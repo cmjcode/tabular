@@ -173,35 +173,6 @@ use crate::{directory, editor, models, sidebar_query, window_egui};
     }
 
 
-pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-        if tabular.show_save_dialog {
-            egui::Window::new("Save Query")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("Enter filename:");
-                    ui.text_edit_singleline(&mut tabular.save_filename);
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() && !tabular.save_filename.is_empty() {
-                            if let Err(err) = editor::save_current_tab_with_name(tabular,tabular.save_filename.clone()) {
-                                error!("Failed to save: {}", err);
-                            }
-                            tabular.show_save_dialog = false;
-                            tabular.save_filename.clear();
-                        }
-                        
-                        if ui.button("Cancel").clicked() {
-                            tabular.show_save_dialog = false;
-                            tabular.save_filename.clear();
-                        }
-                    });
-                });
-        }
-    }
-
-
 
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {

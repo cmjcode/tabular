@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use log::{debug, error};
 
 use crate::{
-    about, cache_data, connection, directory, driver_mysql, driver_postgres, driver_redis, driver_sqlite, editor, export, models, sidebar_database, sidebar_history, sidebar_query
+    dialog, cache_data, connection, directory, driver_mysql, driver_postgres, driver_redis, driver_sqlite, editor, export, models, sidebar_database, sidebar_history, sidebar_query
 };
 
 
@@ -267,25 +267,7 @@ impl Tabular {
         });
     }
 
-    fn render_error_dialog(&mut self, ctx: &egui::Context) {
-        if self.show_error_message {
-            egui::Window::new("Error")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label(&self.error_message);
-                    ui.separator();
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() {
-                            self.show_error_message = false;
-                            self.error_message.clear();
-                        }
-                    });
-                });
-        }
-    }
+
 
     fn get_active_tab_title(&self) -> String {
         if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
@@ -3995,10 +3977,10 @@ impl App for Tabular {
         
         sidebar_database::render_add_connection_dialog(self, ctx);
         sidebar_database::render_edit_connection_dialog(self, ctx);
-        editor::render_save_dialog(self, ctx);
+        dialog::render_save_dialog(self, ctx);
         connection::render_connection_selector(self, ctx);
-        self.render_error_dialog(ctx);
-        about::render_about_dialog(self, ctx);
+        dialog::render_error_dialog(self, ctx);
+        dialog::render_about_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
 

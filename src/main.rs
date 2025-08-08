@@ -16,7 +16,7 @@ mod sidebar_database;
 mod sidebar_history;
 mod sidebar_query;
 mod editor;
-mod about;
+mod dialog;
 
 fn main() -> Result<(), eframe::Error> {
     dotenv::dotenv().ok();
