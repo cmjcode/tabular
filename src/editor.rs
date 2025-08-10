@@ -2,7 +2,7 @@ use eframe::egui;
 use egui_code_editor::{CodeEditor, ColorTheme};
 use log::{debug, error};
 
-use crate::{directory, editor, models, sidebar_query, window_egui};
+use crate::{connection, directory, editor, models, sidebar_history, sidebar_query, window_egui};
 
 
     // Tab management methods
@@ -592,4 +592,156 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
                         });
                     });
             });
+    }
+
+
+pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
+        // Priority: 1) Selected text, 2) Query from cursor position, 3) Full editor text
+        let query = if !tabular.selected_text.trim().is_empty() {
+            tabular.selected_text.trim().to_string()
+        } else {
+            let cursor_query = extract_query_from_cursor(tabular);
+            if !cursor_query.trim().is_empty() {
+                cursor_query
+            } else {
+                tabular.editor_text.trim().to_string()
+            }
+        };
+        
+        if query.is_empty() {
+            tabular.current_table_name = "No query to execute".to_string();
+            tabular.current_table_headers.clear();
+            tabular.current_table_data.clear();
+            return;
+        }
+
+        // Check if current tab has never executed a query
+        let tab_never_executed = if let Some(tab) = tabular.query_tabs.get(tabular.active_tab_index) {
+            !tab.has_executed_query
+        } else {
+            true // If no tab exists, treat as never executed
+        };
+
+        // Get connection_id from current active tab (don't fallback to global for first-time execution)
+        let connection_id = if let Some(tab) = tabular.query_tabs.get(tabular.active_tab_index) {
+            if tab_never_executed {
+                // For first-time execution, only use tab's own connection, don't inherit from other tabs
+                tab.connection_id
+            } else {
+                // For subsequent executions, allow fallback to global
+                tab.connection_id.or(tabular.current_connection_id)
+            }
+        } else {
+            None
+        };
+
+        // If tab has never executed a query and has no connection, show connection selector
+        if tab_never_executed && connection_id.is_none() {
+            debug!("First-time query execution - showing connection selector");
+            tabular.pending_query = query;
+            tabular.auto_execute_after_connection = true;
+            tabular.show_connection_selector = true;
+            return;
+        }
+
+        // Check if we have an active connection
+        if let Some(connection_id) = connection_id {
+            debug!("=== EXECUTING QUERY ===");
+            debug!("Connection ID: {}", connection_id);
+            debug!("Query: {}", query);
+            
+            let result = connection::execute_query_with_connection(tabular, connection_id, query.clone());
+            
+            debug!("Query execution result: {:?}", result.is_some());
+            
+            // Mark tab as having executed a query (regardless of success/failure)
+            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                tab.has_executed_query = true;
+            }
+            
+            if let Some((headers, data)) = result {
+                debug!("=== QUERY RESULT SUCCESS ===");
+                debug!("Headers received: {} - {:?}", headers.len(), headers);
+                debug!("Data rows received: {}", data.len());
+                if !data.is_empty() {
+                    debug!("First row sample: {:?}", &data[0]);
+                }
+                
+                tabular.current_table_headers = headers;
+                
+                // Use pagination for query results
+                tabular.update_pagination_data(data);
+                
+                if tabular.total_rows == 0 {
+                    tabular.current_table_name = "Query executed successfully (no results)".to_string();
+                } else {
+                    tabular.current_table_name = format!("Query Results ({} total rows, showing page {} of {})", 
+                        tabular.total_rows, tabular.current_page + 1, tabular.get_total_pages());
+                }
+                debug!("After update_pagination_data - total_rows: {}, all_table_data.len(): {}", 
+                         tabular.total_rows, tabular.all_table_data.len());
+                debug!("============================");
+                
+                // Save query to history after successful execution
+                sidebar_history::save_query_to_history(tabular, &query, connection_id);
+            } else {
+                tabular.current_table_name = "Query execution failed".to_string();
+                tabular.current_table_headers.clear();
+                tabular.current_table_data.clear();
+                tabular.all_table_data.clear();
+                tabular.total_rows = 0;
+            }
+        } else {
+            // No active connection - check if we have any connections available
+            if tabular.connections.is_empty() {
+                tabular.current_table_name = "No connections available. Please add a connection first.".to_string();
+                tabular.current_table_headers.clear();
+                tabular.current_table_data.clear();
+                tabular.all_table_data.clear();
+                tabular.total_rows = 0;
+            } else {
+                // For tabs that have executed before but lost connection, show connection selector
+                debug!("No connection available for query execution - showing connection selector");
+                tabular.pending_query = query.clone();
+                tabular.show_connection_selector = true;
+                tabular.auto_execute_after_connection = true;
+            }
+        }
+    }
+
+
+pub(crate)fn extract_query_from_cursor(tabular: &mut window_egui::Tabular) -> String {
+        if tabular.editor_text.is_empty() {
+            return String::new();
+        }
+
+        let text_bytes = tabular.editor_text.as_bytes();
+        let cursor_pos = tabular.cursor_position.min(text_bytes.len());
+
+        // Find start position: go backwards from cursor to find the last semicolon (or start of file)
+        let mut start_pos = 0;
+        for i in (0..cursor_pos).rev() {
+            if text_bytes[i] == b';' {
+                // Start after the semicolon
+                start_pos = i + 1;
+                break;
+            }
+        }
+
+        // Find end position: go forwards from cursor to find the next semicolon (or end of file)
+        let mut end_pos = text_bytes.len();
+        for i in cursor_pos..text_bytes.len() {
+            if text_bytes[i] == b';' {
+                // Include the semicolon
+                end_pos = i + 1;
+                break;
+            }
+        }
+
+        // Extract the query text
+        if let Ok(query_text) = std::str::from_utf8(&text_bytes[start_pos..end_pos]) {
+            query_text.trim().to_string()
+        } else {
+            String::new()
+        }
     }

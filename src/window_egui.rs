@@ -2972,41 +2972,6 @@ impl Tabular {
         self.selected_cell = None;
     }
 
-    fn extract_query_from_cursor(&self) -> String {
-        if self.editor_text.is_empty() {
-            return String::new();
-        }
-
-        let text_bytes = self.editor_text.as_bytes();
-        let cursor_pos = self.cursor_position.min(text_bytes.len());
-
-        // Find start position: go backwards from cursor to find the last semicolon (or start of file)
-        let mut start_pos = 0;
-        for i in (0..cursor_pos).rev() {
-            if text_bytes[i] == b';' {
-                // Start after the semicolon
-                start_pos = i + 1;
-                break;
-            }
-        }
-
-        // Find end position: go forwards from cursor to find the next semicolon (or end of file)
-        let mut end_pos = text_bytes.len();
-        for i in cursor_pos..text_bytes.len() {
-            if text_bytes[i] == b';' {
-                // Include the semicolon
-                end_pos = i + 1;
-                break;
-            }
-        }
-
-        // Extract the query text
-        if let Ok(query_text) = std::str::from_utf8(&text_bytes[start_pos..end_pos]) {
-            query_text.trim().to_string()
-        } else {
-            String::new()
-        }
-    }
 
     fn find_redis_key_info(&self, node: &models::structs::TreeNode, key_name: &str) -> Option<(String, String)> {
         // Check if this node is a type folder (like "Strings (5)")
@@ -3071,119 +3036,6 @@ impl Tabular {
         None
     }
 
-    fn execute_query(&mut self) {
-        // Priority: 1) Selected text, 2) Query from cursor position, 3) Full editor text
-        let query = if !self.selected_text.trim().is_empty() {
-            self.selected_text.trim().to_string()
-        } else {
-            let cursor_query = self.extract_query_from_cursor();
-            if !cursor_query.trim().is_empty() {
-                cursor_query
-            } else {
-                self.editor_text.trim().to_string()
-            }
-        };
-        
-        if query.is_empty() {
-            self.current_table_name = "No query to execute".to_string();
-            self.current_table_headers.clear();
-            self.current_table_data.clear();
-            return;
-        }
-
-        // Check if current tab has never executed a query
-        let tab_never_executed = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-            !tab.has_executed_query
-        } else {
-            true // If no tab exists, treat as never executed
-        };
-
-        // Get connection_id from current active tab (don't fallback to global for first-time execution)
-        let connection_id = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-            if tab_never_executed {
-                // For first-time execution, only use tab's own connection, don't inherit from other tabs
-                tab.connection_id
-            } else {
-                // For subsequent executions, allow fallback to global
-                tab.connection_id.or(self.current_connection_id)
-            }
-        } else {
-            None
-        };
-
-        // If tab has never executed a query and has no connection, show connection selector
-        if tab_never_executed && connection_id.is_none() {
-            debug!("First-time query execution - showing connection selector");
-            self.pending_query = query;
-            self.auto_execute_after_connection = true;
-            self.show_connection_selector = true;
-            return;
-        }
-
-        // Check if we have an active connection
-        if let Some(connection_id) = connection_id {
-            debug!("=== EXECUTING QUERY ===");
-            debug!("Connection ID: {}", connection_id);
-            debug!("Query: {}", query);
-            
-            let result = connection::execute_query_with_connection(self, connection_id, query.clone());
-            
-            debug!("Query execution result: {:?}", result.is_some());
-            
-            // Mark tab as having executed a query (regardless of success/failure)
-            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                tab.has_executed_query = true;
-            }
-            
-            if let Some((headers, data)) = result {
-                debug!("=== QUERY RESULT SUCCESS ===");
-                debug!("Headers received: {} - {:?}", headers.len(), headers);
-                debug!("Data rows received: {}", data.len());
-                if !data.is_empty() {
-                    debug!("First row sample: {:?}", &data[0]);
-                }
-                
-                self.current_table_headers = headers;
-                
-                // Use pagination for query results
-                self.update_pagination_data(data);
-                
-                if self.total_rows == 0 {
-                    self.current_table_name = "Query executed successfully (no results)".to_string();
-                } else {
-                    self.current_table_name = format!("Query Results ({} total rows, showing page {} of {})", 
-                        self.total_rows, self.current_page + 1, self.get_total_pages());
-                }
-                debug!("After update_pagination_data - total_rows: {}, all_table_data.len(): {}", 
-                         self.total_rows, self.all_table_data.len());
-                debug!("============================");
-                
-                // Save query to history after successful execution
-                sidebar_history::save_query_to_history(self, &query, connection_id);
-            } else {
-                self.current_table_name = "Query execution failed".to_string();
-                self.current_table_headers.clear();
-                self.current_table_data.clear();
-                self.all_table_data.clear();
-                self.total_rows = 0;
-            }
-        } else {
-            // No active connection - check if we have any connections available
-            if self.connections.is_empty() {
-                self.current_table_name = "No connections available. Please add a connection first.".to_string();
-                self.current_table_headers.clear();
-                self.current_table_data.clear();
-                self.all_table_data.clear();
-                self.total_rows = 0;
-            } else {
-                // For tabs that have executed before but lost connection, show connection selector
-                debug!("No connection available for query execution - showing connection selector");
-                self.pending_query = query.clone();
-                self.show_connection_selector = true;
-                self.auto_execute_after_connection = true;
-            }
-        }
-    }
 
     #[allow(dead_code)]
     fn highlight_sql_syntax(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
@@ -4321,7 +4173,7 @@ impl App for Tabular {
                                         let has_query = if !self.selected_text.trim().is_empty() {
                                             true
                                         } else {
-                                            let cursor_query = self.extract_query_from_cursor();
+                                            let cursor_query = editor::extract_query_from_cursor(self);
                                             if !cursor_query.trim().is_empty() {
                                                 true
                                             } else {
@@ -4331,7 +4183,7 @@ impl App for Tabular {
 
                                         if has_query {
                                             // Always call execute_query, it will handle connection logic internally
-                                            self.execute_query();
+                                            editor::execute_query(self);
                                         }
                                     }
                                     
@@ -4518,7 +4370,7 @@ impl App for Tabular {
                 if !self.selected_text.trim().is_empty() {
                     ui.colored_label(egui::Color32::from_rgb(100, 200, 100), "CMD+Enter: Execute selection");
                 } else {
-                    let cursor_query = self.extract_query_from_cursor();
+                    let cursor_query = editor::extract_query_from_cursor(self);
                     if !cursor_query.trim().is_empty() {
                         ui.colored_label(egui::Color32::from_rgb(200, 150, 100), "CMD+Enter: Execute query at cursor");
                     } else {
