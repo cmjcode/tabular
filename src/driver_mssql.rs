@@ -1,6 +1,7 @@
 // MSSQL driver module now built unconditionally (feature flag removed)
 use std::sync::Arc;
 use crate::models;
+use crate::window_egui; // for Tabular type
 use futures_util::StreamExt; // for next on tiberius QueryStream
 
 // We'll use tiberius for MSSQL. Tiberius uses async-std or tokio with the "rustls" feature.
@@ -38,6 +39,69 @@ pub(crate) fn load_mssql_structure(connection_id: i64, _connection: &models::str
     node.children = main_children;
 }
 
+/// Fetch MSSQL tables or views for a specific database (synchronous wrapper like other drivers)
+pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, table_type: &str) -> Option<Vec<String>> {
+    // Create a new runtime (pattern consistent with other drivers)
+    let rt = tokio::runtime::Runtime::new().ok()?;
+    rt.block_on(async {
+        // Locate connection config
+        let connection = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
+
+        // Open a direct MSSQL connection to the requested database (may differ from original)
+        use tokio_util::compat::TokioAsyncWriteCompatExt;
+        use tiberius::{AuthMethod, Config};
+
+        let host = connection.host.clone();
+        let port: u16 = connection.port.parse().unwrap_or(1433);
+        let user = connection.username.clone();
+        let pass = connection.password.clone();
+        let db_name = if database_name.is_empty() { connection.database.clone() } else { database_name.to_string() };
+
+        let mut config = Config::new();
+        config.host(host.clone());
+        config.port(port);
+        config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+        config.trust_cert();
+        if !db_name.is_empty() { config.database(db_name.clone()); }
+
+        let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await {
+            Ok(t) => t,
+            Err(e) => {
+                log::debug!("MSSQL connect error for table fetch: {}", e);
+                return None;
+            }
+        };
+        let _ = tcp.set_nodelay(true);
+        let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("MSSQL client connect error: {}", e);
+                return None;
+            }
+        };
+
+        // Choose query based on type
+        let query = match table_type {
+            "table" => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME".to_string(),
+            "view" => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME".to_string(),
+            _ => {
+                log::debug!("Unsupported MSSQL table_type: {}", table_type);
+                return None;
+            }
+        };
+
+        let mut stream = match client.simple_query(query).await {
+            Ok(s) => s,
+            Err(e) => { log::debug!("MSSQL list query error: {}", e); return None; }
+        };
+
+        let mut items = Vec::new();
+        use futures_util::TryStreamExt;
+        while let Some(item) = stream.try_next().await.ok()? { if let tiberius::QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); if let Some(n) = name { items.push(n.to_string()); } } }
+        Some(items)
+    })
+}
+
 /// Execute a query and return (headers, rows)
 pub(crate) async fn execute_query(cfg: Arc<MssqlConfigWrapper>, query: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -69,17 +133,41 @@ async fn run_query(mut client: tiberius::Client<tokio_util::compat::Compat<tokio
                 headers = meta.columns().iter().map(|c| c.name().to_string()).collect();
             }
             tiberius::QueryItem::Row(row) => {
-                let mut row_vec = Vec::with_capacity(row.len());
-                for i in 0..row.len() {
-                    let val = match row.get::<&str, _>(i) { Some(v) => v.to_string(), None => {
-                        // try other primitive types
-                        if let Some(v) = row.get::<i32, _>(i) { v.to_string() }
-                        else if let Some(v) = row.get::<i64, _>(i) { v.to_string() }
-                        else if let Some(v) = row.get::<f64, _>(i) { v.to_string() }
-                        else if let Some(v) = row.get::<bool, _>(i) { v.to_string() }
-                        else if let Some(v) = row.get::<&[u8], _>(i) { format!("0x{}", hex::encode(v)) }
-                        else { "NULL".to_string() }
-                    }};
+                use tiberius::ColumnData;
+                let mut row_vec: Vec<String> = Vec::new();
+                for col in row.into_iter() {
+                    let val = match col {
+                        ColumnData::Bit(Some(v)) => v.to_string(),
+                        ColumnData::U8(Some(v)) => v.to_string(),
+                        ColumnData::I16(Some(v)) => v.to_string(),
+                        ColumnData::I32(Some(v)) => v.to_string(),
+                        ColumnData::I64(Some(v)) => v.to_string(),
+                        ColumnData::F32(Some(v)) => v.to_string(),
+                        ColumnData::F64(Some(v)) => v.to_string(),
+                        ColumnData::String(Some(s)) => s.to_string(),
+                        ColumnData::Binary(Some(b)) => format!("0x{}", hex::encode(b)),
+                        ColumnData::Guid(Some(g)) => g.to_string(),
+                        ColumnData::Numeric(Some(n)) => format!("{}", n),
+                        ColumnData::DateTime(Some(dt)) => format!("{:?}", dt),
+                        ColumnData::SmallDateTime(Some(dt)) => format!("{:?}", dt),
+                        ColumnData::Xml(Some(x)) => x.to_string(),
+                        // NULL variants
+                        ColumnData::Bit(None)
+                        | ColumnData::U8(None)
+                        | ColumnData::I16(None)
+                        | ColumnData::I32(None)
+                        | ColumnData::I64(None)
+                        | ColumnData::F32(None)
+                        | ColumnData::F64(None)
+                        | ColumnData::String(None)
+                        | ColumnData::Binary(None)
+                        | ColumnData::Guid(None)
+                        | ColumnData::Numeric(None)
+                        | ColumnData::DateTime(None)
+                        | ColumnData::SmallDateTime(None)
+                        | ColumnData::Xml(None) => "NULL".to_string(),
+                        _ => "".to_string(),
+                    };
                     row_vec.push(val);
                 }
                 data.push(row_vec);

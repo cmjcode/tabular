@@ -1140,8 +1140,64 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
               debug!("Generated Redis databases: {:?}", databases);
               Some(databases)
               }
-              models::enums::DatabasePool::MSSQL(_mssql_cfg) => {
-                     Some(vec!["current".to_string()])
+              models::enums::DatabasePool::MSSQL(ref mssql_cfg) => {
+                     // Fetch list of databases from MSSQL server
+                     use tokio_util::compat::TokioAsyncWriteCompatExt;
+                     use tiberius::{AuthMethod, Config};
+                     {
+                            let mssql_cfg = mssql_cfg.clone();
+                            // Attempt connection with master database to enumerate all
+                            let host = mssql_cfg.host.clone();
+                            let port = mssql_cfg.port;
+                            let user = mssql_cfg.username.clone();
+                            let pass = mssql_cfg.password.clone();
+                            let rt_res = async move {
+                                   let mut config = Config::new();
+                                   config.host(host.clone());
+                                   config.port(port);
+                                   config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+                                   config.trust_cert();
+                                   // Always use master for listing
+                                   config.database("master");
+                                   let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
+                                   tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                                   let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                                   let mut dbs = Vec::new();
+                                   let mut stream = client.simple_query("SELECT name FROM sys.databases ORDER BY name").await.map_err(|e| e.to_string())?;
+                                   use futures_util::TryStreamExt;
+                                   while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
+                                          if let tiberius::QueryItem::Row(r) = item {
+                                                 let name: Option<&str> = r.get(0);
+                                                 if let Some(n) = name {
+                                                        // Optionally skip system DBs? Keep them for completeness; can filter later.
+                                                        dbs.push(n.to_string());
+                                                 }
+                                          }
+                                   }
+                                   Ok::<_, String>(dbs)
+                            }.await;
+                            return match rt_res {
+                                   Ok(mut list) => {
+                                          if list.is_empty() {
+                                                 debug!("MSSQL database list is empty; returning current database only");
+                                                 Some(vec![mssql_cfg.database.clone()])
+                                          } else {
+                                                 // Move system DBs (master, model, msdb, tempdb) to end for nicer UX
+                                                 let system = ["master", "model", "msdb", "tempdb"]; 
+                                                 list.sort();
+                                                 let mut user_dbs: Vec<String> = list.iter().filter(|d| !system.contains(&d.as_str())).cloned().collect();
+                                                 let mut sys_dbs: Vec<String> = list.into_iter().filter(|d| system.contains(&d.as_str())).collect();
+                                                 user_dbs.append(&mut sys_dbs);
+                                                 Some(user_dbs)
+                                          }
+                                   }
+                                   Err(e) => {
+                                          debug!("Failed to fetch MSSQL databases: {}", e);
+                                          // Fallback to default known system DBs so UI still shows something
+                                          Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()])
+                                   }
+                            };
+                     }
               }
        }
        })

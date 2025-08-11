@@ -31,3 +31,10 @@ Build multi architecture :
 ```
 cargo install cross
 ```
+
+
+## DEP
+1. egui
+2. sqlx
+3. tiberias
+4. redis

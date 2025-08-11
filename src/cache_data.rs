@@ -167,10 +167,9 @@ pub(crate) fn fetch_and_cache_connection_data(tabular: &mut window_egui::Tabular
                      models::enums::DatabaseType::Redis => {
                      driver_redis::fetch_tables_from_redis_connection(tabular, connection_id, database_name, table_type)
                      },
-                                    models::enums::DatabaseType::MSSQL => {
-                                           // TODO: implement MSSQL table fetch
-                                           None
-                                    },
+                                      models::enums::DatabaseType::MSSQL => {
+                                             crate::driver_mssql::fetch_tables_from_mssql_connection(tabular, connection_id, database_name, table_type)
+                                       },
               };
               
               if let Some(tables) = tables_result {

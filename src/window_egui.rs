@@ -592,10 +592,23 @@ impl Tabular {
                                 models::enums::DatabaseType::PostgreSQL => {
                                     format!("SELECT * FROM \"{}\".\"{}\" LIMIT 100;", db_name, table_name)
                                 }
-                                _ => format!("SELECT * FROM `{}` LIMIT 100;", table_name)
+                                models::enums::DatabaseType::MSSQL => {
+                                    // In MSSQL we use database.schema.table and TOP instead of LIMIT. Assume dbo schema by default.
+                                    if db_name.is_empty() {
+                                        format!("SELECT TOP 100 * FROM [{}];", table_name)
+                                    } else {
+                                        format!("SELECT TOP 100 * FROM {}.dbo.[{}];", db_name, table_name)
+                                    }
+                                }
+                                models::enums::DatabaseType::SQLite | models::enums::DatabaseType::Redis => {
+                                    format!("SELECT * FROM `{}` LIMIT 100;", table_name)
+                                }
                             }
                         } else {
-                            format!("SELECT * FROM `{}` LIMIT 100;", table_name)
+                            match conn.connection_type {
+                                models::enums::DatabaseType::MSSQL => format!("SELECT TOP 100 * FROM [{}];", table_name),
+                                _ => format!("SELECT * FROM `{}` LIMIT 100;", table_name)
+                            }
                         };
                         
                         let tab_title = format!("Table: {}", table_name);
@@ -2156,7 +2169,9 @@ impl Tabular {
                 models::enums::DatabaseType::Redis => {
                     self.load_redis_folder_content(connection_id, &connection, node, folder_type);
                 }
-                models::enums::DatabaseType::MSSQL => { /* no-op */ }
+                models::enums::DatabaseType::MSSQL => {
+                    self.load_mssql_folder_content(connection_id, &connection, node, folder_type);
+                }
             }
             
             node.is_loaded = true;
@@ -2364,6 +2379,59 @@ impl Tabular {
         }
         
         debug!("Loaded {} items into {:?} folder for SQLite", node.children.len(), folder_type);
+    }
+
+    fn load_mssql_folder_content(&mut self, connection_id: i64, connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode, folder_type: models::enums::NodeType) {
+        debug!("Loading {:?} content for MSSQL", folder_type);
+        let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
+
+        let table_type = match folder_type {
+            models::enums::NodeType::TablesFolder => "table",
+            models::enums::NodeType::ViewsFolder => "view",
+            _ => {
+                node.children = vec![models::structs::TreeNode::new("Unsupported folder for MSSQL".to_string(), models::enums::NodeType::Column)];
+                return;
+            }
+        };
+
+        // Try cache first
+        if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, database_name, table_type) {
+            if !cached.is_empty() {
+                node.children = cached.into_iter().map(|name| {
+                    let ntype = if table_type == "table" { models::enums::NodeType::Table } else { models::enums::NodeType::View };
+                    let mut child = models::structs::TreeNode::new(name, ntype);
+                    child.connection_id = Some(connection_id);
+                    child.database_name = Some(database_name.clone());
+                    child.is_loaded = false;
+                    child
+                }).collect();
+                return;
+            }
+        }
+
+        if let Some(real_items) = crate::driver_mssql::fetch_tables_from_mssql_connection(self, connection_id, database_name, table_type) {
+            let table_data: Vec<(String, String)> = real_items.iter().map(|n| (n.clone(), table_type.to_string())).collect();
+            cache_data::save_tables_to_cache(self, connection_id, database_name, &table_data);
+            node.children = real_items.into_iter().map(|name| {
+                let ntype = if table_type == "table" { models::enums::NodeType::Table } else { models::enums::NodeType::View };
+                let mut child = models::structs::TreeNode::new(name, ntype);
+                child.connection_id = Some(connection_id);
+                child.database_name = Some(database_name.clone());
+                child.is_loaded = false;
+                child
+            }).collect();
+        } else {
+            // fallback sample
+            let sample = if table_type == "table" { vec!["users".to_string(), "orders".to_string()] } else { vec!["user_summary".to_string()] };
+            node.children = sample.into_iter().map(|name| {
+                let ntype = if table_type == "table" { models::enums::NodeType::Table } else { models::enums::NodeType::View };
+                let mut child = models::structs::TreeNode::new(name, ntype);
+                child.connection_id = Some(connection_id);
+                child.database_name = Some(database_name.clone());
+                child.is_loaded = false;
+                child
+            }).collect();
+        }
     }
 
     fn load_redis_folder_content(&mut self, connection_id: i64, _connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode, folder_type: models::enums::NodeType) {
