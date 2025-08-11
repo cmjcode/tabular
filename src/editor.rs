@@ -877,6 +877,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
             }
             
             if let Some((headers, data)) = result {
+                let is_error_result = headers.first().map(|h| h == "Error").unwrap_or(false);
                 debug!("=== QUERY RESULT SUCCESS ===");
                 debug!("Headers received: {} - {:?}", headers.len(), headers);
                 debug!("Data rows received: {}", data.len());
@@ -899,8 +900,12 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                          tabular.total_rows, tabular.all_table_data.len());
                 debug!("============================");
                 
-                // Save query to history after successful execution
-                sidebar_history::save_query_to_history(tabular, &query, connection_id);
+                // Save query to history hanya jika bukan hasil error
+                if !is_error_result {
+                    sidebar_history::save_query_to_history(tabular, &query, connection_id);
+                } else {
+                    debug!("Skip saving to history karena hasil error");
+                }
             } else {
                 tabular.current_table_name = "Query execution failed".to_string();
                 tabular.current_table_headers.clear();
