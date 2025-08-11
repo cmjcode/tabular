@@ -1,14 +1,13 @@
 
 use eframe::{egui, App, Frame};
 use sqlx::SqlitePool;
-use egui_code_editor::{CodeEditor, ColorTheme};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use log::{debug, error};
 
 use crate::{
-    dialog, cache_data, connection, directory, driver_mysql, driver_postgres, driver_redis, driver_sqlite, editor, export, models, sidebar_database, sidebar_history, sidebar_query
+    dialog, cache_data, connection, directory, driver_mysql, driver_postgres, driver_redis, driver_sqlite, editor, export, models, sidebar_database, sidebar_query
 };
 
 

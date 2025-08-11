@@ -105,7 +105,7 @@ fn extract_tables(full_text: &str) -> Vec<String> {
 /// - Selain itu -> SQL_KEYWORDS
 pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: &str) -> Vec<String> {
     if prefix.is_empty() { return Vec::new(); }
-    let (cur_pref, start_idx) = current_prefix(full_text, cursor); // ensure prefix matches
+    let (_cur_pref, start_idx) = current_prefix(full_text, cursor); // ensure prefix matches
     let before = &full_text[..start_idx.min(full_text.len())];
     let tokens = tokenize(before);
     let last = tokens.last().map(|s| s.to_uppercase());
@@ -171,9 +171,7 @@ pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: 
     out
 }
 
-// Accessor previously needed for tree traversal; kept if still used elsewhere.
-trait TreeNodeExt { fn node_type(&self) -> models::enums::NodeType; }
-impl TreeNodeExt for models::structs::TreeNode { fn node_type(&self) -> models::enums::NodeType { self.node_type.clone() } }
+// Removed unused TreeNodeExt trait & impl (was an accessor wrapper) to silence dead_code warning.
 
 // Provide a lightweight clone for cache access (cache functions require &mut Tabular)
 trait ShallowForCache { fn shallow_for_cache(&self) -> Box<Tabular>; }
@@ -214,8 +212,6 @@ pub fn update_autocomplete(app: &mut Tabular) {
         }
         app.last_autocomplete_trigger_len = prefix.len();
     }
-
-    debug!("Cursor position A {}", app.cursor_position);
     // Store start index in last_autocomplete_trigger_len encoded (optional) - keeping simple
     let _ = start_idx; // could be used later for replacement
 }
@@ -223,7 +219,6 @@ pub fn update_autocomplete(app: &mut Tabular) {
 /// Accept currently selected suggestion and replace text.
 pub fn accept_current_suggestion(app: &mut Tabular) {
     if !app.show_autocomplete { return; }
-    debug!("Accepting suggestion: {}", app.autocomplete_suggestions[app.selected_autocomplete_index]);
     if let Some(sugg) = app.autocomplete_suggestions.get(app.selected_autocomplete_index) {
         let cursor = app.cursor_position.min(app.editor_text.len());
         let (prefix, start_idx) = current_prefix(&app.editor_text, cursor);
@@ -247,7 +242,6 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         }
     app.show_autocomplete = false;
     app.autocomplete_suggestions.clear();
-    debug!("Cursor position B {}", app.cursor_position);
     }
 }
 
@@ -289,13 +283,16 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
         .fixed_pos(popup_pos)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
+            // Gunakan frame popup semi-transparan
+            let bg = ui.style().visuals.window_fill; // warna dasar window
+            let translucent = egui::Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 200); // alpha ~78%
             egui::Frame::popup(ui.style())
+                .fill(translucent)
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200,0,0)))
+                .corner_radius(4.0)
                 .show(ui, |ui| {
                     ui.set_min_width(popup_w);
                     ui.set_max_width(popup_w);
-                    // Pastikan tidak wrap per karakter
-                    let old_wrap = ui.style().wrap;
-                    ui.style_mut().wrap = Some(false);
                     egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
                         for (i, s) in app.autocomplete_suggestions.iter().enumerate() {
                             let selected = i == app.selected_autocomplete_index;
@@ -308,8 +305,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                             if resp.clicked() { app.selected_autocomplete_index = i; accept_current_suggestion(app); break; }
                         }
                     });
-                    // Restore wrap (optional)
-                    ui.style_mut().wrap = old_wrap;
+                    // Removed deprecated style.wrap adjustments; suggestions are short so wrapping off tweak not needed.
                 });
         });
 }
