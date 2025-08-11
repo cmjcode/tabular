@@ -46,31 +46,57 @@ fn active_connection_and_db(app: &Tabular) -> Option<(i64, String)> {
 
 /// Extract table names appearing after first FROM (comma separated; stop at clause keywords).
 fn extract_tables(full_text: &str) -> Vec<String> {
+    // Cari token FROM (case-insensitive) sebagai token utuh, lalu kumpulkan nama tabel setelahnya
+    let bytes = full_text.as_bytes();
     let upper = full_text.to_uppercase();
-    if let Some(pos) = upper.find("FROM ") { // FROM with space
-        let after = &full_text[pos+5..];
-        // stop at keywords
-        let stop_keywords = [" WHERE ", " GROUP ", " ORDER ", " LIMIT ", " OFFSET ", " JOIN ", " LEFT ", " RIGHT ", " INNER ", " OUTER ", ";", "\n"]; 
-        let mut end = after.len();
-        for kw in &stop_keywords {
-            if let Some(i) = after.to_uppercase().find(kw) { end = end.min(i); }
+    let mut idx = 0usize;
+    let mut tables: Vec<String> = Vec::new();
+    let stop_tokens = ["WHERE","GROUP","ORDER","LIMIT","OFFSET","JOIN","LEFT","RIGHT","INNER","OUTER"]; // clause penutup
+    while idx < upper.len() {
+        if upper[idx..].starts_with("FROM") {
+            // Pastikan token berdiri sendiri (awal atau non ident char sebelum & sesudah)
+            let before_ok = idx==0 || !upper.as_bytes()[idx-1].is_ascii_alphanumeric();
+            let after = idx+4;
+            let after_ok = after >= upper.len() || !upper.as_bytes()[after].is_ascii_alphanumeric();
+            if before_ok && after_ok { // ditemukan FROM
+                // Skip whitespace/newline setelah FROM
+                let mut j = after;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() { j+=1; }
+                // Ambil segmen sampai semicolon atau akhir atau clause token
+                let mut seg_end = j;
+                while seg_end < bytes.len() {
+                    let ch = bytes[seg_end] as char;
+                    if ch == ';' { break; }
+                    seg_end += 1;
+                }
+                let segment = &full_text[j..seg_end];
+                // Split by commas (support multi-line)
+                for part in segment.split(',') {
+                    let trimmed = part.trim();
+                    if trimmed.is_empty() { continue; }
+                    // Hentikan jika bagian ini diawali clause (WHERE, GROUP, ...)
+                    let upper_first = trimmed.split_whitespace().next().unwrap_or("").to_uppercase();
+                    if stop_tokens.contains(&upper_first.as_str()) { break; }
+                    // token pertama adalah nama tabel sebelum alias
+                    let first = trimmed.split_whitespace().next().unwrap_or("");
+                    // Berhenti kalau first adalah clause
+                    if stop_tokens.contains(&first.to_uppercase().as_str()) { break; }
+                    let cleaned = first.trim_matches('`').trim_matches('"');
+                    if !cleaned.is_empty() {
+                        // Ambil nama terakhir jika schema.table
+                        let final_name = cleaned.split('.').last().unwrap_or(cleaned).to_string();
+                        tables.push(final_name);
+                    }
+                }
+                break; // hanya proses FROM pertama
+            }
         }
-        let region = &after[..end];
-        let mut tables = Vec::new();
-        for part in region.split(',') {
-            let trimmed = part.trim();
-            if trimmed.is_empty() { continue; }
-            // first token before alias
-            let first = trimmed.split_whitespace().next().unwrap_or("");
-            let cleaned = first.trim_matches('`').trim_matches('"');
-            if !cleaned.is_empty() { tables.push(cleaned.split('.').last().unwrap_or(cleaned).to_string()); }
-        }
-        // dedup
-        let mut seen = std::collections::HashSet::new();
-        tables.retain(|t| seen.insert(t.to_lowercase()));
-        return tables;
+        idx += 1;
     }
-    Vec::new()
+    // Dedup
+    let mut seen = std::collections::HashSet::new();
+    tables.retain(|t| seen.insert(t.to_lowercase()));
+    tables
 }
 
 /// Build suggestions context-aware per requirement.
@@ -84,11 +110,18 @@ pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: 
     let tokens = tokenize(before);
     let last = tokens.last().map(|s| s.to_uppercase());
     let last2 = if tokens.len() >= 2 { Some(tokens[tokens.len()-2].to_uppercase()) } else { None };
+    // Deteksi apakah sedang berada di dalam daftar SELECT sebelum FROM
+    let upper_before = before.to_uppercase();
+    let in_select_list = if let Some(sel_pos) = upper_before.rfind("SELECT") {
+        // Ada FROM setelah SELECT? kalau belum berarti masih di daftar SELECT
+        let after_sel = &upper_before[sel_pos+6..];
+        !after_sel.contains("FROM")
+    } else { false };
     let want_columns = match (last2.as_deref(), last.as_deref()) {
         (Some("GROUP"), Some("BY")) => true,
         (_, Some("SELECT")) => true,
         (_, Some("WHERE")) => true,
-        _ => false,
+        _ => in_select_list, // fallback: jika sedang di SELECT list
     };
     let want_tables = matches!(last.as_deref(), Some("FROM"));
 
@@ -105,13 +138,26 @@ pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: 
         let tables = extract_tables(full_text);
         if let Some((cid, db)) = active_connection_and_db(app) {
             let mut clone_for_cache = app.shallow_for_cache();
-            for table in &tables {
-                if let Some(cols) = cache_data::get_columns_from_cache(&mut clone_for_cache, cid, &db, table) {
-                    for (col, _ty) in cols { if col.to_lowercase().starts_with(&low_pref) { out.push(col); } }
+            if !tables.is_empty() {
+                for table in &tables {
+                    if let Some(cols) = cache_data::get_columns_from_cache(&mut clone_for_cache, cid, &db, table) {
+                        for (col, _ty) in cols { if col.to_lowercase().starts_with(&low_pref) { out.push(col); } }
+                    }
+                }
+            } else {
+                // Belum ada FROM: kumpulkan semua kolom dari semua tabel untuk database ini
+                if let Some(all_tables) = cache_data::get_tables_from_cache(&mut clone_for_cache, cid, &db, "table") {
+                    for table in all_tables {
+                        if let Some(cols) = cache_data::get_columns_from_cache(&mut clone_for_cache, cid, &db, &table) {
+                            for (col, _ty) in cols.iter() {
+                                if col.to_lowercase().starts_with(&low_pref) { out.push(col.clone()); }
+                            }
+                        }
+                    }
                 }
             }
         }
-        // Fallback ke keyword kalau belum ada FROM
+        // Jika tetap kosong, fallback ke keywords
         if out.is_empty() { for k in SQL_KEYWORDS { if k.to_lowercase().starts_with(&low_pref) { out.push((*k).to_string()); } } }
     } else {
         // Keywords default

@@ -440,6 +440,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if input.key_pressed(egui::Key::Escape) { tabular.show_autocomplete = false; }
         }
 
+        // Update suggestions saat kursor bergerak kiri/kanan (tanpa perubahan teks)
+        let moved_lr = input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowRight);
+        if moved_lr && !accept_via_tab_pre && !accept_via_enter_pre {
+            // cursor_position sudah diperbarui via response.cursor_range; cukup panggil update
+            editor_autocomplete::update_autocomplete(tabular);
+        }
+
         // Render autocomplete popup positioned under cursor
         if tabular.show_autocomplete && !tabular.autocomplete_suggestions.is_empty() {
             // Approximate cursor line & column
