@@ -411,8 +411,26 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if input.key_pressed(egui::Key::Escape) { tabular.show_autocomplete = false; }
         }
 
-        // Render autocomplete popup (after editor so it overlays)
-        editor_autocomplete::render_autocomplete(tabular, ui);
+        // Render autocomplete popup positioned under cursor
+        if tabular.show_autocomplete && !tabular.autocomplete_suggestions.is_empty() {
+            // Approximate cursor line & column
+            let cursor = tabular.cursor_position.min(tabular.editor_text.len());
+            let mut line_start = 0usize;
+            let mut line_no = 0usize;
+            for (i, ch) in tabular.editor_text.char_indices() {
+                if i >= cursor { break; }
+                if ch == '\n' { line_no += 1; line_start = i + 1; }
+            }
+            let column = cursor - line_start;
+            let char_w = 8.0_f32; // heuristic monospace width
+            let line_h = ui.text_style_height(&egui::TextStyle::Monospace);
+            let editor_rect = response.response.rect; // CodeEditor main rect
+            let mut pos = egui::pos2(editor_rect.left() + 8.0 + (column as f32)*char_w,
+                                     editor_rect.top() + 4.0 + (line_no as f32 + 1.0)*line_h);
+            // Clamp horizontally inside editor area
+            if pos.x > editor_rect.right() - 150.0 { pos.x = editor_rect.right() - 150.0; }
+            editor_autocomplete::render_autocomplete(tabular, ui, pos);
+        }
     }
 
 pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {

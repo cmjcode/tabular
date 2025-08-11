@@ -126,18 +126,32 @@ pub fn navigate(app: &mut Tabular, delta: i32) {
 }
 
 /// Render dropdown near top-right of editor area (simplified positioning). Call after editor.
-pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui) {
+pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2) {
     if !app.show_autocomplete || app.autocomplete_suggestions.is_empty() { return; }
-    let max_height = 150.0;
-    egui::Frame::popup(ui.style()).show(ui, |ui| {
-        egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
-            for (i, s) in app.autocomplete_suggestions.iter().enumerate() {
-                let selected = i == app.selected_autocomplete_index;
-                let text = if selected { egui::RichText::new(s).background_color(ui.style().visuals.selection.bg_fill).color(ui.style().visuals.selection.stroke.color) } else { egui::RichText::new(s) };
-                if ui.selectable_label(selected, text).clicked() { app.selected_autocomplete_index = i; accept_current_suggestion(app); break; }
-            }
+    let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+    let max_visible = 8usize;
+    let visible = app.autocomplete_suggestions.len().min(max_visible);
+    let est_height = (visible as f32) * line_height + 8.0;
+    let screen = ui.ctx().screen_rect();
+    let mut popup_pos = pos;
+    if popup_pos.y + est_height > screen.bottom() { popup_pos.y = (popup_pos.y - est_height).max(screen.top()); }
+    if popup_pos.x + 250.0 > screen.right() { popup_pos.x = (screen.right() - 250.0).max(screen.left()); }
+
+    egui::Area::new(egui::Id::new("autocomplete_popup"))
+        .fixed_pos(popup_pos)
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style())
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        for (i, s) in app.autocomplete_suggestions.iter().enumerate() {
+                            let selected = i == app.selected_autocomplete_index;
+                            let text = if selected { egui::RichText::new(s).background_color(ui.style().visuals.selection.bg_fill).color(ui.style().visuals.selection.stroke.color) } else { egui::RichText::new(s) };
+                            if ui.selectable_label(selected, text).clicked() { app.selected_autocomplete_index = i; accept_current_suggestion(app); break; }
+                        }
+                    });
+                });
         });
-    });
 }
 
 /// Manual trigger (e.g. Ctrl+Space) even if prefix short. Shows all keywords or filtered list.
