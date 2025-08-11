@@ -745,3 +745,20 @@ pub(crate)fn extract_query_from_cursor(tabular: &mut window_egui::Tabular) -> St
             String::new()
         }
     }
+
+
+pub(crate) fn close_tabs_for_file(tabular: &mut window_egui::Tabular, file_path: &str) {
+        // Find all tabs that have this file open and close them
+        let mut indices_to_close = Vec::new();
+        
+        for (index, tab) in tabular.query_tabs.iter().enumerate() {
+            if tab.file_path.as_deref() == Some(file_path) {
+                indices_to_close.push(index);
+            }
+        }
+        
+        // Close tabs in reverse order to maintain correct indices
+        for &index in indices_to_close.iter().rev() {
+            editor::close_tab(tabular, index);
+        }
+    }

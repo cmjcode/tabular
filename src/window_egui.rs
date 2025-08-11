@@ -1265,7 +1265,7 @@ impl Tabular {
         if let Some(file_path) = self.find_query_file_by_hash(hash) {
             
             // Close any open tabs for this file first
-            self.close_tabs_for_file(&file_path);
+            editor::close_tabs_for_file(self, &file_path);
             
             // Remove the file from filesystem
             match std::fs::remove_file(&file_path) {
@@ -1324,21 +1324,6 @@ impl Tabular {
         search_in_dir(&query_dir, hash)
     }
 
-    pub(crate) fn close_tabs_for_file(&mut self, file_path: &str) {
-        // Find all tabs that have this file open and close them
-        let mut indices_to_close = Vec::new();
-        
-        for (index, tab) in self.query_tabs.iter().enumerate() {
-            if tab.file_path.as_deref() == Some(file_path) {
-                indices_to_close.push(index);
-            }
-        }
-        
-        // Close tabs in reverse order to maintain correct indices
-        for &index in indices_to_close.iter().rev() {
-            editor::close_tab(self, index);
-        }
-    }
 
     fn handle_alter_table_request(&mut self, connection_id: i64) {
         debug!("🔍 handle_alter_table_request called with connection_id: {}", connection_id);

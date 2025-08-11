@@ -85,7 +85,7 @@ use crate::{directory, editor, models, sidebar_query, window_egui};
             .map_err(|e| format!("Failed to move file: {}", e))?;
             
         // Close any open tabs for this file and update with new path
-        tabular.close_tabs_for_file(query_file_path);
+        editor::close_tabs_for_file(tabular, query_file_path);
         
         // Refresh the queries tree
         load_queries_from_directory(tabular);
@@ -106,7 +106,7 @@ use crate::{directory, editor, models, sidebar_query, window_egui};
             .map_err(|e| format!("Failed to move file: {}", e))?;
             
         // Close any open tabs for this file and update with new path
-        tabular.close_tabs_for_file(query_file_path);
+        editor::close_tabs_for_file(tabular, query_file_path);
         
         // Refresh the queries tree
         load_queries_from_directory(tabular);
