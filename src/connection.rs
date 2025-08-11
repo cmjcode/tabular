@@ -1,6 +1,7 @@
 use crate::{
-              connection, driver_mysql, driver_postgres, driver_redis, driver_sqlite, helpers, models, modules, window_egui::{self, Tabular}
-       };
+       connection, driver_mysql, driver_postgres, driver_redis, driver_sqlite, driver_mssql, helpers, models, modules, window_egui::{self, Tabular}
+};
+use futures_util::TryStreamExt; // for MSSQL try_next
 use eframe::egui;
 use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions, Column, Row, SqlitePool};
 use std::sync::Arc;
@@ -42,11 +43,12 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                             sfolder,
                             match connection.connection_type {
                             models::enums::DatabaseType::MySQL => "MySQL",
+                            models::enums::DatabaseType::MSSQL => "MSSQL",
                             models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
                             models::enums::DatabaseType::SQLite => "SQLite",
                             models::enums::DatabaseType::Redis => "Redis",
                             },
-                            connection.name 
+                            connection.name
                      );
                                           
                             // Custom button with red fill on hover
@@ -635,6 +637,13 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                             }
                      }
                      }
+                     models::enums::DatabasePool::MSSQL(mssql_cfg) => {
+                            debug!("Executing MSSQL query: {}", query);
+                            match driver_mssql::execute_query(mssql_cfg.clone(), query).await {
+                                   Ok((h, d)) => Some((h, d)),
+                                   Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]])),
+                            }
+                     }
               }
               },
               None => {
@@ -789,6 +798,18 @@ pub(crate) async fn get_or_create_connection_pool(tabular: &mut Tabular, connect
                      }
               }
               }
+              models::enums::DatabaseType::MSSQL => {
+                     let cfg = driver_mssql::MssqlConfigWrapper::new(
+                            connection.host.clone(),
+                            connection.port.clone(),
+                            connection.database.clone(),
+                            connection.username.clone(),
+                            connection.password.clone()
+                     );
+                     let database_pool = models::enums::DatabasePool::MSSQL(Arc::new(cfg));
+                     tabular.connection_pools.insert(connection_id, database_pool.clone());
+                     Some(database_pool)
+              }
        }
        } else {
        None
@@ -832,6 +853,7 @@ pub(crate) async fn refresh_connection_background_async(
                      "MySQL" => models::enums::DatabaseType::MySQL,
                      "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
                      "Redis" => models::enums::DatabaseType::Redis,
+                     "MSSQL" => models::enums::DatabaseType::MSSQL,
                      _ => models::enums::DatabaseType::SQLite,
               },
               folder: None, // Will be loaded from database later
@@ -961,6 +983,16 @@ pub(crate) async fn create_database_pool(connection: &models::structs::Connectio
               Err(_e) => None,
               }
        }
+       models::enums::DatabaseType::MSSQL => {
+              let cfg = driver_mssql::MssqlConfigWrapper::new(
+                     connection.host.clone(),
+                     connection.port.clone(),
+                     connection.database.clone(),
+                     connection.username.clone(),
+                     connection.password.clone(),
+              );
+              Some(models::enums::DatabasePool::MSSQL(Arc::new(cfg)))
+       }
        }
 }
 
@@ -1000,6 +1032,11 @@ async fn fetch_and_cache_all_data(
               } else {
               false
               }
+       }
+       models::enums::DatabaseType::MSSQL => {
+              if let models::enums::DatabasePool::MSSQL(mssql_cfg) = pool {
+                     driver_mssql::fetch_mssql_data(connection_id, mssql_cfg.clone(), cache_pool).await
+              } else { false }
        }
        }
 }
@@ -1102,6 +1139,9 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
               
               debug!("Generated Redis databases: {:?}", databases);
               Some(databases)
+              }
+              models::enums::DatabasePool::MSSQL(_mssql_cfg) => {
+                     Some(vec!["current".to_string()])
               }
        }
        })
@@ -1240,6 +1280,35 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      ("type".to_string(), "String".to_string()),
                      ("ttl".to_string(), "Integer".to_string()),
               ])
+              }
+              models::enums::DatabaseType::MSSQL => {
+              // Basic column metadata using INFORMATION_SCHEMA
+              use tokio_util::compat::TokioAsyncWriteCompatExt;
+              use tiberius::{Config, AuthMethod};
+              let host = connection_clone.host.clone();
+              let port: u16 = connection_clone.port.parse().unwrap_or(1433);
+              let user = connection_clone.username.clone();
+              let pass = connection_clone.password.clone();
+              let db = database_name.clone();
+              let table = table_name.clone();
+              let rt_res = async move {
+                     let mut config = Config::new();
+                     config.host(host.clone());
+                     config.port(port);
+                     config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+                     config.trust_cert();
+                     if !db.is_empty() { config.database(db.clone()); }
+                     let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
+                     tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                     let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                     let query = format!("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{}' ORDER BY ORDINAL_POSITION", table.replace("'", "''"));
+                     let mut stream = client.simple_query(query).await.map_err(|e| e.to_string())?;
+                     let mut cols = Vec::new();
+                     use futures_util::TryStreamExt;
+                     while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); let dt: Option<&str> = r.get(1); if let (Some(n), Some(d)) = (name, dt) { cols.push((n.to_string(), d.to_string())); } } }
+                     Ok::<_, String>(cols)
+              }.await;
+              match rt_res { Ok(v) => Some(v), Err(e) => { debug!("MSSQL column fetch error: {}", e); None } }
               }
        }
        })
@@ -1437,7 +1506,7 @@ pub(crate) fn test_database_connection(connection: &models::structs::ConnectionC
                         Err(e) => (false, format!("SQLite connection failed: {}", e)),
                     }
                 },
-                models::enums::DatabaseType::Redis => {
+                            models::enums::DatabaseType::Redis => {
                     let connection_string = if connection.password.is_empty() {
                         format!("redis://{}:{}", connection.host, connection.port)
                     } else {
@@ -1465,7 +1534,32 @@ pub(crate) fn test_database_connection(connection: &models::structs::ConnectionC
                         },
                         Err(e) => (false, format!("Redis client creation failed: {}", e)),
                     }
-                }
+                            },
+                            models::enums::DatabaseType::MSSQL => {
+                                   // Simple test using tiberius
+                                   let host = connection.host.clone();
+                                   let port: u16 = connection.port.parse().unwrap_or(1433);
+                                   let db = connection.database.clone();
+                                   let user = connection.username.clone();
+                                   let pass = connection.password.clone();
+                                   let res = async {
+                                          use tiberius::{AuthMethod, Config};
+                                          use tokio_util::compat::TokioAsyncWriteCompatExt;
+                                          let mut config = Config::new();
+                                          config.host(host.clone());
+                                          config.port(port);
+                                          config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+                                          config.trust_cert();
+                                          if !db.is_empty() { config.database(db.clone()); }
+                                          let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
+                                          tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                                          let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                                          let mut s = client.simple_query("SELECT 1").await.map_err(|e| e.to_string())?;
+                                          while let Some(item) = s.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(_r) = item { break; } }
+                                          Ok::<_, String>(())
+                                   }.await;
+                                   match res { Ok(_) => (true, "MSSQL connection successful!".to_string()), Err(e) => (false, format!("MSSQL connection failed: {}", e)) }
+                            },
             }
         })
     }

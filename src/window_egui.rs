@@ -847,31 +847,32 @@ impl Tabular {
                     models::enums::NodeType::Column => "📄",
                     models::enums::NodeType::Query => "🔍",
                     models::enums::NodeType::QueryHistItem => "📜",
-                    models::enums::NodeType::Connection => "", // Icon already included in name
+                    models::enums::NodeType::Connection => "",
                     models::enums::NodeType::DatabasesFolder => "📁",
-                    models::enums::NodeType::TablesFolder => "📋",
-                    models::enums::NodeType::ViewsFolder => "👁",
+                    models::enums::NodeType::TablesFolder => "�",
+                    models::enums::NodeType::ViewsFolder => "�",
                     models::enums::NodeType::StoredProceduresFolder => "⚙️",
                     models::enums::NodeType::UserFunctionsFolder => "🔧",
                     models::enums::NodeType::TriggersFolder => "⚡",
                     models::enums::NodeType::EventsFolder => "📅",
-                    models::enums::NodeType::DBAViewsFolder => "👨‍💼",
-                    models::enums::NodeType::UsersFolder => "👥",
-                    models::enums::NodeType::PrivilegesFolder => "🔒",
+                    models::enums::NodeType::DBAViewsFolder => "�‍💼",
+                    models::enums::NodeType::UsersFolder => "�",
+                    models::enums::NodeType::PrivilegesFolder => "�",
                     models::enums::NodeType::ProcessesFolder => "⚡",
                     models::enums::NodeType::StatusFolder => "📊",
-                    models::enums::NodeType::View => "👁",
+                    models::enums::NodeType::View => "�",
                     models::enums::NodeType::StoredProcedure => "⚙️",
                     models::enums::NodeType::UserFunction => "🔧",
                     models::enums::NodeType::Trigger => "⚡",
                     models::enums::NodeType::Event => "📅",
-                    models::enums::NodeType::MySQLFolder => "🐬",
-                    models::enums::NodeType::PostgreSQLFolder => "🐘",
-                    models::enums::NodeType::SQLiteFolder => "📄",
-                    models::enums::NodeType::RedisFolder => "🔴",
-                    models::enums::NodeType::CustomFolder => "📁",
-                    models::enums::NodeType::QueryFolder => "📂",
-                    models::enums::NodeType::HistoryDateFolder => "📅",
+                    models::enums::NodeType::MySQLFolder => "�",
+                    models::enums::NodeType::PostgreSQLFolder => "�",
+                    models::enums::NodeType::SQLiteFolder => "�",
+                    models::enums::NodeType::RedisFolder => "�",
+                    models::enums::NodeType::CustomFolder => "�",
+                    models::enums::NodeType::QueryFolder => "�",
+                    models::enums::NodeType::HistoryDateFolder => "�",
+                    models::enums::NodeType::MSSQLFolder => "�",
                 };
                 
                 let label_text = if icon.is_empty() { 
@@ -1273,6 +1274,7 @@ impl Tabular {
                     models::enums::DatabaseType::PostgreSQL => self.generate_postgresql_alter_table_template(&table_name),
                     models::enums::DatabaseType::SQLite => self.generate_sqlite_alter_table_template(&table_name),
                     models::enums::DatabaseType::Redis => "-- Redis does not support ALTER TABLE operations\n-- Redis is a key-value store, not a relational database".to_string(),
+                    models::enums::DatabaseType::MSSQL => self.generate_mysql_alter_table_template(&table_name).replace("MySQL", "MSSQL"),
                 };
                 
                 // Set the ALTER TABLE template in the editor
@@ -1286,6 +1288,7 @@ impl Tabular {
                     models::enums::DatabaseType::PostgreSQL => "-- PostgreSQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD COLUMN new_column VARCHAR(255),\n  ALTER COLUMN existing_column TYPE INTEGER,\n  DROP COLUMN old_column;".to_string(),
                     models::enums::DatabaseType::SQLite => "-- SQLite ALTER TABLE template\n-- Note: SQLite has limited ALTER TABLE support\nALTER TABLE your_table_name\n  ADD COLUMN new_column TEXT;".to_string(),
                     models::enums::DatabaseType::Redis => "-- Redis does not support ALTER TABLE operations\n-- Redis is a key-value store, not a relational database\n-- Use Redis commands like SET, GET, HSET, etc.".to_string(),
+                    models::enums::DatabaseType::MSSQL => "-- MSSQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD new_column VARCHAR(255) NULL,\n  ALTER COLUMN existing_column INT,\n  DROP COLUMN old_column;".to_string(),
                 };
                 
                 self.editor_text = alter_template;
@@ -1548,7 +1551,7 @@ impl Tabular {
         // Find the connection by ID
         if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
             let connection = connection.clone();
-            
+
             // Create the main structure based on database type
             match connection.connection_type {
                 models::enums::DatabaseType::MySQL => {
@@ -1562,9 +1565,11 @@ impl Tabular {
                 },
                 models::enums::DatabaseType::Redis => {
                     driver_redis::load_redis_structure(self, connection_id, &connection, node);
-                }
+                },
+                models::enums::DatabaseType::MSSQL => {
+                    crate::driver_mssql::load_mssql_structure(connection_id, &connection, node);
+                },
             }
-            
             node.is_loaded = true;
         }
     }
@@ -1716,6 +1721,28 @@ impl Tabular {
                     cache_data::build_redis_structure_from_cache(self, connection_id, node, databases);
                     return;
                 }
+                models::enums::DatabaseType::MSSQL => {
+                    // Basic placeholder similar to MySQL (without DBA views for now)
+                    let mut databases_folder = models::structs::TreeNode::new("Databases".to_string(), models::enums::NodeType::DatabasesFolder);
+                    databases_folder.connection_id = Some(connection_id);
+                    for db_name in databases {
+                        let mut db_node = models::structs::TreeNode::new(db_name.clone(), models::enums::NodeType::Database);
+                        db_node.connection_id = Some(connection_id);
+                        db_node.database_name = Some(db_name.clone());
+                        db_node.is_loaded = false;
+                        let mut tables_folder = models::structs::TreeNode::new("Tables".to_string(), models::enums::NodeType::TablesFolder);
+                        tables_folder.connection_id = Some(connection_id);
+                        tables_folder.database_name = Some(db_name.clone());
+                        tables_folder.is_loaded = false;
+                        let mut views_folder = models::structs::TreeNode::new("Views".to_string(), models::enums::NodeType::ViewsFolder);
+                        views_folder.connection_id = Some(connection_id);
+                        views_folder.database_name = Some(db_name.clone());
+                        views_folder.is_loaded = false;
+                        db_node.children = vec![tables_folder, views_folder];
+                        databases_folder.children.push(db_node);
+                    }
+                    main_children.push(databases_folder);
+                }
             }
             
             node.children = main_children;
@@ -1855,6 +1882,7 @@ impl Tabular {
                 models::enums::DatabaseType::PostgreSQL => vec!["postgres".to_string(), "template1".to_string(), "dvdrental".to_string()],
                 models::enums::DatabaseType::SQLite => vec!["main".to_string()],
                 models::enums::DatabaseType::Redis => vec!["redis".to_string(), "info".to_string()],
+                models::enums::DatabaseType::MSSQL => vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()],
             };
             
             // Clear loading message
@@ -2128,6 +2156,7 @@ impl Tabular {
                 models::enums::DatabaseType::Redis => {
                     self.load_redis_folder_content(connection_id, &connection, node, folder_type);
                 }
+                models::enums::DatabaseType::MSSQL => { /* no-op */ }
             }
             
             node.is_loaded = true;
@@ -2699,6 +2728,10 @@ impl Tabular {
                     self.search_redis_keys(connection_id, search_text);
                 }
                 models::enums::DatabaseType::MySQL | models::enums::DatabaseType::PostgreSQL | models::enums::DatabaseType::SQLite => {
+                    self.search_sql_tables(connection_id, search_text, &conn_type);
+                }
+                models::enums::DatabaseType::MSSQL => {
+                    // Basic table search (reuse SQL logic)
                     self.search_sql_tables(connection_id, search_text, &conn_type);
                 }
             }
@@ -3439,7 +3472,7 @@ impl Tabular {
                                                     ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], stroke);
                                                     ui.painter().line_segment([rect.left_bottom(), rect.left_top()], stroke);
                                                 }
-                                                let max_chars = ((column_width / 8.0) as usize).max(10);
+                                                let max_chars = ((column_width / 8.0).floor() as usize).max(10);
                                                 let display_text = if cell.chars().count() > max_chars {
                                                     format!("{}...", cell.chars().take(max_chars.saturating_sub(3)).collect::<String>())
                                                 } else {

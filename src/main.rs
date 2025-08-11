@@ -10,6 +10,7 @@ mod driver_mysql;
 mod cache_data;
 mod driver_postgres;
 mod driver_redis;
+mod driver_mssql;
 mod directory;
 mod connection;
 mod sidebar_database;

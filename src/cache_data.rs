@@ -142,17 +142,18 @@ pub(crate) fn fetch_and_cache_connection_data(tabular: &mut window_egui::Tabular
        for database_name in &databases {
               
               // Fetch different types of tables based on database type
-              let table_types = match connection.connection_type {
-              models::enums::DatabaseType::MySQL => vec!["table", "view", "procedure", "function", "trigger", "event"],
-              models::enums::DatabaseType::PostgreSQL => vec!["table", "view"], // Add PostgreSQL support later
-              models::enums::DatabaseType::SQLite => vec!["table", "view"],
-              models::enums::DatabaseType::Redis => vec!["info_section", "redis_keys"], // Redis specific types
-              };
+                       let table_types = match connection.connection_type {
+                              models::enums::DatabaseType::MySQL => vec!["table", "view", "procedure", "function", "trigger", "event"],
+                              models::enums::DatabaseType::PostgreSQL => vec!["table", "view"],
+                              models::enums::DatabaseType::SQLite => vec!["table", "view"],
+                              models::enums::DatabaseType::Redis => vec!["info_section", "redis_keys"],
+                              models::enums::DatabaseType::MSSQL => vec!["table", "view"],
+                       };
               
               let mut all_tables = Vec::new();
               
               for table_type in table_types {
-              let tables_result = match connection.connection_type {
+                       let tables_result = match connection.connection_type {
                      models::enums::DatabaseType::MySQL => {
                      driver_mysql::fetch_tables_from_mysql_connection(tabular, connection_id, database_name, table_type)
                      },
@@ -166,6 +167,10 @@ pub(crate) fn fetch_and_cache_connection_data(tabular: &mut window_egui::Tabular
                      models::enums::DatabaseType::Redis => {
                      driver_redis::fetch_tables_from_redis_connection(tabular, connection_id, database_name, table_type)
                      },
+                                    models::enums::DatabaseType::MSSQL => {
+                                           // TODO: implement MSSQL table fetch
+                                           None
+                                    },
               };
               
               if let Some(tables) = tables_result {

@@ -33,6 +33,7 @@ pub enum NodeType {
     Trigger,
     Event,
     MySQLFolder,       // Folder untuk koneksi MySQL
+    MSSQLFolder,      // Folder untuk koneksi MSSQL
     PostgreSQLFolder,  // Folder untuk koneksi PostgreSQL
     SQLiteFolder,      // Folder untuk koneksi SQLite
     RedisFolder,       // Folder untuk koneksi Redis
@@ -57,6 +58,7 @@ pub enum DatabaseType {
     PostgreSQL,
     SQLite,
     Redis,
+    MSSQL,
 }
 
 
@@ -67,4 +69,6 @@ pub enum DatabasePool {
     PostgreSQL(Arc<PgPool>),
     SQLite(Arc<SqlitePool>),
     Redis(Arc<ConnectionManager>),
+    // For MSSQL we store a lightweight config (connections opened per query for now)
+    MSSQL(Arc<crate::driver_mssql::MssqlConfigWrapper>),
 }
