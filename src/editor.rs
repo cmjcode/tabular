@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui_code_editor::{CodeEditor, ColorTheme};
-use log::{debug, error};
+use log::{debug};
 
 use crate::{connection, directory, editor, models, sidebar_history, sidebar_query, window_egui};
 
@@ -730,10 +730,10 @@ pub(crate)fn extract_query_from_cursor(tabular: &mut window_egui::Tabular) -> St
 
         // Find end position: go forwards from cursor to find the next semicolon (or end of file)
         let mut end_pos = text_bytes.len();
-        for i in cursor_pos..text_bytes.len() {
-            if text_bytes[i] == b';' {
+        for (offset, &byte) in text_bytes[cursor_pos..].iter().enumerate() {
+            if byte == b';' {
                 // Include the semicolon
-                end_pos = i + 1;
+                end_pos = cursor_pos + offset + 1;
                 break;
             }
         }
