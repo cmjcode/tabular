@@ -3,4 +3,4 @@
 
 Simple & Powerfull SQL Client
 
-![Screenshot Halaman Utama](screenshots/halaman-utama.png)
+![Screenshot Halaman Utama](screenshots/halaman-utama.jpg)
