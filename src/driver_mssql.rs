@@ -176,7 +176,6 @@ async fn run_query(mut client: tiberius::Client<tokio_util::compat::Compat<tokio
                         | ColumnData::DateTime(None)
                         | ColumnData::SmallDateTime(None)
                         | ColumnData::Xml(None) => "NULL".to_string(),
-                        _ => "".to_string(),
                     };
                     row_vec.push(val);
                 }
