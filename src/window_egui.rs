@@ -641,7 +641,7 @@ impl Tabular {
                 // ID >= 40000 means move query to folder operation
                 let hash = context_id - 40000;
                 debug!("📦 Move query operation with hash: {}", hash);
-                self.handle_query_move_request(hash);
+                sidebar_query::handle_query_move_request(self, hash);
             } else if context_id >= 30000 {
                 // ID >= 30000 means alter table operation
                 let connection_id = context_id - 30000;
@@ -651,7 +651,7 @@ impl Tabular {
                 // ID >= 20000 means query edit operation
                 let hash = context_id - 20000;
                 debug!("✏️ Query edit operation with hash: {}", hash);
-                self.handle_query_edit_request(hash);
+                sidebar_query::handle_query_edit_request(self, hash);
             } else if context_id <= -50000 {
                 // ID <= -50000 means remove folder operation
                 let hash = (-context_id) - 50000;
@@ -663,7 +663,7 @@ impl Tabular {
                 // ID <= -20000 means query removal operation  
                 let hash = (-context_id) - 20000;
                 debug!("🗑️ Remove query operation with hash: {}", hash);
-                if self.handle_query_remove_request_by_hash(hash) {
+                if sidebar_query::handle_query_remove_request_by_hash(self, hash) {
                     // Force refresh of queries tree if removal was successful
                     sidebar_query::load_queries_from_directory(self);
                     
@@ -1230,98 +1230,6 @@ impl Tabular {
         }
         
         (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping)
-    }
-
-    fn handle_query_edit_request(&mut self, hash: i64) {
-        
-        // Find the query file by hash
-        if let Some(query_file_path) = self.find_query_file_by_hash(hash) {
-            
-            // Open the query file in a new tab for editing
-            if let Err(err) = sidebar_query::open_query_file(self, &query_file_path) {
-                debug!("Failed to open query file for editing: {}", err);
-            }
-        } else {
-            debug!("Query file not found for hash: {}", hash);
-        }
-    }
-
-    fn handle_query_move_request(&mut self, hash: i64) {
-        
-        // Find the query file by hash
-        if let Some(query_file_path) = self.find_query_file_by_hash(hash) {
-            
-            // Set up the move dialog
-            self.selected_query_for_move = Some(query_file_path);
-            self.show_move_to_folder_dialog = true;
-        } else {
-            debug!("Query file not found for hash: {}", hash);
-        }
-    }
-
-    fn handle_query_remove_request_by_hash(&mut self, hash: i64) -> bool {
-        
-        // Find the query file by hash using recursive search
-        if let Some(file_path) = self.find_query_file_by_hash(hash) {
-            
-            // Close any open tabs for this file first
-            editor::close_tabs_for_file(self, &file_path);
-            
-            // Remove the file from filesystem
-            match std::fs::remove_file(&file_path) {
-                Ok(()) => {
-                    
-                    // Set needs_refresh flag for next update cycle
-                    self.needs_refresh = true;
-                    
-                    return true;
-                },
-                Err(e) => {
-                    debug!("❌ Failed to remove query file: {}", e);
-                    return false;
-                }
-            }
-        }
-        
-        debug!("❌ Query file not found for hash: {}", hash);
-        false
-    }
-
-
-    fn find_query_file_by_hash(&self, hash: i64) -> Option<String> {
-        let query_dir = directory::get_query_dir();
-        
-        // Function to search recursively in directories
-        fn search_in_dir(dir: &std::path::Path, target_hash: i64) -> Option<String> {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    if let Ok(metadata) = entry.metadata() {
-                        if metadata.is_file() {
-                            if let Some(filename) = entry.file_name().to_str() {
-                                if filename.ends_with(".sql") {
-                                    let file_path = entry.path().to_string_lossy().to_string();
-                                    
-                                    // Use same hash calculation as in context menu: file_path.len() % 1000
-                                    let file_hash = (file_path.len() as i64) % 1000;
-                                    
-                                    if file_hash == target_hash {
-                                        return Some(file_path);
-                                    }
-                                }
-                            }
-                        } else if metadata.is_dir() {
-                            // Recursively search in subdirectories
-                            if let Some(found) = search_in_dir(&entry.path(), target_hash) {
-                                return Some(found);
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        }
-        
-        search_in_dir(&query_dir, hash)
     }
 
 

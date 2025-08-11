@@ -1,4 +1,5 @@
 use eframe::egui;
+use log::debug;
 
 use crate::{directory, editor, models, sidebar_query, window_egui};
 
@@ -259,4 +260,98 @@ pub(crate)fn open_query_file(tabular: &mut window_egui::Tabular, file_path: &str
         tabular.editor_text = content;
         
         Ok(())
+    }
+
+
+
+pub(crate) fn handle_query_edit_request(tabular: &mut window_egui::Tabular, hash: i64) {
+        
+        // Find the query file by hash
+        if let Some(query_file_path) = find_query_file_by_hash(hash) {
+            
+            // Open the query file in a new tab for editing
+            if let Err(err) = sidebar_query::open_query_file(tabular, &query_file_path) {
+                debug!("Failed to open query file for editing: {}", err);
+            }
+        } else {
+            debug!("Query file not found for hash: {}", hash);
+        }
+    }
+
+pub(crate) fn handle_query_move_request(tabular: &mut window_egui::Tabular, hash: i64) {
+        
+        // Find the query file by hash
+        if let Some(query_file_path) = find_query_file_by_hash(hash) {
+            
+            // Set up the move dialog
+            tabular.selected_query_for_move = Some(query_file_path);
+            tabular.show_move_to_folder_dialog = true;
+        } else {
+            debug!("Query file not found for hash: {}", hash);
+        }
+    }
+
+pub(crate) fn handle_query_remove_request_by_hash(tabular: &mut window_egui::Tabular, hash: i64) -> bool {
+        
+        // Find the query file by hash using recursive search
+        if let Some(file_path) = find_query_file_by_hash(hash) {
+            
+            // Close any open tabs for this file first
+            editor::close_tabs_for_file(tabular, &file_path);
+            
+            // Remove the file from filesystem
+            match std::fs::remove_file(&file_path) {
+                Ok(()) => {
+                    
+                    // Set needs_refresh flag for next update cycle
+                    tabular.needs_refresh = true;
+                    
+                    return true;
+                },
+                Err(e) => {
+                    debug!("❌ Failed to remove query file: {}", e);
+                    return false;
+                }
+            }
+        }
+        
+        debug!("❌ Query file not found for hash: {}", hash);
+        false
+    }
+
+
+pub(crate) fn find_query_file_by_hash(hash: i64) -> Option<String> {
+        let query_dir = directory::get_query_dir();
+        
+        // Function to search recursively in directories
+        fn search_in_dir(dir: &std::path::Path, target_hash: i64) -> Option<String> {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    if let Ok(metadata) = entry.metadata() {
+                        if metadata.is_file() {
+                            if let Some(filename) = entry.file_name().to_str() {
+                                if filename.ends_with(".sql") {
+                                    let file_path = entry.path().to_string_lossy().to_string();
+                                    
+                                    // Use same hash calculation as in context menu: file_path.len() % 1000
+                                    let file_hash = (file_path.len() as i64) % 1000;
+                                    
+                                    if file_hash == target_hash {
+                                        return Some(file_path);
+                                    }
+                                }
+                            }
+                        } else if metadata.is_dir() {
+                            // Recursively search in subdirectories
+                            if let Some(found) = search_in_dir(&entry.path(), target_hash) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        
+        search_in_dir(&query_dir, hash)
     }
