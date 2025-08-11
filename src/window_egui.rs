@@ -871,6 +871,7 @@ impl Tabular {
                     models::enums::NodeType::RedisFolder => "🔴",
                     models::enums::NodeType::CustomFolder => "📁",
                     models::enums::NodeType::QueryFolder => "📂",
+                    models::enums::NodeType::HistoryDateFolder => "📅",
                 };
                 
                 let label_text = if icon.is_empty() { 
@@ -1067,7 +1068,18 @@ impl Tabular {
             });
 
             if node.is_expanded {
-                ui.indent(id, |ui| {
+                // Khusus HistoryDateFolder: render children tanpa indent tambahan (full width)
+                let is_history_date_folder = node.node_type == models::enums::NodeType::HistoryDateFolder;
+                if is_history_date_folder {
+                    for (child_index, child) in node.children.iter_mut().enumerate() {
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        if let Some(child_expansion) = child_expansion_request { expansion_request = Some(child_expansion); }
+                        if table_expansion.is_none() { if let Some((child_index, child_conn_id, table_name)) = child_table_expansion { if let Some(conn_id) = node.connection_id { table_expansion = Some((child_index, conn_id, table_name)); } else { table_expansion = Some((child_index, child_conn_id, table_name)); } } }
+                        if let Some((conn_id, table_name)) = child_table_click { table_click_request = Some((conn_id, table_name)); }
+                        if let Some(child_context_id) = child_context { context_menu_request = Some(child_context_id); }
+                    }
+                } else {
+                    ui.indent(id, |ui| {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
                         let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
                         
@@ -1119,6 +1131,7 @@ impl Tabular {
                         }
                     }
                 });
+                }
             }
         } else {
             let response = if node.node_type == models::enums::NodeType::QueryHistItem {
@@ -1160,6 +1173,7 @@ impl Tabular {
                         models::enums::NodeType::RedisFolder => "🔴",
                         models::enums::NodeType::CustomFolder => "📁",
                         models::enums::NodeType::QueryFolder => "📂",
+                        models::enums::NodeType::HistoryDateFolder => "📅",
                         _ => "❓",
                     };
                     

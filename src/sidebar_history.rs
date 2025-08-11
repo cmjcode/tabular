@@ -73,11 +73,28 @@ use crate::{models, window_egui};
 
  pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
         tabular.history_tree.clear();
-        
+
+        // Kelompokkan berdasarkan tanggal (YYYY-MM-DD) dari field executed_at
+        use std::collections::BTreeMap; // BTreeMap agar urutan tanggal terjaga (desc nanti kita balik)
+        let mut grouped: BTreeMap<String, Vec<&models::structs::HistoryItem>> = BTreeMap::new();
+
         for item in &tabular.history_items {
-            let mut node = models::structs::TreeNode::new(item.query.clone(), models::enums::NodeType::QueryHistItem);
-            node.connection_id = Some(item.connection_id);
-            
-            tabular.history_tree.push(node);
+            // Ambil 10 pertama (YYYY-MM-DD) jika format standar (2025-08-11T12:34:56Z / 2025-08-11 12:34:56 ...)
+            let date_key = if item.executed_at.len() >= 10 { &item.executed_at[0..10] } else { &item.executed_at };
+            grouped.entry(date_key.to_string()).or_default().push(item);
+        }
+
+        // Iterasi mundur (tanggal terbaru dulu)
+        for (date, items) in grouped.iter().rev() {
+            let mut date_node = models::structs::TreeNode::new(date.clone(), models::enums::NodeType::HistoryDateFolder);
+            date_node.is_expanded = true; // Expand default supaya user langsung lihat isinya
+
+            for item in items {
+                let mut hist_node = models::structs::TreeNode::new(item.query.clone(), models::enums::NodeType::QueryHistItem);
+                hist_node.connection_id = Some(item.connection_id);
+                date_node.children.push(hist_node);
+            }
+
+            tabular.history_tree.push(date_node);
         }
     }

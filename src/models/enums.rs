@@ -12,6 +12,8 @@ pub enum NodeType {
     Column,
     Query,
     QueryHistItem,
+    // Folder/grouping node for query history by execution date (YYYY-MM-DD)
+    HistoryDateFolder,
     Connection,
     DatabasesFolder,
     TablesFolder,
