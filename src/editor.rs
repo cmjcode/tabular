@@ -1,8 +1,10 @@
 use eframe::egui;
+use egui::text_edit::TextEditState;
+use egui::text::{CCursor, CCursorRange};
 use egui_code_editor::{CodeEditor, ColorTheme};
 use log::{debug};
 
-use crate::{connection, directory, editor, models, sidebar_history, sidebar_query, window_egui};
+use crate::{connection, directory, editor, models, sidebar_history, sidebar_query, window_egui, editor_autocomplete};
 
 
     // Tab management methods
@@ -203,15 +205,102 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
 
         // Main code editor using egui_code_editor
-        let mut editor = CodeEditor::default()
+    let mut editor = CodeEditor::default()
             .id_source("sql_editor")
             .with_rows(25)
             .with_fontsize(tabular.advanced_editor.font_size)
             .with_theme(tabular.advanced_editor.theme)
             .with_syntax(egui_code_editor::Syntax::sql())
             .with_numlines(tabular.advanced_editor.show_line_numbers);
+    // Capture state before editor to allow intercepting Tab
+    let pre_text = tabular.editor_text.clone();
+        // Detect Tab via key_pressed AND raw events (key_pressed may miss if focus moving)
+        let mut tab_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Tab));
+        let mut raw_tab = false;
+        ui.input(|i| {
+            for ev in &i.events {
+                if let egui::Event::Key { key: egui::Key::Tab, pressed: true, .. } = ev { raw_tab = true; }
+            }
+        });
+    if raw_tab { tab_pressed_pre = true; log::debug!("Raw Tab event captured before editor render"); }
+        let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
+        // If accepting, prepare to inject remaining characters as text events so caret advances naturally
+        if accept_via_tab_pre {
+            if let Some(sugg) = tabular.autocomplete_suggestions.get(tabular.selected_autocomplete_index).cloned() {
+                // Remove the Tab key event itself so CodeEditor won't insert a tab char
+                ui.ctx().input_mut(|ri| {
+                    let before = ri.events.len();
+                    ri.events.retain(|e| match e { egui::Event::Key { key: egui::Key::Tab, .. } => false, _ => true });
+                    let removed = before - ri.events.len();
+                    if removed > 0 { log::debug!("Removed {} Tab key event(s) to prevent tab insertion", removed); }
+                });
+                let prefix_len = tabular.autocomplete_prefix.len();
+                if sugg.len() >= prefix_len {
+                    let remainder = &sugg[prefix_len..];
+                    if !remainder.is_empty() {
+                        ui.ctx().input_mut(|ri| {
+                            ri.events.push(egui::Event::Text(remainder.to_string()));
+                        });
+                    }
+                }
+                tabular.show_autocomplete = false;
+                tabular.autocomplete_suggestions.clear();
+                log::debug!("Autocomplete accepted via Tab by injecting remainder (suggestion '{}')", sugg);
+            }
+        }
+    let response = editor.show(ui, &mut tabular.editor_text);
+        // After show(), TextEditState should exist; apply pending cursor now
+        if let Some(pos) = tabular.pending_cursor_set {
+            let id = egui::Id::new("sql_editor");
+                if let Some(mut state) = TextEditState::load(ui.ctx(), id) {
+                    let clamped = pos.min(tabular.editor_text.len());
+                    state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(clamped))));
+                    state.store(ui.ctx(), id);
+                    tabular.cursor_position = clamped;
+                    tabular.pending_cursor_set = None;
+                    ui.memory_mut(|m| m.request_focus(id));
+                    debug!("Applied pending cursor position {} post-show", clamped);
+                } else {
+                    // Create a new state manually so cursor moves even if CodeEditor doesn't create one
+                    let mut state = TextEditState::default();
+                    state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(pos))));
+                    state.store(ui.ctx(), id);
+                    debug!("Manually created TextEditState with cursor {}", pos);
+                }
+        }
 
-        let response = editor.show(ui, &mut tabular.editor_text);
+        // Cleanup stray tab character inside the just-completed identifier (from Tab key) if any
+        if accept_via_tab_pre {
+            // Cursor currently at end of identifier after injection; scan backwards
+            let mut idx = tabular.cursor_position.min(tabular.editor_text.len());
+            let bytes = tabular.editor_text.as_bytes();
+            while idx > 0 {
+                let ch = bytes[idx-1] as char;
+                if ch.is_alphanumeric() || ch == '_' || ch == '\t' { idx -= 1; } else { break; }
+            }
+            // Now [idx .. cursor_position] spans the token (possibly including a tab)
+            if idx < tabular.cursor_position {
+                let token_range_end = tabular.cursor_position;
+                let token_owned = tabular.editor_text[idx..token_range_end].to_string();
+                if token_owned.contains('\t') {
+                    let cleaned: String = token_owned.chars().filter(|c| *c != '\t').collect();
+                    if cleaned != token_owned {
+                        tabular.editor_text.replace_range(idx..token_range_end, &cleaned);
+                        let shift = token_owned.len() - cleaned.len();
+                        tabular.cursor_position -= shift;
+                        // Adjust egui state cursor
+                        let id = egui::Id::new("sql_editor");
+                        if let Some(mut state) = TextEditState::load(ui.ctx(), id) {
+                            state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(tabular.cursor_position))));
+                            state.store(ui.ctx(), id);
+                        } else {
+                            tabular.pending_cursor_set = Some(tabular.cursor_position);
+                        }
+                        log::debug!("Removed tab character from accepted token; new token='{}'", cleaned);
+                    }
+                }
+            }
+        }
         
         // Try to capture selected text from the response
         // Note: This is a simplified approach. The actual implementation may vary depending on the CodeEditor version
@@ -243,13 +332,87 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // let response = editor.show(ui, &mut buffer);
         // tabular.editor_text = buffer.text().to_string();
         
-        // Update tab content when editor changes
+        // Update tab content when editor changes (but skip autocomplete update if we're accepting via Tab)
         if response.response.changed() {
             if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
                 tab.content = tabular.editor_text.clone();
                 tab.is_modified = true;
             }
+            if !accept_via_tab_pre { // don't recalc suggestions; we need the old one
+                editor_autocomplete::update_autocomplete(tabular);
+            } else {
+                log::debug!("Skipping update_autocomplete due to Tab acceptance in progress");
+            }
         }
+
+    // (Old forced replacement path removed; injection handles caret advance)
+
+    // Keyboard handling for autocomplete
+        let input = ui.input(|i| i.clone());
+        if input.key_pressed(egui::Key::Space) && (input.modifiers.ctrl || input.modifiers.command) {
+            editor_autocomplete::trigger_manual(tabular);
+        }
+
+        // Fallback: detect raw tab character insertion (editor consumed Tab key)
+        if tabular.show_autocomplete {
+            if !tab_pressed_pre { // only if we didn't already detect it
+                let cur = tabular.cursor_position.min(tabular.editor_text.len());
+                if cur > 0 && tabular.editor_text.chars().nth(cur - 1) == Some('\t') {
+                    // Remove the inserted tab char then accept suggestion
+                    tabular.editor_text.remove(cur - 1);
+                    tabular.cursor_position = tabular.cursor_position.saturating_sub(1);
+                    log::debug!("Detected tab character insertion -> triggering autocomplete accept");
+                    editor_autocomplete::accept_current_suggestion(tabular);
+                } else if cur >= 4 && &tabular.editor_text[cur-4..cur] == "    " {
+                    // Four spaces indentation
+                    tabular.editor_text.replace_range(cur-4..cur, "");
+                    tabular.cursor_position -= 4;
+                    log::debug!("Detected 4-space indentation -> triggering autocomplete accept");
+                    editor_autocomplete::accept_current_suggestion(tabular);
+                }
+            }
+        }
+        if tabular.show_autocomplete {
+            if input.key_pressed(egui::Key::ArrowDown) { editor_autocomplete::navigate(tabular, 1); }
+            if input.key_pressed(egui::Key::ArrowUp) { editor_autocomplete::navigate(tabular, -1); }
+            let mut accepted = false;
+            if input.key_pressed(egui::Key::Enter) { editor_autocomplete::accept_current_suggestion(tabular); accepted = true; }
+            // Skip Tab acceptance here if already processed earlier
+            if tab_pressed_pre && !accept_via_tab_pre { editor_autocomplete::accept_current_suggestion(tabular); accepted = true; }
+            if accepted {
+        log::debug!("Autocomplete accepted via {}", if tab_pressed_pre {"Tab"} else {"Enter"});
+                // Clean up potential inserted tab characters or spaces from editor before replacement
+                // Detect diff compared to pre_text
+                if tabular.editor_text.contains('\t') {
+                    // Remove a lone tab right before cursor if exists
+                    let cur = tabular.cursor_position.min(tabular.editor_text.len());
+                    if cur > 0 && tabular.editor_text.chars().nth(cur - 1) == Some('\t') {
+                        tabular.editor_text.remove(cur - 1);
+                        tabular.cursor_position = tabular.cursor_position.saturating_sub(1);
+                    }
+                }
+                // Remove four leading spaces sequence before cursor (indent) if present
+                let cur = tabular.cursor_position.min(tabular.editor_text.len());
+                if cur >= 4 && &tabular.editor_text[cur-4..cur] == "    " {
+                    tabular.editor_text.replace_range(cur-4..cur, "");
+                    tabular.cursor_position -= 4;
+                }
+                // Update internal egui state for cursor after Enter accept path
+                let id = egui::Id::new("sql_editor");
+                if let Some(mut state) = TextEditState::load(ui.ctx(), id) {
+                    state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(tabular.cursor_position))));
+                    state.store(ui.ctx(), id);
+                } else {
+                    tabular.pending_cursor_set = Some(tabular.cursor_position);
+                }
+        // Re-focus editor so Tab doesn't move focus away
+        ui.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+            }
+            if input.key_pressed(egui::Key::Escape) { tabular.show_autocomplete = false; }
+        }
+
+        // Render autocomplete popup (after editor so it overlays)
+        editor_autocomplete::render_autocomplete(tabular, ui);
     }
 
 pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {

@@ -16,6 +16,7 @@ mod sidebar_database;
 mod sidebar_history;
 mod sidebar_query;
 mod editor;
+mod editor_autocomplete;
 mod dialog;
 
 fn main() -> Result<(), eframe::Error> {

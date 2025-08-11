@@ -115,6 +115,13 @@ pub struct Tabular {
     // Database cache for performance
     pub database_cache: std::collections::HashMap<i64, Vec<String>>, // connection_id -> databases
     pub database_cache_time: std::collections::HashMap<i64, std::time::Instant>, // connection_id -> cache time
+    // Autocomplete state
+    pub show_autocomplete: bool,
+    pub autocomplete_suggestions: Vec<String>,
+    pub selected_autocomplete_index: usize,
+    pub autocomplete_prefix: String,
+    pub last_autocomplete_trigger_len: usize,
+    pub pending_cursor_set: Option<usize>,
 }
 
 
@@ -214,6 +221,13 @@ impl Tabular {
             // Database cache for performance
             database_cache: std::collections::HashMap::new(),
             database_cache_time: std::collections::HashMap::new(),
+            // Autocomplete
+            show_autocomplete: false,
+            autocomplete_suggestions: Vec::new(),
+            selected_autocomplete_index: 0,
+            autocomplete_prefix: String::new(),
+            last_autocomplete_trigger_len: 0,
+            pending_cursor_set: None,
         };
         
         // Clear any old cached pools
