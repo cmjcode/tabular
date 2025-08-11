@@ -212,16 +212,35 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             .with_theme(tabular.advanced_editor.theme)
             .with_syntax(egui_code_editor::Syntax::sql())
             .with_numlines(tabular.advanced_editor.show_line_numbers);
-    // Capture state before editor to allow intercepting Tab
-    let pre_text = tabular.editor_text.clone();
+    // (Removed pre_text clone; not needed now)
         // Detect Tab via key_pressed AND raw events (key_pressed may miss if focus moving)
         let mut tab_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Tab));
         let mut raw_tab = false;
+        // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
+        let mut arrow_down_pressed = false;
+        let mut arrow_up_pressed = false;
         ui.input(|i| {
             for ev in &i.events {
                 if let egui::Event::Key { key: egui::Key::Tab, pressed: true, .. } = ev { raw_tab = true; }
             }
         });
+        if tabular.show_autocomplete {
+            ui.ctx().input_mut(|ri| {
+                // Drain & filter events: buang ArrowUp/ArrowDown pressed supaya TextEdit tidak memproses
+                let mut kept = Vec::with_capacity(ri.events.len());
+                for ev in ri.events.drain(..) {
+                    match ev {
+                        egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } => { arrow_down_pressed = true; }
+                        egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } => { arrow_up_pressed = true; }
+                        // Jangan hilangkan release events agar repeat logic internal tidak stuck; hanya pressed yang kita konsumsi
+                        other @ egui::Event::Key { key: egui::Key::ArrowDown, pressed: false, .. } => { kept.push(other); }
+                        other @ egui::Event::Key { key: egui::Key::ArrowUp, pressed: false, .. } => { kept.push(other); }
+                        other => kept.push(other)
+                    }
+                }
+                ri.events = kept;
+            });
+        }
     if raw_tab { tab_pressed_pre = true; log::debug!("Raw Tab event captured before editor render"); }
         let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
         // If accepting, prepare to inject remaining characters as text events so caret advances naturally
@@ -354,8 +373,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
 
         // Fallback: detect raw tab character insertion (editor consumed Tab key)
-        if tabular.show_autocomplete {
-            if !tab_pressed_pre { // only if we didn't already detect it
+    if tabular.show_autocomplete && !tab_pressed_pre { // only if we didn't already detect it
                 let cur = tabular.cursor_position.min(tabular.editor_text.len());
                 if cur > 0 && tabular.editor_text.chars().nth(cur - 1) == Some('\t') {
                     // Remove the inserted tab char then accept suggestion
@@ -370,11 +388,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     log::debug!("Detected 4-space indentation -> triggering autocomplete accept");
                     editor_autocomplete::accept_current_suggestion(tabular);
                 }
-            }
-        }
+    }
         if tabular.show_autocomplete {
-            if input.key_pressed(egui::Key::ArrowDown) { editor_autocomplete::navigate(tabular, 1); }
-            if input.key_pressed(egui::Key::ArrowUp) { editor_autocomplete::navigate(tabular, -1); }
+            // Navigasi popup autocomplete: gunakan arrow yang sudah kita intercept sebelum render editor
+            if arrow_down_pressed { editor_autocomplete::navigate(tabular, 1); }
+            if arrow_up_pressed { editor_autocomplete::navigate(tabular, -1); }
             let mut accepted = false;
             if input.key_pressed(egui::Key::Enter) { editor_autocomplete::accept_current_suggestion(tabular); accepted = true; }
             // Skip Tab acceptance here if already processed earlier
