@@ -679,7 +679,9 @@ impl Tabular {
                         editor::create_new_tab_with_connection_and_database(self, tab_title, query_content.clone(), Some(connection_id), database_name.clone());
                         
                         // Set database context for current tab and auto-execute the query and display results in bottom
-                        self.current_connection_id = Some(connection_id);
+                    self.current_connection_id = Some(connection_id);
+                    // Ensure the newly created tab stores selected database (important for MSSQL)
+                    if let Some(dbn) = &database_name { if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) { active_tab.database_name = Some(dbn.clone()); } }
                         if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, query_content) {
                             self.current_table_headers = headers;
                             self.current_table_data = data.clone();
@@ -3104,7 +3106,7 @@ impl Tabular {
         // Look for the table in the tree structure to find its database context
         
         // Check if this node is a table with the matching name and connection
-        if node.node_type == models::enums::NodeType::Table && 
+    if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
            node.name == table_name &&
            node.connection_id == Some(connection_id) {
             return node.database_name.clone();
@@ -4392,7 +4394,7 @@ impl App for Tabular {
                                 .width(120.0)
                                 .show_ui(ui, |ui| {
                                     // For MySQL and PostgreSQL, get available databases
-                                    if matches!(connection_type, models::enums::DatabaseType::MySQL | models::enums::DatabaseType::PostgreSQL) {
+                                    if matches!(connection_type, models::enums::DatabaseType::MySQL | models::enums::DatabaseType::PostgreSQL | models::enums::DatabaseType::MSSQL) {
                                         let available_databases = self.get_databases_cached(conn_id);
                                         
                                         if available_databases.is_empty() {

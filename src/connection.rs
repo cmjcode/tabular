@@ -151,8 +151,27 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
 pub(crate) fn execute_query_with_connection(tabular: &mut Tabular, connection_id: i64, query: String) -> Option<(Vec<String>, Vec<Vec<String>>)> {
        debug!("Query execution requested for connection {} with query: {}", connection_id, query);
        
-       if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(connection_id)).cloned() {
-       execute_table_query_sync(tabular, connection_id, &connection, &query)
+          if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(connection_id)).cloned() {
+          // Determine selected database from active tab (if any)
+          let selected_db = tabular.query_tabs.get(tabular.active_tab_index)
+                 .and_then(|t| t.database_name.clone())
+                 .filter(|s| !s.is_empty());
+
+          // Auto-prepend USE for MSSQL (and optionally MySQL later) if not already present
+          let mut final_query = query.clone();
+          if let Some(db_name) = selected_db {
+                 match connection.connection_type {
+                        models::enums::DatabaseType::MSSQL => {
+                               let upper = final_query.to_uppercase();
+                               if !upper.starts_with("USE ") {
+                                      final_query = format!("USE [{}];\n{}", db_name, final_query);
+                               }
+                        }
+                        _ => {}
+                 }
+          }
+
+          execute_table_query_sync(tabular, connection_id, &connection, &final_query)
        } else {
        debug!("Connection not found for ID: {}", connection_id);
        None
