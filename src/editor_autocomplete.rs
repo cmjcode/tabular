@@ -221,9 +221,23 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     let visible = app.autocomplete_suggestions.len().min(max_visible);
     let est_height = (visible as f32) * line_height + 8.0;
     let screen = ui.ctx().screen_rect();
+    // Hitung lebar ideal berdasarkan suggestion terpanjang (no-wrap) dengan batas min/max
+    let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+    let mut max_px = 0.0_f32;
+    ui.ctx().fonts(|f| {
+        for s in &app.autocomplete_suggestions {
+            let galley = f.layout_no_wrap(s.to_string(), font_id.clone(), egui::Color32::WHITE);
+            if galley.size().x > max_px { max_px = galley.size().x; }
+        }
+    });
+    let padding = 32.0; // ruang kiri/kanan
+    let min_w = 140.0;
+    let max_w = 380.0;
+    let desired_w = max_px + padding;
+    let popup_w = desired_w.clamp(min_w, max_w);
     let mut popup_pos = pos;
     if popup_pos.y + est_height > screen.bottom() { popup_pos.y = (popup_pos.y - est_height).max(screen.top()); }
-    if popup_pos.x + 250.0 > screen.right() { popup_pos.x = (screen.right() - 250.0).max(screen.left()); }
+    if popup_pos.x + popup_w > screen.right() { popup_pos.x = (screen.right() - popup_w).max(screen.left()); }
 
     egui::Area::new(egui::Id::new("autocomplete_popup"))
         .fixed_pos(popup_pos)
@@ -231,13 +245,25 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
                 .show(ui, |ui| {
+                    ui.set_min_width(popup_w);
+                    ui.set_max_width(popup_w);
+                    // Pastikan tidak wrap per karakter
+                    let old_wrap = ui.style().wrap;
+                    ui.style_mut().wrap = Some(false);
                     egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
                         for (i, s) in app.autocomplete_suggestions.iter().enumerate() {
                             let selected = i == app.selected_autocomplete_index;
-                            let text = if selected { egui::RichText::new(s).background_color(ui.style().visuals.selection.bg_fill).color(ui.style().visuals.selection.stroke.color) } else { egui::RichText::new(s) };
-                            if ui.selectable_label(selected, text).clicked() { app.selected_autocomplete_index = i; accept_current_suggestion(app); break; }
+                            let rich = if selected {
+                                egui::RichText::new(s)
+                                    .background_color(ui.style().visuals.selection.bg_fill)
+                                    .color(ui.style().visuals.selection.stroke.color)
+                            } else { egui::RichText::new(s) };
+                            let resp = ui.selectable_label(selected, rich);
+                            if resp.clicked() { app.selected_autocomplete_index = i; accept_current_suggestion(app); break; }
                         }
                     });
+                    // Restore wrap (optional)
+                    ui.style_mut().wrap = old_wrap;
                 });
         });
 }
