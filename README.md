@@ -15,10 +15,19 @@ Export Environment :
 export LIBCLANG_PATH=/usr/lib
 ```
 
+Build multi architecture : 
+```
+cargo install cross
+```
 
 ## BUILD ON UBUNTU
 ### Requirements
 ```bash
 sudo apt update
 sudo apt install clang libclang-dev
+```
+
+Build multi architecture : 
+```
+cargo install cross
 ```
