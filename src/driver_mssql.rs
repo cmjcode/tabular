@@ -80,10 +80,12 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
             }
         };
 
-        // Choose query based on type
+        // Choose query based on type (include schema for views)
         let query = match table_type {
-            "table" => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME".to_string(),
-            "view" => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME".to_string(),
+            // Include schema for tables (some objects not in dbo)
+            "table" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME".to_string(),
+            // Include schema for views so we can build fully-qualified names
+            "view" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME".to_string(),
             _ => {
                 log::debug!("Unsupported MSSQL table_type: {}", table_type);
                 return None;
@@ -97,7 +99,15 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
 
         let mut items = Vec::new();
         use futures_util::TryStreamExt;
-        while let Some(item) = stream.try_next().await.ok()? { if let tiberius::QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); if let Some(n) = name { items.push(n.to_string()); } } }
+        while let Some(item) = stream.try_next().await.ok()? {
+            if let tiberius::QueryItem::Row(r) = item {
+                let schema: Option<&str> = r.get(0);
+                let name: Option<&str> = r.get(1);
+                if let (Some(s), Some(n)) = (schema, name) {
+                    items.push(format!("[{}].[{}]", s, n));
+                }
+            }
+        }
         Some(items)
     })
 }

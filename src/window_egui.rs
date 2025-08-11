@@ -126,6 +126,74 @@ pub struct Tabular {
 
 
 impl Tabular {
+    // Helper: build MSSQL SELECT ensuring database context and proper quoting.
+    // db_name: selected database (can be empty -> fallback to object-provided or omit USE)
+    // raw_name: could be formats: table, [schema].[object], schema.object, [db].[schema].[object], db.schema.object
+    fn build_mssql_select_query(db_name: String, raw_name: String) -> String {
+        // Normalize raw name: remove trailing semicolons/spaces
+        let cleaned = raw_name.trim().trim_end_matches(';').to_string();
+
+        // Split by '.' ignoring brackets segments
+        // Strategy: remove outer brackets then split, re-wrap each part with []
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut in_bracket = false;
+        for ch in cleaned.chars() {
+            match ch {
+                '[' => { in_bracket = true; current.push(ch); },
+                ']' => { in_bracket = false; current.push(ch); },
+                '.' if !in_bracket => { parts.push(current.clone()); current.clear(); },
+                _ => current.push(ch),
+            }
+        }
+        if !current.is_empty() { parts.push(current); }
+
+        // Remove surrounding brackets from each part and re-apply sanitized
+        let mut plain_parts: Vec<String> = parts.into_iter().map(|p| {
+            let p2 = p.trim();
+            let p2 = p2.strip_prefix('[').unwrap_or(p2);
+            let p2 = p2.strip_suffix(']').unwrap_or(p2);
+            p2.to_string()
+        }).collect();
+
+        // Decide final composition
+        // Cases by length: 1=object, 2=schema.object, 3=db.schema.object
+        // If db_name provided, override database part.
+        let (database_part, schema_part, object_part) = match plain_parts.len() {
+            3 => {
+                let obj = plain_parts.pop().unwrap();
+                let schema = plain_parts.pop().unwrap();
+                let db = if !db_name.is_empty() { db_name.clone() } else { plain_parts.pop().unwrap() };
+                (db, schema, obj)
+            },
+            2 => {
+                let obj = plain_parts.pop().unwrap();
+                let schema = plain_parts.pop().unwrap();
+                let db = if !db_name.is_empty() { db_name.clone() } else { String::new() };
+                (db, schema, obj)
+            },
+            1 => {
+                let obj = plain_parts.pop().unwrap();
+                let db = db_name.clone();
+                (db, "dbo".to_string(), obj)
+            },
+            _ => (db_name.clone(), "dbo".to_string(), cleaned),
+        };
+
+        // Build fully qualified name with brackets
+        let fq = if database_part.is_empty() {
+            format!("[{}].[{}]", schema_part, object_part)
+        } else {
+            format!("[{}].[{}].[{}]", database_part, schema_part, object_part)
+        };
+
+        // If database part present, prepend USE to ensure context
+        if database_part.is_empty() {
+            format!("SELECT TOP 100 * FROM {};", fq)
+        } else {
+            format!("USE [{}];\nSELECT TOP 100 * FROM {};", database_part, fq)
+        }
+    }
 
 
     pub fn new() -> Self {
@@ -593,12 +661,8 @@ impl Tabular {
                                     format!("SELECT * FROM \"{}\".\"{}\" LIMIT 100;", db_name, table_name)
                                 }
                                 models::enums::DatabaseType::MSSQL => {
-                                    // In MSSQL we use database.schema.table and TOP instead of LIMIT. Assume dbo schema by default.
-                                    if db_name.is_empty() {
-                                        format!("SELECT TOP 100 * FROM [{}];", table_name)
-                                    } else {
-                                        format!("SELECT TOP 100 * FROM {}.dbo.[{}];", db_name, table_name)
-                                    }
+                                    // Build robust MSSQL SELECT with explicit database context
+                                    Self::build_mssql_select_query(db_name.clone(), table_name.clone())
                                 }
                                 models::enums::DatabaseType::SQLite | models::enums::DatabaseType::Redis => {
                                     format!("SELECT * FROM `{}` LIMIT 100;", table_name)
@@ -606,7 +670,7 @@ impl Tabular {
                             }
                         } else {
                             match conn.connection_type {
-                                models::enums::DatabaseType::MSSQL => format!("SELECT TOP 100 * FROM [{}];", table_name),
+                                models::enums::DatabaseType::MSSQL => Self::build_mssql_select_query("".to_string(), table_name.clone()),
                                 _ => format!("SELECT * FROM `{}` LIMIT 100;", table_name)
                             }
                         };
@@ -785,14 +849,15 @@ impl Tabular {
         let mut folder_name_for_removal = None;
         let mut parent_folder_for_creation = None;
         
-        if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table || 
-           node.node_type == models::enums::NodeType::DatabasesFolder || node.node_type == models::enums::NodeType::TablesFolder ||
-           node.node_type == models::enums::NodeType::ViewsFolder || node.node_type == models::enums::NodeType::StoredProceduresFolder ||
-           node.node_type == models::enums::NodeType::UserFunctionsFolder || node.node_type == models::enums::NodeType::TriggersFolder ||
-           node.node_type == models::enums::NodeType::EventsFolder || node.node_type == models::enums::NodeType::DBAViewsFolder ||
-           node.node_type == models::enums::NodeType::UsersFolder || node.node_type == models::enums::NodeType::PrivilegesFolder ||
-           node.node_type == models::enums::NodeType::ProcessesFolder || node.node_type == models::enums::NodeType::StatusFolder ||
-           node.node_type == models::enums::NodeType::Database || node.node_type == models::enums::NodeType::QueryFolder {
+    if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table || 
+       node.node_type == models::enums::NodeType::View ||
+       node.node_type == models::enums::NodeType::DatabasesFolder || node.node_type == models::enums::NodeType::TablesFolder ||
+       node.node_type == models::enums::NodeType::ViewsFolder || node.node_type == models::enums::NodeType::StoredProceduresFolder ||
+       node.node_type == models::enums::NodeType::UserFunctionsFolder || node.node_type == models::enums::NodeType::TriggersFolder ||
+       node.node_type == models::enums::NodeType::EventsFolder || node.node_type == models::enums::NodeType::DBAViewsFolder ||
+       node.node_type == models::enums::NodeType::UsersFolder || node.node_type == models::enums::NodeType::PrivilegesFolder ||
+       node.node_type == models::enums::NodeType::ProcessesFolder || node.node_type == models::enums::NodeType::StatusFolder ||
+       node.node_type == models::enums::NodeType::Database || node.node_type == models::enums::NodeType::QueryFolder {
             // Use more unique ID including connection_id for connections
             let unique_id = match node.node_type {
                 models::enums::NodeType::Connection => format!("conn_{}_{}", node_index, node.connection_id.unwrap_or(0)),
@@ -817,8 +882,8 @@ impl Tabular {
                         }
                     }
                     
-                    // If this is a table node and not loaded, request table column expansion
-                    if node.node_type == models::enums::NodeType::Table && !node.is_loaded && node.is_expanded {
+                    // If this is a table or view node and not loaded, request column expansion
+                    if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && !node.is_loaded && node.is_expanded {
                         if let Some(conn_id) = node.connection_id {
                             table_expansion = Some((node_index, conn_id, node.name.clone()));
                         }
@@ -920,10 +985,8 @@ impl Tabular {
                     }
                 }
                 
-                // Handle clicks on table labels to load table data - open in new tab
-                if node.node_type == models::enums::NodeType::Table && response.clicked() {
-                    // Don't modify current editor_text, we'll create a new tab instead
-                    // Still trigger table data loading
+                // Handle clicks on table/view labels to load data - open in new tab
+                if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && response.clicked() {
                     if let Some(conn_id) = node.connection_id {
                         table_click_request = Some((conn_id, node.name.clone()));
                     }
@@ -1198,7 +1261,7 @@ impl Tabular {
             if response.clicked() {
                 // Handle node selection
                 match node.node_type {
-                        models::enums::NodeType::Table => {
+                        models::enums::NodeType::Table | models::enums::NodeType::View => {
                             // Don't modify current editor_text, we'll create a new tab
                             // Just trigger table data loading 
                             if let Some(conn_id) = node.connection_id {
@@ -2542,7 +2605,7 @@ impl Tabular {
     fn find_table_database_name(&self, nodes: &[models::structs::TreeNode], table_name: &str, connection_id: i64) -> Option<String> {
         for node in nodes {
             // If this is the table node we're looking for
-            if node.node_type == models::enums::NodeType::Table && 
+            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
                node.name == table_name && 
                node.connection_id == Some(connection_id) {
                 return node.database_name.clone();
@@ -2559,7 +2622,7 @@ impl Tabular {
     fn update_table_node_with_columns_recursive(&mut self, nodes: &mut [models::structs::TreeNode], table_name: &str, columns: Vec<models::structs::TreeNode>, connection_id: i64) -> bool {
         for node in nodes.iter_mut() {
             // If this is the table node we're looking for
-            if node.node_type == models::enums::NodeType::Table && 
+            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
                node.name == table_name && 
                node.connection_id == Some(connection_id) {
                 node.children = columns;
