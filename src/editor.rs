@@ -213,8 +213,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             .with_syntax(egui_code_editor::Syntax::sql())
             .with_numlines(tabular.advanced_editor.show_line_numbers);
     // (Removed pre_text clone; not needed now)
-        // Detect Tab via key_pressed AND raw events (key_pressed may miss if focus moving)
-        let mut tab_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Tab));
+    // Detect Tab & Enter via key_pressed AND raw events (key_pressed may miss if focus moving)
+    let mut tab_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Tab));
+    let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let mut raw_tab = false;
         // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
         let mut arrow_down_pressed = false;
@@ -232,6 +233,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     match ev {
                         egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } => { arrow_down_pressed = true; }
                         egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } => { arrow_up_pressed = true; }
+                        // Intercept Enter pressed untuk autocomplete acceptance (supaya tidak newline)
+                        egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => { enter_pressed_pre = true; }
                         // Jangan hilangkan release events agar repeat logic internal tidak stuck; hanya pressed yang kita konsumsi
                         other @ egui::Event::Key { key: egui::Key::ArrowDown, pressed: false, .. } => { kept.push(other); }
                         other @ egui::Event::Key { key: egui::Key::ArrowUp, pressed: false, .. } => { kept.push(other); }
@@ -243,8 +246,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
     if raw_tab { tab_pressed_pre = true; log::debug!("Raw Tab event captured before editor render"); }
         let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
+        let accept_via_enter_pre = enter_pressed_pre && tabular.show_autocomplete;
         // If accepting, prepare to inject remaining characters as text events so caret advances naturally
-        if accept_via_tab_pre {
+        if accept_via_tab_pre || accept_via_enter_pre {
             if let Some(sugg) = tabular.autocomplete_suggestions.get(tabular.selected_autocomplete_index).cloned() {
                 // Remove the Tab key event itself so CodeEditor won't insert a tab char
                 ui.ctx().input_mut(|ri| {
@@ -252,6 +256,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     ri.events.retain(|e| match e { egui::Event::Key { key: egui::Key::Tab, .. } => false, _ => true });
                     let removed = before - ri.events.len();
                     if removed > 0 { log::debug!("Removed {} Tab key event(s) to prevent tab insertion", removed); }
+                });
+                // Remove Enter key event(s) so tidak newline
+                ui.ctx().input_mut(|ri| {
+                    let before = ri.events.len();
+                    ri.events.retain(|e| match e { egui::Event::Key { key: egui::Key::Enter, .. } => false, _ => true });
+                    let removed = before - ri.events.len();
+                    if removed > 0 { log::debug!("Removed {} Enter key event(s) to prevent newline", removed); }
                 });
                 let prefix_len = tabular.autocomplete_prefix.len();
                 if sugg.len() >= prefix_len {
@@ -264,7 +275,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 }
                 tabular.show_autocomplete = false;
                 tabular.autocomplete_suggestions.clear();
-                log::debug!("Autocomplete accepted via Tab by injecting remainder (suggestion '{}')", sugg);
+                log::debug!("Autocomplete accepted via {} by injecting remainder (suggestion '{}')", if accept_via_tab_pre {"Tab"} else {"Enter"}, sugg);
             }
         }
     let response = editor.show(ui, &mut tabular.editor_text);
@@ -394,11 +405,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if arrow_down_pressed { editor_autocomplete::navigate(tabular, 1); }
             if arrow_up_pressed { editor_autocomplete::navigate(tabular, -1); }
             let mut accepted = false;
-            if input.key_pressed(egui::Key::Enter) { editor_autocomplete::accept_current_suggestion(tabular); accepted = true; }
+            if input.key_pressed(egui::Key::Enter) && !accept_via_enter_pre { editor_autocomplete::accept_current_suggestion(tabular); accepted = true; }
             // Skip Tab acceptance here if already processed earlier
             if tab_pressed_pre && !accept_via_tab_pre { editor_autocomplete::accept_current_suggestion(tabular); accepted = true; }
             if accepted {
-        log::debug!("Autocomplete accepted via {}", if tab_pressed_pre {"Tab"} else {"Enter"});
+        log::debug!("Autocomplete accepted via {}", if tab_pressed_pre {"Tab"} else {"Enter(post)"});
                 // Clean up potential inserted tab characters or spaces from editor before replacement
                 // Detect diff compared to pre_text
                 if tabular.editor_text.contains('\t') {
