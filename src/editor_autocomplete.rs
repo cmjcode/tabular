@@ -1,5 +1,6 @@
 use eframe::egui; 
 use crate::{window_egui::Tabular, models};
+use crate::cache_data; // for table/column cache access
 use log::debug;
 
 // Basic SQL keywords list (extend as needed)
@@ -19,42 +20,129 @@ fn current_prefix(text: &str, cursor: usize) -> (String, usize) {
     (text[start..cursor.min(text.len())].to_string(), start)
 }
 
-/// Build suggestions based on prefix: SQL keywords + table names + column names from active connection tree.
-pub fn build_suggestions(app: &Tabular, prefix: &str) -> Vec<String> {
-    if prefix.len() < 2 { return Vec::new(); } // minimal length
+/// Tokenize helper: split on non-alphanumeric/_ characters.
+fn tokenize(s: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    for ch in s.chars() {
+        if ch.is_alphanumeric() || ch == '_' { cur.push(ch); } else { if !cur.is_empty() { tokens.push(cur.clone()); cur.clear(); } }
+    }
+    if !cur.is_empty() { tokens.push(cur); }
+    tokens
+}
+
+/// Return active (connection_id, database_name) if available.
+fn active_connection_and_db(app: &Tabular) -> Option<(i64, String)> {
+    if let Some(tab) = app.query_tabs.get(app.active_tab_index) {
+        if let Some(cid) = tab.connection_id {
+            if let Some(db) = &tab.database_name { return Some((cid, db.clone())); }
+            // fallback to connection default database
+            if let Some(conn) = app.connections.iter().find(|c| c.id == Some(cid)) { return Some((cid, conn.database.clone())); }
+            return Some((cid, String::new()));
+        }
+    }
+    None
+}
+
+/// Extract table names appearing after first FROM (comma separated; stop at clause keywords).
+fn extract_tables(full_text: &str) -> Vec<String> {
+    let upper = full_text.to_uppercase();
+    if let Some(pos) = upper.find("FROM ") { // FROM with space
+        let after = &full_text[pos+5..];
+        // stop at keywords
+        let stop_keywords = [" WHERE ", " GROUP ", " ORDER ", " LIMIT ", " OFFSET ", " JOIN ", " LEFT ", " RIGHT ", " INNER ", " OUTER ", ";", "\n"]; 
+        let mut end = after.len();
+        for kw in &stop_keywords {
+            if let Some(i) = after.to_uppercase().find(kw) { end = end.min(i); }
+        }
+        let region = &after[..end];
+        let mut tables = Vec::new();
+        for part in region.split(',') {
+            let trimmed = part.trim();
+            if trimmed.is_empty() { continue; }
+            // first token before alias
+            let first = trimmed.split_whitespace().next().unwrap_or("");
+            let cleaned = first.trim_matches('`').trim_matches('"');
+            if !cleaned.is_empty() { tables.push(cleaned.split('.').last().unwrap_or(cleaned).to_string()); }
+        }
+        // dedup
+        let mut seen = std::collections::HashSet::new();
+        tables.retain(|t| seen.insert(t.to_lowercase()));
+        return tables;
+    }
+    Vec::new()
+}
+
+/// Build suggestions context-aware per requirement.
+/// - Jika token sebelumnya FROM -> daftar nama tabel
+/// - Jika token sebelumnya SELECT/WHERE atau pasangan GROUP BY -> daftar kolom dari tabel setelah FROM
+/// - Selain itu -> SQL_KEYWORDS
+pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: &str) -> Vec<String> {
+    if prefix.is_empty() { return Vec::new(); }
+    let (cur_pref, start_idx) = current_prefix(full_text, cursor); // ensure prefix matches
+    let before = &full_text[..start_idx.min(full_text.len())];
+    let tokens = tokenize(before);
+    let last = tokens.last().map(|s| s.to_uppercase());
+    let last2 = if tokens.len() >= 2 { Some(tokens[tokens.len()-2].to_uppercase()) } else { None };
+    let want_columns = match (last2.as_deref(), last.as_deref()) {
+        (Some("GROUP"), Some("BY")) => true,
+        (_, Some("SELECT")) => true,
+        (_, Some("WHERE")) => true,
+        _ => false,
+    };
+    let want_tables = matches!(last.as_deref(), Some("FROM"));
+
+    let low_pref = prefix.to_lowercase();
     let mut out: Vec<String> = Vec::new();
-    let low = prefix.to_lowercase();
 
-    // Keywords
-    for k in SQL_KEYWORDS { if k.to_lowercase().starts_with(&low) { out.push((*k).to_string()); } }
+    if want_tables {
+        // List table names from cache (table + view)
+        if let Some((cid, db)) = active_connection_and_db(app) {
+            let mut clone_for_cache = app.shallow_for_cache();
+            for tt in ["table", "view"] { if let Some(names) = cache_data::get_tables_from_cache(&mut clone_for_cache, cid, &db, tt) { for n in names { if n.to_lowercase().starts_with(&low_pref) { out.push(n); } } } }
+        }
+    } else if want_columns {
+        let tables = extract_tables(full_text);
+        if let Some((cid, db)) = active_connection_and_db(app) {
+            let mut clone_for_cache = app.shallow_for_cache();
+            for table in &tables {
+                if let Some(cols) = cache_data::get_columns_from_cache(&mut clone_for_cache, cid, &db, table) {
+                    for (col, _ty) in cols { if col.to_lowercase().starts_with(&low_pref) { out.push(col); } }
+                }
+            }
+        }
+        // Fallback ke keyword kalau belum ada FROM
+        if out.is_empty() { for k in SQL_KEYWORDS { if k.to_lowercase().starts_with(&low_pref) { out.push((*k).to_string()); } } }
+    } else {
+        // Keywords default
+        for k in SQL_KEYWORDS { if k.to_lowercase().starts_with(&low_pref) { out.push((*k).to_string()); } }
+    }
 
-    // Tables & columns from items_tree (database explorer)
-    for node in &app.items_tree { collect_names(node, &low, &mut out); }
-
-    // Remove duplicates while preserving order
+    // Dedup & sort
     let mut seen = std::collections::HashSet::new();
     out.retain(|s| seen.insert(s.to_lowercase()));
-    out.sort();
+    out.sort_unstable();
     out
 }
 
-fn collect_names(node: &models::structs::TreeNode, prefix_low: &str, out: &mut Vec<String>) {
-    use crate::models::enums::NodeType;
-    match node.node_type() {
-        NodeType::Table | NodeType::View => {
-            if node.name.to_lowercase().starts_with(prefix_low) { out.push(node.name.clone()); }
-        }
-        NodeType::Column => {
-            if node.name.to_lowercase().starts_with(prefix_low) { out.push(node.name.clone()); }
-        }
-        _ => {}
-    }
-    for c in &node.children { collect_names(c, prefix_low, out); }
-}
-
-// Provide accessor for node_type since field is crate private in original struct.
+// Accessor previously needed for tree traversal; kept if still used elsewhere.
 trait TreeNodeExt { fn node_type(&self) -> models::enums::NodeType; }
 impl TreeNodeExt for models::structs::TreeNode { fn node_type(&self) -> models::enums::NodeType { self.node_type.clone() } }
+
+// Provide a lightweight clone for cache access (cache functions require &mut Tabular)
+trait ShallowForCache { fn shallow_for_cache(&self) -> Box<Tabular>; }
+impl ShallowForCache for Tabular {
+    fn shallow_for_cache(&self) -> Box<Tabular> {
+        Box::new(Tabular {
+            db_pool: self.db_pool.clone(),
+            connections: self.connections.clone(),
+            query_tabs: self.query_tabs.clone(),
+            active_tab_index: self.active_tab_index,
+            // The rest are default/empty; not used by cache getters
+            editor_text: String::new(), selected_menu: String::new(), items_tree: Vec::new(), queries_tree: Vec::new(), history_tree: Vec::new(), history_items: Vec::new(), show_add_connection: false, new_connection: models::structs::ConnectionConfig::default(), runtime: self.runtime.clone(), connection_pools: self.connection_pools.clone(), show_edit_connection: false, edit_connection: models::structs::ConnectionConfig::default(), needs_refresh: false, current_table_data: Vec::new(), current_table_headers: Vec::new(), current_table_name: String::new(), current_connection_id: None, current_page: 0, page_size: 0, total_rows: 0, all_table_data: Vec::new(), table_split_ratio: 0.0, sort_column: None, sort_ascending: true, test_connection_status: None, test_connection_in_progress: false, background_sender: None, background_receiver: None, refreshing_connections: std::collections::HashSet::new(), next_tab_id: 0, show_save_dialog: false, save_filename: String::new(), show_connection_selector: false, pending_query: String::new(), auto_execute_after_connection: false, error_message: String::new(), show_error_message: false, advanced_editor: models::structs::AdvancedEditor::default(), selected_text: String::new(), cursor_position: 0, show_command_palette: false, command_palette_input: String::new(), show_theme_selector: false, command_palette_items: Vec::new(), command_palette_selected_index: 0, theme_selector_selected_index: 0, request_theme_selector: false, database_search_text: String::new(), filtered_items_tree: Vec::new(), show_search_results: false, show_create_folder_dialog: false, new_folder_name: String::new(), selected_query_for_move: None, show_move_to_folder_dialog: false, target_folder_name: String::new(), parent_folder_for_creation: None, selected_folder_for_removal: None, folder_removal_map: std::collections::HashMap::new(), last_cleanup_time: std::time::Instant::now(), selected_row: None, selected_cell: None, column_widths: Vec::new(), min_column_width: 0.0, show_about_dialog: false, logo_texture: None, database_cache: std::collections::HashMap::new(), database_cache_time: std::collections::HashMap::new(), show_autocomplete: false, autocomplete_suggestions: Vec::new(), selected_autocomplete_index: 0, autocomplete_prefix: String::new(), last_autocomplete_trigger_len: 0, pending_cursor_set: None,
+        })
+    }
+}
 
 /// Update autocomplete state after text change or cursor move.
 pub fn update_autocomplete(app: &mut Tabular) {
@@ -62,7 +150,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
     let (prefix, start_idx) = current_prefix(&app.editor_text, cursor);
     app.autocomplete_prefix = prefix.clone();
 
-    if prefix.is_empty() || prefix.len() < 2 { // hide if too short
+    if prefix.is_empty() { // hide jika kosong
         app.show_autocomplete = false; 
         app.autocomplete_suggestions.clear();
         return;
@@ -70,7 +158,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
 
     // Only rebuild if prefix length changed or previously hidden
     if app.last_autocomplete_trigger_len != prefix.len() || !app.show_autocomplete {
-        let suggestions = build_suggestions(app, &prefix);
+    let suggestions = build_suggestions(app, &app.editor_text, cursor, &prefix);
         if suggestions.is_empty() {
             app.show_autocomplete = false;
         } else {
