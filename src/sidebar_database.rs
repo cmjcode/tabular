@@ -575,7 +575,8 @@ pub(crate) fn create_connections_folder_structure(tabular: &mut window_egui::Tab
             }
             if !mssql_connections.is_empty() {
                 let _ = mssql_connections.len();
-                let mut mssql_folder = models::structs::TreeNode::new("MSSQL".to_string(), models::enums::NodeType::MySQLFolder);
+                // Correct NodeType for MSSQL folder (previously mistakenly used MySQLFolder)
+                let mut mssql_folder = models::structs::TreeNode::new("MSSQL".to_string(), models::enums::NodeType::MSSQLFolder);
                 mssql_folder.children = mssql_connections;
                 mssql_folder.is_expanded = false;
                 db_type_folders.push(mssql_folder);
