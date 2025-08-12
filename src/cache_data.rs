@@ -147,7 +147,7 @@ pub(crate) fn fetch_and_cache_connection_data(tabular: &mut window_egui::Tabular
                               models::enums::DatabaseType::PostgreSQL => vec!["table", "view"],
                               models::enums::DatabaseType::SQLite => vec!["table", "view"],
                               models::enums::DatabaseType::Redis => vec!["info_section", "redis_keys"],
-                              models::enums::DatabaseType::MSSQL => vec!["table", "view"],
+                              models::enums::DatabaseType::MSSQL => vec!["table", "view", "procedure", "function", "trigger"],
                        };
               
               let mut all_tables = Vec::new();
@@ -168,7 +168,11 @@ pub(crate) fn fetch_and_cache_connection_data(tabular: &mut window_egui::Tabular
                      driver_redis::fetch_tables_from_redis_connection(tabular, connection_id, database_name, table_type)
                      },
                                       models::enums::DatabaseType::MSSQL => {
-                                             crate::driver_mssql::fetch_tables_from_mssql_connection(tabular, connection_id, database_name, table_type)
+                                             match table_type {
+                                                    "table" | "view" => crate::driver_mssql::fetch_tables_from_mssql_connection(tabular, connection_id, database_name, table_type),
+                                                    "procedure" | "function" | "trigger" => crate::driver_mssql::fetch_objects_from_mssql_connection(tabular, connection_id, database_name, table_type),
+                                                    _ => None,
+                                             }
                                        },
               };
               

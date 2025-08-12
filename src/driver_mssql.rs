@@ -112,6 +112,92 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
     })
 }
 
+/// Fetch MSSQL objects for a specific database by type: procedure | function | trigger
+pub(crate) fn fetch_objects_from_mssql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, object_type: &str) -> Option<Vec<String>> {
+    let rt = tokio::runtime::Runtime::new().ok()?;
+    rt.block_on(async {
+        let connection = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
+
+        use tokio_util::compat::TokioAsyncWriteCompatExt;
+        use tiberius::{AuthMethod, Config};
+
+        let host = connection.host.clone();
+        let port: u16 = connection.port.parse().unwrap_or(1433);
+        let user = connection.username.clone();
+        let pass = connection.password.clone();
+        let db_name = if database_name.is_empty() { connection.database.clone() } else { database_name.to_string() };
+
+        let mut config = Config::new();
+        config.host(host.clone());
+        config.port(port);
+        config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+        config.trust_cert();
+        if !db_name.is_empty() { config.database(db_name.clone()); }
+
+        let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await { Ok(t) => t, Err(e) => { log::debug!("MSSQL connect error for object fetch: {}", e); return None; } };
+        let _ = tcp.set_nodelay(true);
+        let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await { Ok(c) => c, Err(e) => { log::debug!("MSSQL client connect error: {}", e); return None; } };
+
+        let query = match object_type {
+            // Stored procedures
+            "procedure" => {
+                // sys.procedures excludes system procedures when filtered by is_ms_shipped = 0
+                "SELECT s.name AS schema_name, p.name AS object_name \
+                 FROM sys.procedures p \
+                 JOIN sys.schemas s ON p.schema_id = s.schema_id \
+                 WHERE ISNULL(p.is_ms_shipped,0) = 0 \
+                 ORDER BY p.name".to_string()
+            }
+            // Functions: scalar, inline table-valued, multi-statement table-valued, and CLR variants
+            "function" => {
+                "SELECT s.name AS schema_name, o.name AS object_name \
+                 FROM sys.objects o \
+                 JOIN sys.schemas s ON o.schema_id = s.schema_id \
+                 WHERE o.type IN ('FN','IF','TF','AF','FS','FT') \
+                 ORDER BY o.name".to_string()
+            }
+            // Triggers: list DML triggers attached to user tables
+            "trigger" => {
+                "SELECT ss.name AS schema_name, t.name AS table_name, tr.name AS trigger_name \
+                 FROM sys.triggers tr \
+                 JOIN sys.tables t ON tr.parent_id = t.object_id \
+                 JOIN sys.schemas ss ON t.schema_id = ss.schema_id \
+                 WHERE t.type = 'U' \
+                 ORDER BY tr.name".to_string()
+            }
+            _ => { log::debug!("Unsupported MSSQL object_type: {}", object_type); return None; }
+        };
+
+        let mut stream = match client.simple_query(query).await { Ok(s) => s, Err(e) => { log::debug!("MSSQL object list query error: {}", e); return None; } };
+
+        let mut items = Vec::new();
+        use futures_util::TryStreamExt;
+        while let Some(item) = stream.try_next().await.ok()? {
+            if let tiberius::QueryItem::Row(r) = item {
+                match object_type {
+                    "procedure" | "function" => {
+                        let schema: Option<&str> = r.get(0);
+                        let name: Option<&str> = r.get(1);
+                        if let (Some(s), Some(n)) = (schema, name) {
+                            items.push(format!("[{}].[{}]", s, n));
+                        }
+                    }
+                    "trigger" => {
+                        let schema: Option<&str> = r.get(0);
+                        let table: Option<&str> = r.get(1);
+                        let trig: Option<&str> = r.get(2);
+                        if let (Some(s), Some(t), Some(tr)) = (schema, table, trig) {
+                            items.push(format!("[{}].[{}].[{}]", s, t, tr));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some(items)
+    })
+}
+
 /// Execute a query and return (headers, rows)
 pub(crate) async fn execute_query(cfg: Arc<MssqlConfigWrapper>, query: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     use tokio_util::compat::TokioAsyncWriteCompatExt;

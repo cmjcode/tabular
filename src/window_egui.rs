@@ -1816,7 +1816,23 @@ impl Tabular {
                         views_folder.connection_id = Some(connection_id);
                         views_folder.database_name = Some(db_name.clone());
                         views_folder.is_loaded = false;
-                        db_node.children = vec![tables_folder, views_folder];
+                        // Stored Procedures folder
+                        let mut sp_folder = models::structs::TreeNode::new("Stored Procedures".to_string(), models::enums::NodeType::StoredProceduresFolder);
+                        sp_folder.connection_id = Some(connection_id);
+                        sp_folder.database_name = Some(db_name.clone());
+                        sp_folder.is_loaded = false;
+                        // Functions folder
+                        let mut fn_folder = models::structs::TreeNode::new("Functions".to_string(), models::enums::NodeType::UserFunctionsFolder);
+                        fn_folder.connection_id = Some(connection_id);
+                        fn_folder.database_name = Some(db_name.clone());
+                        fn_folder.is_loaded = false;
+                        // Triggers folder (events not supported in MSSQL)
+                        let mut trg_folder = models::structs::TreeNode::new("Triggers".to_string(), models::enums::NodeType::TriggersFolder);
+                        trg_folder.connection_id = Some(connection_id);
+                        trg_folder.database_name = Some(db_name.clone());
+                        trg_folder.is_loaded = false;
+
+                        db_node.children = vec![tables_folder, views_folder, sp_folder, fn_folder, trg_folder];
                         databases_folder.children.push(db_node);
                     }
                     main_children.push(databases_folder);
@@ -1935,12 +1951,36 @@ impl Tabular {
                 views_folder.is_loaded = false;
                 db_children.push(views_folder);
                 
-                // Stored Procedures folder
-                let mut sp_folder = models::structs::TreeNode::new("Stored Procedures".to_string(), models::enums::NodeType::StoredProceduresFolder);
-                sp_folder.connection_id = Some(connection_id);
-                sp_folder.database_name = Some(db_name.clone());
-                sp_folder.is_loaded = false;
-                db_children.push(sp_folder);
+                // Stored Procedures / Functions / Triggers depending on DB type
+                if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
+                    match conn.connection_type {
+                        models::enums::DatabaseType::MySQL => {
+                            let mut sp_folder = models::structs::TreeNode::new("Stored Procedures".to_string(), models::enums::NodeType::StoredProceduresFolder);
+                            sp_folder.connection_id = Some(connection_id);
+                            sp_folder.database_name = Some(db_name.clone());
+                            sp_folder.is_loaded = false;
+                            db_children.push(sp_folder);
+                        }
+                        models::enums::DatabaseType::MSSQL => {
+                            let mut sp_folder = models::structs::TreeNode::new("Stored Procedures".to_string(), models::enums::NodeType::StoredProceduresFolder);
+                            sp_folder.connection_id = Some(connection_id);
+                            sp_folder.database_name = Some(db_name.clone());
+                            sp_folder.is_loaded = false;
+                            db_children.push(sp_folder);
+                            let mut fn_folder = models::structs::TreeNode::new("Functions".to_string(), models::enums::NodeType::UserFunctionsFolder);
+                            fn_folder.connection_id = Some(connection_id);
+                            fn_folder.database_name = Some(db_name.clone());
+                            fn_folder.is_loaded = false;
+                            db_children.push(fn_folder);
+                            let mut trg_folder = models::structs::TreeNode::new("Triggers".to_string(), models::enums::NodeType::TriggersFolder);
+                            trg_folder.connection_id = Some(connection_id);
+                            trg_folder.database_name = Some(db_name.clone());
+                            trg_folder.is_loaded = false;
+                            db_children.push(trg_folder);
+                        }
+                        _ => {}
+                    }
+                }
                 
                 db_node.children = db_children;
                 databases_folder.children.push(db_node);
@@ -2024,6 +2064,25 @@ impl Tabular {
                     events_folder.database_name = Some(db_name.clone());
                     events_folder.is_loaded = false;
                     db_children.push(events_folder);
+                } else if matches!(connection.connection_type, models::enums::DatabaseType::MSSQL) {
+                    // For MSSQL, add Procedures, Functions, and Triggers (no Events)
+                    let mut sp_folder = models::structs::TreeNode::new("Stored Procedures".to_string(), models::enums::NodeType::StoredProceduresFolder);
+                    sp_folder.connection_id = Some(connection_id);
+                    sp_folder.database_name = Some(db_name.clone());
+                    sp_folder.is_loaded = false;
+                    db_children.push(sp_folder);
+
+                    let mut fn_folder = models::structs::TreeNode::new("Functions".to_string(), models::enums::NodeType::UserFunctionsFolder);
+                    fn_folder.connection_id = Some(connection_id);
+                    fn_folder.database_name = Some(db_name.clone());
+                    fn_folder.is_loaded = false;
+                    db_children.push(fn_folder);
+
+                    let mut trg_folder = models::structs::TreeNode::new("Triggers".to_string(), models::enums::NodeType::TriggersFolder);
+                    trg_folder.connection_id = Some(connection_id);
+                    trg_folder.database_name = Some(db_name.clone());
+                    trg_folder.is_loaded = false;
+                    db_children.push(trg_folder);
                 }
                 
                 db_node.children = db_children;
@@ -2450,9 +2509,32 @@ impl Tabular {
         debug!("Loading {:?} content for MSSQL", folder_type);
         let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
 
-        let table_type = match folder_type {
-            models::enums::NodeType::TablesFolder => "table",
-            models::enums::NodeType::ViewsFolder => "view",
+        let (kind, node_mapper): (&str, fn(String) -> models::structs::TreeNode) = match folder_type {
+            models::enums::NodeType::TablesFolder => ("table", |name: String| {
+                let mut child = models::structs::TreeNode::new(name, models::enums::NodeType::Table);
+                child.is_loaded = false;
+                child
+            }),
+            models::enums::NodeType::ViewsFolder => ("view", |name: String| {
+                let mut child = models::structs::TreeNode::new(name, models::enums::NodeType::View);
+                child.is_loaded = false;
+                child
+            }),
+            models::enums::NodeType::StoredProceduresFolder => ("procedure", |name: String| {
+                let mut child = models::structs::TreeNode::new(name, models::enums::NodeType::StoredProcedure);
+                child.is_loaded = true;
+                child
+            }),
+            models::enums::NodeType::UserFunctionsFolder => ("function", |name: String| {
+                let mut child = models::structs::TreeNode::new(name, models::enums::NodeType::UserFunction);
+                child.is_loaded = true;
+                child
+            }),
+            models::enums::NodeType::TriggersFolder => ("trigger", |name: String| {
+                let mut child = models::structs::TreeNode::new(name, models::enums::NodeType::Trigger);
+                child.is_loaded = true;
+                child
+            }),
             _ => {
                 node.children = vec![models::structs::TreeNode::new("Unsupported folder for MSSQL".to_string(), models::enums::NodeType::Column)];
                 return;
@@ -2460,40 +2542,47 @@ impl Tabular {
         };
 
         // Try cache first
-        if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, database_name, table_type) {
+        if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, database_name, kind) {
             if !cached.is_empty() {
                 node.children = cached.into_iter().map(|name| {
-                    let ntype = if table_type == "table" { models::enums::NodeType::Table } else { models::enums::NodeType::View };
-                    let mut child = models::structs::TreeNode::new(name, ntype);
+                    let mut child = node_mapper(name);
                     child.connection_id = Some(connection_id);
                     child.database_name = Some(database_name.clone());
-                    child.is_loaded = false;
                     child
                 }).collect();
                 return;
             }
         }
 
-        if let Some(real_items) = crate::driver_mssql::fetch_tables_from_mssql_connection(self, connection_id, database_name, table_type) {
-            let table_data: Vec<(String, String)> = real_items.iter().map(|n| (n.clone(), table_type.to_string())).collect();
+        let fetched = match kind {
+            "table" | "view" => crate::driver_mssql::fetch_tables_from_mssql_connection(self, connection_id, database_name, kind),
+            "procedure" | "function" | "trigger" => crate::driver_mssql::fetch_objects_from_mssql_connection(self, connection_id, database_name, kind),
+            _ => None,
+        };
+
+        if let Some(real_items) = fetched {
+            let table_data: Vec<(String, String)> = real_items.iter().map(|n| (n.clone(), kind.to_string())).collect();
             cache_data::save_tables_to_cache(self, connection_id, database_name, &table_data);
             node.children = real_items.into_iter().map(|name| {
-                let ntype = if table_type == "table" { models::enums::NodeType::Table } else { models::enums::NodeType::View };
-                let mut child = models::structs::TreeNode::new(name, ntype);
+                let mut child = node_mapper(name);
                 child.connection_id = Some(connection_id);
                 child.database_name = Some(database_name.clone());
-                child.is_loaded = false;
                 child
             }).collect();
         } else {
             // fallback sample
-            let sample = if table_type == "table" { vec!["users".to_string(), "orders".to_string()] } else { vec!["user_summary".to_string()] };
+            let sample = match kind {
+                "table" => vec!["users".to_string(), "orders".to_string()],
+                "view" => vec!["user_summary".to_string()],
+                "procedure" => vec!["[dbo].[sp_sample]".to_string()],
+                "function" => vec!["[dbo].[fn_sample]".to_string()],
+                "trigger" => vec!["[dbo].[Table].[trg_sample]".to_string()],
+                _ => Vec::new(),
+            };
             node.children = sample.into_iter().map(|name| {
-                let ntype = if table_type == "table" { models::enums::NodeType::Table } else { models::enums::NodeType::View };
-                let mut child = models::structs::TreeNode::new(name, ntype);
+                let mut child = node_mapper(name);
                 child.connection_id = Some(connection_id);
                 child.database_name = Some(database_name.clone());
-                child.is_loaded = false;
                 child
             }).collect();
         }
