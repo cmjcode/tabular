@@ -229,7 +229,7 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                    let mut execution_success = true;
                                                    let mut error_message = String::new();
 
-                                                   // Open a dedicated connection so USE persists
+                                                   // Open a dedicated connection; we'll reconnect on USE to switch DB
                                                    let encoded_username = modules::url_encode(&connection.username);
                                                    let encoded_password = modules::url_encode(&connection.password);
                                                    let dsn = format!(
@@ -252,19 +252,28 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                           let upper = trimmed.to_uppercase();
 
                                                           if upper.starts_with("USE ") {
-                                                                 // Parse db name
+                                                                 // Parse target database and reconnect instead of executing USE (not supported in prepared protocol)
                                                                  let db_part = trimmed[3..].trim();
                                                                  let db_name = db_part
                                                                         .trim_matches('`')
-                                                                        .trim_matches('"')
+                                                                        .trim_matches('\"')
                                                                         .trim_matches('[')
                                                                         .trim_matches(']')
                                                                         .trim();
-                                                                 let use_sql = format!("USE `{}`", db_name.replace('`', "``"));
-                                                                 if let Err(e) = sqlx::query(&use_sql).execute(&mut conn).await {
-                                                                        error_message = format!("USE failed: {}", e);
-                                                                        execution_success = false;
-                                                                        break;
+                                                                 let new_dsn = format!(
+                                                                        "mysql://{}:{}@{}:{}/{}",
+                                                                        encoded_username, encoded_password, connection.host, connection.port, db_name
+                                                                 );
+                                                                 match MySqlConnection::connect(&new_dsn).await {
+                                                                        Ok(new_conn) => {
+                                                                               debug!("Switched MySQL database by reconnecting to '{}'.", db_name);
+                                                                               conn = new_conn;
+                                                                        }
+                                                                        Err(e) => {
+                                                                               error_message = format!("USE failed (reconnect): {}", e);
+                                                                               execution_success = false;
+                                                                               break;
+                                                                        }
                                                                  }
                                                                  continue;
                                                           }
