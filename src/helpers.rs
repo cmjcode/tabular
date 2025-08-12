@@ -9,7 +9,7 @@ pub(crate) fn ping_host(host: &str) -> bool {
             .arg("-c")
             .arg("1")
             .arg("-W")
-            .arg("2") // timeout 2 detik            
+            .arg("2000") // timeout 2000 ms (2 detik) pada macOS           
             .arg(host)
             .output();
 
@@ -26,10 +26,12 @@ pub(crate) fn ping_host(host: &str) -> bool {
         let output = std::process::Command::new("ping")
             .arg("-n")
             .arg("1")
-            .arg("-W")
-            .arg("2") // timeout 2 detik            
+            .arg("-w")
+            .arg("2000") // timeout 2000 ms (2 detik) untuk Windows            
             .arg(host)
             .output();
+
+        debug!("Ping output: {:?}", output);
 
         match output {
             Ok(out) => out.status.success(),
