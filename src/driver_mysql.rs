@@ -60,6 +60,8 @@ fn get_value_as_string_fallback_idx(row: &sqlx::mysql::MySqlRow, idx: usize, col
     if let Ok(Some(val)) = row.try_get::<Option<i32>, _>(idx) { return val.to_string(); }
     if let Ok(Some(val)) = row.try_get::<Option<u32>, _>(idx) { return val.to_string(); }
     if let Ok(Some(val)) = row.try_get::<Option<f64>, _>(idx) { return val.to_string(); }
+    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) { return val.to_string(); }
+    if let Ok(Some(val)) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(idx) { return val.to_rfc3339(); }
     if let Ok(Some(val)) = row.try_get::<Option<rust_decimal::Decimal>, _>(idx) { return val.to_string(); }
     if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) { return val.to_string(); }
     if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDate>, _>(idx) { return val.to_string(); }
@@ -267,14 +269,23 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
                         Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                     },
                 },
-                "DATETIME" | "TIMESTAMP" => match row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) {
-                    Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
-                    Err(_) => match row.try_get::<Option<String>, _>(idx) {
-                        Ok(Some(val)) => val,
-                        Ok(None) => "NULL".to_string(),
-                        Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
-                    },
+                "DATETIME" | "TIMESTAMP" => {
+                    // Try chrono::NaiveDateTime first
+                    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) {
+                        val.to_string()
+                    } else if let Ok(Some(val)) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(idx) {
+                        val.to_rfc3339()
+                    } else if let Ok(Some(val)) = row.try_get::<Option<String>, _>(idx) {
+                        val
+                    } else if let Ok(val) = row.try_get::<String, _>(idx) {
+                        val
+                    } else if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) {
+                        bytes_to_string_or_marker(bytes)
+                    } else if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) {
+                        bytes_to_string_or_marker(bytes)
+                    } else {
+                        get_value_as_string_fallback_idx(row, idx, column_name, &t)
+                    }
                 },
                 "YEAR" => match row.try_get::<Option<i16>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),

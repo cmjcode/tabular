@@ -426,7 +426,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         let mut query_files_to_open = Vec::new();
         
         for (index, node) in nodes.iter_mut().enumerate() {
-            let (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_for_removal, parent_for_creation, folder_removal_mapping) = Self::render_tree_node_with_table_expansion(ui, node, &mut self.editor_text, index, &self.refreshing_connections);
+            let (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_for_removal, parent_for_creation, folder_removal_mapping, dba_click_request) = Self::render_tree_node_with_table_expansion(ui, node, &mut self.editor_text, index, &self.refreshing_connections);
             if let Some(expansion_req) = expansion_request {
                 expansion_requests.push(expansion_req);
             }
@@ -455,6 +455,27 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             if let Some((filename, content, file_path)) = query_file_to_open {
                 debug!("📋 Collected query file to open: {} (path: {})", filename, file_path);
                 query_files_to_open.push((filename, content, file_path));
+            }
+            // Collect DBA quick view requests
+            if let Some((conn_id, node_type)) = dba_click_request {
+                // Handle immediately here since we have &mut self
+                if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
+                    if let Some((tab_title, query_content)) = self.build_dba_query(&conn, &node_type) {
+                        editor::create_new_tab_with_connection(self, tab_title.clone(), query_content.clone(), Some(conn_id));
+                        self.current_connection_id = Some(conn_id);
+                        if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, query_content) {
+                            self.current_table_headers = headers;
+                            self.current_table_data = data.clone();
+                            self.all_table_data = data;
+                            self.current_table_name = tab_title;
+                            self.total_rows = self.all_table_data.len();
+                            self.current_page = 0;
+                        }
+                    } else {
+                        self.error_message = "DBA view not supported for this database type".to_string();
+                        self.show_error_message = true;
+                    }
+                }
             }
         }
         
@@ -865,7 +886,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             Option<models::structs::ExpansionRequest>, Option<(usize, i64, String)>, 
             Option<i64>, Option<(i64, String)>, Option<i64>, 
             Option<(String, String, String)>, Option<String>, Option<String>, // Add parent folder for creation
-            Option<(i64, String)> // Add mapping for folder removal: (hash, folder_path)
+            Option<(i64, String)>, // Add mapping for folder removal: (hash, folder_path)
+            Option<(i64, models::enums::NodeType)> // DBA quick view click (connection_id, node_type)
         ) {
         let has_children = !node.children.is_empty();
         let mut expansion_request = None;
@@ -876,16 +898,17 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         let mut connection_click_request = None;
         let mut query_file_to_open = None;
         let mut folder_name_for_removal = None;
-        let mut parent_folder_for_creation = None;
+    let mut parent_folder_for_creation = None;
+    let mut dba_click_request: Option<(i64, models::enums::NodeType)> = None;
         
     if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table || 
        node.node_type == models::enums::NodeType::View ||
+        // Show expand toggles for container folders and schema folders only
        node.node_type == models::enums::NodeType::DatabasesFolder || node.node_type == models::enums::NodeType::TablesFolder ||
        node.node_type == models::enums::NodeType::ViewsFolder || node.node_type == models::enums::NodeType::StoredProceduresFolder ||
        node.node_type == models::enums::NodeType::UserFunctionsFolder || node.node_type == models::enums::NodeType::TriggersFolder ||
        node.node_type == models::enums::NodeType::EventsFolder || node.node_type == models::enums::NodeType::DBAViewsFolder ||
-       node.node_type == models::enums::NodeType::UsersFolder || node.node_type == models::enums::NodeType::PrivilegesFolder ||
-       node.node_type == models::enums::NodeType::ProcessesFolder || node.node_type == models::enums::NodeType::StatusFolder ||
+       // Do NOT show expand toggles for DBA leaf items; they act as actions when clicked
        node.node_type == models::enums::NodeType::Database || node.node_type == models::enums::NodeType::QueryFolder {
             // Use more unique ID including connection_id for connections
             let unique_id = match node.node_type {
@@ -1178,16 +1201,17 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 let is_history_date_folder = node.node_type == models::enums::NodeType::HistoryDateFolder;
                 if is_history_date_folder {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
-                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
                         if let Some(child_expansion) = child_expansion_request { expansion_request = Some(child_expansion); }
                         if table_expansion.is_none() { if let Some((child_index, child_conn_id, table_name)) = child_table_expansion { if let Some(conn_id) = node.connection_id { table_expansion = Some((child_index, conn_id, table_name)); } else { table_expansion = Some((child_index, child_conn_id, table_name)); } } }
                         if let Some((conn_id, table_name)) = child_table_click { table_click_request = Some((conn_id, table_name)); }
+                        if let Some(v) = child_dba_click { dba_click_request = Some(v); }
                         if let Some(child_context_id) = child_context { context_menu_request = Some(child_context_id); }
                     }
                 } else {
                     ui.indent(id, |ui| {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
-                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
                         
                         // Handle child expansion requests - propagate to parent
                         if let Some(child_expansion) = child_expansion_request {
@@ -1210,6 +1234,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         if let Some((conn_id, table_name)) = child_table_click {
                             table_click_request = Some((conn_id, table_name));
                         }
+                        // Propagate DBA click to parent
+                        if let Some(v) = child_dba_click { dba_click_request = Some(v); }
                         
                         // Handle child folder removal - propagate to parent
                         if let Some(child_folder_name) = _child_folder_removal {
@@ -1297,6 +1323,12 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 table_click_request = Some((conn_id, node.name.clone()));
                             }
                         },
+                        // DBA quick views: emit a click request to be handled by parent (needs self)
+                        models::enums::NodeType::UsersFolder | models::enums::NodeType::PrivilegesFolder | models::enums::NodeType::ProcessesFolder | models::enums::NodeType::StatusFolder => {
+                            if let Some(conn_id) = node.connection_id {
+                                dba_click_request = Some((conn_id, node.node_type.clone()));
+                            }
+                        },
                         models::enums::NodeType::Query => {
                             // Load query file content
                             debug!("🔍 Query node clicked: {}", node.name);
@@ -1362,7 +1394,91 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 }
         }
         
-        (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping)
+    (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping, dba_click_request)
+    }
+
+    // Helper to get connection by id (immutable clone) for internal handlers
+    fn get_connection_by_id(&self, connection_id: i64) -> Option<models::structs::ConnectionConfig> {
+        self.connections.iter().find(|c| c.id == Some(connection_id)).cloned()
+    }
+
+    // Build standard DBA queries for quick views based on db type and node kind
+    fn build_dba_query(&self, connection: &models::structs::ConnectionConfig, node_type: &models::enums::NodeType) -> Option<(String, String)> {
+        use models::enums::{DatabaseType, NodeType};
+        match connection.connection_type {
+            DatabaseType::MySQL => {
+                match node_type {
+                    NodeType::UsersFolder => Some((
+                        format!("DBA: MySQL Users - {}", connection.name),
+                        "SELECT Host, User, plugin, account_locked, password_expired, password_last_changed \
+FROM mysql.user ORDER BY User, Host;".to_string()
+                    )),
+                    NodeType::PrivilegesFolder => Some((
+                        format!("DBA: MySQL Privileges - {}", connection.name),
+                        "SELECT GRANTEE, PRIVILEGE_TYPE, IS_GRANTABLE FROM INFORMATION_SCHEMA.USER_PRIVILEGES \
+ORDER BY GRANTEE, PRIVILEGE_TYPE;".to_string()
+                    )),
+                    NodeType::ProcessesFolder => Some((
+                        format!("DBA: MySQL Processlist - {}", connection.name),
+                        "SHOW FULL PROCESSLIST;".to_string()
+                    )),
+                    NodeType::StatusFolder => Some((
+                        format!("DBA: MySQL Global Status - {}", connection.name),
+                        "SHOW GLOBAL STATUS;".to_string()
+                    )),
+                    _ => None,
+                }
+            }
+            DatabaseType::PostgreSQL => {
+                match node_type {
+                    NodeType::UsersFolder => Some((
+                        format!("DBA: PostgreSQL Users - {}", connection.name),
+                        "SELECT usename AS user, usesysid, usecreatedb, usesuper FROM pg_user ORDER BY usename;".to_string()
+                    )),
+                    NodeType::PrivilegesFolder => Some((
+                        format!("DBA: PostgreSQL Privileges - {}", connection.name),
+                        "SELECT grantee, table_catalog, table_schema, table_name, privilege_type \
+FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_name;".to_string()
+                    )),
+                    NodeType::ProcessesFolder => Some((
+                        format!("DBA: PostgreSQL Activity - {}", connection.name),
+                        "SELECT pid, usename, application_name, client_addr, state, query_start, query FROM pg_stat_activity ORDER BY query_start DESC NULLS LAST;".to_string()
+                    )),
+                    NodeType::StatusFolder => Some((
+                        format!("DBA: PostgreSQL Settings - {}", connection.name),
+                        "SELECT name, setting FROM pg_settings ORDER BY name;".to_string()
+                    )),
+                    _ => None,
+                }
+            }
+            DatabaseType::MSSQL => {
+                match node_type {
+                    NodeType::UsersFolder => Some((
+                        format!("DBA: MSSQL Principals - {}", connection.name),
+                        "SELECT name, type_desc, create_date, modify_date FROM sys.server_principals \
+WHERE type IN ('S','U','G') AND name NOT LIKE '##MS_%' ORDER BY name;".to_string()
+                    )),
+                    NodeType::PrivilegesFolder => Some((
+                        format!("DBA: MSSQL Server Permissions - {}", connection.name),
+                        "SELECT dp.name AS principal_name, sp.permission_name, sp.state_desc \
+FROM sys.server_permissions sp \
+JOIN sys.server_principals dp ON sp.grantee_principal_id = dp.principal_id \
+ORDER BY dp.name, sp.permission_name;".to_string()
+                    )),
+                    NodeType::ProcessesFolder => Some((
+                        format!("DBA: MSSQL Sessions - {}", connection.name),
+                        "SELECT session_id, login_name, host_name, status, program_name, cpu_time, memory_usage \
+FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
+                    )),
+                    NodeType::StatusFolder => Some((
+                        format!("DBA: MSSQL Performance Counters - {}", connection.name),
+                        "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;".to_string()
+                    )),
+                    _ => None,
+                }
+            }
+            DatabaseType::SQLite | DatabaseType::Redis => None,
+        }
     }
 
 

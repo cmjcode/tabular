@@ -43,26 +43,27 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                         
                         // App icon/logo - use actual logo if loaded, fallback to emoji
                         if let Some(logo_texture) = &tabular.logo_texture {
-                            ui.add(egui::Image::from_texture(logo_texture).max_size(egui::vec2(64.0, 64.0)));
+                            ui.add(egui::Image::from_texture(logo_texture).max_size(egui::vec2(180.0, 180.0)));
                         } else {
                             ui.label(egui::RichText::new("📊").size(48.0));
                         }
                         ui.add_space(10.0);
                         
                         // App name and version
-                        ui.label(egui::RichText::new("Tabular").size(24.0).strong());
-                        ui.label(egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).size(14.0).color(egui::Color32::GRAY));
+                        ui.label(egui::RichText::new("Tabular").size(26.0).strong());
+                        ui.label(egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).size(18.0).color(egui::Color32::GRAY));
+                        ui.label(egui::RichText::new("Built with ❤️ using Rust").size(14.0).color(egui::Color32::GRAY));
                         ui.add_space(15.0);
                         
                         // Description
-                        ui.label("Your SQL Editor, Forged with Rust: Fast, Safe, Efficient.");
-                        ui.label("Jayuda");
+                        ui.label(egui::RichText::new("Your SQL Editor, Forged with Rust: Fast, Safe, Efficient.").size(14.0));
+                        ui.label("Credit : Jayuda");
                         ui.add_space(10.0);
                         
                        
-                        ui.label(egui::RichText::new("© 2025 PT. Vneu Teknologi Indonesia ").size(12.0).color(egui::Color32::GRAY));
                         ui.hyperlink_to("https://github.com/tabular-id/tabular", "https://github.com/tabular-id/tabular");
-                        ui.label(egui::RichText::new("Built with ❤️ using Rust").size(12.0).color(egui::Color32::GRAY));
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("© 2025 PT. Vneu Teknologi Indonesia ").size(10.0).color(egui::Color32::GRAY));
                         ui.add_space(15.0);
                     });
                 });
