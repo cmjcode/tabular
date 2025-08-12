@@ -5,18 +5,26 @@ use crate::{editor, window_egui};
 
 
 fn load_logo_texture(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-       if tabular.logo_texture.is_none() {
-       // Try to load the logo from assets/logo.png
-       if let Ok(image_bytes) = std::fs::read("assets/logo.png") {
-              if let Ok(image) = image::load_from_memory(&image_bytes) {
-              let rgba_image = image.to_rgba8();
-              let size = [image.width() as usize, image.height() as usize];
-              let pixels = rgba_image.as_flat_samples();
-              let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-              tabular.logo_texture = Some(ctx.load_texture("logo", color_image, Default::default()));
-              }
-       }
-       }
+    if tabular.logo_texture.is_some() {
+        return;
+    }
+
+    // Try filesystem asset first (useful during dev runs)
+    let bytes_from_fs = std::fs::read("assets/logo.png").ok();
+
+    // Fallback to embedded bytes so packaged apps always show the logo
+    // SAFETY: the file path is compile-time checked
+    let embedded_bytes: &[u8] = include_bytes!("../assets/logo.png");
+
+    let image_bytes: Vec<u8> = bytes_from_fs.unwrap_or_else(|| embedded_bytes.to_vec());
+
+    if let Ok(image) = image::load_from_memory(&image_bytes) {
+        let rgba_image = image.to_rgba8();
+        let size = [image.width() as usize, image.height() as usize];
+        let pixels = rgba_image.as_flat_samples();
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+        tabular.logo_texture = Some(ctx.load_texture("logo", color_image, Default::default()));
+    }
 }
 pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
         if tabular.show_about_dialog {

@@ -126,6 +126,33 @@ pub struct Tabular {
 
 
 impl Tabular {
+
+// Small painter-drawn triangle toggle to avoid font glyph issues
+fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
+    let size = egui::vec2(16.0, 16.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter_at(rect);
+        let color = ui.visuals().text_color();
+        let stroke = egui::Stroke { width: 1.0, color };
+        if expanded {
+            // Down triangle
+            let p1 = egui::pos2(rect.center().x - 6.0, rect.top() + 5.0);
+            let p2 = egui::pos2(rect.center().x + 6.0, rect.top() + 5.0);
+            let p3 = egui::pos2(rect.center().x, rect.top() + 11.0);
+            painter.add(egui::Shape::convex_polygon(vec![p1, p2, p3], color, stroke));
+        } else {
+            // Right triangle
+            let p1 = egui::pos2(rect.left() + 5.0, rect.center().y - 6.0);
+            let p2 = egui::pos2(rect.left() + 5.0, rect.center().y + 6.0);
+            let p3 = egui::pos2(rect.left() + 11.0, rect.center().y);
+            painter.add(egui::Shape::convex_polygon(vec![p1, p2, p3], color, stroke));
+        }
+    }
+
+    response
+}
     // Helper: build MSSQL SELECT ensuring database context and proper quoting.
     // db_name: selected database (can be empty -> fallback to object-provided or omit USE)
     // raw_name: could be formats: table, [schema].[object], schema.object, [db].[schema].[object], db.schema.object
@@ -867,8 +894,8 @@ impl Tabular {
             };
             let id = egui::Id::new(&unique_id);
             ui.horizontal(|ui| {
-                let expand_icon = if node.is_expanded { "▼" } else { "▶" };
-                if ui.button(expand_icon).clicked() {
+                // Painter-drawn triangle toggle (no font dependency)
+                if Self::triangle_toggle(ui, node.is_expanded).clicked() {
                     node.is_expanded = !node.is_expanded;
                     
                     // If this is a connection node and not loaded, request expansion
@@ -929,30 +956,30 @@ impl Tabular {
                     models::enums::NodeType::QueryHistItem => "📜",
                     models::enums::NodeType::Connection => "",
                     models::enums::NodeType::DatabasesFolder => "📁",
-                    models::enums::NodeType::TablesFolder => "�",
-                    models::enums::NodeType::ViewsFolder => "�",
+                    models::enums::NodeType::TablesFolder => "📋",
+                    models::enums::NodeType::ViewsFolder => "👁",
                     models::enums::NodeType::StoredProceduresFolder => "⚙️",
                     models::enums::NodeType::UserFunctionsFolder => "🔧",
                     models::enums::NodeType::TriggersFolder => "⚡",
                     models::enums::NodeType::EventsFolder => "📅",
-                    models::enums::NodeType::DBAViewsFolder => "�‍💼",
-                    models::enums::NodeType::UsersFolder => "�",
-                    models::enums::NodeType::PrivilegesFolder => "�",
+                    models::enums::NodeType::DBAViewsFolder => "👨‍💼",
+                    models::enums::NodeType::UsersFolder => "👥",
+                    models::enums::NodeType::PrivilegesFolder => "🔒",
                     models::enums::NodeType::ProcessesFolder => "⚡",
                     models::enums::NodeType::StatusFolder => "📊",
-                    models::enums::NodeType::View => "�",
+                    models::enums::NodeType::View => "👁",
                     models::enums::NodeType::StoredProcedure => "⚙️",
                     models::enums::NodeType::UserFunction => "🔧",
                     models::enums::NodeType::Trigger => "⚡",
                     models::enums::NodeType::Event => "📅",
-                    models::enums::NodeType::MySQLFolder => "�",
-                    models::enums::NodeType::PostgreSQLFolder => "�",
-                    models::enums::NodeType::SQLiteFolder => "�",
-                    models::enums::NodeType::RedisFolder => "�",
-                    models::enums::NodeType::CustomFolder => "�",
-                    models::enums::NodeType::QueryFolder => "�",
-                    models::enums::NodeType::HistoryDateFolder => "�",
-                    models::enums::NodeType::MSSQLFolder => "�",
+                    models::enums::NodeType::MySQLFolder => "🐬",
+                    models::enums::NodeType::PostgreSQLFolder => "🐘",
+                    models::enums::NodeType::SQLiteFolder => "📄",
+                    models::enums::NodeType::RedisFolder => "🔴",
+                    models::enums::NodeType::CustomFolder => "📁",
+                    models::enums::NodeType::QueryFolder => "📂",
+                    models::enums::NodeType::HistoryDateFolder => "📅",
+                    models::enums::NodeType::MSSQLFolder => "🧰",
                 };
                 
                 let label_text = if icon.is_empty() { 
@@ -3443,7 +3470,7 @@ impl Tabular {
                     
                     ui.label(format!("Page {} of {}", self.current_page + 1, self.get_total_pages()));
                     
-                    ui.add_enabled(self.current_page < self.get_total_pages().saturating_sub(1), egui::Button::new("Next ▶"))
+                    ui.add_enabled(self.current_page < self.get_total_pages().saturating_sub(1), egui::Button::new("Next >"))
                         .clicked()
                         .then(|| self.next_page());
                     
