@@ -1082,7 +1082,8 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      .await
               {
                      Ok(pool) => {
-                     let query = "SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+                     // Force text decoding to avoid VARBINARY/BLOB issues on some setups
+                     let query = "SELECT CONVERT(COLUMN_NAME USING utf8mb4) AS COLUMN_NAME, CONVERT(DATA_TYPE USING utf8mb4) AS DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
                      match sqlx::query_as::<_, (String, String)>(query)
                             .bind(&database_name)
                             .bind(&table_name)
@@ -1116,17 +1117,23 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      .await
               {
                      Ok(pool) => {
-                     let query = format!("PRAGMA table_info({})", table_name);
-                     match sqlx::query_as::<_, (i32, String, String, i32, String, i32)>(&query)
-                            .fetch_all(&pool)
-                            .await
-                     {
+                     // Use dynamic row extraction to avoid issues with NULL dflt_value, and quote table name safely
+                     let escaped = table_name.replace("'", "''");
+                     let query = format!("PRAGMA table_info('{}')", escaped);
+                     match sqlx::query(&query).fetch_all(&pool).await {
                             Ok(rows) => {
-                                   let columns: Vec<(String, String)> = rows.into_iter()
-                                   .map(|(_, name, data_type, _, _, _)| (name, data_type))
-                                   .collect();
+                                   use sqlx::Row;
+                                   let mut columns: Vec<(String, String)> = Vec::new();
+                                   for row in rows {
+                                          // Columns in pragma: cid, name, type, notnull, dflt_value, pk
+                                          let name: Option<String> = row.try_get("name").ok();
+                                          let data_type: Option<String> = row.try_get("type").ok();
+                                          if let (Some(n), Some(t)) = (name, data_type) {
+                                                 columns.push((n, t));
+                                          }
+                                   }
                                    Some(columns)
-                            },
+                            }
                             Err(e) => {
                                    debug!("Error querying SQLite columns for table {}: {}", table_name, e);
                                    None
@@ -1153,7 +1160,8 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      .await
               {
                      Ok(pool) => {
-                     let query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ? ORDER BY ordinal_position";
+                     // Use PostgreSQL-style positional parameters ($1, $2, ...)
+                     let query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position";
                      match sqlx::query_as::<_, (String, String)>(query)
                             .bind(&table_name)
                             .fetch_all(&pool)
