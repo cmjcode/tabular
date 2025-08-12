@@ -1040,6 +1040,73 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     ui.label(label_text)
                 };
                 
+                // New: Allow clicking the label to also expand/collapse for expandable nodes
+                if response.clicked() {
+                    // We toggle on label click for expandable/container nodes, but not for Table/View (they open data)
+                    let allow_label_toggle = (has_children
+                        || matches!(node.node_type,
+                            models::enums::NodeType::Connection
+                            | models::enums::NodeType::Database
+                            | models::enums::NodeType::DatabasesFolder
+                            | models::enums::NodeType::TablesFolder
+                            | models::enums::NodeType::ViewsFolder
+                            | models::enums::NodeType::StoredProceduresFolder
+                            | models::enums::NodeType::UserFunctionsFolder
+                            | models::enums::NodeType::TriggersFolder
+                            | models::enums::NodeType::EventsFolder
+                            | models::enums::NodeType::DBAViewsFolder
+                            | models::enums::NodeType::QueryFolder))
+                        && node.node_type != models::enums::NodeType::Table
+                        && node.node_type != models::enums::NodeType::View
+                    ;
+
+                    if allow_label_toggle {
+                        node.is_expanded = !node.is_expanded;
+
+                        // Mirror triangle click behaviors for lazy-loading
+                        if node.node_type == models::enums::NodeType::Connection && !node.is_loaded && node.is_expanded {
+                            if let Some(conn_id) = node.connection_id {
+                                expansion_request = Some(models::structs::ExpansionRequest {
+                                    node_type: models::enums::NodeType::Connection,
+                                    connection_id: conn_id,
+                                    database_name: None,
+                                });
+                                // Also set as active connection when expanding
+                                connection_click_request = Some(conn_id);
+                            }
+                        }
+
+                        if (node.node_type == models::enums::NodeType::DatabasesFolder
+                            || node.node_type == models::enums::NodeType::TablesFolder
+                            || node.node_type == models::enums::NodeType::ViewsFolder
+                            || node.node_type == models::enums::NodeType::StoredProceduresFolder
+                            || node.node_type == models::enums::NodeType::UserFunctionsFolder
+                            || node.node_type == models::enums::NodeType::TriggersFolder
+                            || node.node_type == models::enums::NodeType::EventsFolder)
+                            && !node.is_loaded && node.is_expanded
+                        {
+                            if let Some(conn_id) = node.connection_id {
+                                expansion_request = Some(models::structs::ExpansionRequest {
+                                    node_type: node.node_type.clone(),
+                                    connection_id: conn_id,
+                                    database_name: node.database_name.clone(),
+                                });
+                            }
+                        }
+
+                        // Database node expansion (e.g., Redis keys)
+                        if node.node_type == models::enums::NodeType::Database && !node.is_loaded && node.is_expanded {
+                            if let Some(conn_id) = node.connection_id {
+                                expansion_request = Some(models::structs::ExpansionRequest {
+                                    node_type: models::enums::NodeType::Database,
+                                    connection_id: conn_id,
+                                    database_name: node.database_name.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 // Handle clicks on connection labels to set active connection
                 if node.node_type == models::enums::NodeType::Connection && response.clicked() {
                     if let Some(conn_id) = node.connection_id {
