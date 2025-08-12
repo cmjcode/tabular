@@ -1,7 +1,7 @@
 
 use eframe::{egui, App, Frame};
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use log::{debug, error};
@@ -104,6 +104,11 @@ pub struct Tabular {
     // Table selection tracking
     pub selected_row: Option<usize>,
     pub selected_cell: Option<(usize, usize)>, // (row_index, column_index)
+    // Multi-selection (per page)
+    pub selected_rows: BTreeSet<usize>,
+    pub selected_columns: BTreeSet<usize>,
+    pub last_clicked_row: Option<usize>,
+    pub last_clicked_column: Option<usize>,
     // Column width management for resizable columns
     pub column_widths: Vec<f32>, // Store individual column widths
     pub min_column_width: f32,
@@ -305,6 +310,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             last_cleanup_time: std::time::Instant::now(),
             selected_row: None,
             selected_cell: None,
+            selected_rows: BTreeSet::new(),
+            selected_columns: BTreeSet::new(),
+            last_clicked_row: None,
+            last_clicked_column: None,
             // Column width management
             column_widths: Vec::new(),
             min_column_width: 50.0,
@@ -3339,6 +3348,109 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     fn clear_table_selection(&mut self) {
         self.selected_row = None;
         self.selected_cell = None;
+        self.selected_rows.clear();
+        self.selected_columns.clear();
+        self.last_clicked_row = None;
+        self.last_clicked_column = None;
+    }
+
+    fn handle_row_click(&mut self, row_index: usize, modifiers: egui::Modifiers) {
+        // Treat selection within current page only
+        if modifiers.command { // Cmd/Ctrl toggles
+            if self.selected_rows.contains(&row_index) {
+                self.selected_rows.remove(&row_index);
+            } else {
+                self.selected_rows.insert(row_index);
+            }
+            self.last_clicked_row = Some(row_index);
+        } else if modifiers.shift && self.last_clicked_row.is_some() {
+            let last = self.last_clicked_row.unwrap();
+            let (start, end) = if row_index <= last { (row_index, last) } else { (last, row_index) };
+            for r in start..=end { self.selected_rows.insert(r); }
+        } else {
+            // No modifier: if only this row is selected, toggle it off; otherwise select only this
+            if self.selected_rows.len() == 1 && self.selected_rows.contains(&row_index) {
+                self.selected_rows.clear();
+                self.selected_row = None;
+                self.last_clicked_row = None;
+            } else {
+                self.selected_rows.clear();
+                self.selected_rows.insert(row_index);
+                self.last_clicked_row = Some(row_index);
+            }
+        }
+        // Align single-selection marker with set state
+        self.selected_row = if self.selected_rows.len() == 1 {
+            self.selected_rows.iter().copied().next()
+        } else {
+            None
+        };
+        self.selected_cell = None;
+    }
+
+    fn handle_column_click(&mut self, col_index: usize, modifiers: egui::Modifiers) {
+        if modifiers.command { // Cmd/Ctrl toggles
+            if self.selected_columns.contains(&col_index) {
+                self.selected_columns.remove(&col_index);
+            } else {
+                self.selected_columns.insert(col_index);
+            }
+            self.last_clicked_column = Some(col_index);
+        } else if modifiers.shift && self.last_clicked_column.is_some() {
+            let last = self.last_clicked_column.unwrap();
+            let (start, end) = if col_index <= last { (col_index, last) } else { (last, col_index) };
+            for c in start..=end { self.selected_columns.insert(c); }
+        } else {
+            // No modifier: if only this column is selected, toggle it off; otherwise select only this
+            if self.selected_columns.len() == 1 && self.selected_columns.contains(&col_index) {
+                self.selected_columns.clear();
+                self.last_clicked_column = None;
+            } else {
+                self.selected_columns.clear();
+                self.selected_columns.insert(col_index);
+                self.last_clicked_column = Some(col_index);
+            }
+        }
+        self.selected_cell = None;
+    }
+
+    fn copy_selected_rows_as_csv(&self) -> Option<String> {
+        if self.selected_rows.is_empty() { return None; }
+        let mut lines = Vec::new();
+        for (idx, row) in self.current_table_data.iter().enumerate() {
+            if self.selected_rows.contains(&idx) {
+                let line = row.iter().map(|cell| {
+                    if cell.contains(',') || cell.contains('"') || cell.contains('\n') {
+                        format!("\"{}\"", cell.replace('"', "\"\""))
+                    } else { cell.clone() }
+                }).collect::<Vec<_>>().join(",");
+                lines.push(line);
+            }
+        }
+        Some(lines.join("\n"))
+    }
+
+    fn copy_selected_columns_as_csv(&self) -> Option<String> {
+        if self.selected_columns.is_empty() { return None; }
+        let mut lines = Vec::new();
+        // header first
+        let mut header = Vec::new();
+        for (i, h) in self.current_table_headers.iter().enumerate() {
+            if self.selected_columns.contains(&i) { header.push(h.clone()); }
+        }
+        if !header.is_empty() { lines.push(header.join(",")); }
+        for row in &self.current_table_data {
+            let mut cols = Vec::new();
+            for (i, cell) in row.iter().enumerate() {
+                if self.selected_columns.contains(&i) {
+                    if cell.contains(',') || cell.contains('"') || cell.contains('\n') {
+                        cols.push(format!("\"{}\"", cell.replace('"', "\"\"")));
+                    } else { cols.push(cell.clone()); }
+                }
+            }
+            lines.push(cols.join(","));
+        }
+        Some(lines.join("\n"))
     }
 
 
@@ -3604,6 +3716,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     }
                     
                     ui.separator();
+                    if ui.button("Clear selection").clicked() {
+                        self.selected_rows.clear();
+                        self.selected_columns.clear();
+                        self.selected_row = None;
+                        self.selected_cell = None;
+                        self.last_clicked_row = None;
+                        self.last_clicked_column = None;
+                    }
                     
                     // Quick page jump
                     ui.label("Go to page:");
@@ -3625,6 +3745,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 let current_sort_ascending = self.sort_ascending;
                 let headers = self.current_table_headers.clone();
                 let mut sort_requests = Vec::new();
+                let mut row_sel_requests: Vec<(usize, egui::Modifiers)> = Vec::new();
+                let mut col_sel_requests: Vec<(usize, egui::Modifiers)> = Vec::new();
+                let mut cell_sel_requests: Vec<(usize, usize)> = Vec::new();
+                let mut select_all_rows_request = false;
 
                 // Ensure column widths are initialized
                 if self.column_widths.len() != headers.len() {
@@ -3654,7 +3778,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             .min_col_width(0.0)
                             .max_col_width(f32::INFINITY)
                             .show(ui, |ui| {
-                                // Render No column header first (centered)
+                                // Render No column header first (centered) - clicking here selects all rows
                                 ui.allocate_ui_with_layout(
                                     [60.0, ui.available_height().max(30.0)].into(),
                                     egui::Layout::left_to_right(egui::Align::Center),
@@ -3670,16 +3794,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                         ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
                                         ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
                                         ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
-                                        ui.add(egui::Label::new(
-                                            egui::RichText::new("No")
-                                                .strong()
-                                                .size(14.0)
-                                                .color(if ui.visuals().dark_mode {
-                                                    egui::Color32::from_rgb(220, 220, 255)
-                                                } else {
-                                                    egui::Color32::from_rgb(60, 60, 120)
-                                                })
-                                        ));
+                                        // Draw text
+                                        let text_color = if ui.visuals().dark_mode { egui::Color32::from_rgb(220, 220, 255) } else { egui::Color32::from_rgb(60, 60, 120) };
+                                        ui.painter().text(
+                                            rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            "No",
+                                            egui::FontId::proportional(14.0),
+                                            text_color,
+                                        );
+                                        // Clickable overlay
+                                        let resp = ui.allocate_response(rect.size(), egui::Sense::click());
+                                        if resp.clicked() { select_all_rows_request = true; }
                                     }
                                 );
 
@@ -3765,6 +3891,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     };
                                                     sort_requests.push((col_index, new_ascending));
                                                 }
+                                                // Click on empty header area to multi-select columns
+                                                let header_click_resp = ui.interact(rect, egui::Id::new(("col_hdr", col_index)), egui::Sense::click());
+                                                if header_click_resp.clicked() {
+                                                    let modifiers = ui.input(|i| i.modifiers);
+                                                    col_sel_requests.push((col_index, modifiers));
+                                                }
                                             });
                                             // Add resize handle for all columns except the last one, 
                                             // BUT always add for error columns (even if they are the last/only column)
@@ -3818,7 +3950,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
                                 // Render data rows with row numbers
                                 for (row_index, row) in self.current_table_data.iter().enumerate() {
-                                    let is_selected_row = self.selected_row == Some(row_index);
+                                    let is_selected_row = self.selected_rows.contains(&row_index) || self.selected_row == Some(row_index);
                                     let row_color = if is_selected_row {
                                         if ui.visuals().dark_mode {
                                             egui::Color32::from_rgba_unmultiplied(100, 150, 255, 30)
@@ -3846,16 +3978,26 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                             ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
                                             ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
                                             ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
-                                            let label_response = ui.label((row_index + 1).to_string());
-                                            if label_response.clicked() {
-                                                self.selected_row = Some(row_index);
-                                                self.selected_cell = None;
+                                            // Draw row number text centered
+                                            let text_color = ui.visuals().text_color();
+                                            ui.painter().text(
+                                                rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                (row_index + 1).to_string(),
+                                                egui::FontId::proportional(14.0),
+                                                text_color,
+                                            );
+                                            // Clickable overlay for row selection
+                                            let resp = ui.allocate_response(rect.size(), egui::Sense::click());
+                                            if resp.clicked() {
+                                                let modifiers = ui.input(|i| i.modifiers);
+                                                row_sel_requests.push((row_index, modifiers));
                                             }
-                                            label_response
                                         }
                                     );
                                     for (col_index, cell) in row.iter().enumerate() {
                                         let is_selected_cell = self.selected_cell == Some((row_index, col_index));
+                                        let is_selected_col = self.selected_columns.contains(&col_index);
                                         let column_width = if Some(col_index) == error_column_index {
                                             self.get_column_width(col_index).max(100.0)
                                         } else {
@@ -3867,8 +4009,16 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
                                                 let rect = ui.available_rect_before_wrap();
-                                                if row_color != egui::Color32::TRANSPARENT {
+                                                if row_color != egui::Color32::TRANSPARENT || is_selected_col {
                                                     ui.painter().rect_filled(rect, 3.0, row_color);
+                                                    if is_selected_col {
+                                                        let overlay = if ui.visuals().dark_mode {
+                                                            egui::Color32::from_rgba_unmultiplied(100, 255, 150, 20)
+                                                        } else {
+                                                            egui::Color32::from_rgba_unmultiplied(100, 200, 150, 40)
+                                                        };
+                                                        ui.painter().rect_filled(rect, 0.0, overlay);
+                                                    }
                                                 }
                                                 let border_color = if ui.visuals().dark_mode {
                                                     egui::Color32::from_gray(60)
@@ -3896,8 +4046,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                 };
                                                 let cell_response = ui.allocate_response(rect.size(), egui::Sense::click());
                                                 if cell_response.clicked() {
-                                                    self.selected_row = Some(row_index);
-                                                    self.selected_cell = Some((row_index, col_index));
+                                                    cell_sel_requests.push((row_index, col_index));
                                                 }
                                                 let hover_response = if cell.chars().count() > max_chars || !cell.is_empty() {
                                                     cell_response.on_hover_text(cell)
@@ -3925,6 +4074,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     ui.vertical(|ui| {
                                                         if ui.button("📋 Copy Cell Value").clicked() {
                                                             ui.ctx().copy_text(cell.clone());
+                                                            ui.close_menu();
+                                                        }
+                                                        if !self.selected_rows.is_empty() && ui.button("📄 Copy Selected Rows as CSV").clicked() {
+                                                            if let Some(csv) = self.copy_selected_rows_as_csv() { ui.ctx().copy_text(csv); }
+                                                            ui.close_menu();
+                                                        }
+                                                        if !self.selected_columns.is_empty() && ui.button("📄 Copy Selected Columns as CSV").clicked() {
+                                                            if let Some(csv) = self.copy_selected_columns_as_csv() { ui.ctx().copy_text(csv); }
                                                             ui.close_menu();
                                                         }
                                                         if let Some(selected_row_idx) = self.selected_row {
@@ -3973,9 +4130,33 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                     export::export_to_xlsx(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
                                     ui.close_menu();
                                 }
+                                ui.separator();
+                                if !self.selected_rows.is_empty() && ui.button("📋 Copy Selected Rows as CSV").clicked() {
+                                    if let Some(csv) = self.copy_selected_rows_as_csv() { ui.ctx().copy_text(csv); }
+                                    ui.close_menu();
+                                }
+                                if !self.selected_columns.is_empty() && ui.button("📋 Copy Selected Columns as CSV").clicked() {
+                                    if let Some(csv) = self.copy_selected_columns_as_csv() { ui.ctx().copy_text(csv); }
+                                    ui.close_menu();
+                                }
                             });
                         });
                     });
+                // Apply deferred selection changes after UI borrow ends
+                if select_all_rows_request {
+                    if self.selected_rows.len() == self.current_table_data.len() {
+                        self.selected_rows.clear();
+                    } else {
+                        self.selected_rows.clear();
+                        for r in 0..self.current_table_data.len() { self.selected_rows.insert(r); }
+                    }
+                }
+                for (row_idx, modifiers) in row_sel_requests { self.handle_row_click(row_idx, modifiers); }
+                for (col_idx, modifiers) in col_sel_requests { self.handle_column_click(col_idx, modifiers); }
+                if let Some((r, c)) = cell_sel_requests.last().copied() {
+                    self.selected_row = Some(r);
+                    self.selected_cell = Some((r, c));
+                }
                 for (column_index, ascending) in sort_requests {
                     self.sort_table_data(column_index, ascending);
                 }
@@ -4128,7 +4309,7 @@ impl App for Tabular {
                 }
             }
             
-            // Escape to close command palette or theme selector  
+            // Escape to close overlays or clear table selections
             if i.key_pressed(egui::Key::Escape) {
                 if self.show_theme_selector {
                     self.show_theme_selector = false;
@@ -4136,6 +4317,14 @@ impl App for Tabular {
                     self.show_command_palette = false;
                     self.command_palette_input.clear();
                     self.command_palette_selected_index = 0;
+                } else {
+                    // Clear selections in table
+                    self.selected_rows.clear();
+                    self.selected_columns.clear();
+                    self.selected_row = None;
+                    self.selected_cell = None;
+                    self.last_clicked_row = None;
+                    self.last_clicked_column = None;
                 }
             }
         });

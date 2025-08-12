@@ -9,9 +9,7 @@ use crate::{connection, models, window_egui};
 
 // Helper function for final fallback when all type-specific conversions fail
 fn get_value_as_string_fallback(row: &sqlx::mysql::MySqlRow, column_name: &str, type_name: &str) -> String {
-       
-       debug!("Fallback for column '{}' with type '{}'", column_name, type_name);
-       
+              
        // Simple fallback: try string conversion with both column name and index
        // Try column index instead of name (more reliable)
        let column_index = match row.columns().iter().position(|col| col.name() == column_name) {
