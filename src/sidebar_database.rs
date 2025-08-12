@@ -4,7 +4,109 @@ use eframe::egui;
 use log::{debug, error, info, warn};
 use sqlx::SqlitePool;
 
-use crate::{connection, directory, models, sidebar_history, window_egui};
+use crate::{connection, directory, models, modules, sidebar_history, window_egui};
+
+// Helper to parse an editable connection URL and sync it back to fields
+#[derive(Debug, Clone)]
+struct ParsedUrl {
+    db_type: models::enums::DatabaseType,
+    host: String,
+    port: String,
+    username: String,
+    password: String,
+    database: String,
+}
+
+fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
+    let url = input.trim();
+    if url.is_empty() { return None; }
+
+    // Handle sqlite: special cases (sqlite:path or sqlite://path)
+    if url.starts_with("sqlite:") {
+        let rest = &url["sqlite:".len()..];
+        let path = if rest.starts_with("//") { &rest[2..] } else { rest };
+        return Some(ParsedUrl {
+            db_type: models::enums::DatabaseType::SQLite,
+            host: path.to_string(),
+            port: String::new(),
+            username: String::new(),
+            password: String::new(),
+            database: String::new(),
+        });
+    }
+
+    // General scheme:// parser
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (s.to_lowercase(), r),
+        None => {
+            // Accept mssql:/mysql:/postgresql:/redis: without // if user types quickly
+            if let Some((s, r)) = url.split_once(':') { (s.to_lowercase(), r) } else { return None }
+        }
+    };
+
+    let db_type = match scheme.as_str() {
+        "mysql" => models::enums::DatabaseType::MySQL,
+        "postgres" | "postgresql" => models::enums::DatabaseType::PostgreSQL,
+        "redis" => models::enums::DatabaseType::Redis,
+        "mssql" | "sqlserver" => models::enums::DatabaseType::MSSQL,
+        _ => return None,
+    };
+
+    let mut user = String::new();
+    let mut pass = String::new();
+    let mut hostport_and_path = rest;
+
+    // Extract auth if present: use last '@' to avoid '@' in password (should be %40 anyway)
+    if let Some(at_idx) = hostport_and_path.rfind('@') {
+        let (auth, after) = hostport_and_path.split_at(at_idx);
+        hostport_and_path = &after[1..]; // skip '@'
+        if let Some((u, p)) = auth.split_once(':') {
+            user = modules::url_decode(u);
+            pass = modules::url_decode(p);
+        } else {
+            user = modules::url_decode(auth);
+        }
+    }
+
+    // Split host:port and optional /database
+    let (hostport, path) = match hostport_and_path.split_once('/') {
+        Some((hp, p)) => (hp, Some(p)),
+        None => (hostport_and_path, None),
+    };
+
+    let mut host = String::new();
+    let mut port = String::new();
+
+    if hostport.starts_with('[') {
+        // IPv6 literal [::1]:port
+        if let Some(end) = hostport.find(']') {
+            host = hostport[1..end].to_string();
+            if let Some(rem) = hostport[end + 1..].strip_prefix(':') { port = rem.to_string(); }
+        } else {
+            host = hostport.to_string();
+        }
+    } else if let Some((h, p)) = hostport.rsplit_once(':') {
+        host = h.to_string();
+        port = p.to_string();
+    } else {
+        host = hostport.to_string();
+    }
+
+    let database = path.unwrap_or("").trim_matches('/').to_string();
+
+    // Defaults for ports if missing
+    if port.is_empty() {
+        port = match db_type {
+            models::enums::DatabaseType::MySQL => "3306".into(),
+            models::enums::DatabaseType::PostgreSQL => "5432".into(),
+            models::enums::DatabaseType::Redis => "6379".into(),
+            models::enums::DatabaseType::MSSQL => "1433".into(),
+            models::enums::DatabaseType::SQLite => String::new(),
+        };
+    }
+
+    Some(ParsedUrl { db_type, host, port, username: user, password: pass, database })
+}
 
 
 pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context, is_edit_mode: bool) {
@@ -24,9 +126,10 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
        tabular.new_connection.clone()
        };
        
-       egui::Window::new(title)
-       .resizable(false)
-       .default_width(600.0)
+    egui::Window::new(title)
+    .resizable(false)
+    .default_width(480.0)
+    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
        .collapsible(false)
        .open(&mut open)
        .show(ctx, |ui| {
@@ -81,6 +184,56 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                      let mut folder_text = connection_data.folder.as_ref().unwrap_or(&String::new()).clone();
                      ui.text_edit_singleline(&mut folder_text);
                      connection_data.folder = if folder_text.trim().is_empty() { None } else { Some(folder_text.trim().to_string()) };
+                     ui.end_row();
+
+                     // Build and edit Connection URL inline to keep alignment with other fields
+                     let full_url = {
+                         let host = connection_data.host.trim();
+                         let port = connection_data.port.trim();
+                         let user = connection_data.username.trim();
+                         let pass = connection_data.password.clone();
+                         let db = connection_data.database.trim();
+
+                         match connection_data.connection_type {
+                             models::enums::DatabaseType::MySQL => {
+                                 let enc_user = modules::url_encode(user);
+                                 let enc_pass = modules::url_encode(&pass);
+                                 let path = if db.is_empty() { String::new() } else { format!("/{}", db) };
+                                 let auth = if user.is_empty() { String::new() } else if pass.is_empty() { format!("{}@", enc_user) } else { format!("{}:{}@", enc_user, enc_pass) };
+                                 format!("mysql://{}{}:{}{}", auth, host, port, path)
+                             }
+                             models::enums::DatabaseType::PostgreSQL => {
+                                 let path = if db.is_empty() { String::new() } else { format!("/{}", db) };
+                                 let auth = if user.is_empty() { String::new() } else if pass.is_empty() { format!("{}@", user) } else { format!("{}:{}@", user, pass) };
+                                 format!("postgresql://{}{}:{}{}", auth, host, port, path)
+                             }
+                             models::enums::DatabaseType::SQLite => {
+                                 format!("sqlite:{}", host)
+                             }
+                             models::enums::DatabaseType::Redis => {
+                                 if pass.is_empty() && user.is_empty() { format!("redis://{}:{}", host, port) } else if pass.is_empty() { format!("redis://{}@{}:{}", user, host, port) } else { format!("redis://{}:{}@{}:{}", user, pass, host, port) }
+                             }
+                             models::enums::DatabaseType::MSSQL => {
+                                 let path = if db.is_empty() { String::new() } else { format!("/{}", db) };
+                                 let auth = if user.is_empty() { String::new() } else if pass.is_empty() { format!("{}@", user) } else { format!("{}:{}@", user, pass) };
+                                 format!("mssql://{}{}:{}{}", auth, host, port, path)
+                             }
+                         }
+                     };
+
+                     ui.label("Connection URL:");
+                     let mut url_text = full_url.clone();
+                     let resp = ui.text_edit_singleline(&mut url_text);
+                     if resp.changed() {
+                         if let Some(parsed) = parse_connection_url(&url_text) {
+                             connection_data.connection_type = parsed.db_type;
+                             connection_data.host = parsed.host;
+                             connection_data.port = parsed.port;
+                             connection_data.username = parsed.username;
+                             connection_data.password = parsed.password;
+                             connection_data.database = parsed.database;
+                         }
+                     }
                      ui.end_row();
                      });
 
