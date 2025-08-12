@@ -1,5 +1,5 @@
 use crate::{
-       connection, driver_mysql, driver_postgres, driver_redis, driver_sqlite, driver_mssql, helpers, models, modules, window_egui::{self, Tabular}
+       connection, driver_mysql, driver_postgres, driver_redis, driver_sqlite, driver_mssql, models, modules, window_egui::{self, Tabular}
 };
 use futures_util::TryStreamExt; // for MSSQL try_next
 use eframe::egui;
@@ -698,11 +698,9 @@ pub(crate) async fn get_or_create_connection_pool(tabular: &mut Tabular, connect
                      encoded_username, encoded_password, connection.host, connection.port, connection.database
               );
 
-              // ping the host first
-              if !helpers::ping_host(&connection.host) {
-                     debug!("❌ Cannot ping host: {}", connection.host);
-                     return None;
-              }
+              // Don't block on ICMP ping (often disabled on Windows firewalls). Attempt direct connect.
+              // If you still want diagnostics, you can log ping result without failing the flow:
+              // let _ = helpers::ping_host(&connection.host);
               
               // Configure MySQL pool with improved settings for stability
               let pool_result = MySqlPoolOptions::new()
@@ -1539,12 +1537,7 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
 
 
 pub(crate) fn test_database_connection(connection: &models::structs::ConnectionConfig) -> (bool, String) {
-
-        // ping the host first
-        if !helpers::ping_host(&connection.host) {
-            return (false, format!("Failed to ping host: {}", connection.host));
-        }
-
+       // Do not require ICMP ping; many environments (esp. Windows) block it. Try actual DB connect.
         let rt = tokio::runtime::Runtime::new().unwrap();
         
         rt.block_on(async {

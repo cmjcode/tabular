@@ -1,4 +1,6 @@
 
+use log::debug;
+
 pub(crate) fn ping_host(host: &str) -> bool {
     if host.contains("/data") {
         // check if file is exists from path in string host
