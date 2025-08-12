@@ -1376,7 +1376,40 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
                      tcp.set_nodelay(true).map_err(|e| e.to_string())?;
                      let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
-                     let query = format!("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{}' ORDER BY ORDINAL_POSITION", table.replace("'", "''"));
+                     // Parse possible qualified MSSQL names like [schema].[table] or schema.table
+                     let parse_qualified = |name: &str| -> (Option<String>, String) {
+                            // Handle [schema].[table] or [schema].[table].[extra]
+                            if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
+                                   let trimmed = name.trim_matches(|c| c == '[' || c == ']');
+                                   let parts: Vec<&str> = trimmed.split("].[" ).collect();
+                                   if parts.len() >= 2 {
+                                          return (Some(parts[0].to_string()), parts[1].to_string());
+                                   }
+                            }
+                            // Handle schema.table
+                            if let Some((schema, tbl)) = name.split_once('.') {
+                                   return (
+                                          Some(schema.trim_matches(|c| c == '[' || c == ']').to_string()),
+                                          tbl.trim_matches(|c| c == '[' || c == ']').to_string()
+                                   );
+                            }
+                            // Only table
+                            (None, name.trim_matches(|c| c == '[' || c == ']').to_string())
+                     };
+
+                     let (schema_opt, table_only) = parse_qualified(&table);
+
+                     // Build INFORMATION_SCHEMA query with optional schema filter
+                     let table_escaped = table_only.replace("'", "''");
+                     let mut query = format!(
+                            "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{}'",
+                            table_escaped
+                     );
+                     if let Some(schema) = schema_opt {
+                            let schema_escaped = schema.replace("'", "''");
+                            query.push_str(&format!(" AND TABLE_SCHEMA = '{}'", schema_escaped));
+                     }
+                     query.push_str(" ORDER BY ORDINAL_POSITION");
                      let mut stream = client.simple_query(query).await.map_err(|e| e.to_string())?;
                      let mut cols = Vec::new();
                      use futures_util::TryStreamExt;
