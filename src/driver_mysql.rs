@@ -348,65 +348,72 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
 
 pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache_pool: &SqlitePool) -> bool {
 
-       // Fetch databases
-       if let Ok(rows) = sqlx::query("SHOW DATABASES")
-       .fetch_all(pool)
-       .await 
-       {
-       for row in rows {
-              if let Ok(db_name) = row.try_get::<String, _>(0) {
-              // Cache database
-              let _ = sqlx::query("INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)")
-                     .bind(connection_id)
-                     .bind(&db_name)
-                     .execute(cache_pool)
-                     .await;
+    // Fetch databases via INFORMATION_SCHEMA and skip system schemas
+    let db_rows_res = sqlx::query_as::<_, (String,)>(
+        "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA"
+    ).fetch_all(pool).await;
 
-              // Fetch tables for this database
-              let query = format!("SHOW TABLES FROM `{}`", db_name);
-              if let Ok(table_rows) = sqlx::query(&query).fetch_all(pool).await {
-                     for table_row in table_rows {
-                     if let Ok(table_name) = table_row.try_get::<String, _>(0) {
-                            // Cache table
-                            let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name) VALUES (?, ?, ?)")
-                                   .bind(connection_id)
-                                   .bind(&db_name)
-                                   .bind(&table_name)
-                                   .execute(cache_pool)
-                                   .await;
+    let db_rows = match db_rows_res { Ok(r) => r, Err(e) => { debug!("MySQL fetch_mysql_data: failed to list schemata: {}", e); return false; } };
 
-                            // Fetch columns for this table
-                            let col_query = format!("DESCRIBE `{}`.`{}`", db_name, table_name);
-                            if let Ok(col_rows) = sqlx::query(&col_query).fetch_all(pool).await {
-                                   for col_row in col_rows {
-                                   if let (Ok(col_name), Ok(col_type)) = (
-                                          col_row.try_get::<String, _>(0),
-                                          col_row.try_get::<String, _>(1)
-                                   ) {
-                                          // Cache column
-                                          let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
-                                          .bind(connection_id)
-                                          .bind(&db_name)
-                                          .bind(&table_name)
-                                          .bind(&col_name)
-                                          .bind(&col_type)
-                                          .bind(0) // MySQL DESCRIBE doesn't provide ordinal position easily
-                                          .execute(cache_pool)
-                                          .await;
-                                   }
-                                   }
-                            }
-                     }
-                     }
-              }
-              }
-       }
-       true
-       } else {
-       false
-       }
+    for (db_name,) in db_rows.into_iter() {
+        if ["information_schema", "performance_schema", "mysql", "sys"].contains(&db_name.as_str()) { continue; }
+
+        // Cache database
+        let _ = sqlx::query("INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)"
+        )
+        .bind(connection_id)
+        .bind(&db_name)
+        .execute(cache_pool)
+        .await;
+
+        // Fetch base tables using INFORMATION_SCHEMA
+        let tables_res = sqlx::query_as::<_, (String,)>(
+            "SELECT CONVERT(TABLE_NAME USING utf8mb4) AS TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+        )
+        .bind(&db_name)
+        .fetch_all(pool)
+        .await;
+
+        let tables = match tables_res { Ok(r) => r, Err(e) => { debug!("MySQL fetch_mysql_data: failed to list tables in {}: {}", db_name, e); continue; } };
+
+        for (table_name,) in tables.into_iter() {
+            // Cache table
+            let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name) VALUES (?, ?, ?)"
+            )
+            .bind(connection_id)
+            .bind(&db_name)
+            .bind(&table_name)
+            .execute(cache_pool)
+            .await;
+
+            // Fetch columns using INFORMATION_SCHEMA
+            let cols_res = sqlx::query_as::<_, (String, String, i64)>(
+                "SELECT CONVERT(COLUMN_NAME USING utf8mb4) AS COLUMN_NAME, CONVERT(DATA_TYPE USING utf8mb4) AS DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
+            )
+            .bind(&db_name)
+            .bind(&table_name)
+            .fetch_all(pool)
+            .await;
+
+            if let Ok(cols) = cols_res {
+                for (col_name, col_type, ord) in cols {
+                    let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)"
+                    )
+                    .bind(connection_id)
+                    .bind(&db_name)
+                    .bind(&table_name)
+                    .bind(&col_name)
+                    .bind(&col_type)
+                    .bind(ord)
+                    .execute(cache_pool)
+                    .await;
+                }
+            }
+        }
+    }
+
+    true
 }
-
 
 pub(crate) fn fetch_tables_from_mysql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, table_type: &str) -> Option<Vec<String>> {
        
@@ -419,13 +426,16 @@ pub(crate) fn fetch_tables_from_mysql_connection(tabular: &mut window_egui::Tabu
        
        match pool {
               models::enums::DatabasePool::MySQL(mysql_pool) => {
-              let query = match table_type {
-                     "table" => format!("SHOW TABLES FROM `{}`", database_name),
-                     "view" => format!("SELECT table_name FROM information_schema.views WHERE table_schema = '{}'", database_name),
-                     "procedure" => format!("SELECT routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'PROCEDURE'", database_name),
-                     "function" => format!("SELECT routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'FUNCTION'", database_name),
-                     "trigger" => format!("SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = '{}'", database_name),
-                     "event" => format!("SELECT event_name FROM information_schema.events WHERE event_schema = '{}'", database_name),
+        let query = match table_type {
+            "table" => format!(
+                "SELECT CONVERT(TABLE_NAME USING utf8mb4) AS TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{}' AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME",
+                database_name.replace("'", "''")
+            ),
+                     "view" => format!("SELECT CONVERT(table_name USING utf8mb4) AS table_name FROM information_schema.views WHERE table_schema = '{}'", database_name),
+                     "procedure" => format!("SELECT CONVERT(routine_name USING utf8mb4) AS routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'PROCEDURE'", database_name),
+                     "function" => format!("SELECT CONVERT(routine_name USING utf8mb4) AS routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'FUNCTION'", database_name),
+                     "trigger" => format!("SELECT CONVERT(trigger_name USING utf8mb4) AS trigger_name FROM information_schema.triggers WHERE trigger_schema = '{}'", database_name),
+                     "event" => format!("SELECT CONVERT(event_name USING utf8mb4) AS event_name FROM information_schema.events WHERE event_schema = '{}'", database_name),
                      _ => {
                      debug!("Unsupported table type: {}", table_type);
                      return None;

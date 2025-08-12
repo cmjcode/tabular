@@ -4,6 +4,8 @@ use crate::{
 use futures_util::TryStreamExt; // for MSSQL try_next
 use eframe::egui;
 use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions, Column, Row, SqlitePool};
+use sqlx::mysql::MySqlConnection;
+use sqlx::Connection; // for MySqlConnection::connect
 use std::sync::Arc;
 use redis::{Client, aio::ConnectionManager};
 use log::{debug};
@@ -157,7 +159,7 @@ pub(crate) fn execute_query_with_connection(tabular: &mut Tabular, connection_id
                  .and_then(|t| t.database_name.clone())
                  .filter(|s| !s.is_empty());
 
-          // Auto-prepend USE for MSSQL (and optionally MySQL later) if not already present
+          // Auto-prepend USE for MSSQL/MySQL if not already present
           let mut final_query = query.clone();
           if let Some(db_name) = selected_db {
                  match connection.connection_type {
@@ -165,6 +167,12 @@ pub(crate) fn execute_query_with_connection(tabular: &mut Tabular, connection_id
                                let upper = final_query.to_uppercase();
                                if !upper.starts_with("USE ") {
                                       final_query = format!("USE [{}];\n{}", db_name, final_query);
+                               }
+                        }
+                        models::enums::DatabaseType::MySQL => {
+                               let upper = final_query.to_uppercase();
+                               if !upper.starts_with("USE ") {
+                                      final_query = format!("USE `{}`;\n{}", db_name, final_query);
                                }
                         }
                         _ => {}
@@ -178,502 +186,314 @@ pub(crate) fn execute_query_with_connection(tabular: &mut Tabular, connection_id
        }
 }
 
-pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64, _connection: &models::structs::ConnectionConfig, query: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-       debug!("Executing query synchronously: {}", query);
-       
-       // Use the shared runtime from tabular instead of creating a new one
-       let runtime = match &tabular.runtime {
-           Some(rt) => rt.clone(),
-           None => {
-               debug!("No runtime available, creating temporary one");
-               match tokio::runtime::Runtime::new() {
-                   Ok(rt) => Arc::new(rt),
-                   Err(e) => {
-                       debug!("Failed to create runtime: {}", e);
-                       return None;
-                   }
-               }
-           }
-       };
-       
-       runtime.block_on(async {
-       match get_or_create_connection_pool(tabular, connection_id).await {
-              Some(pool) => {
-              match pool {
-                     models::enums::DatabasePool::MySQL(mut mysql_pool) => {
-                     debug!("Executing MySQL query: {}", query);
-                     
-                     // Split query by semicolons to handle multi-statement queries
-                     let statements: Vec<&str> = query.split(';')
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                     
-                     debug!("Found {} SQL statements to execute", statements.len());
-                     
-                     let mut final_headers = Vec::new();
-                     let mut final_data = Vec::new();
-                     
-                     // Try query with retry mechanism
-                     let mut attempts = 0;
-                     let max_attempts = 3;
-                     
-                     while attempts < max_attempts {
-                            attempts += 1;
-                            debug!("Query attempt {} of {}", attempts, max_attempts);
-                            
-                            let mut execution_success = true;
-                            let mut error_message = String::new();
-                            
-                            // Execute each statement separately
-                            for (i, statement) in statements.iter().enumerate() {
-                                   debug!("Executing statement {}: {}", i + 1, statement);
-                                   
-                                   // Check if this is a USE statement
-                                   let statement_upper = statement.trim().to_uppercase();
-                                   if statement_upper.starts_with("USE") {
-                                          // For USE statements, skip execution as they're not needed with connection pools
-                                          // The database context is already set in the connection string
-                                          debug!("Skipping USE statement as database context is handled by connection pool");
-                                          continue;
-                                   }
-                                   
-                                   // Execute other statements normally
-                                   match sqlx::query(statement).fetch_all(mysql_pool.as_ref()).await {
-                                          Ok(rows) => {
-                                          debug!("Statement {} executed successfully, {} rows returned", i + 1, rows.len());
-                                          
-                                          // For the last statement that returns data, store the results
-                                          if !rows.is_empty() && i == statements.len() - 1 {
-                                                 // Get column headers
-                                                 final_headers = rows[0].columns().iter()
-                                                        .map(|col| col.name().to_string())
-                                                        .collect();
-                                                 
-                                                 // Convert rows to table data
-                                                 final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
-                                          }
-                                          },
-                                          Err(e) => {
-                                          let error_msg = e.to_string();
-                                          debug!("Statement {} failed: {}", i + 1, error_msg);
-                                          execution_success = false;
-                                          error_message = error_msg;
-                                          break;
-                                          }
-                                   }
-                            }
-                            
-                            if execution_success {
-                                   debug!("All statements executed successfully: {} headers, {} rows", final_headers.len(), final_data.len());
-                                   return Some((final_headers, final_data));
-                            } else {
-                                   debug!("MySQL query failed on attempt {}: {}", attempts, error_message);
-                                   
-                                   // If it's a connection timeout/pool error and not the last attempt
-                                   if (error_message.contains("timed out") || error_message.contains("pool")) && attempts < max_attempts {
-                                          debug!("Removing cached pool and retrying...");
-                                          tabular.connection_pools.remove(&connection_id);
-                                          
-                                          // Try to recreate the pool for next attempt
-                                          if let Some(models::enums::DatabasePool::MySQL(new_mysql_pool)) = get_or_create_connection_pool(tabular, connection_id).await {
-                                                 mysql_pool = new_mysql_pool;
-                                                 continue;
-                                          }
-                                   }
-                                   
-                                   // If this is the last attempt, return error
-                                   if attempts >= max_attempts {
-                                          return Some((
-                                                 vec!["Error".to_string()],
-                                                 vec![vec![format!("Query error: {}", error_message)]]
-                                          ));
-                                   }
-                            }
-                     }
-                     
-                     // Fallback return if something goes wrong
-                     Some((
-                            vec!["Error".to_string()],
-                            vec![vec!["Failed to execute query after multiple attempts".to_string()]]
-                     ))
-                     },
-                     models::enums::DatabasePool::PostgreSQL(pg_pool) => {
-                     debug!("Executing PostgreSQL query: {}", query);
-                     
-                     // Split query by semicolons to handle multi-statement queries
-                     let statements: Vec<&str> = query.split(';')
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                     
-                     debug!("Found {} SQL statements to execute", statements.len());
-                     
-                     let mut final_headers = Vec::new();
-                     let mut final_data = Vec::new();
-                     
-                     // Execute each statement separately
-                     for (i, statement) in statements.iter().enumerate() {
-                            debug!("Executing PostgreSQL statement {}: {}", i + 1, statement);
-                            
-                            match sqlx::query(statement).fetch_all(pg_pool.as_ref()).await {
-                                   Ok(rows) => {
-                                   debug!("Statement {} executed successfully, {} rows returned", i + 1, rows.len());
-                                   
-                                   // For the last statement that returns data, store the results
-                                   if !rows.is_empty() && i == statements.len() - 1 {
-                                          final_headers = rows[0].columns().iter()
-                                                 .map(|col| col.name().to_string())
-                                                 .collect();
-                                          
-                                          final_data = rows.iter().map(|row| {
-                                                 (0..row.len()).map(|j| {
-                                                        match row.try_get::<Option<String>, _>(j) {
-                                                        Ok(Some(value)) => value,
-                                                        Ok(None) => "NULL".to_string(),
-                                                        Err(_) => "Error".to_string(),
-                                                        }
-                                                 }).collect()
-                                          }).collect();
-                                   }
-                                   },
-                                   Err(e) => {
-                                   debug!("PostgreSQL statement {} failed: {}", i + 1, e);
-                                   return Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec![format!("Query error: {}", e)]]
-                                   ));
-                                   }
-                            }
-                     }
-                     
-                     Some((final_headers, final_data))
-                     },
-                     models::enums::DatabasePool::SQLite(sqlite_pool) => {
-                     debug!("Executing SQLite query: {}", query);
-                     
-                     // Split query by semicolons to handle multi-statement queries
-                     let statements: Vec<&str> = query.split(';')
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                     
-                     debug!("Found {} SQL statements to execute", statements.len());
-                     
-                     let mut final_headers = Vec::new();
-                     let mut final_data = Vec::new();
-                     
-                     // Execute each statement separately
-                     for (i, statement) in statements.iter().enumerate() {
-                            debug!("Executing SQLite statement {}: {}", i + 1, statement);
-                            
-                            match sqlx::query(statement).fetch_all(sqlite_pool.as_ref()).await {
-                                   Ok(rows) => {
-                                   debug!("Statement {} executed successfully, {} rows returned", i + 1, rows.len());
-                                   
-                                   // For the last statement that returns data, store the results
-                                   if !rows.is_empty() && i == statements.len() - 1 {
-                                          final_headers = rows[0].columns().iter()
-                                                 .map(|col| col.name().to_string())
-                                                 .collect();
-                                          
-                                          // Convert SQLite rows to table data with proper type handling
-                                          final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
-                                   }
-                                   },
-                                   Err(e) => {
-                                   debug!("SQLite statement {} failed: {}", i + 1, e);
-                                   return Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec![format!("Query error: {}", e)]]
-                                   ));
-                                   }
-                            }
-                     }
-                     
-                     debug!("All SQLite statements executed successfully: {} headers, {} rows", final_headers.len(), final_data.len());
-                     Some((final_headers, final_data))
-                     },
-                     models::enums::DatabasePool::Redis(redis_manager) => {
-                     debug!("Executing Redis command: {}", query);
-                     
-                     // For Redis, we need to handle commands differently
-                     // Redis doesn't have SQL queries, so we'll treat the query as a Redis command
-                     let mut connection = redis_manager.as_ref().clone();
-                     use redis::AsyncCommands;
-                     
-                     // Parse simple Redis commands
-                     let parts: Vec<&str> = query.split_whitespace().collect();
-                     if parts.is_empty() {
-                            return Some((
-                                   vec!["Error".to_string()],
-                                   vec![vec!["Empty command".to_string()]]
-                            ));
-                     }
-                     
-                     match parts[0].to_uppercase().as_str() {
-                            "GET" => {
-                                   if parts.len() != 2 {
-                                   return Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec!["GET requires exactly one key".to_string()]]
-                                   ));
-                                   }
-                                   match connection.get::<&str, Option<String>>(parts[1]).await {
-                                   Ok(Some(value)) => {
-                                          Some((
-                                          vec!["Key".to_string(), "Value".to_string()],
-                                          vec![vec![parts[1].to_string(), value]]
-                                          ))
-                                   },
-                                   Ok(None) => {
-                                          Some((
-                                          vec!["Key".to_string(), "Value".to_string()],
-                                          vec![vec![parts[1].to_string(), "NULL".to_string()]]
-                                          ))
-                                   },
-                                   Err(e) => {
-                                          Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec![format!("Redis GET error: {}", e)]]
-                                          ))
-                                   }
-                                   }
-                            },
-                            "KEYS" => {
-                                   if parts.len() != 2 {
-                                   return Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec!["KEYS requires exactly one pattern".to_string()]]
-                                   ));
-                                   }
-                                   match connection.keys::<&str, Vec<String>>(parts[1]).await {
-                                   Ok(keys) => {
-                                          let table_data: Vec<Vec<String>> = keys.into_iter()
-                                          .map(|key| vec![key])
-                                          .collect();
-                                          Some((
-                                          vec!["Key".to_string()],
-                                          table_data
-                                          ))
-                                   },
-                                   Err(e) => {
-                                          Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec![format!("Redis KEYS error: {}", e)]]
-                                          ))
-                                   }
-                                   }
-                            },
-                            "SCAN" => {
-                                   // SCAN cursor [MATCH pattern] [COUNT count]
-                                   // Parse SCAN command arguments
-                                   if parts.len() < 2 {
-                                   return Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec!["SCAN requires cursor parameter".to_string()]]
-                                   ));
-                                   }
-                                   
-                                   let cursor = parts[1];
-                                   let mut match_pattern = "*"; // default pattern
-                                   let mut count = 10; // default count
-                                   
-                                   // Parse optional MATCH and COUNT parameters
-                                   let mut i = 2;
-                                   while i < parts.len() {
-                                   match parts[i].to_uppercase().as_str() {
-                                          "MATCH" => {
-                                          if i + 1 < parts.len() {
-                                                 match_pattern = parts[i + 1];
-                                                 i += 2;
-                                          } else {
-                                                 return Some((
-                                                 vec!["Error".to_string()],
-                                                 vec![vec!["MATCH requires a pattern".to_string()]]
-                                                 ));
-                                          }
-                                          },
-                                          "COUNT" => {
-                                          if i + 1 < parts.len() {
-                                                 if let Ok(c) = parts[i + 1].parse::<i64>() {
-                                                 count = c;
-                                                 i += 2;
-                                                 } else {
-                                                 return Some((
-                                                        vec!["Error".to_string()],
-                                                        vec![vec!["COUNT must be a number".to_string()]]
-                                                 ));
-                                                 }
-                                          } else {
-                                                 return Some((
-                                                 vec!["Error".to_string()],
-                                                 vec![vec!["COUNT requires a number".to_string()]]
-                                                 ));
-                                          }
-                                          },
-                                          _ => {
-                                          return Some((
-                                                 vec!["Error".to_string()],
-                                                 vec![vec![format!("Unknown SCAN parameter: {}", parts[i])]]
-                                          ));
-                                          }
-                                   }
-                                   }
-                                   
-                                   // Execute SCAN command using redis::cmd
-                                   let mut cmd = redis::cmd("SCAN");
-                                   cmd.arg(cursor);
-                                   if match_pattern != "*" {
-                                   cmd.arg("MATCH").arg(match_pattern);
-                                   }
-                                   cmd.arg("COUNT").arg(count);
-                                   
-                                   match cmd.query_async::<_, (String, Vec<String>)>(&mut connection).await {
-                                   Ok((next_cursor, keys)) => {
-                                          let mut table_data = Vec::new();
-                                          
-                                          if keys.is_empty() {
-                                          // No keys found, provide helpful information
-                                          table_data.push(vec!["Info".to_string(), format!("No keys found matching pattern: {}", match_pattern)]);
-                                          table_data.push(vec!["Cursor".to_string(), next_cursor.clone()]);
-                                          table_data.push(vec!["Suggestion".to_string(), "Try different pattern or use 'SCAN 0 COUNT 100' to see all keys".to_string()]);
-                                          
-                                          // If this was a pattern search and found nothing, try a general scan as fallback
-                                          if match_pattern != "*" {
-                                                 match redis::cmd("SCAN").arg("0").arg("COUNT").arg("10").query_async::<_, (String, Vec<String>)>(&mut connection).await {
-                                                 Ok((_, sample_keys)) => {
-                                                        if !sample_keys.is_empty() {
-                                                               table_data.push(vec!["Sample Keys Found".to_string(), "".to_string()]);
-                                                               for (i, key) in sample_keys.iter().take(5).enumerate() {
-                                                               table_data.push(vec![format!("Sample {}", i+1), key.clone()]);
-                                                               }
-                                                        }
-                                                 },
-                                                 Err(_) => {
-                                                        table_data.push(vec!["Note".to_string(), "Could not retrieve sample keys".to_string()]);
-                                                 }
-                                                 }
-                                          }
-                                          } else {
-                                          // Add cursor info as first row
-                                          table_data.push(vec!["CURSOR".to_string(), next_cursor]);
-                                          
-                                          // Add keys as subsequent rows
-                                          for key in keys {
-                                                 table_data.push(vec!["KEY".to_string(), key]);
-                                          }
-                                          }
-                                          
-                                          Some((
-                                          vec!["Type".to_string(), "Value".to_string()],
-                                          table_data
-                                          ))
-                                   },
-                                   Err(e) => {
-                                          Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec![format!("Redis SCAN error: {}", e)]]
-                                          ))
-                                   }
-                                   }
-                            },
-                            "INFO" => {
-                                   // INFO command can have optional section parameter
-                                   let section = if parts.len() > 1 { parts[1] } else { "default" };
-                                   
-                                   // Use Redis cmd for INFO command
-                                   match redis::cmd("INFO").arg(section).query_async::<_, String>(&mut connection).await {
-                                   Ok(info_result) => {
-                                          // Parse INFO result into key-value pairs
-                                          let mut table_data = Vec::new();
-                                          
-                                          for line in info_result.lines() {
-                                          if line.trim().is_empty() || line.starts_with('#') {
-                                                 continue;
-                                          }
-                                          
-                                          if let Some((key, value)) = line.split_once(':') {
-                                                 table_data.push(vec![key.to_string(), value.to_string()]);
-                                          }
-                                          }
-                                          
-                                          Some((
-                                          vec!["Property".to_string(), "Value".to_string()],
-                                          table_data
-                                          ))
-                                   },
-                                   Err(e) => {
-                                          Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec![format!("Redis INFO error: {}", e)]]
-                                          ))
-                                   }
-                                   }
-                            },
-                            "HGETALL" => {
-                                   // HGETALL key - get all fields and values from a hash
-                                   if parts.len() != 2 {
-                                   return Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec!["HGETALL requires exactly one key".to_string()]]
-                                   ));
-                                   }
-                                   
-                                   match redis::cmd("HGETALL").arg(parts[1]).query_async::<_, Vec<String>>(&mut connection).await {
-                                   Ok(hash_data) => {
-                                          let mut table_data = Vec::new();
-                                          
-                                          // HGETALL returns a flat list: [field1, value1, field2, value2, ...]
-                                          for chunk in hash_data.chunks(2) {
-                                          if chunk.len() == 2 {
-                                                 table_data.push(vec![chunk[0].clone(), chunk[1].clone()]);
-                                          }
-                                          }
-                                          
-                                          if table_data.is_empty() {
-                                          table_data.push(vec!["No data".to_string(), "Hash is empty or key does not exist".to_string()]);
-                                          }
-                                          
-                                          Some((
-                                          vec!["Field".to_string(), "Value".to_string()],
-                                          table_data
-                                          ))
-                                   },
-                                   Err(e) => {
-                                          Some((
-                                          vec!["Error".to_string()],
-                                          vec![vec![format!("Redis HGETALL error: {}", e)]]
-                                          ))
-                                   }
-                                   }
-                            },
-                            _ => {
-                                   Some((
-                                   vec!["Error".to_string()],
-                                   vec![vec![format!("Unsupported Redis command: {}", parts[0])]]
-                                   ))
-                            }
-                     }
-                     }
-                     models::enums::DatabasePool::MSSQL(mssql_cfg) => {
-                            debug!("Executing MSSQL query: {}", query);
-                            match driver_mssql::execute_query(mssql_cfg.clone(), query).await {
-                                   Ok((h, d)) => Some((h, d)),
-                                   Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]])),
-                            }
-                     }
-              }
-              },
-              None => {
-              debug!("Failed to get connection pool for connection_id: {}", connection_id);
-              Some((
-                     vec!["Error".to_string()],
-                     vec![vec!["Failed to connect to database".to_string()]]
-              ))
-              }
-       }
-       })
+pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64, connection: &models::structs::ConnectionConfig, query: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+         debug!("Executing query synchronously: {}", query);
+
+         // Use the shared runtime from tabular instead of creating a new one
+         let runtime = match &tabular.runtime {
+                Some(rt) => rt.clone(),
+                None => {
+                       debug!("No runtime available, creating temporary one");
+                       match tokio::runtime::Runtime::new() {
+                              Ok(rt) => Arc::new(rt),
+                              Err(e) => {
+                                     debug!("Failed to create runtime: {}", e);
+                                     return None;
+                              }
+                       }
+                }
+         };
+
+         runtime.block_on(async {
+                match get_or_create_connection_pool(tabular, connection_id).await {
+                       Some(pool) => {
+                              match pool {
+                                     models::enums::DatabasePool::MySQL(_mysql_pool) => {
+                                            debug!("Executing MySQL query: {}", query);
+
+                                            // Split into statements
+                                            let statements: Vec<&str> = query
+                                                   .split(';')
+                                                   .map(|s| s.trim())
+                                                   .filter(|s| !s.is_empty())
+                                                   .collect();
+                                            debug!("Found {} SQL statements to execute", statements.len());
+
+                                            let mut final_headers = Vec::new();
+                                            let mut final_data = Vec::new();
+
+                                            let mut attempts = 0;
+                                            let max_attempts = 3;
+                                            while attempts < max_attempts {
+                                                   attempts += 1;
+                                                   let mut execution_success = true;
+                                                   let mut error_message = String::new();
+
+                                                   // Open a dedicated connection so USE persists
+                                                   let encoded_username = modules::url_encode(&connection.username);
+                                                   let encoded_password = modules::url_encode(&connection.password);
+                                                   let dsn = format!(
+                                                          "mysql://{}:{}@{}:{}/{}",
+                                                          encoded_username, encoded_password, connection.host, connection.port, connection.database
+                                                   );
+                                                   let mut conn = match MySqlConnection::connect(&dsn).await {
+                                                          Ok(c) => c,
+                                                          Err(e) => {
+                                                                 error_message = e.to_string();
+                                                                 execution_success = false;
+                                                                 debug!("Failed to open MySQL connection: {}", error_message);
+                                                                 if attempts >= max_attempts { break; } else { continue; }
+                                                          }
+                                                   };
+
+                                                   for (i, statement) in statements.iter().enumerate() {
+                                                          let trimmed = statement.trim();
+                                                          if trimmed.is_empty() { continue; }
+                                                          let upper = trimmed.to_uppercase();
+
+                                                          if upper.starts_with("USE ") {
+                                                                 // Parse db name
+                                                                 let db_part = trimmed[3..].trim();
+                                                                 let db_name = db_part
+                                                                        .trim_matches('`')
+                                                                        .trim_matches('"')
+                                                                        .trim_matches('[')
+                                                                        .trim_matches(']')
+                                                                        .trim();
+                                                                 let use_sql = format!("USE `{}`", db_name.replace('`', "``"));
+                                                                 if let Err(e) = sqlx::query(&use_sql).execute(&mut conn).await {
+                                                                        error_message = format!("USE failed: {}", e);
+                                                                        execution_success = false;
+                                                                        break;
+                                                                 }
+                                                                 continue;
+                                                          }
+
+                                                          match sqlx::query(trimmed).fetch_all(&mut conn).await {
+                                                                 Ok(rows) => {
+                                                                        if !rows.is_empty() && i == statements.len() - 1 {
+                                                                               final_headers = rows[0]
+                                                                                      .columns()
+                                                                                      .iter()
+                                                                                      .map(|c| c.name().to_string())
+                                                                                      .collect();
+                                                                               final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
+                                                                        }
+                                                                 }
+                                                                 Err(e) => {
+                                                                        error_message = e.to_string();
+                                                                        execution_success = false;
+                                                                        break;
+                                                                 }
+                                                          }
+                                                   }
+
+                                                   if execution_success {
+                                                          return Some((final_headers, final_data));
+                                                   } else {
+                                                          debug!("MySQL query failed on attempt {}: {}", attempts, error_message);
+                                                          if (error_message.contains("timed out") || error_message.contains("pool")) && attempts < max_attempts {
+                                                                 tabular.connection_pools.remove(&connection_id);
+                                                                 continue;
+                                                          }
+                                                          if attempts >= max_attempts {
+                                                                 return Some((
+                                                                        vec!["Error".to_string()],
+                                                                        vec![vec![format!("Query error: {}", error_message)]]
+                                                                 ));
+                                                          }
+                                                   }
+                                            }
+
+                                            Some((
+                                                   vec!["Error".to_string()],
+                                                   vec![vec!["Failed to execute query after multiple attempts".to_string()]]
+                                            ))
+                                     }
+                                     models::enums::DatabasePool::PostgreSQL(pg_pool) => {
+                                            debug!("Executing PostgreSQL query: {}", query);
+                                            let statements: Vec<&str> = query
+                                                   .split(';')
+                                                   .map(|s| s.trim())
+                                                   .filter(|s| !s.is_empty())
+                                                   .collect();
+                                            debug!("Found {} SQL statements to execute", statements.len());
+
+                                            let mut final_headers = Vec::new();
+                                            let mut final_data = Vec::new();
+
+                                            for (i, statement) in statements.iter().enumerate() {
+                                                   match sqlx::query(statement).fetch_all(pg_pool.as_ref()).await {
+                                                          Ok(rows) => {
+                                                                 if !rows.is_empty() && i == statements.len() - 1 {
+                                                                        final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
+                                                                        final_data = rows.iter().map(|row| {
+                                                                               (0..row.len()).map(|j| match row.try_get::<Option<String>, _>(j) {
+                                                                                      Ok(Some(v)) => v,
+                                                                                      Ok(None) => "NULL".to_string(),
+                                                                                      Err(_) => "Error".to_string(),
+                                                                               }).collect()
+                                                                        }).collect();
+                                                                 }
+                                                          }
+                                                          Err(e) => {
+                                                                 return Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]]));
+                                                          }
+                                                   }
+                                            }
+
+                                            Some((final_headers, final_data))
+                                     }
+                                     models::enums::DatabasePool::SQLite(sqlite_pool) => {
+                                            debug!("Executing SQLite query: {}", query);
+                                            let statements: Vec<&str> = query
+                                                   .split(';')
+                                                   .map(|s| s.trim())
+                                                   .filter(|s| !s.is_empty())
+                                                   .collect();
+                                            debug!("Found {} SQL statements to execute", statements.len());
+
+                                            let mut final_headers = Vec::new();
+                                            let mut final_data = Vec::new();
+
+                                            for (i, statement) in statements.iter().enumerate() {
+                                                   match sqlx::query(statement).fetch_all(sqlite_pool.as_ref()).await {
+                                                          Ok(rows) => {
+                                                                 if !rows.is_empty() && i == statements.len() - 1 {
+                                                                        final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
+                                                                        final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
+                                                                 }
+                                                          }
+                                                          Err(e) => {
+                                                                 return Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]]));
+                                                          }
+                                                   }
+                                            }
+
+                                            Some((final_headers, final_data))
+                                     }
+                                     models::enums::DatabasePool::Redis(redis_manager) => {
+                                            debug!("Executing Redis command: {}", query);
+                                            let mut connection = redis_manager.as_ref().clone();
+                                            use redis::AsyncCommands;
+
+                                            let parts: Vec<&str> = query.split_whitespace().collect();
+                                            if parts.is_empty() {
+                                                   return Some((vec!["Error".to_string()], vec![vec!["Empty command".to_string()]]));
+                                            }
+
+                                            match parts[0].to_uppercase().as_str() {
+                                                   "GET" => {
+                                                          if parts.len() != 2 {
+                                                                 return Some((vec!["Error".to_string()], vec![vec!["GET requires exactly one key".to_string()]]));
+                                                          }
+                                                          match connection.get::<&str, Option<String>>(parts[1]).await {
+                                                                 Ok(Some(value)) => Some((vec!["Key".to_string(), "Value".to_string()], vec![vec![parts[1].to_string(), value]])),
+                                                                 Ok(None) => Some((vec!["Key".to_string(), "Value".to_string()], vec![vec![parts[1].to_string(), "NULL".to_string()]])),
+                                                                 Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis GET error: {}", e)]])),
+                                                          }
+                                                   }
+                                                   "KEYS" => {
+                                                          if parts.len() != 2 {
+                                                                 return Some((vec!["Error".to_string()], vec![vec!["KEYS requires exactly one pattern".to_string()]]));
+                                                          }
+                                                          match connection.keys::<&str, Vec<String>>(parts[1]).await {
+                                                                 Ok(keys) => {
+                                                                        let table_data: Vec<Vec<String>> = keys.into_iter().map(|k| vec![k]).collect();
+                                                                        Some((vec!["Key".to_string()], table_data))
+                                                                 }
+                                                                 Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis KEYS error: {}", e)]])),
+                                                          }
+                                                   }
+                                                   "SCAN" => {
+                                                          if parts.len() < 2 {
+                                                                 return Some((vec!["Error".to_string()], vec![vec!["SCAN requires cursor parameter".to_string()]]));
+                                                          }
+                                                          let cursor = parts[1];
+                                                          let mut match_pattern = "*";
+                                                          let mut count: i64 = 10;
+                                                          let mut i = 2;
+                                                          while i < parts.len() {
+                                                                 match parts[i].to_uppercase().as_str() {
+                                                                        "MATCH" => { if i + 1 < parts.len() { match_pattern = parts[i + 1]; i += 2; } else { return Some((vec!["Error".to_string()], vec![vec!["MATCH requires a pattern".to_string()]])); } }
+                                                                        "COUNT" => { if i + 1 < parts.len() { if let Ok(c) = parts[i + 1].parse::<i64>() { count = c; i += 2; } else { return Some((vec!["Error".to_string()], vec![vec!["COUNT must be a number".to_string()]])); } } else { return Some((vec!["Error".to_string()], vec![vec!["COUNT requires a number".to_string()]])); } }
+                                                                        _ => { return Some((vec!["Error".to_string()], vec![vec![format!("Unknown SCAN parameter: {}", parts[i])]])); }
+                                                                 }
+                                                          }
+
+                                                          let mut cmd = redis::cmd("SCAN");
+                                                          cmd.arg(cursor);
+                                                          if match_pattern != "*" { cmd.arg("MATCH").arg(match_pattern); }
+                                                          cmd.arg("COUNT").arg(count);
+
+                                                          match cmd.query_async::<_, (String, Vec<String>)>(&mut connection).await {
+                                                                 Ok((next_cursor, keys)) => {
+                                                                        let mut table_data = Vec::new();
+                                                                        if keys.is_empty() {
+                                                                               table_data.push(vec!["Info".to_string(), format!("No keys found matching pattern: {}", match_pattern)]);
+                                                                               table_data.push(vec!["Cursor".to_string(), next_cursor.clone()]);
+                                                                               table_data.push(vec!["Suggestion".to_string(), "Try different pattern or use 'SCAN 0 COUNT 100' to see all keys".to_string()]);
+                                                                               if match_pattern != "*" {
+                                                                                      if let Ok((_, sample_keys)) = redis::cmd("SCAN").arg("0").arg("COUNT").arg("10").query_async::<_, (String, Vec<String>)>(&mut connection).await {
+                                                                                             if !sample_keys.is_empty() {
+                                                                                                    table_data.push(vec!["Sample Keys Found".to_string(), "".to_string()]);
+                                                                                                    for (i, key) in sample_keys.iter().take(5).enumerate() { table_data.push(vec![format!("Sample {}", i + 1), key.clone()]); }
+                                                                                             }
+                                                                                      }
+                                                                               }
+                                                                        } else {
+                                                                               table_data.push(vec!["CURSOR".to_string(), next_cursor]);
+                                                                               for key in keys { table_data.push(vec!["KEY".to_string(), key]); }
+                                                                        }
+                                                                        Some((vec!["Type".to_string(), "Value".to_string()], table_data))
+                                                                 }
+                                                                 Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis SCAN error: {}", e)]])),
+                                                          }
+                                                   }
+                                                   "INFO" => {
+                                                          let section = if parts.len() > 1 { parts[1] } else { "default" };
+                                                          match redis::cmd("INFO").arg(section).query_async::<_, String>(&mut connection).await {
+                                                                 Ok(info_result) => {
+                                                                        let mut table_data = Vec::new();
+                                                                        for line in info_result.lines() {
+                                                                               if line.trim().is_empty() || line.starts_with('#') { continue; }
+                                                                               if let Some((key, value)) = line.split_once(':') { table_data.push(vec![key.to_string(), value.to_string()]); }
+                                                                        }
+                                                                        Some((vec!["Property".to_string(), "Value".to_string()], table_data))
+                                                                 }
+                                                                 Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis INFO error: {}", e)]])),
+                                                          }
+                                                   }
+                                                   "HGETALL" => {
+                                                          if parts.len() != 2 { return Some((vec!["Error".to_string()], vec![vec!["HGETALL requires exactly one key".to_string()]])); }
+                                                          match redis::cmd("HGETALL").arg(parts[1]).query_async::<_, Vec<String>>(&mut connection).await {
+                                                                 Ok(hash_data) => {
+                                                                        let mut table_data = Vec::new();
+                                                                        for chunk in hash_data.chunks(2) { if chunk.len() == 2 { table_data.push(vec![chunk[0].clone(), chunk[1].clone()]); } }
+                                                                        if table_data.is_empty() { table_data.push(vec!["No data".to_string(), "Hash is empty or key does not exist".to_string()]); }
+                                                                        Some((vec!["Field".to_string(), "Value".to_string()], table_data))
+                                                                 }
+                                                                 Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis HGETALL error: {}", e)]])),
+                                                          }
+                                                   }
+                                                   _ => Some((vec!["Error".to_string()], vec![vec![format!("Unsupported Redis command: {}", parts[0])]])),
+                                            }
+                                     }
+                                     models::enums::DatabasePool::MSSQL(mssql_cfg) => {
+                                            debug!("Executing MSSQL query: {}", query);
+                                            match driver_mssql::execute_query(mssql_cfg.clone(), query).await {
+                                                   Ok((h, d)) => Some((h, d)),
+                                                   Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]])),
+                                            }
+                                     }
+                              }
+                       }
+                       None => {
+                              debug!("Failed to get connection pool for connection_id: {}", connection_id);
+                              Some((vec!["Error".to_string()], vec![vec!["Failed to connect to database".to_string()]]))
+                       }
+                }
+         })
 }
 
 
@@ -686,7 +506,7 @@ pub(crate) async fn get_or_create_connection_pool(tabular: &mut Tabular, connect
        }
 
        debug!("🔄 Creating new connection pool for connection {}", connection_id);
-
+       
        // If not cached, create a new connection pool
        if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(connection_id)) {
        match connection.connection_type {
@@ -1074,20 +894,24 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
        
        match pool {
               models::enums::DatabasePool::MySQL(mysql_pool) => {
-              let result = sqlx::query_as::<_, (String,)>("SHOW DATABASES")
-                     .fetch_all(mysql_pool.as_ref())
-                     .await;
-                     
+              // Use INFORMATION_SCHEMA to avoid VARBINARY decode issues from SHOW DATABASES on some setups
+              let result = sqlx::query_as::<_, (String,)>(
+                     "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS schema_name FROM INFORMATION_SCHEMA.SCHEMATA"
+              )
+              .fetch_all(mysql_pool.as_ref())
+              .await;
+
               match result {
                      Ok(rows) => {
-                     let databases: Vec<String> = rows.into_iter()
+                     let databases: Vec<String> = rows
+                            .into_iter()
                             .map(|(db_name,)| db_name)
                             .filter(|db| !["information_schema", "performance_schema", "mysql", "sys"].contains(&db.as_str()))
                             .collect();
                      Some(databases)
                      },
                      Err(e) => {
-                     debug!("Error querying MySQL databases: {}", e);
+                     debug!("Error querying MySQL databases via INFORMATION_SCHEMA: {}", e);
                      None
                      }
               }

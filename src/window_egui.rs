@@ -1399,10 +1399,6 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
     (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping, dba_click_request)
     }
 
-    // Helper to get connection by id (immutable clone) for internal handlers
-    fn get_connection_by_id(&self, connection_id: i64) -> Option<models::structs::ConnectionConfig> {
-        self.connections.iter().find(|c| c.id == Some(connection_id)).cloned()
-    }
 
     // Build standard DBA queries for quick views based on db type and node kind
     fn build_dba_query(&self, connection: &models::structs::ConnectionConfig, node_type: &models::enums::NodeType) -> Option<(String, String)> {
@@ -2548,37 +2544,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             
             node.children = child_nodes;
         } else {
-            // If database fetch fails, add sample data as fallback
-            debug!("Failed to fetch from MySQL, using sample {} data", table_type);
-            
-            let sample_items = match folder_type {
-                models::enums::NodeType::TablesFolder => vec!["users".to_string(), "products".to_string(), "orders".to_string()],
-                models::enums::NodeType::ViewsFolder => vec!["user_orders_view".to_string(), "product_summary_view".to_string()],
-                models::enums::NodeType::StoredProceduresFolder => vec!["sp_get_user".to_string(), "sp_create_order".to_string()],
-                models::enums::NodeType::UserFunctionsFolder => vec!["fn_calculate_total".to_string()],
-                models::enums::NodeType::TriggersFolder => vec!["tr_update_timestamp".to_string()],
-                models::enums::NodeType::EventsFolder => vec!["ev_cleanup".to_string()],
-                _ => vec![],
+            // If database fetch fails, show an informative placeholder instead of confusing sample data
+            debug!("Failed to fetch from MySQL, showing placeholder for {}", table_type);
+            let placeholder = match folder_type {
+                models::enums::NodeType::TablesFolder => "Failed to load tables",
+                models::enums::NodeType::ViewsFolder => "Failed to load views",
+                models::enums::NodeType::StoredProceduresFolder => "Failed to load procedures",
+                models::enums::NodeType::UserFunctionsFolder => "Failed to load functions",
+                models::enums::NodeType::TriggersFolder => "Failed to load triggers",
+                models::enums::NodeType::EventsFolder => "Failed to load events",
+                _ => "Failed to load items",
             };
-            
-            // Create tree nodes
-            let child_nodes: Vec<models::structs::TreeNode> = sample_items.into_iter().map(|item_name| {
-                let mut child_node = models::structs::TreeNode::new(item_name.clone(), match folder_type {
-                    models::enums::NodeType::TablesFolder => models::enums::NodeType::Table,
-                    models::enums::NodeType::ViewsFolder => models::enums::NodeType::View,
-                    models::enums::NodeType::StoredProceduresFolder => models::enums::NodeType::StoredProcedure,
-                    models::enums::NodeType::UserFunctionsFolder => models::enums::NodeType::UserFunction,
-                    models::enums::NodeType::TriggersFolder => models::enums::NodeType::Trigger,
-                    models::enums::NodeType::EventsFolder => models::enums::NodeType::Event,
-                    _ => models::enums::NodeType::Table,
-                });
-                child_node.connection_id = Some(connection_id);
-                child_node.database_name = Some(database_name.clone());
-                child_node.is_loaded = false; // Will load columns on expansion if it's a table
-                child_node
-            }).collect();
-            
-            node.children = child_nodes;
+            node.children = vec![models::structs::TreeNode::new(placeholder.to_string(), models::enums::NodeType::Column)];
         }
         
         debug!("Loaded {} {} items for MySQL", node.children.len(), table_type);
