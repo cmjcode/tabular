@@ -253,14 +253,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 // Remove the Tab key event itself so CodeEditor won't insert a tab char
                 ui.ctx().input_mut(|ri| {
                     let before = ri.events.len();
-                    ri.events.retain(|e| match e { egui::Event::Key { key: egui::Key::Tab, .. } => false, _ => true });
+                    ri.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Tab, .. }));
                     let removed = before - ri.events.len();
                     if removed > 0 { log::debug!("Removed {} Tab key event(s) to prevent tab insertion", removed); }
                 });
                 // Remove Enter key event(s) so tidak newline
                 ui.ctx().input_mut(|ri| {
                     let before = ri.events.len();
-                    ri.events.retain(|e| match e { egui::Event::Key { key: egui::Key::Enter, .. } => false, _ => true });
+                    ri.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Enter, .. }));
                     let removed = before - ri.events.len();
                     if removed > 0 { log::debug!("Removed {} Enter key event(s) to prevent newline", removed); }
                 });

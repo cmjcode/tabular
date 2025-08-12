@@ -25,7 +25,7 @@ fn tokenize(s: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut cur = String::new();
     for ch in s.chars() {
-        if ch.is_alphanumeric() || ch == '_' { cur.push(ch); } else { if !cur.is_empty() { tokens.push(cur.clone()); cur.clear(); } }
+        if ch.is_alphanumeric() || ch == '_' { cur.push(ch); } else if !cur.is_empty() { tokens.push(cur.clone()); cur.clear(); }
     }
     if !cur.is_empty() { tokens.push(cur); }
     tokens
@@ -131,8 +131,8 @@ pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: 
     if want_tables {
         // List table names from cache (table + view)
         if let Some((cid, db)) = active_connection_and_db(app) {
-            let mut clone_for_cache = app.shallow_for_cache();
-            for tt in ["table", "view"] { if let Some(names) = cache_data::get_tables_from_cache(&mut clone_for_cache, cid, &db, tt) { for n in names { if n.to_lowercase().starts_with(&low_pref) { out.push(n); } } } }
+            let clone_for_cache = app.shallow_for_cache();
+            for tt in ["table", "view"] { if let Some(names) = cache_data::get_tables_from_cache(&clone_for_cache, cid, &db, tt) { for n in names { if n.to_lowercase().starts_with(&low_pref) { out.push(n); } } } }
         }
     } else if want_columns {
         let tables = extract_tables(full_text);
@@ -146,7 +146,7 @@ pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: 
                 }
             } else {
                 // Belum ada FROM: kumpulkan semua kolom dari semua tabel untuk database ini
-                if let Some(all_tables) = cache_data::get_tables_from_cache(&mut clone_for_cache, cid, &db, "table") {
+                if let Some(all_tables) = cache_data::get_tables_from_cache(&clone_for_cache, cid, &db, "table") {
                     for table in all_tables {
                         if let Some(cols) = cache_data::get_columns_from_cache(&mut clone_for_cache, cid, &db, &table) {
                             for (col, _ty) in cols.iter() {
@@ -250,7 +250,7 @@ pub fn navigate(app: &mut Tabular, delta: i32) {
     if !app.show_autocomplete || app.autocomplete_suggestions.is_empty() { return; }
     let len = app.autocomplete_suggestions.len();
     if delta > 0 { app.selected_autocomplete_index = (app.selected_autocomplete_index + 1) % len; }
-    else { if app.selected_autocomplete_index == 0 { app.selected_autocomplete_index = len - 1; } else { app.selected_autocomplete_index -= 1; } }
+    else if app.selected_autocomplete_index == 0 { app.selected_autocomplete_index = len - 1; } else { app.selected_autocomplete_index -= 1; }
 }
 
 /// Render dropdown near top-right of editor area (simplified positioning). Call after editor.

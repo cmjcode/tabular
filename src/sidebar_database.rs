@@ -22,9 +22,8 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
     if url.is_empty() { return None; }
 
     // Handle sqlite: special cases (sqlite:path or sqlite://path)
-    if url.starts_with("sqlite:") {
-        let rest = &url["sqlite:".len()..];
-        let path = if rest.starts_with("//") { &rest[2..] } else { rest };
+    if let Some(rest) = url.strip_prefix("sqlite:") {
+        let path = rest.strip_prefix("//").unwrap_or(rest);
         return Some(ParsedUrl {
             db_type: models::enums::DatabaseType::SQLite,
             host: path.to_string(),
@@ -74,7 +73,7 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
         None => (hostport_and_path, None),
     };
 
-    let mut host = String::new();
+    let host: String;
     let mut port = String::new();
 
     if hostport.starts_with('[') {

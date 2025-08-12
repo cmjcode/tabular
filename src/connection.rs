@@ -240,7 +240,6 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                           Ok(c) => c,
                                                           Err(e) => {
                                                                  error_message = e.to_string();
-                                                                 execution_success = false;
                                                                  debug!("Failed to open MySQL connection: {}", error_message);
                                                                  if attempts >= max_attempts { break; } else { continue; }
                                                           }
@@ -271,7 +270,6 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                         }
                                                                         Err(e) => {
                                                                                error_message = format!("USE failed (reconnect): {}", e);
-                                                                               execution_success = false;
                                                                                break;
                                                                         }
                                                                  }
@@ -1026,7 +1024,7 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
                                    }
                                    Ok::<_, String>(dbs)
                             }.await;
-                            return match rt_res {
+                            match rt_res {
                                    Ok(mut list) => {
                                           if list.is_empty() {
                                                  debug!("MSSQL database list is empty; returning current database only");
@@ -1046,7 +1044,7 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
                                           // Fallback to default known system DBs so UI still shows something
                                           Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()])
                                    }
-                            };
+                            }
                      }
               }
        }
