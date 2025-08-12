@@ -187,5 +187,4 @@ pub struct IndexDialogState {
     pub unique: bool,
     pub method: Option<String>,       // e.g., btree/hash for PG, BTREE/HASH for MySQL
     pub db_type: crate::models::enums::DatabaseType,
-    pub default_database: Option<String>, // default DB name from connection if needed
 }

@@ -784,7 +784,6 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         unique: false,
                         method: None,
                         db_type: conn.connection_type.clone(),
-                        default_database: Some(conn.database.clone()),
                     });
                     self.show_index_dialog = true;
                 }
@@ -806,7 +805,6 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         unique: false,
                         method: None,
                         db_type: conn.connection_type.clone(),
-                        default_database: Some(conn.database.clone()),
                     });
                     self.show_index_dialog = true;
                 }
