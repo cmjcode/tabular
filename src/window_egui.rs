@@ -3958,8 +3958,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     };
                                                     sort_requests.push((col_index, new_ascending));
                                                 }
-                                                // Click on empty header area to multi-select columns
-                                                let header_click_resp = ui.interact(rect, egui::Id::new(("col_hdr", col_index)), egui::Sense::click());
+                                                // Click on empty header area (excluding sort button) to multi-select columns
+                                                // Avoid overlapping the sort button so it remains clickable even when selecting columns
+                                                let header_click_rect = egui::Rect::from_min_max(
+                                                    rect.min,
+                                                    egui::pos2((rect.max.x - sort_button_width).max(rect.min.x), rect.max.y)
+                                                );
+                                                let header_click_resp = ui.interact(header_click_rect, egui::Id::new(("col_hdr", col_index)), egui::Sense::click());
                                                 if header_click_resp.clicked() {
                                                     let modifiers = ui.input(|i| i.modifiers);
                                                     col_sel_requests.push((col_index, modifiers));
