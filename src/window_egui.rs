@@ -2410,9 +2410,52 @@ impl Tabular {
         debug!("Loaded {} {} items for MySQL", node.children.len(), table_type);
     }
 
-    fn load_postgresql_folder_content(&mut self, _connection_id: i64, _connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode, _folder_type: models::enums::NodeType) {
-        // Placeholder for PostgreSQL folder content loading
-        node.children = vec![models::structs::TreeNode::new("PostgreSQL folder content not implemented yet".to_string(), models::enums::NodeType::Column)];
+    fn load_postgresql_folder_content(&mut self, connection_id: i64, connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode, folder_type: models::enums::NodeType) {
+        let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
+
+        let table_type = match folder_type {
+            models::enums::NodeType::TablesFolder => "table",
+            models::enums::NodeType::ViewsFolder => "view",
+            _ => {
+                node.children = vec![models::structs::TreeNode::new("Not supported for PostgreSQL".to_string(), models::enums::NodeType::Column)];
+                return;
+            }
+        };
+
+        // Try cache first
+        if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, database_name, table_type) {
+            if !cached.is_empty() {
+                node.children = cached.into_iter().map(|name| {
+                    let mut child = models::structs::TreeNode::new(
+                        name,
+                        match folder_type { models::enums::NodeType::TablesFolder => models::enums::NodeType::Table, _ => models::enums::NodeType::View }
+                    );
+                    child.connection_id = Some(connection_id);
+                    child.database_name = Some(database_name.clone());
+                    child.is_loaded = false;
+                    child
+                }).collect();
+                return;
+            }
+        }
+
+        // Fallback to live fetch
+        if let Some(real_items) = crate::driver_postgres::fetch_tables_from_postgres_connection(self, connection_id, database_name, table_type) {
+            let table_data: Vec<(String, String)> = real_items.iter().map(|n| (n.clone(), table_type.to_string())).collect();
+            cache_data::save_tables_to_cache(self, connection_id, database_name, &table_data);
+            node.children = real_items.into_iter().map(|name| {
+                let mut child = models::structs::TreeNode::new(
+                    name,
+                    match folder_type { models::enums::NodeType::TablesFolder => models::enums::NodeType::Table, _ => models::enums::NodeType::View }
+                );
+                child.connection_id = Some(connection_id);
+                child.database_name = Some(database_name.clone());
+                child.is_loaded = false;
+                child
+            }).collect();
+        } else {
+            node.children = vec![models::structs::TreeNode::new("Failed to load items".to_string(), models::enums::NodeType::Column)];
+        }
     }
 
     fn load_sqlite_folder_content(&mut self, connection_id: i64, _connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode, folder_type: models::enums::NodeType) {
