@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use redis::aio::ConnectionManager;
+use mongodb::Client as MongoClient;
 use serde::{Deserialize, Serialize};
 use sqlx::{MySqlPool, PgPool, SqlitePool};
 
@@ -34,6 +35,7 @@ pub enum NodeType {
     Event,
     MySQLFolder,       // Folder untuk koneksi MySQL
     MSSQLFolder,      // Folder untuk koneksi MSSQL
+    MongoDBFolder,    // Folder untuk koneksi MongoDB
     PostgreSQLFolder,  // Folder untuk koneksi PostgreSQL
     SQLiteFolder,      // Folder untuk koneksi SQLite
     RedisFolder,       // Folder untuk koneksi Redis
@@ -64,6 +66,7 @@ pub enum DatabaseType {
     SQLite,
     Redis,
     MSSQL,
+    MongoDB,
 }
 
 
@@ -76,4 +79,5 @@ pub enum DatabasePool {
     Redis(Arc<ConnectionManager>),
     // For MSSQL we store a lightweight config (connections opened per query for now)
     MSSQL(Arc<crate::driver_mssql::MssqlConfigWrapper>),
+    MongoDB(Arc<MongoClient>),
 }

@@ -169,45 +169,46 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                             .unwrap_or(working.db_type.clone());
                         match db_type {
                             crate::models::enums::DatabaseType::SQLite | crate::models::enums::DatabaseType::Redis => {
-                                ui.label(egui::RichText::new("N/A").italics().color(egui::Color32::GRAY));
-                                working.method = None;
-                            }
+                                                        ui.label(egui::RichText::new("N/A").italics().color(egui::Color32::GRAY));
+                                                        working.method = None;
+                                                    }
                             crate::models::enums::DatabaseType::MySQL => {
-                                let options = ["BTREE", "HASH"];
-                                let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
-                                egui::ComboBox::from_label("")
-                                    .selected_text(selected.clone())
-                                    .show_ui(ui, |ui| {
-                                        for opt in options.iter() {
-                                            ui.selectable_value(&mut selected, opt.to_string(), *opt);
-                                        }
-                                    });
-                                working.method = Some(selected);
-                            }
+                                                        let options = ["BTREE", "HASH"];
+                                                        let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                                                        egui::ComboBox::from_label("")
+                                                            .selected_text(selected.clone())
+                                                            .show_ui(ui, |ui| {
+                                                                for opt in options.iter() {
+                                                                    ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                                                }
+                                                            });
+                                                        working.method = Some(selected);
+                                                    }
                             crate::models::enums::DatabaseType::PostgreSQL => {
-                                let options = ["btree", "hash", "gist", "gin", "spgist", "brin"];
-                                let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
-                                egui::ComboBox::from_label("")
-                                    .selected_text(selected.clone())
-                                    .show_ui(ui, |ui| {
-                                        for opt in options.iter() {
-                                            ui.selectable_value(&mut selected, opt.to_string(), *opt);
-                                        }
-                                    });
-                                working.method = Some(selected);
-                            }
+                                                        let options = ["btree", "hash", "gist", "gin", "spgist", "brin"];
+                                                        let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                                                        egui::ComboBox::from_label("")
+                                                            .selected_text(selected.clone())
+                                                            .show_ui(ui, |ui| {
+                                                                for opt in options.iter() {
+                                                                    ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                                                }
+                                                            });
+                                                        working.method = Some(selected);
+                                                    }
                             crate::models::enums::DatabaseType::MSSQL => {
-                                let options = ["NONCLUSTERED", "CLUSTERED"];
-                                let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
-                                egui::ComboBox::from_label("")
-                                    .selected_text(selected.clone())
-                                    .show_ui(ui, |ui| {
-                                        for opt in options.iter() {
-                                            ui.selectable_value(&mut selected, opt.to_string(), *opt);
-                                        }
-                                    });
-                                working.method = Some(selected);
-                            }
+                                                        let options = ["NONCLUSTERED", "CLUSTERED"];
+                                                        let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                                                        egui::ComboBox::from_label("")
+                                                            .selected_text(selected.clone())
+                                                            .show_ui(ui, |ui| {
+                                                                for opt in options.iter() {
+                                                                    ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                                                }
+                                                            });
+                                                        working.method = Some(selected);
+                                                    }
+crate::models::enums::DatabaseType::MongoDB => todo!(),
                         }
                         ui.end_row();
                     });
@@ -222,93 +223,94 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                             use crate::models::enums::DatabaseType;
                             match (working.mode.clone(), conn.connection_type.clone()) {
                                 (crate::models::structs::IndexDialogMode::Create, DatabaseType::MySQL) => {
-                                    let method = working.method.clone().unwrap_or("BTREE".to_string());
-                                    format!("CREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
-                                        unique = if working.unique {"UNIQUE"} else {""},
-                                        name = working.index_name,
-                                        table = working.table_name,
-                                        cols = working.columns,
-                                        method = method
-                                    )
-                                }
+                                                                let method = working.method.clone().unwrap_or("BTREE".to_string());
+                                                                format!("CREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
+                                                                    unique = if working.unique {"UNIQUE"} else {""},
+                                                                    name = working.index_name,
+                                                                    table = working.table_name,
+                                                                    cols = working.columns,
+                                                                    method = method
+                                                                )
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Create, DatabaseType::PostgreSQL) => {
-                                    let schema = working.database_name.clone().unwrap_or_else(|| "public".to_string());
-                                    let method = working.method.clone().unwrap_or("btree".to_string());
-                                    format!("CREATE {unique} INDEX {name} ON \"{schema}\".\"{table}\" USING {method} ({cols});",
-                                        unique = if working.unique {"UNIQUE"} else {""},
-                                        name = working.index_name,
-                                        schema = schema,
-                                        table = working.table_name,
-                                        cols = working.columns,
-                                        method = method
-                                    )
-                                }
+                                                                let schema = working.database_name.clone().unwrap_or_else(|| "public".to_string());
+                                                                let method = working.method.clone().unwrap_or("btree".to_string());
+                                                                format!("CREATE {unique} INDEX {name} ON \"{schema}\".\"{table}\" USING {method} ({cols});",
+                                                                    unique = if working.unique {"UNIQUE"} else {""},
+                                                                    name = working.index_name,
+                                                                    schema = schema,
+                                                                    table = working.table_name,
+                                                                    cols = working.columns,
+                                                                    method = method
+                                                                )
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Create, DatabaseType::SQLite) => {
-                                    format!("CREATE {unique} INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({cols});",
-                                        unique = if working.unique {"UNIQUE"} else {""},
-                                        name = working.index_name,
-                                        table = working.table_name,
-                                        cols = working.columns,
-                                    )
-                                }
+                                                                format!("CREATE {unique} INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({cols});",
+                                                                    unique = if working.unique {"UNIQUE"} else {""},
+                                                                    name = working.index_name,
+                                                                    table = working.table_name,
+                                                                    cols = working.columns,
+                                                                )
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Create, DatabaseType::MSSQL) => {
-                                    let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
-                                    let clustered = working.method.clone().unwrap_or("NONCLUSTERED".to_string());
-                                    format!("USE [{db}];\nCREATE {unique} {clustered} INDEX [{name}] ON [dbo].[{table}] ({cols});",
-                                        unique = if working.unique {"UNIQUE"} else {""},
-                                        name = working.index_name,
-                                        db = db,
-                                        clustered = clustered,
-                                        table = working.table_name,
-                                        cols = working.columns,
-                                    )
-                                }
+                                                                let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
+                                                                let clustered = working.method.clone().unwrap_or("NONCLUSTERED".to_string());
+                                                                format!("USE [{db}];\nCREATE {unique} {clustered} INDEX [{name}] ON [dbo].[{table}] ({cols});",
+                                                                    unique = if working.unique {"UNIQUE"} else {""},
+                                                                    name = working.index_name,
+                                                                    db = db,
+                                                                    clustered = clustered,
+                                                                    table = working.table_name,
+                                                                    cols = working.columns,
+                                                                )
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Create, DatabaseType::Redis) => {
-                                    "-- Not applicable for Redis".to_string()
-                                }
-                                // Edit -> show safe guidance template per DB
+                                                                "-- Not applicable for Redis".to_string()
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MySQL) => {
-                                    let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
-                                    let method = working.method.clone().unwrap_or("BTREE".to_string());
-                                    format!("-- MySQL has no ALTER INDEX; typically DROP then CREATE\nALTER TABLE `{table}` DROP INDEX `{idx}`;\nCREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
-                                        unique = if working.unique {"UNIQUE"} else {""},
-                                        name = working.index_name,
-                                        table = working.table_name,
-                                        cols = working.columns,
-                                        method = method,
-                                        idx = idx,
-                                    )
-                                }
+                                                                let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
+                                                                let method = working.method.clone().unwrap_or("BTREE".to_string());
+                                                                format!("-- MySQL has no ALTER INDEX; typically DROP then CREATE\nALTER TABLE `{table}` DROP INDEX `{idx}`;\nCREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
+                                                                    unique = if working.unique {"UNIQUE"} else {""},
+                                                                    name = working.index_name,
+                                                                    table = working.table_name,
+                                                                    cols = working.columns,
+                                                                    method = method,
+                                                                    idx = idx,
+                                                                )
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Edit, DatabaseType::PostgreSQL) => {
-                                    let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
-                                    format!("-- PostgreSQL example edits\nALTER INDEX IF EXISTS \"{idx}\" RENAME TO \"{new}\";\n-- or REBUILD/SET options\n-- ALTER INDEX IF EXISTS \"{new}\" SET (fillfactor = 90);",
-                                        idx = idx,
-                                        new = working.index_name,
-                                    )
-                                }
+                                                                let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
+                                                                format!("-- PostgreSQL example edits\nALTER INDEX IF EXISTS \"{idx}\" RENAME TO \"{new}\";\n-- or REBUILD/SET options\n-- ALTER INDEX IF EXISTS \"{new}\" SET (fillfactor = 90);",
+                                                                    idx = idx,
+                                                                    new = working.index_name,
+                                                                )
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Edit, DatabaseType::SQLite) => {
-                                    let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
-                                    format!("-- SQLite has no ALTER INDEX; DROP and CREATE\nDROP INDEX IF EXISTS \"{idx}\";\nCREATE {unique} INDEX \"{name}\" ON \"{table}\"({cols});",
-                                        unique = if working.unique {"UNIQUE"} else {""},
-                                        name = working.index_name,
-                                        table = working.table_name,
-                                        cols = working.columns,
-                                        idx = idx,
-                                    )
-                                }
+                                                                let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
+                                                                format!("-- SQLite has no ALTER INDEX; DROP and CREATE\nDROP INDEX IF EXISTS \"{idx}\";\nCREATE {unique} INDEX \"{name}\" ON \"{table}\"({cols});",
+                                                                    unique = if working.unique {"UNIQUE"} else {""},
+                                                                    name = working.index_name,
+                                                                    table = working.table_name,
+                                                                    cols = working.columns,
+                                                                    idx = idx,
+                                                                )
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MSSQL) => {
-                                    let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
-                                    let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
-                                    format!("USE [{db}];\nALTER INDEX [{idx}] ON [dbo].[{table}] REBUILD;\n-- To rename: EXEC sp_rename N'[dbo].[{idx}]', N'{new}', N'INDEX';",
-                                        db = db,
-                                        idx = idx,
-                                        table = working.table_name,
-                                        new = working.index_name,
-                                    )
-                                }
+                                                                let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
+                                                                let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
+                                                                format!("USE [{db}];\nALTER INDEX [{idx}] ON [dbo].[{table}] REBUILD;\n-- To rename: EXEC sp_rename N'[dbo].[{idx}]', N'{new}', N'INDEX';",
+                                                                    db = db,
+                                                                    idx = idx,
+                                                                    table = working.table_name,
+                                                                    new = working.index_name,
+                                                                )
+                                                            }
                                 (crate::models::structs::IndexDialogMode::Edit, DatabaseType::Redis) => {
-                                    "-- Not applicable for Redis".to_string()
-                                }
+                                                                "-- Not applicable for Redis".to_string()
+                                                            }
+                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MongoDB) => todo!(),
+                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MongoDB) => todo!(),
                             }
                         } else {
                             "-- No connection selected".to_string()

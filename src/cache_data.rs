@@ -148,6 +148,7 @@ pub(crate) fn fetch_and_cache_connection_data(tabular: &mut window_egui::Tabular
                               models::enums::DatabaseType::SQLite => vec!["table", "view"],
                               models::enums::DatabaseType::Redis => vec!["info_section", "redis_keys"],
                               models::enums::DatabaseType::MSSQL => vec!["table", "view", "procedure", "function", "trigger"],
+                              models::enums::DatabaseType::MongoDB => vec!["collection"],
                        };
               
               let mut all_tables = Vec::new();
@@ -173,6 +174,11 @@ pub(crate) fn fetch_and_cache_connection_data(tabular: &mut window_egui::Tabular
                                                     _ => None,
                                              }
                                        },
+                     models::enums::DatabaseType::MongoDB => {
+                            if table_type == "collection" {
+                                   crate::driver_mongodb::fetch_collections_from_mongodb_connection(tabular, connection_id, database_name)
+                            } else { None }
+                     },
               };
               
               if let Some(tables) = tables_result {

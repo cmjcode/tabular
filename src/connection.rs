@@ -8,6 +8,7 @@ use sqlx::mysql::MySqlConnection;
 use sqlx::Connection; // for MySqlConnection::connect
 use std::sync::Arc;
 use redis::{Client, aio::ConnectionManager};
+use mongodb::{Client as MongoClient, bson::doc};
 use log::{debug};
 
 
@@ -49,6 +50,7 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                             models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
                             models::enums::DatabaseType::SQLite => "SQLite",
                             models::enums::DatabaseType::Redis => "Redis",
+                            models::enums::DatabaseType::MongoDB => "MongoDB",
                             },
                             connection.name
                      );
@@ -493,6 +495,10 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                    Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]])),
                                             }
                                      }
+                                     models::enums::DatabasePool::MongoDB(_client) => {
+                                            // For now, MongoDB queries are not supported via SQL editor. Provide hint.
+                                            Some((vec!["Info".to_string()], vec![vec!["MongoDB query execution is not supported. Use tree to browse collections.".to_string()]]))
+                                     }
                               }
                        }
                        None => {
@@ -640,6 +646,27 @@ pub(crate) async fn get_or_create_connection_pool(tabular: &mut Tabular, connect
                      debug!("Failed to create Redis client: {}", e);
                      None
                      }
+              }
+              }
+              models::enums::DatabaseType::MongoDB => {
+              // Build MongoDB connection string
+              let uri = if connection.username.is_empty() {
+                     format!("mongodb://{}:{}", connection.host, connection.port)
+              } else if connection.password.is_empty() {
+                     format!("mongodb://{}@{}:{}", connection.username, connection.host, connection.port)
+              } else {
+                     let enc_user = modules::url_encode(&connection.username);
+                     let enc_pass = modules::url_encode(&connection.password);
+                     format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection.host, connection.port)
+              };
+              debug!("Creating MongoDB client for URI: {}", uri);
+              match MongoClient::with_uri_str(uri).await {
+                     Ok(client) => {
+                            let pool = models::enums::DatabasePool::MongoDB(Arc::new(client));
+                            tabular.connection_pools.insert(connection_id, pool.clone());
+                            Some(pool)
+                     }
+                     Err(e) => { debug!("Failed to create MongoDB client: {}", e); None }
               }
               }
               models::enums::DatabaseType::MSSQL => {
@@ -837,6 +864,21 @@ pub(crate) async fn create_database_pool(connection: &models::structs::Connectio
               );
               Some(models::enums::DatabasePool::MSSQL(Arc::new(cfg)))
        }
+       models::enums::DatabaseType::MongoDB => {
+              let uri = if connection.username.is_empty() {
+                     format!("mongodb://{}:{}", connection.host, connection.port)
+              } else if connection.password.is_empty() {
+                     format!("mongodb://{}@{}:{}", connection.username, connection.host, connection.port)
+              } else {
+                     let enc_user = modules::url_encode(&connection.username);
+                     let enc_pass = modules::url_encode(&connection.password);
+                     format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection.host, connection.port)
+              };
+              match MongoClient::with_uri_str(uri).await {
+                     Ok(client) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
+                     Err(_) => None,
+              }
+       }
        }
 }
 
@@ -880,6 +922,12 @@ async fn fetch_and_cache_all_data(
        models::enums::DatabaseType::MSSQL => {
               if let models::enums::DatabasePool::MSSQL(mssql_cfg) = pool {
                      driver_mssql::fetch_mssql_data(connection_id, mssql_cfg.clone(), cache_pool).await
+              } else { false }
+       }
+       models::enums::DatabaseType::MongoDB => {
+              if let models::enums::DatabasePool::MongoDB(client) = pool {
+                     // Use helper to populate cache
+                     crate::driver_mongodb::fetch_mongodb_data(connection_id, client.clone(), cache_pool).await
               } else { false }
        }
        }
@@ -1047,6 +1095,12 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
                             }
                      }
               }
+              models::enums::DatabasePool::MongoDB(client) => {
+              match client.list_database_names().await {
+                     Ok(dbs) => Some(dbs),
+                     Err(e) => { debug!("MongoDB list databases error: {}", e); None }
+              }
+              }
        }
        })
 }
@@ -1193,6 +1247,50 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      ("ttl".to_string(), "Integer".to_string()),
               ])
               }
+                       models::enums::DatabaseType::MongoDB => {
+                              // Connect directly and sample one document to infer top-level fields
+                              let uri = if connection_clone.username.is_empty() {
+                                     format!("mongodb://{}:{}", connection_clone.host, connection_clone.port)
+                              } else if connection_clone.password.is_empty() {
+                                     format!("mongodb://{}@{}:{}", connection_clone.username, connection_clone.host, connection_clone.port)
+                              } else {
+                                     let enc_user = modules::url_encode(&connection_clone.username);
+                                     let enc_pass = modules::url_encode(&connection_clone.password);
+                                     format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection_clone.host, connection_clone.port)
+                              };
+                              match MongoClient::with_uri_str(uri).await {
+                                     Ok(client) => {
+                                            let coll = client.database(&database_name).collection::<mongodb::bson::Document>(&table_name);
+                                            match coll.find(doc!{}).limit(1).await {
+                                                   Ok(mut cursor) => {
+                                                          if let Some(doc) = cursor.try_next().await.unwrap_or(None) {
+                                                                 use mongodb::bson::Bson;
+                                                                 let cols: Vec<(String, String)> = doc.into_iter().map(|(k,v)| {
+                                                                        let t = match v {
+                                                                               Bson::Double(_) => "double",
+                                                                               Bson::String(_) => "string",
+                                                                               Bson::Array(_) => "array",
+                                                                               Bson::Document(_) => "document",
+                                                                               Bson::Boolean(_) => "bool",
+                                                                               Bson::Int32(_) => "int32",
+                                                                               Bson::Int64(_) => "int64",
+                                                                               Bson::Decimal128(_) => "decimal128",
+                                                                               Bson::ObjectId(_) => "objectId",
+                                                                               Bson::DateTime(_) => "date",
+                                                                               Bson::Null => "null",
+                                                                               _ => "any",
+                                                                        };
+                                                                        (k, t.to_string())
+                                                                 }).collect();
+                                                                 Some(cols)
+                                                          } else { None }
+                                                   }
+                                                   Err(_) => None,
+                                            }
+                                     }
+                                     Err(_) => None,
+                              }
+                       }
               models::enums::DatabaseType::MSSQL => {
               // Basic column metadata using INFORMATION_SCHEMA
               use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -1255,6 +1353,7 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
               }.await;
               match rt_res { Ok(v) => Some(v), Err(e) => { debug!("MSSQL column fetch error: {}", e); None } }
               }
+              // MongoDB has been handled above; no additional branch here.
        }
        })
 }
@@ -1446,6 +1545,28 @@ pub(crate) fn test_database_connection(connection: &models::structs::ConnectionC
                         Err(e) => (false, format!("SQLite connection failed: {}", e)),
                     }
                 },
+                            models::enums::DatabaseType::MongoDB => {
+                                   // Build URI and ping
+                                   let uri = if connection.username.is_empty() {
+                                          format!("mongodb://{}:{}", connection.host, connection.port)
+                                   } else if connection.password.is_empty() {
+                                          format!("mongodb://{}@{}:{}", connection.username, connection.host, connection.port)
+                                   } else {
+                                          let enc_user = modules::url_encode(&connection.username);
+                                          let enc_pass = modules::url_encode(&connection.password);
+                                          format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection.host, connection.port)
+                                   };
+                                   match MongoClient::with_uri_str(uri).await {
+                                          Ok(client) => {
+                                                 let admin = client.database("admin");
+                                                 match admin.run_command(doc!("ping": 1)).await {
+                                                        Ok(_) => (true, "MongoDB connection successful!".to_string()),
+                                                        Err(e) => (false, format!("MongoDB ping failed: {}", e)),
+                                                 }
+                                          }
+                                          Err(e) => (false, format!("MongoDB client error: {}", e)),
+                                   }
+                            },
                             models::enums::DatabaseType::Redis => {
                     let connection_string = if connection.password.is_empty() {
                         format!("redis://{}:{}", connection.host, connection.port)

@@ -48,6 +48,7 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
         "postgres" | "postgresql" => models::enums::DatabaseType::PostgreSQL,
         "redis" => models::enums::DatabaseType::Redis,
         "mssql" | "sqlserver" => models::enums::DatabaseType::MSSQL,
+    "mongodb" | "mongo" => models::enums::DatabaseType::MongoDB,
         _ => return None,
     };
 
@@ -101,6 +102,7 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
             models::enums::DatabaseType::Redis => "6379".into(),
             models::enums::DatabaseType::MSSQL => "1433".into(),
             models::enums::DatabaseType::SQLite => String::new(),
+            models::enums::DatabaseType::MongoDB => "27017".into(),
         };
     }
 
@@ -149,6 +151,7 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                     models::enums::DatabaseType::SQLite => "SQLite",
                     models::enums::DatabaseType::Redis => "Redis",
                     models::enums::DatabaseType::MSSQL => "MSSQL",
+                    models::enums::DatabaseType::MongoDB => "MongoDB",
                 })
                             .show_ui(ui, |ui| {
                                    ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::MySQL, "MySQL");
@@ -156,6 +159,7 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                    ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::SQLite, "SQLite");
                                    ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::Redis, "Redis");
                                    ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::MSSQL, "MSSQL");
+                                   ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::MongoDB, "MongoDB");
                             });
                      ui.end_row();
 
@@ -200,6 +204,13 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                  let path = if db.is_empty() { String::new() } else { format!("/{}", db) };
                                  let auth = if user.is_empty() { String::new() } else if pass.is_empty() { format!("{}@", enc_user) } else { format!("{}:{}@", enc_user, enc_pass) };
                                  format!("mysql://{}{}:{}{}", auth, host, port, path)
+                             }
+                             models::enums::DatabaseType::MongoDB => {
+                                 let enc_user = modules::url_encode(user);
+                                 let enc_pass = modules::url_encode(&pass);
+                                 let auth = if user.is_empty() { String::new() } else if pass.is_empty() { format!("{}@", enc_user) } else { format!("{}:{}@", enc_user, enc_pass) };
+                                 let path = if db.is_empty() { String::new() } else { format!("/{}", db) };
+                                 format!("mongodb://{}{}:{}{}", auth, host, port, path)
                              }
                              models::enums::DatabaseType::PostgreSQL => {
                                  let path = if db.is_empty() { String::new() } else { format!("/{}", db) };
@@ -381,6 +392,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                      "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
                      "Redis" => models::enums::DatabaseType::Redis,
                      "MSSQL" => models::enums::DatabaseType::MSSQL,
+                     "MongoDB" => models::enums::DatabaseType::MongoDB,
                      _ => models::enums::DatabaseType::SQLite,
                      },
                      folder,
@@ -684,6 +696,7 @@ pub(crate) fn create_connections_folder_structure(tabular: &mut window_egui::Tab
             let mut sqlite_connections = Vec::new();
             let mut redis_connections = Vec::new();
             let mut mssql_connections = Vec::new();
+            let mut mongodb_connections = Vec::new();
             
             for conn in connections {
                 if let Some(id) = conn.id {
@@ -703,6 +716,9 @@ pub(crate) fn create_connections_folder_structure(tabular: &mut window_egui::Tab
                         },
                         models::enums::DatabaseType::MSSQL => {
                             mssql_connections.push(node);
+                        },
+                        models::enums::DatabaseType::MongoDB => {
+                            mongodb_connections.push(node);
                         },
                     }
                 } else {
@@ -751,6 +767,13 @@ pub(crate) fn create_connections_folder_structure(tabular: &mut window_egui::Tab
                 mssql_folder.children = mssql_connections;
                 mssql_folder.is_expanded = false;
                 db_type_folders.push(mssql_folder);
+            }
+            if !mongodb_connections.is_empty() {
+                let _ = mongodb_connections.len();
+                let mut mongodb_folder = models::structs::TreeNode::new("MongoDB".to_string(), models::enums::NodeType::MongoDBFolder);
+                mongodb_folder.children = mongodb_connections;
+                mongodb_folder.is_expanded = false;
+                db_type_folders.push(mongodb_folder);
             }
             
             custom_folder.children = db_type_folders;
