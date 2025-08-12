@@ -166,3 +166,26 @@ pub struct ExpansionRequest {
     pub connection_id: i64,
     pub database_name: Option<String>,
 }
+
+
+// UI state for Create/Edit Index modal
+#[derive(Clone, Debug, PartialEq)]
+pub enum IndexDialogMode {
+    Create,
+    Edit,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexDialogState {
+    pub mode: IndexDialogMode,
+    pub connection_id: i64,
+    pub database_name: Option<String>, // For PG schema or MSSQL db context
+    pub table_name: String,
+    pub existing_index_name: Option<String>,
+    pub index_name: String,
+    pub columns: String,              // comma-separated list the user can edit
+    pub unique: bool,
+    pub method: Option<String>,       // e.g., btree/hash for PG, BTREE/HASH for MySQL
+    pub db_type: crate::models::enums::DatabaseType,
+    pub default_database: Option<String>, // default DB name from connection if needed
+}

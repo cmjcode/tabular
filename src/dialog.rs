@@ -122,3 +122,233 @@ pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui:
     }
 
 
+pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+        if !tabular.show_index_dialog {
+            return;
+        }
+    let mut open_flag = tabular.show_index_dialog;
+    // Work on a local copy and write back after UI, so typing/checkbox persist across frames
+    let Some(initial_state) = tabular.index_dialog.clone() else { return; };
+    let mut working = initial_state;
+    // Defer opening tab until after closure to avoid borrow conflicts
+    let mut open_tab_request: Option<(String /*title*/, String /*sql*/)> = None;
+
+    let mut should_close = false;
+        egui::Window::new("Generate Query Index")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(450.0)
+            .max_height(150.0)
+            .open(&mut open_flag)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+
+                    // Fields - aligned using a two-column Grid
+                    ui.add_space(4.0);
+                    egui::Grid::new("index_form_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                        ui.label("Index name");
+                        ui.add(egui::TextEdit::singleline(&mut working.index_name).desired_width(360.0));
+                        ui.end_row();
+
+                        ui.label("Columns");
+                        ui.add(egui::TextEdit::singleline(&mut working.columns).desired_width(360.0));
+                        ui.end_row();
+
+                        ui.label("Unique");
+                        ui.checkbox(&mut working.unique, "");
+                        ui.end_row();
+
+                        ui.label("Method");
+                        // Determine db type for appropriate method options
+                        let db_type = tabular
+                            .connections
+                            .iter()
+                            .find(|c| c.id == Some(working.connection_id))
+                            .map(|c| c.connection_type.clone())
+                            .unwrap_or(working.db_type.clone());
+                        match db_type {
+                            crate::models::enums::DatabaseType::SQLite | crate::models::enums::DatabaseType::Redis => {
+                                ui.label(egui::RichText::new("N/A").italics().color(egui::Color32::GRAY));
+                                working.method = None;
+                            }
+                            crate::models::enums::DatabaseType::MySQL => {
+                                let options = ["BTREE", "HASH"];
+                                let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                                egui::ComboBox::from_label("")
+                                    .selected_text(selected.clone())
+                                    .show_ui(ui, |ui| {
+                                        for opt in options.iter() {
+                                            ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                        }
+                                    });
+                                working.method = Some(selected);
+                            }
+                            crate::models::enums::DatabaseType::PostgreSQL => {
+                                let options = ["btree", "hash", "gist", "gin", "spgist", "brin"];
+                                let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                                egui::ComboBox::from_label("")
+                                    .selected_text(selected.clone())
+                                    .show_ui(ui, |ui| {
+                                        for opt in options.iter() {
+                                            ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                        }
+                                    });
+                                working.method = Some(selected);
+                            }
+                            crate::models::enums::DatabaseType::MSSQL => {
+                                let options = ["NONCLUSTERED", "CLUSTERED"];
+                                let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                                egui::ComboBox::from_label("")
+                                    .selected_text(selected.clone())
+                                    .show_ui(ui, |ui| {
+                                        for opt in options.iter() {
+                                            ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                        }
+                                    });
+                                working.method = Some(selected);
+                            }
+                        }
+                        ui.end_row();
+                    });
+
+                    ui.add_space(8.0);
+
+
+                    // Build SQL preview string depending on the connection type.
+                    let sql_preview = {
+                        let conn = tabular.connections.iter().find(|c| c.id == Some(working.connection_id));
+                        if let Some(conn) = conn {
+                            use crate::models::enums::DatabaseType;
+                            match (working.mode.clone(), conn.connection_type.clone()) {
+                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MySQL) => {
+                                    let method = working.method.clone().unwrap_or("BTREE".to_string());
+                                    format!("CREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
+                                        unique = if working.unique {"UNIQUE"} else {""},
+                                        name = working.index_name,
+                                        table = working.table_name,
+                                        cols = working.columns,
+                                        method = method
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::PostgreSQL) => {
+                                    let schema = working.database_name.clone().unwrap_or_else(|| "public".to_string());
+                                    let method = working.method.clone().unwrap_or("btree".to_string());
+                                    format!("CREATE {unique} INDEX {name} ON \"{schema}\".\"{table}\" USING {method} ({cols});",
+                                        unique = if working.unique {"UNIQUE"} else {""},
+                                        name = working.index_name,
+                                        schema = schema,
+                                        table = working.table_name,
+                                        cols = working.columns,
+                                        method = method
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::SQLite) => {
+                                    format!("CREATE {unique} INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({cols});",
+                                        unique = if working.unique {"UNIQUE"} else {""},
+                                        name = working.index_name,
+                                        table = working.table_name,
+                                        cols = working.columns,
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MSSQL) => {
+                                    let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
+                                    let clustered = working.method.clone().unwrap_or("NONCLUSTERED".to_string());
+                                    format!("USE [{db}];\nCREATE {unique} {clustered} INDEX [{name}] ON [dbo].[{table}] ({cols});",
+                                        unique = if working.unique {"UNIQUE"} else {""},
+                                        name = working.index_name,
+                                        db = db,
+                                        clustered = clustered,
+                                        table = working.table_name,
+                                        cols = working.columns,
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::Redis) => {
+                                    "-- Not applicable for Redis".to_string()
+                                }
+                                // Edit -> show safe guidance template per DB
+                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MySQL) => {
+                                    let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
+                                    let method = working.method.clone().unwrap_or("BTREE".to_string());
+                                    format!("-- MySQL has no ALTER INDEX; typically DROP then CREATE\nALTER TABLE `{table}` DROP INDEX `{idx}`;\nCREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
+                                        unique = if working.unique {"UNIQUE"} else {""},
+                                        name = working.index_name,
+                                        table = working.table_name,
+                                        cols = working.columns,
+                                        method = method,
+                                        idx = idx,
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::PostgreSQL) => {
+                                    let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
+                                    format!("-- PostgreSQL example edits\nALTER INDEX IF EXISTS \"{idx}\" RENAME TO \"{new}\";\n-- or REBUILD/SET options\n-- ALTER INDEX IF EXISTS \"{new}\" SET (fillfactor = 90);",
+                                        idx = idx,
+                                        new = working.index_name,
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::SQLite) => {
+                                    let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
+                                    format!("-- SQLite has no ALTER INDEX; DROP and CREATE\nDROP INDEX IF EXISTS \"{idx}\";\nCREATE {unique} INDEX \"{name}\" ON \"{table}\"({cols});",
+                                        unique = if working.unique {"UNIQUE"} else {""},
+                                        name = working.index_name,
+                                        table = working.table_name,
+                                        cols = working.columns,
+                                        idx = idx,
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MSSQL) => {
+                                    let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
+                                    let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
+                                    format!("USE [{db}];\nALTER INDEX [{idx}] ON [dbo].[{table}] REBUILD;\n-- To rename: EXEC sp_rename N'[dbo].[{idx}]', N'{new}', N'INDEX';",
+                                        db = db,
+                                        idx = idx,
+                                        table = working.table_name,
+                                        new = working.index_name,
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::Redis) => {
+                                    "-- Not applicable for Redis".to_string()
+                                }
+                            }
+                        } else {
+                            "-- No connection selected".to_string()
+                        }
+                    };
+
+                    egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| { ui.code(sql_preview.clone()); });
+
+                    ui.add_space(10.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let big_btn = egui::Button::new(egui::RichText::new("Open in Editor").strong())
+                            .min_size(egui::vec2(150.0, 30.0));
+                        if ui.add(big_btn).clicked() {
+                            let title = match working.mode {
+                                crate::models::structs::IndexDialogMode::Create => format!("Create Index on {}", working.table_name),
+                                crate::models::structs::IndexDialogMode::Edit => format!("Edit Index {}", working.index_name),
+                            };
+                            open_tab_request = Some((title, sql_preview.clone()));
+                            should_close = true; // close dialog after UI
+                        }
+                    });
+                });
+            });
+        // Persist user edits back into app state
+        tabular.index_dialog = Some(working);
+        // Update dialog visibility from open_flag set in UI
+        if should_close { open_flag = false; }
+        tabular.show_index_dialog = open_flag;
+        // If user requested opening a tab, do it now (outside of UI borrow)
+        if let Some((title, sql)) = open_tab_request {
+            if let Some(state) = &tabular.index_dialog {
+                editor::create_new_tab_with_connection_and_database(
+                    tabular,
+                    title,
+                    sql,
+                    Some(state.connection_id),
+                    state.database_name.clone(),
+                );
+            }
+        }
+}
+
+

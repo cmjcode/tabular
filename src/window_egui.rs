@@ -126,6 +126,9 @@ pub struct Tabular {
     pub autocomplete_prefix: String,
     pub last_autocomplete_trigger_len: usize,
     pub pending_cursor_set: Option<usize>,
+    // Index dialog
+    pub show_index_dialog: bool,
+    pub index_dialog: Option<models::structs::IndexDialogState>,
 }
 
 
@@ -331,6 +334,9 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             autocomplete_prefix: String::new(),
             last_autocomplete_trigger_len: 0,
             pending_cursor_set: None,
+            // Index dialog defaults
+            show_index_dialog: false,
+            index_dialog: None,
         };
         
         // Clear any old cached pools
@@ -432,8 +438,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         let mut context_menu_requests = Vec::new();
         let mut table_click_requests = Vec::new();
         let mut connection_click_requests = Vec::new();
-        let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> = Vec::new();
-        let mut create_index_requests: Vec<(i64, Option<String>, Option<String>)> = Vec::new();
+    let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> = Vec::new();
+    let mut create_index_requests: Vec<(i64, Option<String>, Option<String>)> = Vec::new();
         let mut query_files_to_open = Vec::new();
         
         for (index, node) in nodes.iter_mut().enumerate() {
@@ -762,75 +768,47 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             }
         }
 
-        // Handle index click requests - open ALTER INDEX template in new tab
+        // Handle index click requests - open Edit Index dialog
         for (connection_id, index_name, database_name, table_name) in index_click_requests {
             if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)).cloned() {
-                let (title, ddl) = match conn.connection_type {
-                    models::enums::DatabaseType::MySQL => (
-                        format!("Alter Index: {}", index_name),
-                        match table_name.clone() {
-                            Some(tn) => format!("-- MySQL\n-- SHOW INDEX FROM `{}`;\n-- To alter, DROP and CREATE:\nALTER TABLE `{}` DROP INDEX `{}`;\n-- ALTER TABLE `{}` ADD INDEX `{}` (...);", tn, tn, index_name, tn, index_name),
-                            None => format!("-- MySQL\n-- ALTER INDEX requires table context\n-- DROP INDEX `{}` ON <table>;\n-- CREATE INDEX `{}` ON <table>(...);", index_name, index_name),
-                        }
-                    ),
-                    models::enums::DatabaseType::PostgreSQL => (
-                        format!("Alter Index: {}", index_name),
-                        format!("-- PostgreSQL\nALTER INDEX IF EXISTS \"{}\" RENAME TO <new_name>;\n-- ALTER INDEX IF EXISTS \"{}\" SET (fillfactor = 90);", index_name, index_name)
-                    ),
-                    models::enums::DatabaseType::SQLite => (
-                        format!("Alter Index: {}", index_name),
-                        match table_name.clone() {
-                            Some(tn) => format!("-- SQLite has no ALTER INDEX, usually DROP and CREATE\nDROP INDEX IF EXISTS \"{}\";\n-- CREATE INDEX \"{}\" ON \"{}\"(<cols>);", index_name, index_name, tn),
-                            None => format!("-- SQLite has no ALTER INDEX, usually DROP and CREATE\nDROP INDEX IF EXISTS \"{}\";\n-- CREATE INDEX \"{}\" ON <table>(<cols>);", index_name, index_name),
-                        }
-                    ),
-                    models::enums::DatabaseType::MSSQL => {
-                        let db = database_name.clone().unwrap_or_default();
-                        let tn = table_name.clone().unwrap_or("<table>".to_string());
-                        (
-                            format!("Alter Index: {}", index_name),
-                            format!("-- SQL Server\nALTER INDEX [{}] ON [{}].dbo.[{}] REBUILD;\n-- ALTER INDEX [{}] ON [{}].dbo.[{}] DISABLE;", index_name, db, tn, index_name, db, tn)
-                        )
-                    }
-                    models::enums::DatabaseType::Redis => (
-                        format!("Index: {}", index_name),
-                        "-- Not applicable for Redis".to_string()
-                    ),
-                };
-                editor::create_new_tab_with_connection_and_database(self, title, ddl, Some(connection_id), database_name.clone());
+                // Prefill dialog state for Edit
+                if let Some(tn) = table_name.clone() {
+                    self.index_dialog = Some(models::structs::IndexDialogState {
+                        mode: models::structs::IndexDialogMode::Edit,
+                        connection_id,
+                        database_name: database_name.clone(),
+                        table_name: tn,
+                        existing_index_name: Some(index_name.clone()),
+                        index_name: index_name.clone(),
+                        columns: String::new(),
+                        unique: false,
+                        method: None,
+                        db_type: conn.connection_type.clone(),
+                        default_database: Some(conn.database.clone()),
+                    });
+                    self.show_index_dialog = true;
+                }
             }
         }
 
-        // Handle create index requests - open CREATE INDEX template in new tab
+        // Handle create index requests - open Create Index dialog
         for (connection_id, database_name, table_name) in create_index_requests {
             if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)).cloned() {
                 if let Some(tn) = table_name.clone() {
-                    let (title, ddl) = match conn.connection_type {
-                        models::enums::DatabaseType::MySQL => (
-                            format!("Create Index on {}", tn),
-                            format!("CREATE INDEX `idx_{0}_col` ON `{0}` (`column1`) USING BTREE;", tn)
-                        ),
-                        models::enums::DatabaseType::PostgreSQL => {
-                            let schema = database_name.clone().unwrap_or_else(|| "public".to_string());
-                            (
-                                format!("Create Index on {}", tn),
-                                format!("CREATE INDEX idx_{0}_col ON \"{1}\".\"{0}\" USING btree (column1);", tn, schema)
-                            )
-                        }
-                        models::enums::DatabaseType::SQLite => (
-                            format!("Create Index on {}", tn),
-                            format!("CREATE INDEX IF NOT EXISTS \"idx_{0}_col\" ON \"{0}\"(column1);", tn)
-                        ),
-                        models::enums::DatabaseType::MSSQL => {
-                            let db = database_name.clone().unwrap_or_else(|| conn.database.clone());
-                            (
-                                format!("Create Index on {}", tn),
-                                format!("CREATE INDEX [idx_{0}_col] ON [{1}].dbo.[{0}] ([column1]);", tn, db)
-                            )
-                        }
-                        models::enums::DatabaseType::Redis => ("Create Index".to_string(), "-- Not applicable for Redis".to_string()),
-                    };
-                    editor::create_new_tab_with_connection_and_database(self, title, ddl, Some(connection_id), database_name.clone());
+                    self.index_dialog = Some(models::structs::IndexDialogState {
+                        mode: models::structs::IndexDialogMode::Create,
+                        connection_id,
+                        database_name: database_name.clone(),
+                        table_name: tn.clone(),
+                        existing_index_name: None,
+                        index_name: format!("idx_{}_col", tn),
+                        columns: "columns comma-separated".to_string(),
+                        unique: false,
+                        method: None,
+                        db_type: conn.connection_type.clone(),
+                        default_database: Some(conn.database.clone()),
+                    });
+                    self.show_index_dialog = true;
                 }
             }
         }
@@ -4846,6 +4824,8 @@ impl App for Tabular {
         connection::render_connection_selector(self, ctx);
         dialog::render_error_dialog(self, ctx);
         dialog::render_about_dialog(self, ctx);
+    // Index create/edit dialog
+    dialog::render_index_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
 
