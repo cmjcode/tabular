@@ -1943,7 +1943,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     return;
                 }
                 models::enums::DatabaseType::MSSQL => {
-                    // Basic placeholder similar to MySQL (without DBA views for now)
+                    // Databases folder
                     let mut databases_folder = models::structs::TreeNode::new("Databases".to_string(), models::enums::NodeType::DatabasesFolder);
                     databases_folder.connection_id = Some(connection_id);
                     for db_name in databases {
@@ -1978,7 +1978,36 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         db_node.children = vec![tables_folder, views_folder, sp_folder, fn_folder, trg_folder];
                         databases_folder.children.push(db_node);
                     }
+
+                    // DBA Views folder similar to MySQL
+                    let mut dba_folder = models::structs::TreeNode::new("DBA Views".to_string(), models::enums::NodeType::DBAViewsFolder);
+                    dba_folder.connection_id = Some(connection_id);
+
+                    let mut dba_children = Vec::new();
+                    let mut users_folder = models::structs::TreeNode::new("Users".to_string(), models::enums::NodeType::UsersFolder);
+                    users_folder.connection_id = Some(connection_id);
+                    users_folder.is_loaded = false;
+                    dba_children.push(users_folder);
+
+                    let mut priv_folder = models::structs::TreeNode::new("Privileges".to_string(), models::enums::NodeType::PrivilegesFolder);
+                    priv_folder.connection_id = Some(connection_id);
+                    priv_folder.is_loaded = false;
+                    dba_children.push(priv_folder);
+
+                    let mut proc_folder = models::structs::TreeNode::new("Processes".to_string(), models::enums::NodeType::ProcessesFolder);
+                    proc_folder.connection_id = Some(connection_id);
+                    proc_folder.is_loaded = false;
+                    dba_children.push(proc_folder);
+
+                    let mut status_folder = models::structs::TreeNode::new("Status".to_string(), models::enums::NodeType::StatusFolder);
+                    status_folder.connection_id = Some(connection_id);
+                    status_folder.is_loaded = false;
+                    dba_children.push(status_folder);
+
+                    dba_folder.children = dba_children;
+
                     main_children.push(databases_folder);
+                    main_children.push(dba_folder);
                 }
             }
             

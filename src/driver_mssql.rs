@@ -29,13 +29,48 @@ pub(crate) async fn fetch_mssql_data(_connection_id: i64, _cfg: Arc<MssqlConfigW
 }
 
 pub(crate) fn load_mssql_structure(connection_id: i64, _connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode) {
-    // Similar to PostgreSQL: show Databases folder with loading marker.
+    // Similar to other drivers: show Databases + DBA Views folders
     let mut main_children = Vec::new();
+
+    // Databases folder with loading marker
     let mut databases_folder = models::structs::TreeNode::new("Databases".to_string(), models::enums::NodeType::DatabasesFolder);
     databases_folder.connection_id = Some(connection_id);
     let loading_node = models::structs::TreeNode::new("Loading databases...".to_string(), models::enums::NodeType::Database);
     databases_folder.children.push(loading_node);
     main_children.push(databases_folder);
+
+    // DBA Views folder with standard children
+    let mut dba_folder = models::structs::TreeNode::new("DBA Views".to_string(), models::enums::NodeType::DBAViewsFolder);
+    dba_folder.connection_id = Some(connection_id);
+
+    let mut dba_children = Vec::new();
+    // Users
+    let mut users_folder = models::structs::TreeNode::new("Users".to_string(), models::enums::NodeType::UsersFolder);
+    users_folder.connection_id = Some(connection_id);
+    users_folder.is_loaded = false;
+    dba_children.push(users_folder);
+
+    // Privileges
+    let mut priv_folder = models::structs::TreeNode::new("Privileges".to_string(), models::enums::NodeType::PrivilegesFolder);
+    priv_folder.connection_id = Some(connection_id);
+    priv_folder.is_loaded = false;
+    dba_children.push(priv_folder);
+
+    // Processes
+    let mut proc_folder = models::structs::TreeNode::new("Processes".to_string(), models::enums::NodeType::ProcessesFolder);
+    proc_folder.connection_id = Some(connection_id);
+    proc_folder.is_loaded = false;
+    dba_children.push(proc_folder);
+
+    // Status
+    let mut status_folder = models::structs::TreeNode::new("Status".to_string(), models::enums::NodeType::StatusFolder);
+    status_folder.connection_id = Some(connection_id);
+    status_folder.is_loaded = false;
+    dba_children.push(status_folder);
+
+    dba_folder.children = dba_children;
+    main_children.push(dba_folder);
+
     node.children = main_children;
 }
 
