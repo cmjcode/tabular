@@ -119,20 +119,20 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
        let mut open = true;
        let title = if is_edit_mode { "Edit Connection" } else { "Add New Connection" };
        
-       // Clone the connection data to work with
-       let mut connection_data = if is_edit_mode {
-       tabular.edit_connection.clone()
-       } else {
-       tabular.new_connection.clone()
-       };
+        // Clone the connection data to work with
+        let mut connection_data = if is_edit_mode {
+            tabular.edit_connection.clone()
+        } else {
+            tabular.new_connection.clone()
+        };
        
-    egui::Window::new(title)
-    .resizable(false)
-    .default_width(480.0)
-    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-       .collapsible(false)
-       .open(&mut open)
-       .show(ctx, |ui| {
+        egui::Window::new(title)
+        .resizable(false)
+        .default_width(400.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .collapsible(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
               ui.vertical(|ui| {
               egui::Grid::new("connection_form")
                      .num_columns(2)
