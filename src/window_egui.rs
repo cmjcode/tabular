@@ -433,10 +433,11 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         let mut table_click_requests = Vec::new();
         let mut connection_click_requests = Vec::new();
         let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> = Vec::new();
+        let mut create_index_requests: Vec<(i64, Option<String>, Option<String>)> = Vec::new();
         let mut query_files_to_open = Vec::new();
         
         for (index, node) in nodes.iter_mut().enumerate() {
-            let (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_for_removal, parent_for_creation, folder_removal_mapping, dba_click_request, index_click_request) = Self::render_tree_node_with_table_expansion(ui, node, &mut self.editor_text, index, &self.refreshing_connections);
+            let (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_for_removal, parent_for_creation, folder_removal_mapping, dba_click_request, index_click_request, create_index_request) = Self::render_tree_node_with_table_expansion(ui, node, &mut self.editor_text, index, &self.refreshing_connections);
             if let Some(expansion_req) = expansion_request {
                 expansion_requests.push(expansion_req);
             }
@@ -490,6 +491,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             // Collect index click requests
             if let Some((conn_id, index_name, db_name, table_name)) = index_click_request {
                 index_click_requests.push((conn_id, index_name, db_name, table_name));
+            }
+            // Collect create index requests
+            if let Some((conn_id, db_name, table_name)) = create_index_request {
+                create_index_requests.push((conn_id, db_name, table_name));
             }
         }
         
@@ -795,6 +800,40 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 editor::create_new_tab_with_connection_and_database(self, title, ddl, Some(connection_id), database_name.clone());
             }
         }
+
+        // Handle create index requests - open CREATE INDEX template in new tab
+        for (connection_id, database_name, table_name) in create_index_requests {
+            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)).cloned() {
+                if let Some(tn) = table_name.clone() {
+                    let (title, ddl) = match conn.connection_type {
+                        models::enums::DatabaseType::MySQL => (
+                            format!("Create Index on {}", tn),
+                            format!("CREATE INDEX `idx_{0}_col` ON `{0}` (`column1`) USING BTREE;", tn)
+                        ),
+                        models::enums::DatabaseType::PostgreSQL => {
+                            let schema = database_name.clone().unwrap_or_else(|| "public".to_string());
+                            (
+                                format!("Create Index on {}", tn),
+                                format!("CREATE INDEX idx_{0}_col ON \"{1}\".\"{0}\" USING btree (column1);", tn, schema)
+                            )
+                        }
+                        models::enums::DatabaseType::SQLite => (
+                            format!("Create Index on {}", tn),
+                            format!("CREATE INDEX IF NOT EXISTS \"idx_{0}_col\" ON \"{0}\"(column1);", tn)
+                        ),
+                        models::enums::DatabaseType::MSSQL => {
+                            let db = database_name.clone().unwrap_or_else(|| conn.database.clone());
+                            (
+                                format!("Create Index on {}", tn),
+                                format!("CREATE INDEX [idx_{0}_col] ON [{1}].dbo.[{0}] ([column1]);", tn, db)
+                            )
+                        }
+                        models::enums::DatabaseType::Redis => ("Create Index".to_string(), "-- Not applicable for Redis".to_string()),
+                    };
+                    editor::create_new_tab_with_connection_and_database(self, title, ddl, Some(connection_id), database_name.clone());
+                }
+            }
+        }
         
         // Handle query file open requests
         let results = query_files_to_open.clone();
@@ -941,7 +980,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             Option<(String, String, String)>, Option<String>, Option<String>, // Add parent folder for creation
             Option<(i64, String)>, // Add mapping for folder removal: (hash, folder_path)
             Option<(i64, models::enums::NodeType)>, // DBA quick view click (connection_id, node_type)
-            Option<(i64, String, Option<String>, Option<String>)> // Index click (connection_id, index_name, database_name, table_name)
+            Option<(i64, String, Option<String>, Option<String>)>, // Index click (connection_id, index_name, database_name, table_name)
+            Option<(i64, Option<String>, Option<String>)> // Create index (connection_id, database_name, table_name)
         ) {
         let has_children = !node.children.is_empty();
         let mut expansion_request = None;
@@ -955,6 +995,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
     let mut parent_folder_for_creation = None;
     let mut dba_click_request: Option<(i64, models::enums::NodeType)> = None;
     let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
+    let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
         
     if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table || 
        node.node_type == models::enums::NodeType::View ||
@@ -1177,12 +1218,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     }
                 }
 
-                // Handle clicks on Index items - open ALTER INDEX template
-                if node.node_type == models::enums::NodeType::Index && response.clicked() {
-                    if let Some(conn_id) = node.connection_id {
-                        index_click_request = Some((conn_id, node.name.clone(), node.database_name.clone(), node.table_name.clone()));
-                    }
-                }
+                // Index items: no left-click action; use context menu for Alter Index
                 
                 // Add context menu for connection nodes
                 if node.node_type == models::enums::NodeType::Connection {
@@ -1287,6 +1323,13 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             ui.close_menu();
                         }
                         ui.separator();
+                        if ui.button("➕ Add Index (New Tab)").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                create_index_request = Some((conn_id, node.database_name.clone(), Some(node.name.clone())));
+                            }
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         if ui.button("🔧 Alter Table").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 // Use connection_id + 30000 to indicate alter table request
@@ -1334,6 +1377,30 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         }
                     });
                 }
+
+                // Context menu for Indexes folder: create index
+                if node.node_type == models::enums::NodeType::IndexesFolder {
+                    response.context_menu(|ui| {
+                        if ui.button("➕ New Index").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                create_index_request = Some((conn_id, node.database_name.clone(), node.table_name.clone()));
+                            }
+                            ui.close_menu();
+                        }
+                    });
+                }
+
+                // Context menu for Index node: edit index
+                if node.node_type == models::enums::NodeType::Index {
+                    response.context_menu(|ui| {
+                        if ui.button("✏️ Edit Index").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                index_click_request = Some((conn_id, node.name.clone(), node.database_name.clone(), node.table_name.clone()));
+                            }
+                            ui.close_menu();
+                        }
+                    });
+                }
             });
 
             if node.is_expanded {
@@ -1341,18 +1408,19 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 let is_history_date_folder = node.node_type == models::enums::NodeType::HistoryDateFolder;
                 if is_history_date_folder {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
-                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click, child_create_index_request) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
                         if let Some(child_expansion) = child_expansion_request { expansion_request = Some(child_expansion); }
                         if table_expansion.is_none() { if let Some((child_index, child_conn_id, table_name)) = child_table_expansion { if let Some(conn_id) = node.connection_id { table_expansion = Some((child_index, conn_id, table_name)); } else { table_expansion = Some((child_index, child_conn_id, table_name)); } } }
                         if let Some((conn_id, table_name)) = child_table_click { table_click_request = Some((conn_id, table_name)); }
                         if let Some(v) = child_dba_click { dba_click_request = Some(v); }
                         if let Some(v) = child_index_click { index_click_request = Some(v); }
+                        if let Some(v) = child_create_index_request { create_index_request = Some(v); }
                         if let Some(child_context_id) = child_context { context_menu_request = Some(child_context_id); }
                     }
                 } else {
                     ui.indent(id, |ui| {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
-                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click, child_create_index_request) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
                         
                         // Handle child expansion requests - propagate to parent
                         if let Some(child_expansion) = child_expansion_request {
@@ -1378,6 +1446,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         // Propagate DBA click to parent
                         if let Some(v) = child_dba_click { dba_click_request = Some(v); }
                         if let Some(v) = child_index_click { index_click_request = Some(v); }
+                        if let Some(v) = child_create_index_request { create_index_request = Some(v); }
                         
                         // Handle child folder removal - propagate to parent
                         if let Some(child_folder_name) = _child_folder_removal {
@@ -1535,9 +1604,21 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         }
                     });
                 }
+
+                // Add context menu for Index nodes (non-expandable branch)
+                if node.node_type == models::enums::NodeType::Index {
+                    response.context_menu(|ui| {
+                        if ui.button("✏️ Edit Index").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                index_click_request = Some((conn_id, node.name.clone(), node.database_name.clone(), node.table_name.clone()));
+                            }
+                            ui.close_menu();
+                        }
+                    });
+                }
         }
         
-    (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping, dba_click_request, index_click_request)
+    (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping, dba_click_request, index_click_request, create_index_request)
     }
 
 
