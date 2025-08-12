@@ -14,6 +14,7 @@ pub struct TreeNode {
     pub is_loaded: bool, // For tracking if tables/columns are loaded
     pub database_name: Option<String>, // For storing database context
     pub file_path: Option<String>, // For query files
+    pub table_name: Option<String>, // For storing table context for subfolders/items
 }
 
 impl TreeNode {
@@ -27,6 +28,7 @@ impl TreeNode {
             is_loaded: true, // Regular nodes are always loaded
             database_name: None,
             file_path: None,
+            table_name: None,
         }
     }
 
@@ -41,6 +43,7 @@ impl TreeNode {
             is_loaded: true,
             database_name: None,
             file_path: None,
+            table_name: None,
         }
     }
 
@@ -54,6 +57,7 @@ impl TreeNode {
             is_loaded: false, // Connection nodes need to load tables
             database_name: None,
             file_path: None,
+            table_name: None,
         }
     }
 }

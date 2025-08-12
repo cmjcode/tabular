@@ -564,6 +564,9 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                             column_name TEXT NOT NULL,
                             data_type TEXT NOT NULL,
                             ordinal_position INTEGER NOT NULL,
+                            -- New flags for schema insights
+                            is_primary_key INTEGER NOT NULL DEFAULT 0, -- 0 = false, 1 = true
+                            is_indexed INTEGER NOT NULL DEFAULT 0,     -- 0 = false, 1 = true
                             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                             FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE,
                             UNIQUE(connection_id, database_name, table_name, column_name)
@@ -608,6 +611,22 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
         
         if let Some(pool) = pool_result {
             tabular.db_pool = Some(Arc::new(pool));
+            // Best-effort migrations for new columns (idempotent): add flags to column_cache
+            // Ignore errors if columns already exist
+            if let Some(ref pool) = tabular.db_pool {
+                let _ = rt.block_on(async {
+                    let _ = sqlx::query(
+                        "ALTER TABLE column_cache ADD COLUMN is_primary_key INTEGER NOT NULL DEFAULT 0"
+                    )
+                    .execute(pool.as_ref())
+                    .await;
+                    let _ = sqlx::query(
+                        "ALTER TABLE column_cache ADD COLUMN is_indexed INTEGER NOT NULL DEFAULT 0"
+                    )
+                    .execute(pool.as_ref())
+                    .await;
+                });
+            }
             // Load existing connections from database
             load_connections(tabular);
             // Load query history from database

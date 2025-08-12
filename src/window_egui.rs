@@ -432,10 +432,11 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         let mut context_menu_requests = Vec::new();
         let mut table_click_requests = Vec::new();
         let mut connection_click_requests = Vec::new();
+        let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> = Vec::new();
         let mut query_files_to_open = Vec::new();
         
         for (index, node) in nodes.iter_mut().enumerate() {
-            let (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_for_removal, parent_for_creation, folder_removal_mapping, dba_click_request) = Self::render_tree_node_with_table_expansion(ui, node, &mut self.editor_text, index, &self.refreshing_connections);
+            let (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_for_removal, parent_for_creation, folder_removal_mapping, dba_click_request, index_click_request) = Self::render_tree_node_with_table_expansion(ui, node, &mut self.editor_text, index, &self.refreshing_connections);
             if let Some(expansion_req) = expansion_request {
                 expansion_requests.push(expansion_req);
             }
@@ -485,6 +486,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         self.show_error_message = true;
                     }
                 }
+            }
+            // Collect index click requests
+            if let Some((conn_id, index_name, db_name, table_name)) = index_click_request {
+                index_click_requests.push((conn_id, index_name, db_name, table_name));
             }
         }
         
@@ -751,6 +756,45 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 };
             }
         }
+
+        // Handle index click requests - open ALTER INDEX template in new tab
+        for (connection_id, index_name, database_name, table_name) in index_click_requests {
+            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)).cloned() {
+                let (title, ddl) = match conn.connection_type {
+                    models::enums::DatabaseType::MySQL => (
+                        format!("Alter Index: {}", index_name),
+                        match table_name.clone() {
+                            Some(tn) => format!("-- MySQL\n-- SHOW INDEX FROM `{}`;\n-- To alter, DROP and CREATE:\nALTER TABLE `{}` DROP INDEX `{}`;\n-- ALTER TABLE `{}` ADD INDEX `{}` (...);", tn, tn, index_name, tn, index_name),
+                            None => format!("-- MySQL\n-- ALTER INDEX requires table context\n-- DROP INDEX `{}` ON <table>;\n-- CREATE INDEX `{}` ON <table>(...);", index_name, index_name),
+                        }
+                    ),
+                    models::enums::DatabaseType::PostgreSQL => (
+                        format!("Alter Index: {}", index_name),
+                        format!("-- PostgreSQL\nALTER INDEX IF EXISTS \"{}\" RENAME TO <new_name>;\n-- ALTER INDEX IF EXISTS \"{}\" SET (fillfactor = 90);", index_name, index_name)
+                    ),
+                    models::enums::DatabaseType::SQLite => (
+                        format!("Alter Index: {}", index_name),
+                        match table_name.clone() {
+                            Some(tn) => format!("-- SQLite has no ALTER INDEX, usually DROP and CREATE\nDROP INDEX IF EXISTS \"{}\";\n-- CREATE INDEX \"{}\" ON \"{}\"(<cols>);", index_name, index_name, tn),
+                            None => format!("-- SQLite has no ALTER INDEX, usually DROP and CREATE\nDROP INDEX IF EXISTS \"{}\";\n-- CREATE INDEX \"{}\" ON <table>(<cols>);", index_name, index_name),
+                        }
+                    ),
+                    models::enums::DatabaseType::MSSQL => {
+                        let db = database_name.clone().unwrap_or_default();
+                        let tn = table_name.clone().unwrap_or("<table>".to_string());
+                        (
+                            format!("Alter Index: {}", index_name),
+                            format!("-- SQL Server\nALTER INDEX [{}] ON [{}].dbo.[{}] REBUILD;\n-- ALTER INDEX [{}] ON [{}].dbo.[{}] DISABLE;", index_name, db, tn, index_name, db, tn)
+                        )
+                    }
+                    models::enums::DatabaseType::Redis => (
+                        format!("Index: {}", index_name),
+                        "-- Not applicable for Redis".to_string()
+                    ),
+                };
+                editor::create_new_tab_with_connection_and_database(self, title, ddl, Some(connection_id), database_name.clone());
+            }
+        }
         
         // Handle query file open requests
         let results = query_files_to_open.clone();
@@ -896,7 +940,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             Option<i64>, Option<(i64, String)>, Option<i64>, 
             Option<(String, String, String)>, Option<String>, Option<String>, // Add parent folder for creation
             Option<(i64, String)>, // Add mapping for folder removal: (hash, folder_path)
-            Option<(i64, models::enums::NodeType)> // DBA quick view click (connection_id, node_type)
+            Option<(i64, models::enums::NodeType)>, // DBA quick view click (connection_id, node_type)
+            Option<(i64, String, Option<String>, Option<String>)> // Index click (connection_id, index_name, database_name, table_name)
         ) {
         let has_children = !node.children.is_empty();
         let mut expansion_request = None;
@@ -909,6 +954,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         let mut folder_name_for_removal = None;
     let mut parent_folder_for_creation = None;
     let mut dba_click_request: Option<(i64, models::enums::NodeType)> = None;
+    let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
         
     if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table || 
        node.node_type == models::enums::NodeType::View ||
@@ -916,9 +962,9 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
        node.node_type == models::enums::NodeType::DatabasesFolder || node.node_type == models::enums::NodeType::TablesFolder ||
        node.node_type == models::enums::NodeType::ViewsFolder || node.node_type == models::enums::NodeType::StoredProceduresFolder ||
        node.node_type == models::enums::NodeType::UserFunctionsFolder || node.node_type == models::enums::NodeType::TriggersFolder ||
-       node.node_type == models::enums::NodeType::EventsFolder || node.node_type == models::enums::NodeType::DBAViewsFolder ||
+    node.node_type == models::enums::NodeType::EventsFolder || node.node_type == models::enums::NodeType::DBAViewsFolder ||
        // Do NOT show expand toggles for DBA leaf items; they act as actions when clicked
-       node.node_type == models::enums::NodeType::Database || node.node_type == models::enums::NodeType::QueryFolder {
+    node.node_type == models::enums::NodeType::Database || node.node_type == models::enums::NodeType::QueryFolder {
             // Use more unique ID including connection_id for connections
             let unique_id = match node.node_type {
                 models::enums::NodeType::Connection => format!("conn_{}_{}", node_index, node.connection_id.unwrap_or(0)),
@@ -957,7 +1003,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         node.node_type == models::enums::NodeType::StoredProceduresFolder ||
                         node.node_type == models::enums::NodeType::UserFunctionsFolder ||
                         node.node_type == models::enums::NodeType::TriggersFolder ||
-                        node.node_type == models::enums::NodeType::EventsFolder) && 
+                        node.node_type == models::enums::NodeType::EventsFolder ||
+                        node.node_type == models::enums::NodeType::ColumnsFolder ||
+                        node.node_type == models::enums::NodeType::IndexesFolder ||
+                        node.node_type == models::enums::NodeType::PrimaryKeysFolder) && 
                        !node.is_loaded && node.is_expanded {
                         if let Some(conn_id) = node.connection_id {
                             expansion_request = Some(models::structs::ExpansionRequest {
@@ -985,6 +1034,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     models::enums::NodeType::Table => "📋",
                     // Use a plain bullet to avoid emoji font issues for column icons
                     models::enums::NodeType::Column => "•",
+                    models::enums::NodeType::ColumnsFolder => "📑",
+                    models::enums::NodeType::IndexesFolder => "🧭",
+                    models::enums::NodeType::PrimaryKeysFolder => "🔑",
+                    models::enums::NodeType::Index => "#",
                     models::enums::NodeType::Query => "🔍",
                     models::enums::NodeType::QueryHistItem => "📜",
                     models::enums::NodeType::Connection => "",
@@ -1082,7 +1135,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             || node.node_type == models::enums::NodeType::StoredProceduresFolder
                             || node.node_type == models::enums::NodeType::UserFunctionsFolder
                             || node.node_type == models::enums::NodeType::TriggersFolder
-                            || node.node_type == models::enums::NodeType::EventsFolder)
+                            || node.node_type == models::enums::NodeType::EventsFolder
+                            || node.node_type == models::enums::NodeType::ColumnsFolder
+                            || node.node_type == models::enums::NodeType::IndexesFolder
+                            || node.node_type == models::enums::NodeType::PrimaryKeysFolder)
                             && !node.is_loaded && node.is_expanded
                         {
                             if let Some(conn_id) = node.connection_id {
@@ -1118,6 +1174,13 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && response.clicked() {
                     if let Some(conn_id) = node.connection_id {
                         table_click_request = Some((conn_id, node.name.clone()));
+                    }
+                }
+
+                // Handle clicks on Index items - open ALTER INDEX template
+                if node.node_type == models::enums::NodeType::Index && response.clicked() {
+                    if let Some(conn_id) = node.connection_id {
+                        index_click_request = Some((conn_id, node.name.clone(), node.database_name.clone(), node.table_name.clone()));
                     }
                 }
                 
@@ -1278,17 +1341,18 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 let is_history_date_folder = node.node_type == models::enums::NodeType::HistoryDateFolder;
                 if is_history_date_folder {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
-                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
                         if let Some(child_expansion) = child_expansion_request { expansion_request = Some(child_expansion); }
                         if table_expansion.is_none() { if let Some((child_index, child_conn_id, table_name)) = child_table_expansion { if let Some(conn_id) = node.connection_id { table_expansion = Some((child_index, conn_id, table_name)); } else { table_expansion = Some((child_index, child_conn_id, table_name)); } } }
                         if let Some((conn_id, table_name)) = child_table_click { table_click_request = Some((conn_id, table_name)); }
                         if let Some(v) = child_dba_click { dba_click_request = Some(v); }
+                        if let Some(v) = child_index_click { index_click_request = Some(v); }
                         if let Some(child_context_id) = child_context { context_menu_request = Some(child_context_id); }
                     }
                 } else {
                     ui.indent(id, |ui| {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
-                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
                         
                         // Handle child expansion requests - propagate to parent
                         if let Some(child_expansion) = child_expansion_request {
@@ -1313,6 +1377,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         }
                         // Propagate DBA click to parent
                         if let Some(v) = child_dba_click { dba_click_request = Some(v); }
+                        if let Some(v) = child_index_click { index_click_request = Some(v); }
                         
                         // Handle child folder removal - propagate to parent
                         if let Some(child_folder_name) = _child_folder_removal {
@@ -1472,7 +1537,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 }
         }
         
-    (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping, dba_click_request)
+    (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping, dba_click_request, index_click_request)
     }
 
 
@@ -2952,10 +3017,45 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 .unwrap_or_else(|| connection.database.clone());
             
             // Load columns for this table without creating new runtime
-            let columns = self.load_table_columns_sync(connection_id, table_name, &connection, &database_name);
-            
-            // Find the table node recursively and update it
-            let updated = self.update_table_node_with_columns_recursive(nodes, table_name, columns, connection_id);
+            // Build subfolders: Columns, Indexes, Primary Keys
+            let columns_children = self.load_table_columns_sync(connection_id, table_name, &connection, &database_name);
+
+            let indexes_list = self.fetch_index_names_for_table(connection_id, &connection, &database_name, table_name);
+            let pk_columns = self.fetch_primary_key_columns_for_table(connection_id, &connection, &database_name, table_name);
+
+            let mut columns_folder = models::structs::TreeNode::new("Columns".to_string(), models::enums::NodeType::ColumnsFolder);
+            columns_folder.connection_id = Some(connection_id);
+            columns_folder.database_name = Some(database_name.clone());
+            columns_folder.table_name = Some(table_name.to_string());
+            columns_folder.is_loaded = true;
+            columns_folder.children = columns_children;
+
+            let mut indexes_folder = models::structs::TreeNode::new("Indexes".to_string(), models::enums::NodeType::IndexesFolder);
+            indexes_folder.connection_id = Some(connection_id);
+            indexes_folder.database_name = Some(database_name.clone());
+            indexes_folder.table_name = Some(table_name.to_string());
+            indexes_folder.is_loaded = true;
+            indexes_folder.children = indexes_list.into_iter().map(|idx| {
+                let mut n = models::structs::TreeNode::new(idx, models::enums::NodeType::Index);
+                n.connection_id = Some(connection_id);
+                n.database_name = Some(database_name.clone());
+                n.table_name = Some(table_name.to_string());
+                n
+            }).collect();
+
+            let mut pks_folder = models::structs::TreeNode::new("Primary Keys".to_string(), models::enums::NodeType::PrimaryKeysFolder);
+            pks_folder.connection_id = Some(connection_id);
+            pks_folder.database_name = Some(database_name.clone());
+            pks_folder.table_name = Some(table_name.to_string());
+            pks_folder.is_loaded = true;
+            pks_folder.children = pk_columns.into_iter().map(|col| {
+                models::structs::TreeNode::new(col, models::enums::NodeType::Column)
+            }).collect();
+
+            let subfolders = vec![columns_folder, indexes_folder, pks_folder];
+
+            // Find the table node recursively and update it with subfolders
+            let updated = self.update_table_node_with_columns_recursive(nodes, table_name, subfolders, connection_id);
             
             if !updated {
                 // Log only if update failed
@@ -2997,6 +3097,208 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
         }
         false
+    }
+
+    // Fetch index names per database type
+    fn fetch_index_names_for_table(&mut self, connection_id: i64, connection: &models::structs::ConnectionConfig, database_name: &str, table_name: &str) -> Vec<String> {
+        match connection.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        let q = "SELECT DISTINCT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME";
+                        match sqlx::query_as::<_, (String,)>(q)
+                            .bind(database_name)
+                            .bind(table_name)
+                            .fetch_all(mysql_pool.as_ref())
+                            .await {
+                                Ok(rows) => rows.into_iter().map(|(n,)| n).collect(),
+                                Err(_) => Vec::new(),
+                            }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        let q = "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1 ORDER BY indexname";
+                        match sqlx::query_as::<_, (String,)>(q)
+                            .bind(table_name)
+                            .fetch_all(pg_pool.as_ref())
+                            .await {
+                                Ok(rows) => rows.into_iter().map(|(n,)| n).collect(),
+                                Err(_) => Vec::new(),
+                            }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::SQLite => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        let escaped = table_name.replace("'", "''");
+                        let q = format!("PRAGMA index_list('{}')", escaped);
+                        match sqlx::query(&q).fetch_all(sqlite_pool.as_ref()).await {
+                            Ok(rows) => {
+                                use sqlx::Row;
+                                let mut names = Vec::new();
+                                for r in rows {
+                                    if let Ok(Some(n)) = r.try_get::<Option<String>, _>("name") { names.push(n); }
+                                }
+                                names
+                            }
+                            Err(_) => Vec::new(),
+                        }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::MSSQL => {
+                // Use tiberius
+                use tokio_util::compat::TokioAsyncWriteCompatExt;
+                use tiberius::{Config, AuthMethod};
+                let host = connection.host.clone();
+                let port: u16 = connection.port.parse().unwrap_or(1433);
+                let user = connection.username.clone();
+                let pass = connection.password.clone();
+                let db = database_name.to_string();
+                let tbl = table_name.to_string();
+                let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                    let mut config = Config::new();
+                    config.host(host.clone());
+                    config.port(port);
+                    config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+                    config.trust_cert();
+                    if !db.is_empty() { config.database(db.clone()); }
+                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
+                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                    let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                    // Parse schema-qualified name
+                    let parse = |name: &str| -> (Option<String>, String) {
+                        if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
+                            let trimmed = name.trim_matches(|c| c == '[' || c == ']');
+                            let parts: Vec<&str> = trimmed.split("].[").collect();
+                            if parts.len() >= 2 { return (Some(parts[0].to_string()), parts[1].to_string()); }
+                        }
+                        if let Some((s, t)) = name.split_once('.') { return (Some(s.trim_matches(|c| c=='['||c==']').to_string()), t.trim_matches(|c| c=='['||c==']').to_string()); }
+                        (None, name.trim_matches(|c| c=='['||c==']').to_string())
+                    };
+                    let (schema_opt, table_only) = parse(&tbl);
+                    let mut q = format!("SELECT i.name FROM sys.indexes i INNER JOIN sys.objects o ON i.object_id = o.object_id WHERE o.name = '{}' AND i.name IS NOT NULL", table_only.replace("'", "''"));
+                    if let Some(s) = schema_opt { q.push_str(&format!(" AND SCHEMA_NAME(o.schema_id) = '{}'", s.replace("'", "''"))); }
+                    q.push_str(" ORDER BY i.name");
+                    let mut stream = client.simple_query(q).await.map_err(|e| e.to_string())?;
+                    let mut list = Vec::new();
+                    use futures_util::TryStreamExt;
+                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let n: Option<&str> = r.get(0); if let Some(nm) = n { list.push(nm.to_string()); } } }
+                    Ok::<_, String>(list)
+                });
+                match rt_res { Ok(v) => v, Err(_) => Vec::new() }
+            }
+            models::enums::DatabaseType::Redis => Vec::new(),
+        }
+    }
+
+    // Fetch primary key column names per database type
+    fn fetch_primary_key_columns_for_table(&mut self, connection_id: i64, connection: &models::structs::ConnectionConfig, database_name: &str, table_name: &str) -> Vec<String> {
+        match connection.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        let q = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION";
+                        match sqlx::query_as::<_, (String,)>(q)
+                            .bind(database_name)
+                            .bind(table_name)
+                            .fetch_all(mysql_pool.as_ref())
+                            .await {
+                                Ok(rows) => rows.into_iter().map(|(n,)| n).collect(),
+                                Err(_) => Vec::new(),
+                            }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        let q = "SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey) JOIN pg_namespace n ON n.oid = c.relnamespace WHERE i.indisprimary AND c.relname = $1 AND n.nspname = 'public' ORDER BY a.attnum";
+                        match sqlx::query_as::<_, (String,)>(q)
+                            .bind(table_name)
+                            .fetch_all(pg_pool.as_ref())
+                            .await {
+                                Ok(rows) => rows.into_iter().map(|(n,)| n).collect(),
+                                Err(_) => Vec::new(),
+                            }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::SQLite => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        let escaped = table_name.replace("'", "''");
+                        let q = format!("PRAGMA table_info('{}')", escaped);
+                        match sqlx::query(&q).fetch_all(sqlite_pool.as_ref()).await {
+                            Ok(rows) => {
+                                use sqlx::Row;
+                                let mut names = Vec::new();
+                                for r in rows {
+                                    let pk: i64 = r.try_get::<i64, _>("pk").unwrap_or(0);
+                                    if pk > 0 { if let Ok(Some(n)) = r.try_get::<Option<String>, _>("name") { names.push(n); } }
+                                }
+                                names
+                            }
+                            Err(_) => Vec::new(),
+                        }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::MSSQL => {
+                // Use tiberius
+                use tokio_util::compat::TokioAsyncWriteCompatExt;
+                use tiberius::{Config, AuthMethod};
+                let host = connection.host.clone();
+                let port: u16 = connection.port.parse().unwrap_or(1433);
+                let user = connection.username.clone();
+                let pass = connection.password.clone();
+                let db = database_name.to_string();
+                let tbl = table_name.to_string();
+                let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                    let mut config = Config::new();
+                    config.host(host.clone());
+                    config.port(port);
+                    config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+                    config.trust_cert();
+                    if !db.is_empty() { config.database(db.clone()); }
+                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
+                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                    let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                    // Parse schema-qualified name
+                    let parse = |name: &str| -> (Option<String>, String) {
+                        if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
+                            let trimmed = name.trim_matches(|c| c == '[' || c == ']');
+                            let parts: Vec<&str> = trimmed.split("].[").collect();
+                            if parts.len() >= 2 { return (Some(parts[0].to_string()), parts[1].to_string()); }
+                        }
+                        if let Some((s, t)) = name.split_once('.') { return (Some(s.trim_matches(|c| c=='['||c==']').to_string()), t.trim_matches(|c| c=='['||c==']').to_string()); }
+                        (None, name.trim_matches(|c| c=='['||c==']').to_string())
+                    };
+                    let (schema_opt, table_only) = parse(&tbl);
+                    let mut q = String::from("SELECT c.name FROM sys.indexes i JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id JOIN sys.objects o ON i.object_id = o.object_id WHERE i.is_primary_key = 1");
+                    q.push_str(&format!(" AND o.name = '{}'", table_only.replace("'", "''")));
+                    if let Some(s) = schema_opt { q.push_str(&format!(" AND SCHEMA_NAME(o.schema_id) = '{}'", s.replace("'", "''"))); }
+                    q.push_str(" ORDER BY ic.key_ordinal");
+                    let mut stream = client.simple_query(q).await.map_err(|e| e.to_string())?;
+                    let mut list = Vec::new();
+                    use futures_util::TryStreamExt;
+                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let n: Option<&str> = r.get(0); if let Some(nm) = n { list.push(nm.to_string()); } } }
+                    Ok::<_, String>(list)
+                });
+                match rt_res { Ok(v) => v, Err(_) => Vec::new() }
+            }
+            models::enums::DatabaseType::Redis => Vec::new(),
+        }
     }
 
     // Pagination methods

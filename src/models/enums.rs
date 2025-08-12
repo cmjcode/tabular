@@ -39,6 +39,11 @@ pub enum NodeType {
     RedisFolder,       // Folder untuk koneksi Redis
     CustomFolder,      // Folder custom yang bisa dinamai user
     QueryFolder,       // Folder untuk mengelompokkan query files
+    // New table subfolders and items
+    ColumnsFolder,
+    IndexesFolder,
+    PrimaryKeysFolder,
+    Index,
 }
 
 #[derive(Debug, Clone)]
