@@ -974,7 +974,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 let icon = match node.node_type {
                     models::enums::NodeType::Database => "🗄",
                     models::enums::NodeType::Table => "📋",
-                    models::enums::NodeType::Column => "📄",
+                    // Use a plain bullet to avoid emoji font issues for column icons
+                    models::enums::NodeType::Column => "•",
                     models::enums::NodeType::Query => "🔍",
                     models::enums::NodeType::QueryHistItem => "📜",
                     models::enums::NodeType::Connection => "",
@@ -1277,10 +1278,11 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 // For all other node types, use horizontal layout with icons
                 ui.horizontal(|ui| {
                     let icon = match node.node_type {
-                        models::enums::NodeType::Database => "�",
-                        models::enums::NodeType::Table => "�",
-                        models::enums::NodeType::Column => "�",
-                        models::enums::NodeType::Query => "�",
+                        models::enums::NodeType::Database => "🗄",
+                        models::enums::NodeType::Table => "📋",
+                        // Use a plain bullet again for columns in fallback rendering
+                        models::enums::NodeType::Column => "•",
+                        models::enums::NodeType::Query => "🔍",
                         models::enums::NodeType::Connection => "🔗",
                         models::enums::NodeType::DatabasesFolder => "📁",
                         models::enums::NodeType::TablesFolder => "📋",
