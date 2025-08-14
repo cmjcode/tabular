@@ -188,3 +188,33 @@ pub struct IndexDialogState {
     pub method: Option<String>,       // e.g., btree/hash for PG, BTREE/HASH for MySQL
     pub db_type: crate::models::enums::DatabaseType,
 }
+
+// Bottom panel view mode for a selected table
+#[derive(Clone, Debug, PartialEq)]
+pub enum TableBottomView {
+    Data,
+    Structure,
+}
+
+impl Default for TableBottomView {
+    fn default() -> Self { TableBottomView::Data }
+}
+
+// Simplified column info for Structure tab (can be extended later per RDBMS)
+#[derive(Clone, Debug, Default)]
+pub struct ColumnStructInfo {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: Option<bool>,
+    pub default_value: Option<String>,
+    pub extra: Option<String>,
+}
+
+// Sub view inside Structure (so kita tidak render dua tabel sekaligus)
+#[derive(Clone, Debug, PartialEq)]
+pub enum StructureSubView {
+    Columns,
+    Indexes,
+}
+
+impl Default for StructureSubView { fn default() -> Self { StructureSubView::Columns } }

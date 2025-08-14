@@ -129,6 +129,15 @@ pub struct Tabular {
     // Index dialog
     pub show_index_dialog: bool,
     pub index_dialog: Option<models::structs::IndexDialogState>,
+    // Bottom panel view mode (Data / Structure)
+    pub table_bottom_view: models::structs::TableBottomView,
+    // Cached structure info for current table
+    pub structure_columns: Vec<models::structs::ColumnStructInfo>,
+    pub structure_indexes: Vec<String>,
+    // Structure view column widths (separate from data grid)
+    pub structure_col_widths: Vec<f32>, // for columns table
+    pub structure_idx_col_widths: Vec<f32>, // for indexes table
+    pub structure_sub_view: models::structs::StructureSubView,
 }
 
 
@@ -337,6 +346,12 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             // Index dialog defaults
             show_index_dialog: false,
             index_dialog: None,
+            table_bottom_view: models::structs::TableBottomView::default(),
+            structure_columns: Vec::new(),
+            structure_indexes: Vec::new(),
+            structure_col_widths: Vec::new(),
+            structure_idx_col_widths: Vec::new(),
+            structure_sub_view: models::structs::StructureSubView::Columns,
         };
         
         // Clear any old cached pools
@@ -4205,6 +4220,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
     fn render_table_data(&mut self, ui: &mut egui::Ui) {
         if !self.current_table_headers.is_empty() || !self.current_table_name.is_empty() {
+            // This function now only renders DATA grid (toggle handled at higher level for table tabs)
             // Render pagination controls at the top
             if self.total_rows > 0 {
                 ui.horizontal(|ui| {
@@ -4757,6 +4773,122 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         );
     }
 
+    // Fetch structure (columns & indexes) metadata for current table for Structure tab.
+    fn load_structure_info_for_current_table(&mut self) {
+        self.structure_columns.clear();
+        self.structure_indexes.clear();
+        let Some(conn_id) = self.current_connection_id else { return; };
+        // Infer table & database
+        let active_tab_db = self.query_tabs.get(self.active_tab_index).and_then(|t| t.database_name.clone()).unwrap_or_default();
+        // Attempt to reuse already loaded tree metadata (columns already cached in column_cache)
+        if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
+            // Rough table name inference from title
+            let mut table_guess = self.current_table_name.clone();
+            if let Some(pos) = table_guess.find(':') { table_guess = table_guess[pos+1..].trim().to_string(); }
+            if let Some(pos) = table_guess.find('(') { table_guess = table_guess[..pos].trim().to_string(); }
+            let database = if !active_tab_db.is_empty() { active_tab_db.clone() } else { conn.database.clone() };
+            // Columns: try fetch_columns_from_database synchronously via helper used earlier
+            if let Some(cols) = crate::connection::fetch_columns_from_database(conn_id, &database, &table_guess, &conn) {
+                for (name, dtype) in cols { self.structure_columns.push(models::structs::ColumnStructInfo { name, data_type: dtype, ..Default::default() }); }
+            }
+            // Indexes
+            let idxs = self.fetch_index_names_for_table(conn_id, &conn, &database, &table_guess);
+            self.structure_indexes = idxs;
+        }
+    }
+
+    fn render_structure_view(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let active_cols = self.structure_sub_view == models::structs::StructureSubView::Columns;
+            if ui.add(egui::SelectableLabel::new(active_cols, "Columns")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Columns; }
+            let active_idx = self.structure_sub_view == models::structs::StructureSubView::Indexes;
+            if ui.add(egui::SelectableLabel::new(active_idx, "Indexes")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Indexes; }
+            ui.separator();
+            if ui.button("Refresh").clicked() { self.load_structure_info_for_current_table(); }
+        });
+        ui.separator();
+
+        match self.structure_sub_view {
+            models::structs::StructureSubView::Columns => {
+                let headers = ["No", "Name", "Type", "Nullable", "Default", "Extra"];                
+                if self.structure_col_widths.len() != headers.len() { self.structure_col_widths = vec![60.0, 180.0, 140.0, 90.0, 160.0, 140.0]; }
+                let mut local_widths = self.structure_col_widths.clone();
+                let mut rows: Vec<Vec<String>> = Vec::with_capacity(self.structure_columns.len());
+                for (i,c) in self.structure_columns.iter().enumerate() {
+                    rows.push(vec![
+                        (i+1).to_string(),
+                        c.name.clone(),
+                        c.data_type.clone(),
+                        c.nullable.map(|b| if b {"YES"} else {"NO"}).unwrap_or("?").to_string(),
+                        c.default_value.clone().unwrap_or_default(),
+                        c.extra.clone().unwrap_or_default(),
+                    ]);
+                }
+                self.render_structure_grid(ui, "struct_cols", &headers, &mut local_widths, &rows);
+                self.structure_col_widths = local_widths;
+            },
+            models::structs::StructureSubView::Indexes => {
+                let headers = ["No", "Index Name"]; 
+                if self.structure_idx_col_widths.len() != headers.len() { self.structure_idx_col_widths = vec![60.0, 320.0]; }
+                let mut local_widths = self.structure_idx_col_widths.clone();
+                let mut rows: Vec<Vec<String>> = Vec::with_capacity(self.structure_indexes.len());
+                for (i,name) in self.structure_indexes.iter().enumerate() { rows.push(vec![(i+1).to_string(), name.clone()]); }
+                self.render_structure_grid(ui, "struct_idx", &headers, &mut local_widths, &rows);
+                self.structure_idx_col_widths = local_widths;
+            }
+        }
+    }
+
+    // Generic bordered grid renderer (lighter reuse of render_table_data look & feel)
+    fn render_structure_grid(&mut self, ui: &mut egui::Ui, id_prefix: &str, headers: &[&str], widths: &mut [f32], rows: &[Vec<String>]) {
+        // Basic, reliable layout (horizontal rows) to avoid overlap issues.
+        for w in widths.iter_mut() { if *w < 40.0 { *w = 80.0; } }
+        let dark = ui.visuals().dark_mode;
+        let border = if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) };
+        let stroke = egui::Stroke::new(0.5, border);
+        let header_text_col = if dark { egui::Color32::from_rgb(220,220,255) } else { egui::Color32::from_rgb(60,60,120) };
+        let header_bg = if dark { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::from_gray(240) };
+        let row_h = 24.0f32;
+        let header_h = 28.0f32;
+
+        egui::ScrollArea::both().id_salt(format!("{}_scroll", id_prefix)).auto_shrink([false,false]).show(ui, |ui| {
+            // HEADER
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (i,h) in headers.iter().enumerate() {
+                    let w = widths[i].clamp(40.0, 2000.0);
+                    let (rect, _resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 0.0, header_bg);
+                    ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
+                    ui.painter().text(rect.left_center() + egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, *h, egui::FontId::proportional(13.0), header_text_col);
+                    // resize handle
+                    let handle = egui::Rect::from_min_max(egui::pos2(rect.max.x - 4.0, rect.min.y), rect.max);
+                    let rh = ui.interact(handle, egui::Id::new((id_prefix,"resize",i)), egui::Sense::drag());
+                    if rh.dragged() { widths[i] = (widths[i] + rh.drag_delta().x).clamp(40.0, 2000.0); ui.ctx().request_repaint(); }
+                    if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
+                }
+            });
+            ui.add_space(2.0);
+
+            // ROWS
+            for (ri,row) in rows.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (c,cell) in row.iter().enumerate() {
+                        let w = widths[c].clamp(40.0, 2000.0);
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
+                        // background stripe
+                        if ri % 2 == 1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect, 0.0, bg); }
+                        ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
+                        if resp.hovered() { ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(100,150,255)), egui::StrokeKind::Outside); }
+                        let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
+                        ui.painter().text(rect.left_center() + egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, cell, egui::FontId::proportional(13.0), txt_col);
+                    }
+                });
+            }
+        });
+    }
+
 
 }
 
@@ -5079,24 +5211,42 @@ impl App for Tabular {
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO)) // Remove all padding
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO))
             .show(ctx, |ui| {
-            ui.vertical_centered_justified(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0; // Remove vertical spacing
-                ui.spacing_mut().indent = 0.0; // Remove indentation
-                
-                // Use egui's built-in resizable panels for smooth resizing
-                let available_height = ui.available_height();
-                let editor_height = available_height * self.table_split_ratio;
-                
-                // SQL Editor in a resizable top panel - completely flush
-                egui::TopBottomPanel::top("sql_editor_panel")
-                    .resizable(true)
-                    .height_range(available_height * 0.1..=available_height * 0.9)
-                    .default_height(editor_height)
-                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO)) // Remove panel margin
-                    .show_inside(ui, |ui| {
-                        ui.vertical(|ui| {
+                let full_table_tab = self.query_tabs.get(self.active_tab_index).map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:")).unwrap_or(false);
+                if full_table_tab {
+                    // Data/Structure only
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
+                            if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Data; }
+                            let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
+                            if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Structure; if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); } }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if self.table_bottom_view == models::structs::TableBottomView::Structure {
+                                    if ui.button("+ Index").clicked() { if let Some(conn_id) = self.current_connection_id { let ttitle = self.query_tabs.get(self.active_tab_index).map(|t| t.title.clone()).unwrap_or_default(); let tname = ttitle.split(':').nth(1).unwrap_or(&ttitle).trim().to_string(); self.index_dialog = Some(models::structs::IndexDialogState { mode: models::structs::IndexDialogMode::Create, connection_id: conn_id, database_name: self.query_tabs.get(self.active_tab_index).and_then(|t| t.database_name.clone()), table_name: tname.clone(), existing_index_name: None, index_name: format!("idx_{}_col", tname), columns: "col1".to_string(), unique: false, method: None, db_type: self.connections.iter().find(|c| c.id==Some(conn_id)).map(|c| c.connection_type.clone()).unwrap_or(models::enums::DatabaseType::MySQL) }); self.show_index_dialog = true; } }
+                                    ui.add_space(4.0);
+                                    if ui.button("+ Column").clicked() { if let Some(conn_id) = self.current_connection_id { if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)) { let ttitle = self.query_tabs.get(self.active_tab_index).map(|t| t.title.clone()).unwrap_or_default(); let mut table_guess = ttitle.split(':').nth(1).unwrap_or(&ttitle).trim().to_string(); if let Some(p) = table_guess.find('(') { table_guess = table_guess[..p].trim().to_string(); } let stmt = match conn.connection_type { models::enums::DatabaseType::MySQL | models::enums::DatabaseType::MSSQL => format!("ALTER TABLE `{}` ADD COLUMN new_column VARCHAR(255) NULL;", table_guess), models::enums::DatabaseType::PostgreSQL => format!("ALTER TABLE \"{}\" ADD COLUMN new_column VARCHAR(255);", table_guess), models::enums::DatabaseType::SQLite => format!("ALTER TABLE `{}` ADD COLUMN new_column TEXT;", table_guess), _ => "-- Add column not supported for this database type".to_string() }; self.editor_text.push_str("\n"); self.editor_text.push_str(&stmt); } } }
+                                }
+                            });
+                        });
+                        ui.separator();
+                        if self.table_bottom_view == models::structs::TableBottomView::Structure { self.render_structure_view(ui); } else { self.render_table_data(ui); }
+                    });
+                } else {
+                    // Original editor + data layout
+                    ui.vertical_centered_justified(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.spacing_mut().indent = 0.0;
+                        let available_height = ui.available_height();
+                        let editor_height = available_height * self.table_split_ratio;
+                        egui::TopBottomPanel::top("sql_editor_panel")
+                            .resizable(true)
+                            .height_range(available_height * 0.1..=available_height * 0.9)
+                            .default_height(editor_height)
+                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO))
+                            .show_inside(ui, |ui| {
+                                ui.vertical(|ui| {
                             // Tab bar
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0; // Remove spacing between tabs
@@ -5292,19 +5442,14 @@ impl App for Tabular {
                                 });
                         });
                         
-                        // Update split ratio when panel is resized
-                        let current_height = ui.min_rect().height();
-                        self.table_split_ratio = (current_height / available_height).clamp(0.1, 0.9);
-                    });
-                
-                // Table data in the remaining space
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO)) // Remove all padding
-                    .show_inside(ui, |ui| {
-                    self.render_table_data(ui);
-                });
-            });
-        });
+                                // Update split ratio when panel is resized
+                                let current_height = ui.min_rect().height();
+                                self.table_split_ratio = (current_height / available_height).clamp(0.1, 0.9);
+                            }); // end top panel
+                    }); // end vertical_centered_justified
+                    egui::CentralPanel::default().frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO)).show_inside(ui, |ui| { self.render_table_data(ui); });
+                }
+            }); // end central panel block
 
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
