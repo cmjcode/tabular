@@ -4905,28 +4905,32 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn render_structure_view(&mut self, ui: &mut egui::Ui) {
-        let bar_height = 34.0f32;
-        // Reserve height for bottom bar by constraining scroll area height
-        let available_height = ui.available_height();
-        let content_height = (available_height - bar_height).max(50.0);
-        let scroll_id = if matches!(self.structure_sub_view, models::structs::StructureSubView::Indexes) { "struct_idx_inline" } else { "struct_cols_inline_wrapper" };
-        egui::ScrollArea::both().id_salt(scroll_id).max_height(content_height).auto_shrink([false,false]).show(ui, |cui| {
+        // We want a fixed bottom bar with the Columns / Indexes toggle.
+        // Compute available height and reserve space for bottom bar (e.g. 34px including separator).
+        let bottom_bar_height = 34.0f32; // content + padding
+        let avail = ui.available_size();
+        let scroll_height = (avail.y - bottom_bar_height).max(0.0);
+
+        egui::ScrollArea::both().id_salt("structure_scroll").max_height(scroll_height).show(ui, |ui| {
             match self.structure_sub_view {
                 models::structs::StructureSubView::Columns => {
-                    self.render_structure_columns_editor(cui);
+                    self.render_structure_columns_editor(ui);
                 },
                 models::structs::StructureSubView::Indexes => {
-                    let headers = ["#", "index_name", "algorithm", "unique", "columns", "actions"]; 
-                    if self.structure_idx_col_widths.len() != headers.len() { self.structure_idx_col_widths = vec![40.0, 200.0, 120.0, 70.0, 260.0, 120.0]; }
-                    let mut widths = self.structure_idx_col_widths.clone();
-                    for w in widths.iter_mut() { *w = w.clamp(40.0, 800.0); }
-                    let dark = cui.visuals().dark_mode;
-                    let border = if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) };
-                    let stroke = egui::Stroke::new(0.5, border);
-                    let header_text_col = if dark { egui::Color32::from_rgb(220,220,255) } else { egui::Color32::from_rgb(60,60,120) };
-                    let header_bg = if dark { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::from_gray(240) };
-                    let row_h = 26.0f32; let header_h = 30.0f32;
-                    cui.horizontal(|ui| {
+                // Headers: No | index_name | algorithm | unique | columns | actions
+                let headers = ["#", "index_name", "algorithm", "unique", "columns", "actions"]; 
+                if self.structure_idx_col_widths.len() != headers.len() { self.structure_idx_col_widths = vec![40.0, 200.0, 120.0, 70.0, 260.0, 120.0]; }
+                let mut widths = self.structure_idx_col_widths.clone();
+                for w in widths.iter_mut() { *w = w.clamp(40.0, 800.0); }
+                let dark = ui.visuals().dark_mode;
+                let border = if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) };
+                let stroke = egui::Stroke::new(0.5, border);
+                let header_text_col = if dark { egui::Color32::from_rgb(220,220,255) } else { egui::Color32::from_rgb(60,60,120) };
+                let header_bg = if dark { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::from_gray(240) };
+                let row_h = 26.0f32; let header_h = 30.0f32;
+                egui::ScrollArea::both().id_salt("struct_idx_inline").auto_shrink([false,false]).show(ui, |ui| {
+                    // Header
+                    ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         for (i,h) in headers.iter().enumerate() {
                             let w = widths[i];
@@ -4947,10 +4951,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             });
                         }
                     });
-                    cui.add_space(2.0);
+                    ui.add_space(2.0);
+                    // Existing indexes rows
                     let existing_indexes = self.structure_indexes.clone();
                     for (idx, ix) in existing_indexes.iter().enumerate() {
-                        cui.horizontal(|ui| {
+                        ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
                             let values = [
                                 (idx+1).to_string(),
@@ -4958,7 +4963,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                 ix.method.clone().unwrap_or_default(),
                                 if ix.unique { "YES".to_string() } else { "NO".to_string() },
                                 if ix.columns.is_empty() { String::new() } else { ix.columns.join(",") },
-                                String::new(),
+                                String::new(), // actions placeholder
                             ];
                             for (i,val) in values.iter().enumerate() {
                                 let w = widths[i];
@@ -4991,27 +4996,31 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             }
                         });
                     }
+                    // Inline add new index row (editable fields like add column)
                     if self.adding_index {
-                        cui.horizontal(|ui| {
+                        ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
-                            let row_h = 26.0f32;
+                            // #
                             let (rect_no,_) = ui.allocate_exact_size(egui::vec2(widths[0], row_h), egui::Sense::hover());
-                            ui.painter().rect_stroke(rect_no,0.0,egui::Stroke::new(0.5, if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) }), egui::StrokeKind::Outside);
+                            ui.painter().rect_stroke(rect_no,0.0,stroke, egui::StrokeKind::Outside);
                             let idx_txt = format!("{}", self.structure_indexes.len()+1);
                             let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; ui.painter().text(rect_no.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, idx_txt, egui::FontId::proportional(13.0), txt_col);
+                            // index_name
                             let w_name = widths[1];
                             ui.allocate_ui_with_layout(egui::vec2(w_name,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 ui.set_min_width(w_name-8.0); ui.add_space(4.0);
                                 if self.new_index_name.is_empty() { self.new_index_name = format!("idx_{}_col", self.infer_current_table_name()); }
                                 ui.text_edit_singleline(&mut self.new_index_name);
                             });
+                            // algorithm
                             let w_alg = widths[2];
                             ui.allocate_ui_with_layout(egui::vec2(w_alg,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                let algos = ["", "btree", "hash", "gin", "gist"]; 
+                                let algos = ["", "btree", "hash", "gin", "gist"]; // union superset
                                 egui::ComboBox::from_id_salt("new_index_algo").selected_text(if self.new_index_method.is_empty(){"(auto)"} else { &self.new_index_method }).show_ui(ui, |ui| {
                                     for a in algos { if ui.selectable_label(self.new_index_method==a, if a.is_empty(){"(auto)"} else {a}).clicked() { self.new_index_method = a.to_string(); } }
                                 });
                             });
+                            // unique
                             let w_unique = widths[3];
                             ui.allocate_ui_with_layout(egui::vec2(w_unique,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 egui::ComboBox::from_id_salt("new_index_unique").selected_text(if self.new_index_unique {"YES"} else {"NO"}).show_ui(ui, |ui| {
@@ -5019,12 +5028,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                     if ui.selectable_label(!self.new_index_unique, "NO").clicked() { self.new_index_unique = false; }
                                 });
                             });
+                            // columns
                             let w_cols = widths[4];
                             ui.allocate_ui_with_layout(egui::vec2(w_cols,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 ui.set_min_width(w_cols-8.0); ui.add_space(4.0);
                                 if self.new_index_columns.is_empty() { self.new_index_columns = "col1".to_string(); }
                                 ui.text_edit_singleline(&mut self.new_index_columns);
                             });
+                            // actions
                             let w_act = widths[5];
                             ui.allocate_ui_with_layout(egui::vec2(w_act,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 let save_enabled = !self.new_index_name.trim().is_empty() && !self.new_index_columns.trim().is_empty();
@@ -5033,30 +5044,20 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             });
                         });
                     }
+                });
                     self.structure_idx_col_widths = widths;
                 }
             }
         });
 
-        // Bottom bar (fixed area below scroll)
-        ui.add_space(4.0);
-        let dark = ui.visuals().dark_mode;
-        let bar_frame = egui::Frame::none().fill(if dark { egui::Color32::from_rgb(25,25,25) } else { egui::Color32::from_gray(235) }).stroke(egui::Stroke::new(1.0, if dark { egui::Color32::from_gray(60) } else { egui::Color32::from_gray(180) }));
-        bar_frame.show(ui, |ui| {
-            ui.set_min_height(bar_height - 6.0);
-            ui.horizontal(|ui| {
-                ui.add_space(6.0);
-                let active_cols = self.structure_sub_view == models::structs::StructureSubView::Columns;
-                if ui.add(egui::SelectableLabel::new(active_cols, "Columns")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Columns; }
-                ui.add_space(12.0);
-                let active_idx = self.structure_sub_view == models::structs::StructureSubView::Indexes;
-                if ui.add(egui::SelectableLabel::new(active_idx, "Indexes")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Indexes; }
-                // ui.add_space(16.0);
-                // if ui.small_button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // placeholder for future actions
-                });
-            });
+    // Draw bottom bar (fixed) after scroll area so it stays at bottom.
+    // Just create a horizontal layout now (will appear after scroll area visually at bottom of panel area)
+        ui.separator();
+        ui.horizontal(|ui| {
+            let active_cols = self.structure_sub_view == models::structs::StructureSubView::Columns;
+            if ui.add(egui::SelectableLabel::new(active_cols, "Columns")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Columns; }
+            let active_idx = self.structure_sub_view == models::structs::StructureSubView::Indexes;
+            if ui.add(egui::SelectableLabel::new(active_idx, "Indexes")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Indexes; }
         });
     }
 
@@ -5757,26 +5758,80 @@ impl App for Tabular {
                 }
 
                 // Normal query tab: tab bar, editor, toggle, content
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    let mut to_close = None;
-                    let mut to_switch = None;
+                // Compact top bar: tabs on left, selectors on right, single row
+                let top_bar_height = 26.0;
+                let available_width = ui.available_width();
+                let (bar_rect, _resp) = ui.allocate_exact_size(egui::vec2(available_width, top_bar_height), egui::Sense::hover());
+                let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
+                left_ui.allocate_ui_with_layout(bar_rect.size(), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let mut to_close = None; let mut to_switch = None;
                     for (i, tab) in self.query_tabs.iter().enumerate() {
                         let active = i == self.active_tab_index;
                         let color = if active { egui::Color32::from_rgb(255,60,0) } else { ui.visuals().text_color() };
                         let bg = egui::Color32::BLACK;
                         let mut title = tab.title.clone();
                         if let Some(cid) = tab.connection_id { if let Some(n) = self.get_connection_name(cid) { title = format!("{} [{}]", title, n); } }
-                        let resp = ui.add(egui::Button::new(egui::RichText::new(title).color(color).size(12.0)).fill(bg).stroke(egui::Stroke::NONE));
+                        let resp = ui.add_sized([120.0,20.0], egui::Button::new(egui::RichText::new(title).color(color).size(12.0)).fill(bg).stroke(egui::Stroke::NONE));
                         if resp.clicked() && !active { to_switch = Some(i); }
                         if self.query_tabs.len() > 1 || !active {
                             if ui.add_sized([16.0,16.0], egui::Button::new("×").fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::NONE)).clicked() { to_close = Some(i); }
                         }
                     }
+                    if ui.add_sized([20.0,20.0], egui::Button::new("+").fill(egui::Color32::BLACK)).clicked() { editor::create_new_tab(self, "Untitled Query".to_string(), String::new()); }
                     if let Some(i) = to_close { editor::close_tab(self, i); }
                     if let Some(i) = to_switch { editor::switch_to_tab(self, i); }
-                    if ui.add_sized([24.0,24.0], egui::Button::new("+").fill(egui::Color32::BLACK)).clicked() { editor::create_new_tab(self, "Untitled Query".to_string(), String::new()); }
                 });
+                // Right side overlay for selectors
+                let selectors_width = 360.0; // 160 + 160 + padding
+                let selectors_rect = egui::Rect::from_min_size(egui::pos2(bar_rect.right() - selectors_width, bar_rect.top()), egui::vec2(selectors_width, top_bar_height));
+                let mut right_ui = ui.new_child(egui::UiBuilder::new().max_rect(selectors_rect));
+                right_ui.allocate_ui_with_layout(selectors_rect.size(), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let conn_list: Vec<(i64,String)> = self.connections.iter().filter_map(|c| c.id.map(|id| (id, c.name.clone()))).collect();
+                    // Use per-tab connection
+                    let (tab_conn_id, tab_db_name) = self.query_tabs.get(self.active_tab_index).map(|t| (t.connection_id, t.database_name.clone())).unwrap_or((None, None));
+                    let current_conn_name = if let Some(cid) = tab_conn_id { self.get_connection_name(cid).unwrap_or_else(|| "(conn)".to_string()) } else { "Select Connection".to_string() };
+                    // Add right margin so database combobox not flush to window edge
+                    ui.add_space(5.0);
+                    // Database selector first (rightmost)
+                    if let Some(cid) = tab_conn_id {
+                        let mut dbs = self.get_databases_cached(cid);
+                        if dbs.is_empty() { dbs.push("(default)".to_string()); }
+                        let active_db = tab_db_name.clone().unwrap_or_else(|| "(default)".to_string());
+                        egui::ComboBox::from_id_salt("query_db_select")
+                            .width(150.0)
+                            .selected_text(active_db.clone())
+                            .show_ui(ui, |ui| {
+                                for db in &dbs {
+                                    if ui.selectable_label(active_db==*db, db).clicked() {
+                                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) { tab.database_name = if db=="(default)" { None } else { Some(db.clone()) }; }
+                                        // clear results only if tab was using different db
+                                        self.current_table_headers.clear();
+                                        self.current_table_data.clear();
+                                    }
+                                }
+                            });
+                        ui.add_space(8.0);
+                    }
+                    egui::ComboBox::from_id_salt("query_conn_select")
+                        .width(150.0)
+                        .selected_text(current_conn_name)
+                        .show_ui(ui, |ui| {
+                            for (cid, name) in &conn_list {
+                                let selected = tab_conn_id == Some(*cid);
+                                if ui.selectable_label(selected, name).clicked() {
+                                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                        tab.connection_id = Some(*cid);
+                                        tab.database_name = None; // reset db for new connection
+                                    }
+                                    // do not touch global current_connection_id here (keep for tree / structure context)
+                                    self.current_table_headers.clear();
+                                    self.current_table_data.clear();
+                                }
+                            }
+                        });
+                });
+                ui.add_space(2.0);
                 ui.separator();
 
                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {

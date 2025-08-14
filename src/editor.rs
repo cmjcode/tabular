@@ -832,29 +832,17 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
             return;
         }
 
-        // Check if current tab has never executed a query
-        let tab_never_executed = if let Some(tab) = tabular.query_tabs.get(tabular.active_tab_index) {
-            !tab.has_executed_query
-        } else {
-            true // If no tab exists, treat as never executed
-        };
+    // We no longer branch on first execution; per-tab connection must always be set explicitly.
 
-        // Get connection_id from current active tab (don't fallback to global for first-time execution)
-        let connection_id = if let Some(tab) = tabular.query_tabs.get(tabular.active_tab_index) {
-            if tab_never_executed {
-                // For first-time execution, only use tab's own connection, don't inherit from other tabs
-                tab.connection_id
-            } else {
-                // For subsequent executions, allow fallback to global
-                tab.connection_id.or(tabular.current_connection_id)
-            }
-        } else {
-            None
-        };
+        // Strict per-tab connection: always use the tab's own connection_id (no global fallback)
+        let connection_id = tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .and_then(|t| t.connection_id);
 
-        // If tab has never executed a query and has no connection, show connection selector
-        if tab_never_executed && connection_id.is_none() {
-            debug!("First-time query execution - showing connection selector");
+        // If tab has no connection, show connection selector (first time OR after user cleared it)
+        if connection_id.is_none() {
+            debug!("Query execution requested but tab has no connection - opening selector");
             tabular.pending_query = query;
             tabular.auto_execute_after_connection = true;
             tabular.show_connection_selector = true;
@@ -862,7 +850,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
         }
 
         // Check if we have an active connection
-        if let Some(connection_id) = connection_id {
+    if let Some(connection_id) = connection_id {
             debug!("=== EXECUTING QUERY ===");
             debug!("Connection ID: {}", connection_id);
             debug!("Query: {}", query);
@@ -913,22 +901,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                 tabular.all_table_data.clear();
                 tabular.total_rows = 0;
             }
-        } else {
-            // No active connection - check if we have any connections available
-            if tabular.connections.is_empty() {
-                tabular.current_table_name = "No connections available. Please add a connection first.".to_string();
-                tabular.current_table_headers.clear();
-                tabular.current_table_data.clear();
-                tabular.all_table_data.clear();
-                tabular.total_rows = 0;
-            } else {
-                // For tabs that have executed before but lost connection, show connection selector
-                debug!("No connection available for query execution - showing connection selector");
-                tabular.pending_query = query.clone();
-                tabular.show_connection_selector = true;
-                tabular.auto_execute_after_connection = true;
-            }
-        }
+    }
     }
 
 
