@@ -4872,6 +4872,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
                     // Context menu on any header cell
                     resp.context_menu(|ui| {
+                        if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close_menu(); }
                         if ui.button("➕ Add Column").clicked() {
                             if !self.adding_column { // initialize add column row
                                 self.adding_column = true;
@@ -4887,8 +4888,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             });
             ui.add_space(2.0);
 
-            // EXISTING ROWS
-            for (idx,col) in self.structure_columns.iter().enumerate() {
+            // EXISTING ROWS (clone to avoid simultaneous mutable borrow when using context menu actions)
+            let existing_cols = self.structure_columns.clone();
+            for (idx,col) in existing_cols.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let values = [
@@ -4901,27 +4903,26 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     ];
                     for (i,val) in values.iter().enumerate() {
                         let w = widths[i];
-                        // Only first cell needs Sense::click for context menu; rest can stay hover
-                        let sense = if i==0 { egui::Sense::click() } else { egui::Sense::hover() };
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), sense);
+                        // All cells clickable for context menu
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
                         if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);} 
                         ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside); 
                         let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; 
                         ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
-                        if i==0 { // attach context menu for row
-                            resp.context_menu(|ui| {
-                                if ui.button("➕ Add Column").clicked() {
-                                    if !self.adding_column {
-                                        self.adding_column = true;
-                                        if self.new_column_type.trim().is_empty() { self.new_column_type = "varchar(255)".to_string(); }
-                                        self.new_column_name.clear();
-                                        self.new_column_default.clear();
-                                        self.new_column_nullable = true;
-                                    }
-                                    ui.close_menu();
+                        // Context menu on every cell
+                        resp.context_menu(|ui| {
+                            if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close_menu(); }
+                            if ui.button("➕ Add Column").clicked() {
+                                if !self.adding_column {
+                                    self.adding_column = true;
+                                    if self.new_column_type.trim().is_empty() { self.new_column_type = "varchar(255)".to_string(); }
+                                    self.new_column_name.clear();
+                                    self.new_column_default.clear();
+                                    self.new_column_nullable = true;
                                 }
-                            });
-                        }
+                                ui.close_menu();
+                            }
+                        });
                     }
                 });
             }
