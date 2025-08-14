@@ -210,6 +210,15 @@ pub struct ColumnStructInfo {
     pub extra: Option<String>,
 }
 
+// Simplified index info shown in Structure -> Indexes
+#[derive(Clone, Debug, Default)]
+pub struct IndexStructInfo {
+    pub name: String,
+    pub method: Option<String>,   // algorithm / type (btree, hash, etc.)
+    pub unique: bool,
+    pub columns: Vec<String>,
+}
+
 // Sub view inside Structure (so kita tidak render dua tabel sekaligus)
 #[derive(Clone, Debug, PartialEq)]
 pub enum StructureSubView {

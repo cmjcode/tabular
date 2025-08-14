@@ -196,6 +196,13 @@ impl ShallowForCache for Tabular {
             new_column_type: String::new(),
             new_column_nullable: true,
             new_column_default: String::new(),
+            adding_index: false,
+            new_index_name: String::new(),
+            new_index_method: String::new(),
+            new_index_unique: false,
+            new_index_columns: String::new(),
+            pending_drop_index_name: None,
+            pending_drop_index_stmt: None,
         })
     }
 }

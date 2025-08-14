@@ -133,7 +133,10 @@ pub struct Tabular {
     pub table_bottom_view: models::structs::TableBottomView,
     // Cached structure info for current table
     pub structure_columns: Vec<models::structs::ColumnStructInfo>,
-    pub structure_indexes: Vec<String>,
+    pub structure_indexes: Vec<models::structs::IndexStructInfo>,
+    // Pending drop index confirmation
+    pub pending_drop_index_name: Option<String>,
+    pub pending_drop_index_stmt: Option<String>,
     // Structure view column widths (separate from data grid)
     pub structure_col_widths: Vec<f32>, // for columns table
     pub structure_idx_col_widths: Vec<f32>, // for indexes table
@@ -144,6 +147,12 @@ pub struct Tabular {
     pub new_column_type: String,
     pub new_column_nullable: bool,
     pub new_column_default: String,
+    // Inline add-index state for Structure -> Indexes
+    pub adding_index: bool,
+    pub new_index_name: String,
+    pub new_index_method: String,
+    pub new_index_unique: bool,
+    pub new_index_columns: String,
 }
 
 
@@ -355,6 +364,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             table_bottom_view: models::structs::TableBottomView::default(),
             structure_columns: Vec::new(),
             structure_indexes: Vec::new(),
+            pending_drop_index_name: None,
+            pending_drop_index_stmt: None,
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,
@@ -363,6 +374,11 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             new_column_type: String::new(),
             new_column_nullable: true,
             new_column_default: String::new(),
+            adding_index: false,
+            new_index_name: String::new(),
+            new_index_method: String::new(),
+            new_index_unique: false,
+            new_index_columns: String::new(),
         };
         
         // Clear any old cached pools
@@ -1264,12 +1280,6 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         if ui.button("Remove Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(-conn_id); // Negative ID indicates removal
-                            }
-                            ui.close_menu();
-                        }
-                        if ui.button("Refresh").clicked() {
-                            if let Some(conn_id) = node.connection_id {
-                                context_menu_request = Some(1000 + conn_id); // Add to 1000 base for refresh (range 1001-9999)
                             }
                             ui.close_menu();
                         }
@@ -4795,50 +4805,259 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         self.structure_columns.clear();
         self.structure_indexes.clear();
         let Some(conn_id) = self.current_connection_id else { return; };
-        // Infer table & database
         let active_tab_db = self.query_tabs.get(self.active_tab_index).and_then(|t| t.database_name.clone()).unwrap_or_default();
-        // Attempt to reuse already loaded tree metadata (columns already cached in column_cache)
         if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
-            // Rough table name inference from title
             let mut table_guess = self.current_table_name.clone();
             if let Some(pos) = table_guess.find(':') { table_guess = table_guess[pos+1..].trim().to_string(); }
             if let Some(pos) = table_guess.find('(') { table_guess = table_guess[..pos].trim().to_string(); }
             let database = if !active_tab_db.is_empty() { active_tab_db.clone() } else { conn.database.clone() };
-            // Columns: try fetch_columns_from_database synchronously via helper used earlier
             if let Some(cols) = crate::connection::fetch_columns_from_database(conn_id, &database, &table_guess, &conn) {
                 for (name, dtype) in cols { self.structure_columns.push(models::structs::ColumnStructInfo { name, data_type: dtype, ..Default::default() }); }
             }
-            // Indexes
-            let idxs = self.fetch_index_names_for_table(conn_id, &conn, &database, &table_guess);
-            self.structure_indexes = idxs;
+            // NEW: detailed index metadata
+            self.structure_indexes = self.fetch_index_details_for_table(conn_id, &conn, &database, &table_guess);
+        }
+    }
+
+    // Detailed index metadata loader per database
+    fn fetch_index_details_for_table(&mut self, connection_id: i64, connection: &models::structs::ConnectionConfig, database_name: &str, table_name: &str) -> Vec<models::structs::IndexStructInfo> {
+        match connection.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = crate::connection::get_or_create_connection_pool(self, connection_id).await {
+                        let q = r#"SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, MIN(NON_UNIQUE) AS NON_UNIQUE, GROUP_CONCAT(DISTINCT INDEX_TYPE) AS TYPES FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? GROUP BY INDEX_NAME ORDER BY INDEX_NAME"#;
+                        match sqlx::query(q).bind(database_name).bind(table_name).fetch_all(mysql_pool.as_ref()).await {
+                            Ok(rows) => { use sqlx::Row; rows.into_iter().map(|r| {
+                                let name: String = r.get("INDEX_NAME");
+                                let cols_str: Option<String> = r.try_get("COLS").ok();
+                                let non_unique: Option<i64> = r.try_get("NON_UNIQUE").ok();
+                                let types: Option<String> = r.try_get("TYPES").ok();
+                                let columns = cols_str.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+                                let unique = matches!(non_unique, Some(0));
+                                let method = types.and_then(|t| t.split(',').next().map(|m| m.trim().to_string())).filter(|s| !s.is_empty());
+                                models::structs::IndexStructInfo { name, method, unique, columns }
+                            }).collect() }
+                            Err(_) => Vec::new(),
+                        }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = crate::connection::get_or_create_connection_pool(self, connection_id).await {
+                        let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique FROM pg_class t JOIN pg_index i ON t.oid = i.indrelid JOIN pg_class idx ON idx.oid = i.indexrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE t.relname = $1 AND n.nspname='public' ORDER BY idx.relname"#;
+                        match sqlx::query(q).bind(table_name).fetch_all(pg_pool.as_ref()).await {
+                            Ok(rows) => { use sqlx::Row; rows.into_iter().map(|r| {
+                                let name: String = r.get("index_name");
+                                let def: String = r.get("index_def");
+                                let unique: bool = r.get("is_unique");
+                                let method = def.split(" USING ").nth(1).and_then(|rest| rest.split_whitespace().next()).and_then(|m| if m.starts_with('('){None}else{Some(m.trim_matches('(').trim_matches(')').to_string())});
+                                let columns: Vec<String> = if let Some(start) = def.rfind('(') { if let Some(end_rel) = def[start+1..].find(')') { def[start+1..start+1+end_rel].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect() } else { Vec::new() } } else { Vec::new() };
+                                models::structs::IndexStructInfo { name, method, unique, columns }
+                            }).collect() }
+                            Err(_) => Vec::new(),
+                        }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::MSSQL => {
+                use tokio_util::compat::TokioAsyncWriteCompatExt; use tiberius::{Config, AuthMethod};
+                let host = connection.host.clone(); let port: u16 = connection.port.parse().unwrap_or(1433);
+                let user = connection.username.clone(); let pass = connection.password.clone();
+                let db = database_name.to_string(); let tbl = table_name.to_string();
+                let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                    let mut config = Config::new(); config.host(host.clone()); config.port(port); config.authentication(AuthMethod::sql_server(user.clone(), pass.clone())); config.trust_cert(); if !db.is_empty() { config.database(db.clone()); }
+                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?; tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                    let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                    let parse = |name: &str| -> (Option<String>, String) { if let Some((s,t)) = name.split_once('.') { (Some(s.trim_matches(['[',']']).to_string()), t.trim_matches(['[',']']).to_string()) } else { (None, name.trim_matches(['[',']']).to_string()) } };
+                    let (_schema_opt, table_only) = parse(&tbl);
+                    let q = format!("SELECT i.name AS index_name, i.is_unique, i.type_desc, STUFF((SELECT ','+c.name FROM sys.index_columns ic2 JOIN sys.columns c ON c.object_id=ic2.object_id AND c.column_id=ic2.column_id WHERE ic2.object_id=i.object_id AND ic2.index_id=i.index_id ORDER BY ic2.key_ordinal FOR XML PATH(''), TYPE).value('.','NVARCHAR(MAX)'),1,1,'') AS columns FROM sys.indexes i INNER JOIN sys.objects o ON o.object_id=i.object_id WHERE o.name='{}' AND i.name IS NOT NULL ORDER BY i.name", table_only.replace("'","''"));
+                    let mut stream = client.simple_query(q).await.map_err(|e| e.to_string())?; use futures_util::TryStreamExt; use tiberius::QueryItem; let mut list = Vec::new();
+                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); let is_unique: Option<bool> = r.get(1); let type_desc: Option<&str> = r.get(2); let cols: Option<&str> = r.get(3); if let Some(nm)=name { list.push(models::structs::IndexStructInfo { name: nm.to_string(), method: type_desc.map(|s| s.to_string()), unique: is_unique.unwrap_or(false), columns: cols.unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() }); } } }
+                    Ok::<_, String>(list)
+                }); match rt_res { Ok(v) => v, Err(_) => Vec::new() }
+            }
+            models::enums::DatabaseType::SQLite => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) = crate::connection::get_or_create_connection_pool(self, connection_id).await {
+                        use sqlx::Row; let list_query = format!("PRAGMA index_list('{}')", table_name.replace("'","''"));
+                        match sqlx::query(&list_query).fetch_all(sqlite_pool.as_ref()).await { Ok(rows) => {
+                            let mut infos = Vec::new(); for r in rows { let name_opt: Option<String> = r.try_get("name").ok().flatten(); let unique_flag: Option<i64> = r.try_get("unique").ok().flatten(); if let Some(nm) = name_opt { let info_q = format!("PRAGMA index_info('{}')", nm.replace("'","''")); let mut cols_vec = Vec::new(); if let Ok(crows) = sqlx::query(&info_q).fetch_all(sqlite_pool.as_ref()).await { for cr in crows { if let Ok(Some(coln)) = cr.try_get::<Option<String>, _>("name") { cols_vec.push(coln); } } } infos.push(models::structs::IndexStructInfo { name: nm, method: None, unique: matches!(unique_flag, Some(0)), columns: cols_vec }); } } infos } Err(_) => Vec::new(), }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::MongoDB => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::MongoDB(client)) = crate::connection::get_or_create_connection_pool(self, connection_id).await {
+                        match client.database(database_name).collection::<mongodb::bson::Document>(table_name).list_index_names().await {
+                            Ok(names) => names.into_iter().map(|n| models::structs::IndexStructInfo { name: n, method: None, unique: false, columns: Vec::new() }).collect(),
+                            Err(_) => Vec::new(),
+                        }
+                    } else { Vec::new() }
+                })
+            }
+            _ => Vec::new()
         }
     }
 
     fn render_structure_view(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let active_cols = self.structure_sub_view == models::structs::StructureSubView::Columns;
-            if ui.add(egui::SelectableLabel::new(active_cols, "Columns")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Columns; }
-            let active_idx = self.structure_sub_view == models::structs::StructureSubView::Indexes;
-            if ui.add(egui::SelectableLabel::new(active_idx, "Indexes")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Indexes; }
-            ui.separator();
-            if ui.button("Refresh").clicked() { self.load_structure_info_for_current_table(); }
-        });
-        ui.separator();
-
-        match self.structure_sub_view {
-            models::structs::StructureSubView::Columns => {
-                self.render_structure_columns_editor(ui);
-            },
-            models::structs::StructureSubView::Indexes => {
-                let headers = ["No", "Index Name"]; 
-                if self.structure_idx_col_widths.len() != headers.len() { self.structure_idx_col_widths = vec![60.0, 320.0]; }
-                let mut local_widths = self.structure_idx_col_widths.clone();
-                let mut rows: Vec<Vec<String>> = Vec::with_capacity(self.structure_indexes.len());
-                for (i,name) in self.structure_indexes.iter().enumerate() { rows.push(vec![(i+1).to_string(), name.clone()]); }
-                self.render_structure_grid(ui, "struct_idx", &headers, &mut local_widths, &rows);
-                self.structure_idx_col_widths = local_widths;
+        let bar_height = 34.0f32;
+        // Reserve height for bottom bar by constraining scroll area height
+        let available_height = ui.available_height();
+        let content_height = (available_height - bar_height).max(50.0);
+        let scroll_id = if matches!(self.structure_sub_view, models::structs::StructureSubView::Indexes) { "struct_idx_inline" } else { "struct_cols_inline_wrapper" };
+        egui::ScrollArea::both().id_salt(scroll_id).max_height(content_height).auto_shrink([false,false]).show(ui, |cui| {
+            match self.structure_sub_view {
+                models::structs::StructureSubView::Columns => {
+                    self.render_structure_columns_editor(cui);
+                },
+                models::structs::StructureSubView::Indexes => {
+                    let headers = ["#", "index_name", "algorithm", "unique", "columns", "actions"]; 
+                    if self.structure_idx_col_widths.len() != headers.len() { self.structure_idx_col_widths = vec![40.0, 200.0, 120.0, 70.0, 260.0, 120.0]; }
+                    let mut widths = self.structure_idx_col_widths.clone();
+                    for w in widths.iter_mut() { *w = w.clamp(40.0, 800.0); }
+                    let dark = cui.visuals().dark_mode;
+                    let border = if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) };
+                    let stroke = egui::Stroke::new(0.5, border);
+                    let header_text_col = if dark { egui::Color32::from_rgb(220,220,255) } else { egui::Color32::from_rgb(60,60,120) };
+                    let header_bg = if dark { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::from_gray(240) };
+                    let row_h = 26.0f32; let header_h = 30.0f32;
+                    cui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for (i,h) in headers.iter().enumerate() {
+                            let w = widths[i];
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::click());
+                            ui.painter().rect_filled(rect,0.0,header_bg);
+                            ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
+                            ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, *h, egui::FontId::proportional(13.0), header_text_col);
+                            let handle = egui::Rect::from_min_max(egui::pos2(rect.max.x - 4.0, rect.min.y), rect.max);
+                            let rh = ui.interact(handle, egui::Id::new(("struct_idx_inline","resize",i)), egui::Sense::drag());
+                            if rh.dragged() { widths[i] = (widths[i] + rh.drag_delta().x).clamp(40.0, 800.0); ui.ctx().request_repaint(); }
+                            if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
+                            resp.context_menu(|ui| {
+                                if ui.button("➕ Add Index").clicked() {
+                                    if !self.adding_index { self.start_inline_add_index(); }
+                                    ui.close_menu();
+                                }
+                                if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close_menu(); }
+                            });
+                        }
+                    });
+                    cui.add_space(2.0);
+                    let existing_indexes = self.structure_indexes.clone();
+                    for (idx, ix) in existing_indexes.iter().enumerate() {
+                        cui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let values = [
+                                (idx+1).to_string(),
+                                ix.name.clone(),
+                                ix.method.clone().unwrap_or_default(),
+                                if ix.unique { "YES".to_string() } else { "NO".to_string() },
+                                if ix.columns.is_empty() { String::new() } else { ix.columns.join(",") },
+                                String::new(),
+                            ];
+                            for (i,val) in values.iter().enumerate() {
+                                let w = widths[i];
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
+                                if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);} 
+                                ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
+                                let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; 
+                                ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
+                                resp.context_menu(|ui| {
+                                    if ui.button("➕ Add Index").clicked() { if !self.adding_index { self.start_inline_add_index(); } ui.close_menu(); }
+                                    if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close_menu(); }
+                                    if ui.button("❌ Drop Index").clicked() {
+                                        if let Some(conn_id) = self.current_connection_id { if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
+                                            let table_name = self.infer_current_table_name();
+                                            let drop_stmt = match conn.connection_type {
+                                                models::enums::DatabaseType::MySQL => format!("ALTER TABLE `{}` DROP INDEX `{}`;", table_name, ix.name),
+                                                models::enums::DatabaseType::MSSQL => format!("DROP INDEX [{}] ON [{}];", ix.name, table_name),
+                                                models::enums::DatabaseType::PostgreSQL => format!("DROP INDEX IF EXISTS \"{}\";", ix.name),
+                                                models::enums::DatabaseType::SQLite => format!("DROP INDEX IF EXISTS `{}`;", ix.name),
+                                                models::enums::DatabaseType::MongoDB => format!("-- MongoDB drop index '{}' (executed via driver)", ix.name),
+                                                _ => "-- Drop index not supported for this database type".to_string()
+                                            };
+                                            self.pending_drop_index_name = Some(ix.name.clone());
+                                            self.pending_drop_index_stmt = Some(drop_stmt.clone());
+                                            self.editor_text.push('\n'); self.editor_text.push_str(&drop_stmt);
+                                        }}
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                        });
+                    }
+                    if self.adding_index {
+                        cui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let row_h = 26.0f32;
+                            let (rect_no,_) = ui.allocate_exact_size(egui::vec2(widths[0], row_h), egui::Sense::hover());
+                            ui.painter().rect_stroke(rect_no,0.0,egui::Stroke::new(0.5, if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) }), egui::StrokeKind::Outside);
+                            let idx_txt = format!("{}", self.structure_indexes.len()+1);
+                            let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; ui.painter().text(rect_no.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, idx_txt, egui::FontId::proportional(13.0), txt_col);
+                            let w_name = widths[1];
+                            ui.allocate_ui_with_layout(egui::vec2(w_name,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.set_min_width(w_name-8.0); ui.add_space(4.0);
+                                if self.new_index_name.is_empty() { self.new_index_name = format!("idx_{}_col", self.infer_current_table_name()); }
+                                ui.text_edit_singleline(&mut self.new_index_name);
+                            });
+                            let w_alg = widths[2];
+                            ui.allocate_ui_with_layout(egui::vec2(w_alg,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let algos = ["", "btree", "hash", "gin", "gist"]; 
+                                egui::ComboBox::from_id_salt("new_index_algo").selected_text(if self.new_index_method.is_empty(){"(auto)"} else { &self.new_index_method }).show_ui(ui, |ui| {
+                                    for a in algos { if ui.selectable_label(self.new_index_method==a, if a.is_empty(){"(auto)"} else {a}).clicked() { self.new_index_method = a.to_string(); } }
+                                });
+                            });
+                            let w_unique = widths[3];
+                            ui.allocate_ui_with_layout(egui::vec2(w_unique,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                egui::ComboBox::from_id_salt("new_index_unique").selected_text(if self.new_index_unique {"YES"} else {"NO"}).show_ui(ui, |ui| {
+                                    if ui.selectable_label(self.new_index_unique, "YES").clicked() { self.new_index_unique = true; }
+                                    if ui.selectable_label(!self.new_index_unique, "NO").clicked() { self.new_index_unique = false; }
+                                });
+                            });
+                            let w_cols = widths[4];
+                            ui.allocate_ui_with_layout(egui::vec2(w_cols,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.set_min_width(w_cols-8.0); ui.add_space(4.0);
+                                if self.new_index_columns.is_empty() { self.new_index_columns = "col1".to_string(); }
+                                ui.text_edit_singleline(&mut self.new_index_columns);
+                            });
+                            let w_act = widths[5];
+                            ui.allocate_ui_with_layout(egui::vec2(w_act,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let save_enabled = !self.new_index_name.trim().is_empty() && !self.new_index_columns.trim().is_empty();
+                                if ui.add_enabled(save_enabled, egui::Button::new("Save")).clicked() { self.commit_new_index(); }
+                                if ui.button("Cancel").clicked() { self.adding_index=false; }
+                            });
+                        });
+                    }
+                    self.structure_idx_col_widths = widths;
+                }
             }
-        }
+        });
+
+        // Bottom bar (fixed area below scroll)
+        ui.add_space(4.0);
+        let dark = ui.visuals().dark_mode;
+        let bar_frame = egui::Frame::none().fill(if dark { egui::Color32::from_rgb(25,25,25) } else { egui::Color32::from_gray(235) }).stroke(egui::Stroke::new(1.0, if dark { egui::Color32::from_gray(60) } else { egui::Color32::from_gray(180) }));
+        bar_frame.show(ui, |ui| {
+            ui.set_min_height(bar_height - 6.0);
+            ui.horizontal(|ui| {
+                ui.add_space(6.0);
+                let active_cols = self.structure_sub_view == models::structs::StructureSubView::Columns;
+                if ui.add(egui::SelectableLabel::new(active_cols, "Columns")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Columns; }
+                ui.add_space(12.0);
+                let active_idx = self.structure_sub_view == models::structs::StructureSubView::Indexes;
+                if ui.add(egui::SelectableLabel::new(active_idx, "Indexes")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Indexes; }
+                // ui.add_space(16.0);
+                // if ui.small_button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // placeholder for future actions
+                });
+            });
+        });
     }
 
     fn render_structure_columns_editor(&mut self, ui: &mut egui::Ui) {
@@ -5010,6 +5229,127 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         self.new_column_default.clear();
         // Optionally update local view (append optimistic row)
     self.structure_columns.push(models::structs::ColumnStructInfo { name: name_owned, data_type: self.new_column_type.clone(), nullable: Some(self.new_column_nullable), default_value: if self.new_column_default.trim().is_empty() { None } else { Some(self.new_column_default.trim().to_string()) }, extra: None });
+    }
+
+    fn start_inline_add_index(&mut self) {
+        self.adding_index = true;
+        self.new_index_unique = false;
+        self.new_index_method.clear();
+        // Prefill columns using first column(s) from structure view if available
+        if !self.structure_columns.is_empty() {
+            let first_cols: Vec<String> = self.structure_columns.iter().take(2).map(|c| c.name.clone()).collect();
+            self.new_index_columns = first_cols.join(",");
+        } else {
+            self.new_index_columns.clear();
+        }
+        let t = self.infer_current_table_name();
+        self.new_index_name = if t.is_empty() { "idx_new_col".to_string() } else { format!("idx_{}_col", t) };
+    }
+
+    fn infer_current_table_name(&self) -> String {
+        // Priority 1: if current_table_name starts with "Table:" extract
+        if self.current_table_name.starts_with("Table:") {
+            let after = self.current_table_name.splitn(2, ':').nth(1).unwrap_or("").trim();
+            let mut cut = after.to_string();
+            if let Some(p) = cut.find('(') { cut = cut[..p].trim().to_string(); }
+            if !cut.is_empty() { return cut; }
+        }
+        // Priority 2: active tab title pattern
+        let ttitle = self.query_tabs.get(self.active_tab_index).map(|t| t.title.clone()).unwrap_or_default();
+        let mut table_guess = if ttitle.contains(':') { ttitle.split(':').nth(1).unwrap_or("").trim().to_string() } else { String::new() };
+        if let Some(p) = table_guess.find('(') { table_guess = table_guess[..p].trim().to_string(); }
+        table_guess
+    }
+
+    fn commit_new_index(&mut self) {
+        if !self.adding_index { return; }
+        let Some(conn_id) = self.current_connection_id else { self.adding_index=false; return; };
+        let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() else { self.adding_index=false; return; };
+        let table_name = self.infer_current_table_name();
+        if table_name.is_empty() {
+            // Don't silently fail; tell user
+            self.error_message = "Gagal membuat index: nama tabel tidak ditemukan (buka data table atau klik tabel dulu).".to_string();
+            self.show_error_message = true;
+            return;
+        }
+        let idx_name = self.new_index_name.trim(); if idx_name.is_empty() { return; }
+        let cols_raw = self.new_index_columns.trim(); if cols_raw.is_empty() { return; }
+        let cols: Vec<String> = cols_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        if cols.is_empty() { return; }
+        let method = self.new_index_method.trim();
+        let mut stmt = String::new();
+        match conn.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                // ALTER TABLE add index for consistency (so it can run with other alters)
+                let algo_clause = if method.is_empty() { "".to_string() } else { format!(" USING {}", method.to_uppercase()) };
+                let unique = if self.new_index_unique { "UNIQUE " } else { "" };
+                stmt = format!("ALTER TABLE `{}` ADD {}INDEX `{}` ({}){};", table_name, unique, idx_name, cols.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", "), algo_clause);
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                let unique = if self.new_index_unique { "UNIQUE " } else { "" };
+                let using_clause = if method.is_empty() { "".to_string() } else { format!(" USING {}", method) };
+                stmt = format!("CREATE {}INDEX \"{}\" ON \"{}\"{} ({});", unique, idx_name, table_name, using_clause, cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", "));
+            }
+            models::enums::DatabaseType::MSSQL => {
+                let unique = if self.new_index_unique { "UNIQUE " } else { "" };
+                // SQL Server: CREATE [UNIQUE] [NONCLUSTERED] INDEX idx ON table(col,...)
+                stmt = format!("CREATE {}INDEX [{}] ON [{}] ({});", unique, idx_name, table_name, cols.join(", "));
+            }
+            models::enums::DatabaseType::SQLite => {
+                let unique = if self.new_index_unique { "UNIQUE " } else { "" };
+                stmt = format!("CREATE {}INDEX IF NOT EXISTS `{}` ON `{}` ({});", unique, idx_name, table_name, cols.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", "));
+            }
+            _ => {
+                stmt = "-- Create index not supported for this database type".to_string();
+            }
+        }
+        if !stmt.starts_with("--") { self.editor_text.push('\n'); }
+        self.editor_text.push_str(&stmt);
+        // Append optimistic row
+        self.structure_indexes.push(models::structs::IndexStructInfo { name: idx_name.to_string(), method: if method.is_empty(){None}else{Some(method.to_string())}, unique: self.new_index_unique, columns: cols.clone() });
+        // Reset state before execution to avoid double firing on UI re-render
+        self.adding_index = false;
+        self.new_index_columns.clear();
+        self.new_index_method.clear();
+        self.new_index_name.clear();
+        // Auto execute and refresh
+        if !stmt.starts_with("--") {
+            if let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()) {
+                let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
+                if is_error {
+                    if let Some(first_row) = data.first() { if let Some(err) = first_row.get(0) { self.error_message = format!("Gagal CREATE INDEX: {}", err); self.show_error_message = true; } }
+                } else {
+                    self.load_structure_info_for_current_table();
+                }
+            }
+        }
+    }
+
+    fn render_drop_index_confirmation(&mut self, ctx: &egui::Context) {
+        if self.pending_drop_index_name.is_none() || self.pending_drop_index_stmt.is_none() { return; }
+        let idx_name = self.pending_drop_index_name.clone().unwrap();
+        let stmt = self.pending_drop_index_stmt.clone().unwrap();
+        egui::Window::new("Konfirmasi Drop Index")
+            .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_size(egui::vec2(420.0, 170.0))
+            .show(ctx, |ui| {
+                ui.label(format!("Index: {}", idx_name));
+                ui.add_space(4.0);
+                ui.code(&stmt);
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() { self.pending_drop_index_name=None; self.pending_drop_index_stmt=None; }
+                    if ui.button(egui::RichText::new("Confirm").color(egui::Color32::RED)).clicked() {
+                        if let Some(conn_id) = self.current_connection_id { if !stmt.starts_with("--") { let _ = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()); } }
+                        let victim = idx_name.clone();
+                        self.structure_indexes.retain(|it| it.name != victim);
+                        self.load_structure_info_for_current_table();
+                        self.pending_drop_index_name=None; self.pending_drop_index_stmt=None;
+                    }
+                });
+            });
     }
 
     // Generic bordered grid renderer (lighter reuse of render_table_data look & feel)
@@ -5411,6 +5751,8 @@ impl App for Tabular {
                     } else {
                         self.render_table_data(ui);
                     }
+                    // Render confirmation overlay if any (must be before return)
+                    self.render_drop_index_confirmation(ui.ctx());
                     return; // done (only for table/collection tabs)
                 }
 
@@ -5443,7 +5785,6 @@ impl App for Tabular {
 
                 let is_table_tab = self.query_tabs.get(self.active_tab_index).map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:")).unwrap_or(false);
                 if is_table_tab {
-                    // Table tab: no SQL editor, only Data/Structure toggle
                     ui.horizontal(|ui| {
                         let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
                         if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Data; }
@@ -5519,6 +5860,8 @@ impl App for Tabular {
                         self.render_table_data(ui); // show query results / messages under editor
                     }
                 }
+
+                self.render_drop_index_confirmation(ui.ctx());
             });
 
     } // end update
