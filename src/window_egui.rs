@@ -723,6 +723,25 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             }
                         }
                     }
+                    models::enums::DatabaseType::MongoDB => {
+                        // For MongoDB, treat table_name as a collection; database_name must be present
+                        if let Some(db_name) = &database_name {
+                            let tab_title = format!("Collection: {}.{}", db_name, table_name);
+                            editor::create_new_tab_with_connection_and_database(self, tab_title.clone(), String::new(), Some(connection_id), database_name.clone());
+                            self.current_connection_id = Some(connection_id);
+                            if let Some((headers, data)) = crate::driver_mongodb::sample_collection_documents(self, connection_id, db_name, &table_name, 100) {
+                                self.current_table_headers = headers;
+                                self.current_table_data = data.clone();
+                                self.all_table_data = data;
+                                self.current_table_name = tab_title;
+                                self.total_rows = self.all_table_data.len();
+                                self.current_page = 0;
+                            }
+                        } else {
+                            self.error_message = "MongoDB requires a database; please select a database.".to_string();
+                            self.show_error_message = true;
+                        }
+                    }
                     _ => {
                         // SQL databases - use regular SELECT query with proper database context
                         let query_content = if let Some(db_name) = &database_name {
@@ -739,6 +758,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 }
                                 models::enums::DatabaseType::SQLite | models::enums::DatabaseType::Redis => {
                                     format!("SELECT * FROM `{}` LIMIT 100;", table_name)
+                                }
+                                models::enums::DatabaseType::MongoDB => {
+                                    // Unreachable here; MongoDB handled above with sampling
+                                    String::new()
                                 }
                             }
                         } else {
@@ -1079,6 +1102,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     models::enums::NodeType::PostgreSQLFolder => "🐘",
                     models::enums::NodeType::SQLiteFolder => "📄",
                     models::enums::NodeType::RedisFolder => "🔴",
+                    models::enums::NodeType::MongoDBFolder => "🍃",
                     models::enums::NodeType::CustomFolder => "📁",
                     models::enums::NodeType::QueryFolder => "📂",
                     models::enums::NodeType::HistoryDateFolder => "📅",
@@ -1673,7 +1697,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     _ => None,
                 }
             }
-            DatabaseType::SQLite | DatabaseType::Redis => None,
+            DatabaseType::SQLite | DatabaseType::Redis | DatabaseType::MongoDB => None,
         }
     }
 
@@ -1692,6 +1716,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     models::enums::DatabaseType::SQLite => self.generate_sqlite_alter_table_template(&table_name),
                     models::enums::DatabaseType::Redis => "-- Redis does not support ALTER TABLE operations\n-- Redis is a key-value store, not a relational database".to_string(),
                     models::enums::DatabaseType::MSSQL => self.generate_mysql_alter_table_template(&table_name).replace("MySQL", "MSSQL"),
+                    models::enums::DatabaseType::MongoDB => "-- MongoDB collections are schemaless; ALTER TABLE not applicable".to_string(),
                 };
                 
                 // Set the ALTER TABLE template in the editor
@@ -1706,6 +1731,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     models::enums::DatabaseType::SQLite => "-- SQLite ALTER TABLE template\n-- Note: SQLite has limited ALTER TABLE support\nALTER TABLE your_table_name\n  ADD COLUMN new_column TEXT;".to_string(),
                     models::enums::DatabaseType::Redis => "-- Redis does not support ALTER TABLE operations\n-- Redis is a key-value store, not a relational database\n-- Use Redis commands like SET, GET, HSET, etc.".to_string(),
                     models::enums::DatabaseType::MSSQL => "-- MSSQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD new_column VARCHAR(255) NULL,\n  ALTER COLUMN existing_column INT,\n  DROP COLUMN old_column;".to_string(),
+                    models::enums::DatabaseType::MongoDB => "-- MongoDB does not support ALTER TABLE; modify documents with update operators".to_string(),
                 };
                 
                 self.editor_text = alter_template;
@@ -1985,6 +2011,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 },
                 models::enums::DatabaseType::MSSQL => {
                     crate::driver_mssql::load_mssql_structure(connection_id, &connection, node);
+                    },
+                    models::enums::DatabaseType::MongoDB => {
+                        crate::driver_mongodb::load_mongodb_structure(connection_id, &connection, node);
                 },
             }
             node.is_loaded = true;
@@ -2117,6 +2146,28 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         }
                     }
                     
+                    main_children.push(databases_folder);
+                },
+                models::enums::DatabaseType::MongoDB => {
+                    // MongoDB: Databases -> Collections
+                    let mut databases_folder = models::structs::TreeNode::new("Databases".to_string(), models::enums::NodeType::DatabasesFolder);
+                    databases_folder.connection_id = Some(connection_id);
+
+                    for db_name in databases {
+                        let mut db_node = models::structs::TreeNode::new(db_name.clone(), models::enums::NodeType::Database);
+                        db_node.connection_id = Some(connection_id);
+                        db_node.database_name = Some(db_name.clone());
+                        db_node.is_loaded = false;
+
+                        // Collections folder (reuse TablesFolder type for UI rendering)
+                        let mut collections_folder = models::structs::TreeNode::new("Collections".to_string(), models::enums::NodeType::TablesFolder);
+                        collections_folder.connection_id = Some(connection_id);
+                        collections_folder.database_name = Some(db_name.clone());
+                        collections_folder.is_loaded = false;
+                        db_node.children = vec![collections_folder];
+                        databases_folder.children.push(db_node);
+                    }
+
                     main_children.push(databases_folder);
                 },
                 models::enums::DatabaseType::SQLite => {
@@ -2369,6 +2420,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 models::enums::DatabaseType::SQLite => vec!["main".to_string()],
                 models::enums::DatabaseType::Redis => vec!["redis".to_string(), "info".to_string()],
                 models::enums::DatabaseType::MSSQL => vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()],
+                models::enums::DatabaseType::MongoDB => vec!["admin".to_string(), "local".to_string()],
             };
             
             // Clear loading message
@@ -2663,6 +2715,40 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 }
                 models::enums::DatabaseType::MSSQL => {
                     self.load_mssql_folder_content(connection_id, &connection, node, folder_type);
+                }
+                models::enums::DatabaseType::MongoDB => {
+                    // For MongoDB, TablesFolder represents collections
+                    let database_name = node.database_name.clone().unwrap_or_else(|| connection.database.clone());
+                    let table_type = "collection";
+
+                    // Try cache first
+                    if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, &database_name, table_type) {
+                        if !cached.is_empty() {
+                            node.children = cached.into_iter().map(|name| {
+                                let mut child = models::structs::TreeNode::new(name, models::enums::NodeType::Table);
+                                child.connection_id = Some(connection_id);
+                                child.database_name = Some(database_name.clone());
+                                child.is_loaded = false;
+                                child
+                            }).collect();
+                            return;
+                        }
+                    }
+
+                    // Fallback to live fetch
+                    if let Some(cols) = crate::driver_mongodb::fetch_collections_from_mongodb_connection(self, connection_id, &database_name) {
+                        let table_data: Vec<(String, String)> = cols.iter().map(|n| (n.clone(), table_type.to_string())).collect();
+                        cache_data::save_tables_to_cache(self, connection_id, &database_name, &table_data);
+                        node.children = cols.into_iter().map(|name| {
+                            let mut child = models::structs::TreeNode::new(name, models::enums::NodeType::Table);
+                            child.connection_id = Some(connection_id);
+                            child.database_name = Some(database_name.clone());
+                            child.is_loaded = false;
+                            child
+                        }).collect();
+                    } else {
+                        node.children = vec![models::structs::TreeNode::new("Failed to load collections".to_string(), models::enums::NodeType::Column)];
+                    }
                 }
             }
             
@@ -3253,6 +3339,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 match rt_res { Ok(v) => v, Err(_) => Vec::new() }
             }
             models::enums::DatabaseType::Redis => Vec::new(),
+            models::enums::DatabaseType::MongoDB => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::MongoDB(client)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        let coll = client.database(database_name).collection::<mongodb::bson::Document>(table_name);
+                        match coll.list_index_names().await {
+                            Ok(names) => names,
+                            Err(_) => Vec::new(),
+                        }
+                    } else { Vec::new() }
+                })
+            }
         }
     }
 
@@ -3355,6 +3453,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 match rt_res { Ok(v) => v, Err(_) => Vec::new() }
             }
             models::enums::DatabaseType::Redis => Vec::new(),
+            models::enums::DatabaseType::MongoDB => vec!["_id".to_string()],
         }
     }
 
@@ -3583,6 +3682,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 }
                 models::enums::DatabaseType::MSSQL => {
                     // Basic table search (reuse SQL logic)
+                    self.search_sql_tables(connection_id, search_text, &conn_type);
+                }
+                models::enums::DatabaseType::MongoDB => {
+                    // Reuse SQL table cache search; collections are stored in table_cache with table_type='collection'
                     self.search_sql_tables(connection_id, search_text, &conn_type);
                 }
             }
