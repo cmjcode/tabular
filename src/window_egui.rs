@@ -4854,25 +4854,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         let row_h = 26.0f32;
         let header_h = 30.0f32;
 
-        // Toolbar for add column inline
-        ui.horizontal(|ui| {
-            if !self.adding_column && ui.button("+ Column").clicked() {
-                self.adding_column = true;
-                self.new_column_name.clear();
-                if self.new_column_type.is_empty() { self.new_column_type = "varchar(255)".to_string(); }
-                self.new_column_nullable = true;
-                self.new_column_default.clear();
-            }
-        });
-        ui.separator();
-
         egui::ScrollArea::both().id_salt("struct_cols_inline").auto_shrink([false,false]).show(ui, |ui| {
             // HEADER
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for (i,h) in headers.iter().enumerate() {
                     let w = widths[i];
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::hover());
+                    // Make header cells clickable so we can attach context menu (right-click)
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::click());
                     ui.painter().rect_filled(rect, 0.0, header_bg);
                     ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
                     ui.painter().text(rect.left_center() + egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, *h, egui::FontId::proportional(13.0), header_text_col);
@@ -4881,6 +4870,19 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     let rh = ui.interact(handle, egui::Id::new(("struct_cols_inline","resize",i)), egui::Sense::drag());
                     if rh.dragged() { widths[i] = (widths[i] + rh.drag_delta().x).clamp(40.0, 600.0); ui.ctx().request_repaint(); }
                     if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
+                    // Context menu on any header cell
+                    resp.context_menu(|ui| {
+                        if ui.button("➕ Add Column").clicked() {
+                            if !self.adding_column { // initialize add column row
+                                self.adding_column = true;
+                                if self.new_column_type.trim().is_empty() { self.new_column_type = "varchar(255)".to_string(); }
+                                self.new_column_name.clear();
+                                self.new_column_default.clear();
+                                self.new_column_nullable = true;
+                            }
+                            ui.close_menu();
+                        }
+                    });
                 }
             });
             ui.add_space(2.0);
@@ -4897,7 +4899,30 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         col.default_value.clone().unwrap_or_default(),
                         col.extra.clone().unwrap_or_default(),
                     ];
-                    for (i,val) in values.iter().enumerate() { let w = widths[i]; let (rect,_) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::hover()); if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);} ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside); let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col); }
+                    for (i,val) in values.iter().enumerate() {
+                        let w = widths[i];
+                        // Only first cell needs Sense::click for context menu; rest can stay hover
+                        let sense = if i==0 { egui::Sense::click() } else { egui::Sense::hover() };
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), sense);
+                        if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);} 
+                        ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside); 
+                        let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; 
+                        ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
+                        if i==0 { // attach context menu for row
+                            resp.context_menu(|ui| {
+                                if ui.button("➕ Add Column").clicked() {
+                                    if !self.adding_column {
+                                        self.adding_column = true;
+                                        if self.new_column_type.trim().is_empty() { self.new_column_type = "varchar(255)".to_string(); }
+                                        self.new_column_name.clear();
+                                        self.new_column_default.clear();
+                                        self.new_column_nullable = true;
+                                    }
+                                    ui.close_menu();
+                                }
+                            });
+                        }
+                    }
                 });
             }
 
@@ -5378,14 +5403,6 @@ impl App for Tabular {
                             self.table_bottom_view = models::structs::TableBottomView::Structure;
                             if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); }
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self.table_bottom_view == models::structs::TableBottomView::Structure {
-                                if ui.button("+ Column").clicked() {
-                                    self.adding_column = true;
-                                    if self.new_column_type.is_empty() { self.new_column_type = "varchar(255)".to_string(); }
-                                }
-                            }
-                        });
                     });
                     ui.separator();
                     if self.table_bottom_view == models::structs::TableBottomView::Structure {
@@ -5431,9 +5448,6 @@ impl App for Tabular {
                         if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Data; }
                         let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
                         if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Structure; if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); } }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self.table_bottom_view == models::structs::TableBottomView::Structure && ui.button("+ Column").clicked() { self.adding_column = true; if self.new_column_type.is_empty() { self.new_column_type = "varchar(255)".to_string(); } }
-                        });
                     });
                     ui.separator();
                     if self.table_bottom_view == models::structs::TableBottomView::Structure { self.render_structure_view(ui); } else { self.render_table_data(ui); }
@@ -5465,14 +5479,6 @@ impl App for Tabular {
                         // Fixed-height container with internal scroll so long queries don't push result panel
                         let run_bar_height = 30.0;
                         let editor_area_height = (editor_h - run_bar_height).max(80.0);
-                        // Run bar
-                        ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new("▶ Run").shortcut_text("Ctrl+Enter")).clicked() {
-                                let has_q = if !self.selected_text.trim().is_empty() { true } else { let cq = editor::extract_query_from_cursor(self); !cq.trim().is_empty() || !self.editor_text.trim().is_empty() };
-                                if has_q { editor::execute_query(self); }
-                            }
-                            ui.separator();
-                        });
                         // Scrollable editor area
                         let avail_w = ui.available_width();
                         // Allocate a fixed rectangle then paint a vertical ScrollArea inside it so content doesn't expand layout
