@@ -138,6 +138,12 @@ pub struct Tabular {
     pub structure_col_widths: Vec<f32>, // for columns table
     pub structure_idx_col_widths: Vec<f32>, // for indexes table
     pub structure_sub_view: models::structs::StructureSubView,
+    // Inline add-column state for Structure -> Columns
+    pub adding_column: bool,
+    pub new_column_name: String,
+    pub new_column_type: String,
+    pub new_column_nullable: bool,
+    pub new_column_default: String,
 }
 
 
@@ -352,6 +358,11 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,
+            adding_column: false,
+            new_column_name: String::new(),
+            new_column_type: String::new(),
+            new_column_nullable: true,
+            new_column_default: String::new(),
         };
         
         // Clear any old cached pools
@@ -1417,6 +1428,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     });
                 }
             });
+
+    // (central panel logic handled inside update previously)
 
             if node.is_expanded {
                 // Khusus HistoryDateFolder: render children tanpa indent tambahan (full width)
@@ -4810,22 +4823,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
         match self.structure_sub_view {
             models::structs::StructureSubView::Columns => {
-                let headers = ["No", "Name", "Type", "Nullable", "Default", "Extra"];                
-                if self.structure_col_widths.len() != headers.len() { self.structure_col_widths = vec![60.0, 180.0, 140.0, 90.0, 160.0, 140.0]; }
-                let mut local_widths = self.structure_col_widths.clone();
-                let mut rows: Vec<Vec<String>> = Vec::with_capacity(self.structure_columns.len());
-                for (i,c) in self.structure_columns.iter().enumerate() {
-                    rows.push(vec![
-                        (i+1).to_string(),
-                        c.name.clone(),
-                        c.data_type.clone(),
-                        c.nullable.map(|b| if b {"YES"} else {"NO"}).unwrap_or("?").to_string(),
-                        c.default_value.clone().unwrap_or_default(),
-                        c.extra.clone().unwrap_or_default(),
-                    ]);
-                }
-                self.render_structure_grid(ui, "struct_cols", &headers, &mut local_widths, &rows);
-                self.structure_col_widths = local_widths;
+                self.render_structure_columns_editor(ui);
             },
             models::structs::StructureSubView::Indexes => {
                 let headers = ["No", "Index Name"]; 
@@ -4837,6 +4835,151 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 self.structure_idx_col_widths = local_widths;
             }
         }
+    }
+
+    fn render_structure_columns_editor(&mut self, ui: &mut egui::Ui) {
+        let headers = ["#", "column_name", "data_type", "nullable", "default", "extra"];                
+        if self.structure_col_widths.len() != headers.len() { self.structure_col_widths = vec![40.0, 180.0, 160.0, 90.0, 160.0, 120.0]; }
+        let mut widths = self.structure_col_widths.clone();
+        for w in widths.iter_mut() { *w = w.clamp(40.0, 600.0); }
+        let dark = ui.visuals().dark_mode;
+        let border = if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) };
+        let stroke = egui::Stroke::new(0.5, border);
+        let header_text_col = if dark { egui::Color32::from_rgb(220,220,255) } else { egui::Color32::from_rgb(60,60,120) };
+        let header_bg = if dark { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::from_gray(240) };
+        let row_h = 26.0f32;
+        let header_h = 30.0f32;
+
+        // Toolbar for add column inline
+        ui.horizontal(|ui| {
+            if !self.adding_column && ui.button("+ Column").clicked() {
+                self.adding_column = true;
+                self.new_column_name.clear();
+                if self.new_column_type.is_empty() { self.new_column_type = "varchar(255)".to_string(); }
+                self.new_column_nullable = true;
+                self.new_column_default.clear();
+            }
+        });
+        ui.separator();
+
+        egui::ScrollArea::both().id_salt("struct_cols_inline").auto_shrink([false,false]).show(ui, |ui| {
+            // HEADER
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (i,h) in headers.iter().enumerate() {
+                    let w = widths[i];
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 0.0, header_bg);
+                    ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
+                    ui.painter().text(rect.left_center() + egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, *h, egui::FontId::proportional(13.0), header_text_col);
+                    // simple resize region
+                    let handle = egui::Rect::from_min_max(egui::pos2(rect.max.x - 4.0, rect.min.y), rect.max);
+                    let rh = ui.interact(handle, egui::Id::new(("struct_cols_inline","resize",i)), egui::Sense::drag());
+                    if rh.dragged() { widths[i] = (widths[i] + rh.drag_delta().x).clamp(40.0, 600.0); ui.ctx().request_repaint(); }
+                    if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
+                }
+            });
+            ui.add_space(2.0);
+
+            // EXISTING ROWS
+            for (idx,col) in self.structure_columns.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let values = [
+                        (idx+1).to_string(),
+                        col.name.clone(),
+                        col.data_type.clone(),
+                        col.nullable.map(|b| if b {"YES"} else {"NO"}).unwrap_or("?").to_string(),
+                        col.default_value.clone().unwrap_or_default(),
+                        col.extra.clone().unwrap_or_default(),
+                    ];
+                    for (i,val) in values.iter().enumerate() { let w = widths[i]; let (rect,_) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::hover()); if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);} ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside); let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col); }
+                });
+            }
+
+            // NEW COLUMN ROW (editable)
+            if self.adding_column {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    // #
+                    let (rect_no,_) = ui.allocate_exact_size(egui::vec2(widths[0], row_h), egui::Sense::hover());
+                    ui.painter().rect_stroke(rect_no,0.0,stroke, egui::StrokeKind::Outside);
+                    let idx_txt = format!("{}", self.structure_columns.len()+1);
+                    let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; ui.painter().text(rect_no.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, idx_txt, egui::FontId::proportional(13.0), txt_col);
+                    // Name
+                    let w_name = widths[1];
+                    ui.allocate_ui_with_layout(egui::vec2(w_name,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(w_name-8.0);
+                        ui.add_space(4.0);
+                        ui.text_edit_singleline(&mut self.new_column_name);
+                    });
+                    // Type combobox
+                    let w_type = widths[2];
+                    ui.allocate_ui_with_layout(egui::vec2(w_type,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(w_type-8.0);
+                        let types = ["varchar(255)", "bigint", "int", "text", "longtext", "datetime", "date", "float", "double", "boolean"];
+                        egui::ComboBox::from_id_salt("new_col_type").selected_text(&self.new_column_type).show_ui(ui, |ui| {
+                            for t in types { if ui.selectable_label(self.new_column_type==t, t).clicked() { self.new_column_type = t.to_string(); } }
+                        });
+                    });
+                    // Nullable
+                    let w_null = widths[3];
+                    ui.allocate_ui_with_layout(egui::vec2(w_null,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        egui::ComboBox::from_id_salt("new_col_nullable").selected_text(if self.new_column_nullable {"YES"} else {"NO"}).show_ui(ui, |ui| {
+                            if ui.selectable_label(self.new_column_nullable, "YES").clicked() { self.new_column_nullable = true; }
+                            if ui.selectable_label(!self.new_column_nullable, "NO").clicked() { self.new_column_nullable = false; }
+                        });
+                    });
+                    // Default
+                    let w_def = widths[4];
+                    ui.allocate_ui_with_layout(egui::vec2(w_def,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(w_def-8.0);
+                        ui.add_space(4.0);
+                        ui.text_edit_singleline(&mut self.new_column_default);
+                    });
+                    // Extra (save/cancel buttons)
+                    let w_extra = widths[5];
+                    ui.allocate_ui_with_layout(egui::vec2(w_extra,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let save_enabled = !self.new_column_name.trim().is_empty();
+                        if ui.add_enabled(save_enabled, egui::Button::new("Save")).clicked() { self.commit_new_column(); }
+                        if ui.button("Cancel").clicked() { self.adding_column = false; }
+                    });
+                });
+            }
+        });
+        self.structure_col_widths = widths;
+    }
+
+    fn commit_new_column(&mut self) {
+        if !self.adding_column { return; }
+        let Some(conn_id) = self.current_connection_id else { self.adding_column=false; return; };
+        let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() else { self.adding_column=false; return; };
+        let ttitle = self.query_tabs.get(self.active_tab_index).map(|t| t.title.clone()).unwrap_or_default();
+        let mut table_guess = ttitle.split(':').nth(1).unwrap_or(&ttitle).trim().to_string();
+        if let Some(p) = table_guess.find('(') { table_guess = table_guess[..p].trim().to_string(); }
+    let name_owned = self.new_column_name.trim().to_string();
+    if name_owned.is_empty() { return; }
+        let mut default_clause = String::new();
+        if !self.new_column_default.trim().is_empty() {
+            let d = self.new_column_default.trim();
+            let needs_quote = !(d.chars().all(|c| c.is_ascii_digit()) || matches!(d.to_uppercase().as_str(), "CURRENT_TIMESTAMP"|"NOW()"));
+            if needs_quote { default_clause = format!(" DEFAULT '{}'", d.replace("'", "''")); } else { default_clause = format!(" DEFAULT {}", d); }
+        }
+        let null_clause = if self.new_column_nullable { "" } else { " NOT NULL" };
+        let stmt = match conn.connection_type {
+            models::enums::DatabaseType::MySQL | models::enums::DatabaseType::MSSQL => format!("ALTER TABLE `{}` ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
+            models::enums::DatabaseType::PostgreSQL => format!("ALTER TABLE \"{}\" ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
+            models::enums::DatabaseType::SQLite => format!("ALTER TABLE `{}` ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
+            _ => "-- Add column not supported for this database type".to_string()
+        };
+        if !stmt.starts_with("--") { self.editor_text.push('\n'); }
+        self.editor_text.push_str(&stmt);
+        // Reset state
+        self.adding_column = false;
+    self.new_column_name.clear();
+        self.new_column_default.clear();
+        // Optionally update local view (append optimistic row)
+    self.structure_columns.push(models::structs::ColumnStructInfo { name: name_owned, data_type: self.new_column_type.clone(), nullable: Some(self.new_column_nullable), default_value: if self.new_column_default.trim().is_empty() { None } else { Some(self.new_column_default.trim().to_string()) }, extra: None });
     }
 
     // Generic bordered grid renderer (lighter reuse of render_table_data look & feel)
@@ -5210,413 +5353,101 @@ impl App for Tabular {
                 });
             });
 
+        // Central panel (main editor / data / structure)
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO))
             .show(ctx, |ui| {
-                let full_table_tab = self.query_tabs.get(self.active_tab_index).map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:")).unwrap_or(false);
+                let full_table_tab = self
+                    .query_tabs
+                    .get(self.active_tab_index)
+                    .map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:"))
+                    .unwrap_or(false);
+
                 if full_table_tab {
-                    // Data/Structure only
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
-                            if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Data; }
-                            let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
-                            if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Structure; if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); } }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if self.table_bottom_view == models::structs::TableBottomView::Structure {
-                                    if ui.button("+ Index").clicked() { if let Some(conn_id) = self.current_connection_id { let ttitle = self.query_tabs.get(self.active_tab_index).map(|t| t.title.clone()).unwrap_or_default(); let tname = ttitle.split(':').nth(1).unwrap_or(&ttitle).trim().to_string(); self.index_dialog = Some(models::structs::IndexDialogState { mode: models::structs::IndexDialogMode::Create, connection_id: conn_id, database_name: self.query_tabs.get(self.active_tab_index).and_then(|t| t.database_name.clone()), table_name: tname.clone(), existing_index_name: None, index_name: format!("idx_{}_col", tname), columns: "col1".to_string(), unique: false, method: None, db_type: self.connections.iter().find(|c| c.id==Some(conn_id)).map(|c| c.connection_type.clone()).unwrap_or(models::enums::DatabaseType::MySQL) }); self.show_index_dialog = true; } }
-                                    ui.add_space(4.0);
-                                    if ui.button("+ Column").clicked() { if let Some(conn_id) = self.current_connection_id { if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)) { let ttitle = self.query_tabs.get(self.active_tab_index).map(|t| t.title.clone()).unwrap_or_default(); let mut table_guess = ttitle.split(':').nth(1).unwrap_or(&ttitle).trim().to_string(); if let Some(p) = table_guess.find('(') { table_guess = table_guess[..p].trim().to_string(); } let stmt = match conn.connection_type { models::enums::DatabaseType::MySQL | models::enums::DatabaseType::MSSQL => format!("ALTER TABLE `{}` ADD COLUMN new_column VARCHAR(255) NULL;", table_guess), models::enums::DatabaseType::PostgreSQL => format!("ALTER TABLE \"{}\" ADD COLUMN new_column VARCHAR(255);", table_guess), models::enums::DatabaseType::SQLite => format!("ALTER TABLE `{}` ADD COLUMN new_column TEXT;", table_guess), _ => "-- Add column not supported for this database type".to_string() }; self.editor_text.push_str("\n"); self.editor_text.push_str(&stmt); } } }
+                    ui.horizontal(|ui| {
+                        let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
+                        if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() {
+                            self.table_bottom_view = models::structs::TableBottomView::Data;
+                        }
+                        let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
+                        if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() {
+                            self.table_bottom_view = models::structs::TableBottomView::Structure;
+                            if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); }
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if self.table_bottom_view == models::structs::TableBottomView::Structure {
+                                if ui.button("+ Column").clicked() {
+                                    self.adding_column = true;
+                                    if self.new_column_type.is_empty() { self.new_column_type = "varchar(255)".to_string(); }
                                 }
-                            });
+                            }
                         });
-                        ui.separator();
-                        if self.table_bottom_view == models::structs::TableBottomView::Structure { self.render_structure_view(ui); } else { self.render_table_data(ui); }
                     });
-                } else {
-                    // Original editor + data layout
-                    ui.vertical_centered_justified(|ui| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.spacing_mut().indent = 0.0;
-                        let available_height = ui.available_height();
-                        let editor_height = available_height * self.table_split_ratio;
-                        egui::TopBottomPanel::top("sql_editor_panel")
-                            .resizable(true)
-                            .height_range(available_height * 0.1..=available_height * 0.9)
-                            .default_height(editor_height)
-                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO))
-                            .show_inside(ui, |ui| {
-                                ui.vertical(|ui| {
-                            // Tab bar
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 0.0; // Remove spacing between tabs
-                                
-                                // Render tabs
-                                let mut tab_to_close = None;
-                                let mut tab_to_switch = None;
-                                let mut connection_to_set: Option<(usize, Option<i64>)> = None;
-                                
-                                for (index, tab) in self.query_tabs.iter().enumerate() {
-                                    let is_active = index == self.active_tab_index;
-                                    let tab_color = if is_active {
-                                        egui::Color32::from_rgb(255, 60, 0) // Orange for active
-                                    } else {
-                                        ui.visuals().text_color()
-                                    };
-                                    
-                                    let tab_bg = egui::Color32::from_rgb(0, 0, 0); // Black background for all tabs
-                                    
-                                    ui.horizontal(|ui| {
-                                        // Tab button with connection indicator
-                                        let mut tab_text = tab.title.clone();
-                                        
-                                        // Add connection indicator to tab title
-                                        if let Some(conn_id) = tab.connection_id {
-                                            if let Some(conn_name) = self.get_connection_name(conn_id) {
-                                                tab_text = format!("{} [{}]", tab.title, conn_name);
-                                            }
-                                        }
-                                        
-                                        let tab_response = ui.add(
-                                            egui::Button::new(
-                                                egui::RichText::new(&tab_text)
-                                                    .color(tab_color)
-                                                    .size(12.0)
-                                            )
-                                            .fill(tab_bg)
-                                            .stroke(egui::Stroke::NONE)
-                                        );
-                                        
-                                        if tab_response.clicked() && !is_active {
-                                            tab_to_switch = Some(index);
-                                        }
-                                        
-                                        // Right-click context menu for connection selection
-                                        tab_response.context_menu(|ui| {
-                                            ui.label("Select Connection:");
-                                            ui.separator();
-                                            
-                                            // None option
-                                            if ui.selectable_label(tab.connection_id.is_none(), "None").clicked() {
-                                                connection_to_set = Some((index, None));
-                                                ui.close_menu();
-                                            }
-                                            
-                                            // Available connections
-                                            for connection in &self.connections {
-                                                if let Some(conn_id) = connection.id {
-                                                    let is_selected = tab.connection_id == Some(conn_id);
-                                                    if ui.selectable_label(is_selected, &connection.name).clicked() {
-                                                        connection_to_set = Some((index, Some(conn_id)));
-                                                        ui.close_menu();
-                                                    }
-                                                }
-                                            }
-                                        });
-                                        
-                                        // Close button (only show for non-active tabs or if more than 1 tab)
-                                        if self.query_tabs.len() > 1 || !is_active {
-                                            let close_response = ui.add_sized(
-                                                [16.0, 16.0],
-                                                egui::Button::new("×")
-                                                    .fill(egui::Color32::TRANSPARENT)
-                                                    .stroke(egui::Stroke::NONE)
-                                            );
-                                            
-                                            if close_response.clicked() {
-                                                tab_to_close = Some(index);
-                                            }
-                                        }
-                                    });
-                                }
-                                
-                                // Handle deferred operations after the loop
-                                if let Some((tab_index, conn_id)) = connection_to_set {
-                                    if let Some(tab) = self.query_tabs.get_mut(tab_index) {
-                                        tab.connection_id = conn_id;
-                                    }
-                                }
-                                
-                                // New tab button
-                                if ui.add_sized(
-                                    [24.0, 24.0],
-                                    egui::Button::new("+")
-                                        .fill(egui::Color32::BLACK)
-                                ).clicked() {
-                                    editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
-                                }
-                                
-                                // Push gear icon to the far right
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    // Gear icon with context menu
-                                    let gear_button = ui.add_sized(
-                                        [24.0, 24.0],
-                                        egui::Button::new("⚙")
-                                            .fill(egui::Color32::TRANSPARENT)
-                                            .stroke(egui::Stroke::NONE)
-                                    );
-                                    
-                                    // Show context menu when gear is left-clicked
-                                    if gear_button.clicked() {
-                                        ui.memory_mut(|mem| mem.toggle_popup(egui::Id::new("gear_menu")));
-                                    }
-                                    
-                                    // Render popup menu
-                                    egui::popup::popup_below_widget(ui, egui::Id::new("gear_menu"), &gear_button, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-                                        ui.set_min_width(120.0); // Set minimum width for the popup
-                                        ui.spacing_mut().button_padding = egui::vec2(8.0, 6.0); // Add more padding to buttons
-                                        ui.spacing_mut().item_spacing.y = 4.0; // Add vertical spacing between items
-                                        
-                                        if ui.add_sized([100.0, 24.0], egui::Button::new("Settings")).clicked() {
-                                            editor::open_command_palette(self);
-                                            ui.memory_mut(|mem| mem.close_popup());
-                                        }
-                                        if ui.add_sized([100.0, 24.0], egui::Button::new("About")).clicked() {
-                                            self.show_about_dialog = true;
-                                            ui.memory_mut(|mem| mem.close_popup());
-                                        }
-                                    });
-                                });
-                                
-                                
-                                // Handle tab operations
-                                if let Some(index) = tab_to_close {
-                                    editor::close_tab(self, index);
-                                }
-                                if let Some(index) = tab_to_switch {
-                                    editor::switch_to_tab(self, index);
-                                }
-                            });
-                            
-                            ui.separator();
-                            
-                            // Update current tab content with editor changes
-                            if let Some(current_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                if current_tab.content != self.editor_text {
-                                    current_tab.content = self.editor_text.clone();
-                                    current_tab.is_modified = true;
-                                }
-                            }
-                            
-                            // SQL Editor area
-                            egui::Frame::NONE
-                                .fill(if ui.visuals().dark_mode { 
-                                    egui::Color32::from_rgb(30, 30, 30) // Slightly darker for contrast
-                                } else { 
-                                    egui::Color32::WHITE // Pure white for light mode
-                                })
-                                .inner_margin(egui::Margin::ZERO) // No padding for compact design
-                                .show(ui, |ui| {
-                                    editor::render_advanced_editor(self, ui);
-                                    
-                                    // Check for Ctrl+Enter or Cmd+Enter to execute query
-                                    if ui.input(|i| {
-                                        (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::Enter)
-                                    }) {
-                                        // Check if there's any query to execute using same priority as execute_query
-                                        let has_query = if !self.selected_text.trim().is_empty() {
-                                            true
-                                        } else {
-                                            let cursor_query = editor::extract_query_from_cursor(self);
-                                            if !cursor_query.trim().is_empty() {
-                                                true
-                                            } else {
-                                                !self.editor_text.trim().is_empty()
-                                            }
-                                        };
-
-                                        if has_query {
-                                            // Always call execute_query, it will handle connection logic internally
-                                            editor::execute_query(self);
-                                        }
-                                    }
-                                    
-                                    // Check for Ctrl+S or Cmd+S to save
-                                    if ui.input(|i| {
-                                        (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::S)
-                                    }) {
-                                        if let Err(err) = editor::save_current_tab(self) {
-                                            error!("Failed to save: {}", err);
-                                        }
-                                    }
-                                });
-                        });
-                        
-                                // Update split ratio when panel is resized
-                                let current_height = ui.min_rect().height();
-                                self.table_split_ratio = (current_height / available_height).clamp(0.1, 0.9);
-                            }); // end top panel
-                    }); // end vertical_centered_justified
-                    egui::CentralPanel::default().frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO)).show_inside(ui, |ui| { self.render_table_data(ui); });
-                }
-            }); // end central panel block
-
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!("Active Tab: {}", self.get_active_tab_title()));
-                ui.separator();
-                ui.label(format!("Lines: {}", self.editor_text.lines().count()));
-                ui.separator();
-                                
-                // Show selection status
-                if !self.selected_text.trim().is_empty() {
-                    ui.colored_label(egui::Color32::from_rgb(0, 150, 255), 
-                        format!("Selected: {} chars", self.selected_text.len()));
                     ui.separator();
-                }
-                
-                ui.label(format!("Tabs: {}", self.query_tabs.len()));
-                ui.separator();
-                ui.label(format!("Connections: {}", self.connections.len()));
-                ui.separator();
-                
-                // Connection selector ComboBox for current tab
-                if !self.connections.is_empty() {
-                    ui.label("Conn:");
-                    let current_tab_connection_name = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-                        if let Some(conn_id) = tab.connection_id {
-                            self.get_connection_name(conn_id).unwrap_or_else(|| format!("ID {}", conn_id))
-                        } else {
-                            "None".to_string()
-                        }
+                    if self.table_bottom_view == models::structs::TableBottomView::Structure {
+                        self.render_structure_view(ui);
                     } else {
-                        "No Tab".to_string()
-                    };
-                    
-                    let mut connection_to_set: Option<Option<i64>> = None;
-                    
-                    egui::ComboBox::from_id_salt("status_tab_connection_selector")
-                        .selected_text(&current_tab_connection_name)
-                        .width(150.0)
-                        .show_ui(ui, |ui| {
-                            // Option for no connection
-                            if ui.selectable_label(
-                                self.query_tabs.get(self.active_tab_index).is_some_and(|tab| tab.connection_id.is_none()), 
-                                "None"
-                            ).clicked() {
-                                connection_to_set = Some(None);
-                            }
-                            
-                            // All available connections
-                            for connection in &self.connections {
-                                if let Some(connection_id) = connection.id {
-                                    let is_selected = self.query_tabs.get(self.active_tab_index).is_some_and(|tab| tab.connection_id == Some(connection_id));
-                                    if ui.selectable_label(is_selected, &connection.name).clicked() {
-                                        connection_to_set = Some(Some(connection_id));
-                                    }
-                                }
-                            }
-                        });
-                    
-                    // Apply connection change after the borrow is released
-                    if let Some(conn_id) = connection_to_set {
-                        self.set_active_tab_connection(conn_id);
+                        self.render_table_data(ui);
                     }
-                    
-                    ui.separator();
-                    
-                    // Database selector for current tab connection (for MySQL and PostgreSQL)
-                    let current_tab_connection = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-                        tab.connection_id
-                    } else {
-                        None
-                    };
-                    
-                    let current_tab_database = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-                        tab.database_name.clone()
-                    } else {
-                        None
-                    };
-                    
-                    if let Some(conn_id) = current_tab_connection {
-                        if let Some(connection) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
-                            // Store connection info to avoid borrow checker issues
-                            let connection_type = connection.connection_type.clone();
-                            let connection_database = connection.database.clone();
-                            
-                            // Show database selector for all connection types
-                            ui.label("Database:");
-                            
-                            // Get current tab's database selection
-                            let current_database = current_tab_database.clone().unwrap_or_else(|| "Select Database".to_string());
-                            
-                            let mut database_to_set: Option<Option<String>> = None;
-                            
-                            egui::ComboBox::from_id_salt("status_database_selector")
-                                .selected_text(&current_database)
-                                .width(120.0)
-                                .show_ui(ui, |ui| {
-                                    // For MySQL and PostgreSQL, get available databases
-                                    if matches!(connection_type, models::enums::DatabaseType::MySQL | models::enums::DatabaseType::PostgreSQL | models::enums::DatabaseType::MSSQL) {
-                                        let available_databases = self.get_databases_cached(conn_id);
-                                        
-                                        if available_databases.is_empty() {
-                                            ui.colored_label(egui::Color32::GRAY, "Loading databases...");
-                                        } else {
-                                            for database in &available_databases {
-                                                let is_selected = current_tab_database.as_ref() == Some(database);
-                                                if ui.selectable_label(is_selected, database).clicked() {
-                                                    database_to_set = Some(Some(database.clone()));
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // For SQLite and Redis, show the configured database
-                                        let is_selected = current_tab_database.as_ref() == Some(&connection_database);
-                                        if ui.selectable_label(is_selected, &connection_database).clicked() {
-                                            database_to_set = Some(Some(connection_database.clone()));
-                                        }
-                                    }
-                                });
-                            
-                            // Apply database change after the borrow is released
-                            if let Some(db_name) = database_to_set {
-                                self.set_active_tab_database(db_name.clone());
-                                
-                                // Clear current table data when switching databases
-                                self.current_table_data.clear();
-                                self.current_table_headers.clear();
-                                self.current_table_name.clear();
-                                self.total_rows = 0;
-                                self.current_page = 0;
-                                
-                                if let Some(db) = &db_name {
-                                    debug!("Switched to database: {}", db);
-                                }
-                            }
-                            
-                            ui.separator();
+                    return; // done
+                }
+
+                // Normal query tab: tab bar, editor, toggle, content
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let mut to_close = None;
+                    let mut to_switch = None;
+                    for (i, tab) in self.query_tabs.iter().enumerate() {
+                        let active = i == self.active_tab_index;
+                        let color = if active { egui::Color32::from_rgb(255,60,0) } else { ui.visuals().text_color() };
+                        let bg = egui::Color32::BLACK;
+                        let mut title = tab.title.clone();
+                        if let Some(cid) = tab.connection_id { if let Some(n) = self.get_connection_name(cid) { title = format!("{} [{}]", title, n); } }
+                        let resp = ui.add(egui::Button::new(egui::RichText::new(title).color(color).size(12.0)).fill(bg).stroke(egui::Stroke::NONE));
+                        if resp.clicked() && !active { to_switch = Some(i); }
+                        if self.query_tabs.len() > 1 || !active {
+                            if ui.add_sized([16.0,16.0], egui::Button::new("×").fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::NONE)).clicked() { to_close = Some(i); }
                         }
                     }
-                } else {
-                    ui.colored_label(egui::Color32::RED, "No connections available");
-                }
+                    if let Some(i) = to_close { editor::close_tab(self, i); }
+                    if let Some(i) = to_switch { editor::switch_to_tab(self, i); }
+                    if ui.add_sized([24.0,24.0], egui::Button::new("+").fill(egui::Color32::BLACK)).clicked() { editor::create_new_tab(self, "Untitled Query".to_string(), String::new()); }
+                });
                 ui.separator();
-                
-                // Show pagination info
-                if self.total_rows > 0 {
-                    ui.label(format!("Showing {} of {} rows (page {}/{})", 
-                        self.current_table_data.len(), 
-                        self.total_rows,
-                        self.current_page + 1,
-                        self.get_total_pages()));
-                } else {
-                    ui.label(format!("Showing {} rows", self.current_table_data.len()));
+
+                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                    if tab.content != self.editor_text { tab.content = self.editor_text.clone(); tab.is_modified = true; }
                 }
-                ui.separator();
-                
-                // Show execution hint
-                if !self.selected_text.trim().is_empty() {
-                    ui.colored_label(egui::Color32::from_rgb(100, 200, 100), "CMD+Enter: Execute selection");
-                } else {
-                    let cursor_query = editor::extract_query_from_cursor(self);
-                    if !cursor_query.trim().is_empty() {
-                        ui.colored_label(egui::Color32::from_rgb(200, 150, 100), "CMD+Enter: Execute query at cursor");
-                    } else {
-                        ui.label("CMD+Enter: Execute all");
+
+                // Editor area with fixed ratio
+                let avail = ui.available_height();
+                let editor_h = (avail * self.table_split_ratio).clamp(120.0, avail - 150.0);
+                let editor_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), editor_h));
+                let (id, _) = ui.allocate_space(editor_rect.size());
+                let mut editor_ui = ui.new_child(egui::UiBuilder::new().id_salt("editor_area"));
+                egui::Frame::NONE.fill(if editor_ui.visuals().dark_mode { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::WHITE }).show(&mut editor_ui, |ui| {
+                    editor::render_advanced_editor(self, ui);
+                    if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::Enter)) {
+                        let has_q = if !self.selected_text.trim().is_empty() { true } else { let cq = editor::extract_query_from_cursor(self); !cq.trim().is_empty() || !self.editor_text.trim().is_empty() };
+                        if has_q { editor::execute_query(self); }
                     }
-                }
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
+                    if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Data; }
+                    let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
+                    if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Structure; if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); } }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.table_bottom_view == models::structs::TableBottomView::Structure {
+                            if ui.button("+ Column").clicked() { self.adding_column = true; if self.new_column_type.is_empty() { self.new_column_type = "varchar(255)".to_string(); } }
+                        }
+                    });
+                });
+                ui.separator();
+                if self.table_bottom_view == models::structs::TableBottomView::Structure { self.render_structure_view(ui); } else { self.render_table_data(ui); }
             });
-        });
-    }
-}
+
+    } // end update
+} // end impl App for Tabular
