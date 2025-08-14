@@ -4297,7 +4297,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 ui.separator();
             }
             
-            if !self.current_table_headers.is_empty() && !self.current_table_data.is_empty() {
+            // Show grid whenever we have headers (even if 0 rows) so user sees column structure
+            if !self.current_table_headers.is_empty() {
                 // Store sort state locally to avoid borrowing issues
                 let current_sort_column = self.sort_column;
                 let current_sort_ascending = self.sort_ascending;
@@ -4720,8 +4721,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     self.selected_row = Some(r);
                     self.selected_cell = Some((r, c));
                 }
-                for (column_index, ascending) in sort_requests {
-                    self.sort_table_data(column_index, ascending);
+                for (column_index, ascending) in sort_requests { self.sort_table_data(column_index, ascending); }
+                // If there are no rows, display an explicit message under the header grid
+                if self.current_table_data.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("0 rows").italics().weak());
                 }
             } else if self.current_table_name.starts_with("Failed") {
                 ui.colored_label(egui::Color32::RED, &self.current_table_name);
@@ -5389,7 +5393,7 @@ impl App for Tabular {
                     } else {
                         self.render_table_data(ui);
                     }
-                    return; // done
+                    return; // done (only for table/collection tabs)
                 }
 
                 // Normal query tab: tab bar, editor, toggle, content
@@ -5419,34 +5423,95 @@ impl App for Tabular {
                     if tab.content != self.editor_text { tab.content = self.editor_text.clone(); tab.is_modified = true; }
                 }
 
-                // Editor area with fixed ratio
-                let avail = ui.available_height();
-                let editor_h = (avail * self.table_split_ratio).clamp(120.0, avail - 150.0);
-                let editor_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), editor_h));
-                let (id, _) = ui.allocate_space(editor_rect.size());
-                let mut editor_ui = ui.new_child(egui::UiBuilder::new().id_salt("editor_area"));
-                egui::Frame::NONE.fill(if editor_ui.visuals().dark_mode { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::WHITE }).show(&mut editor_ui, |ui| {
-                    editor::render_advanced_editor(self, ui);
-                    if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::Enter)) {
-                        let has_q = if !self.selected_text.trim().is_empty() { true } else { let cq = editor::extract_query_from_cursor(self); !cq.trim().is_empty() || !self.editor_text.trim().is_empty() };
-                        if has_q { editor::execute_query(self); }
+                let is_table_tab = self.query_tabs.get(self.active_tab_index).map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:")).unwrap_or(false);
+                if is_table_tab {
+                    // Table tab: no SQL editor, only Data/Structure toggle
+                    ui.horizontal(|ui| {
+                        let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
+                        if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Data; }
+                        let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
+                        if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Structure; if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); } }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if self.table_bottom_view == models::structs::TableBottomView::Structure && ui.button("+ Column").clicked() { self.adding_column = true; if self.new_column_type.is_empty() { self.new_column_type = "varchar(255)".to_string(); } }
+                        });
+                    });
+                    ui.separator();
+                    if self.table_bottom_view == models::structs::TableBottomView::Structure { self.render_structure_view(ui); } else { self.render_table_data(ui); }
+                } else {
+                    // Query tab: editor on top, results (if any) below
+                    // Query tab logic: show bottom panel if we have any headers/data, a status name/message, or tab executed at least once
+                    let avail = ui.available_height();
+                    let executed = self.query_tabs.get(self.active_tab_index).map(|t| t.has_executed_query).unwrap_or(false);
+                    let has_headers = !self.current_table_headers.is_empty();
+                    let has_message = !self.current_table_name.is_empty();
+                    let show_bottom = has_headers || has_message || executed;
+                    // Draggable splitter: when showing bottom, always reserve some min space; allow adjusting ratio
+                    if show_bottom {
+                        // Enforce bounds
+                        if self.table_split_ratio < 0.1 { self.table_split_ratio = 0.1; }
+                        if self.table_split_ratio > 0.9 { self.table_split_ratio = 0.9; }
                     }
-                });
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
-                    if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Data; }
-                    let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
-                    if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Structure; if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); } }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.table_bottom_view == models::structs::TableBottomView::Structure {
-                            if ui.button("+ Column").clicked() { self.adding_column = true; if self.new_column_type.is_empty() { self.new_column_type = "varchar(255)".to_string(); } }
+                    let editor_h = if show_bottom {
+                        let mut h = avail * self.table_split_ratio;
+                        if has_headers {
+                            h = h.clamp(100.0, avail - 140.0);
+                        } else {
+                            // If only message, give more space to editor
+                            h = h.clamp(140.0, avail - 100.0);
+                        }
+                        h
+                    } else { avail };
+                    egui::Frame::NONE.fill(if ui.visuals().dark_mode { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::WHITE }).show(ui, |ui| {
+                        // Fixed-height container with internal scroll so long queries don't push result panel
+                        let run_bar_height = 30.0;
+                        let editor_area_height = (editor_h - run_bar_height).max(80.0);
+                        // Run bar
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new("▶ Run").shortcut_text("Ctrl+Enter")).clicked() {
+                                let has_q = if !self.selected_text.trim().is_empty() { true } else { let cq = editor::extract_query_from_cursor(self); !cq.trim().is_empty() || !self.editor_text.trim().is_empty() };
+                                if has_q { editor::execute_query(self); }
+                            }
+                            ui.separator();
+                        });
+                        // Scrollable editor area
+                        let avail_w = ui.available_width();
+                        // Allocate a fixed rectangle then paint a vertical ScrollArea inside it so content doesn't expand layout
+                        let desired = egui::vec2(avail_w, editor_area_height);
+                        let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
+                        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                        egui::ScrollArea::vertical()
+                            .id_salt("query_editor_scroll")
+                            .auto_shrink([false, false])
+                            .show(&mut child_ui, |ui| {
+                                // Constrain width to avoid horizontal grow
+                                ui.set_min_width(avail_w - 4.0);
+                                editor::render_advanced_editor(self, ui);
+                            });
+                        // Key shortcut check
+                        if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::Enter)) {
+                            let has_q = if !self.selected_text.trim().is_empty() { true } else { let cq = editor::extract_query_from_cursor(self); !cq.trim().is_empty() || !self.editor_text.trim().is_empty() };
+                            if has_q { editor::execute_query(self); }
                         }
                     });
-                });
-                ui.separator();
-                if self.table_bottom_view == models::structs::TableBottomView::Structure { self.render_structure_view(ui); } else { self.render_table_data(ui); }
+                    if show_bottom {
+                        // Draw draggable handle
+                        let handle_id = ui.make_persistent_id("editor_table_splitter");
+                        let desired_h = 6.0;
+                        let available_w = ui.available_width();
+                        let (rect, resp) = ui.allocate_at_least(egui::vec2(available_w, desired_h), egui::Sense::click_and_drag());
+                        let stroke = egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.fg_stroke.color);
+                        ui.painter().hline(rect.x_range(), rect.center().y, stroke);
+                        if resp.dragged() {
+                            let drag_delta = resp.drag_delta().y;
+                            if avail > 0.0 {
+                                self.table_split_ratio = (self.table_split_ratio + (drag_delta / avail)).clamp(0.1, 0.9);
+                            }
+                            ui.memory_mut(|m| m.request_focus(handle_id));
+                        }
+                        ui.add_space(2.0);
+                        self.render_table_data(ui); // show query results / messages under editor
+                    }
+                }
             });
 
     } // end update

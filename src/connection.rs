@@ -131,6 +131,10 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                             tabular.all_table_data.clear();
                             tabular.total_rows = 0;
                             }
+                            // Mark active tab as having executed a query
+                            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                                   tab.has_executed_query = true;
+                            }
                      }
                      
                      tabular.show_connection_selector = false;
