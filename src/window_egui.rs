@@ -119,6 +119,13 @@ pub struct Tabular {
     pub min_column_width: f32,
     // Gear menu and about dialog
     pub show_about_dialog: bool,
+    // Preferences persistence
+    pub config_store: Option<crate::config::ConfigStore>,
+    pub last_saved_prefs: Option<crate::config::AppPreferences>,
+    pub prefs_dirty: bool,
+    pub prefs_save_feedback: Option<String>,
+    pub prefs_last_saved_at: Option<std::time::Instant>,
+    pub prefs_loaded: bool,
     // Logo texture
     pub logo_texture: Option<egui::TextureHandle>,
     // Database cache for performance
@@ -388,6 +395,12 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             new_index_method: String::new(),
             new_index_unique: false,
             new_index_columns: String::new(),
+            config_store: None,
+            last_saved_prefs: None,
+            prefs_dirty: false,
+            prefs_save_feedback: None,
+            prefs_last_saved_at: None,
+            prefs_loaded: false,
         };
         
         // Clear any old cached pools
@@ -5418,6 +5431,30 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
 impl App for Tabular {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // helper closure to save immediately when prefs_dirty flagged
+        let try_save_prefs = |app: &mut Tabular| {
+            if app.prefs_dirty {
+                if let (Some(store), Some(rt)) = (app.config_store.as_ref(), app.runtime.as_ref()) {
+                    let prefs = crate::config::AppPreferences {
+                        is_dark_mode: app.is_dark_mode,
+                        link_editor_theme: app.link_editor_theme,
+                        editor_theme: match app.advanced_editor.theme { 
+                            ColorTheme::GITHUB_LIGHT => "GITHUB_LIGHT".into(), 
+                            ColorTheme::GRUVBOX => "GRUVBOX".into(), 
+                            _ => "GITHUB_DARK".into() 
+                        },
+                        font_size: app.advanced_editor.font_size,
+                        word_wrap: app.advanced_editor.word_wrap,
+                    };
+                    rt.block_on(store.save(&prefs));
+                    log::info!("Preferences saved successfully");
+                    app.last_saved_prefs = Some(prefs);
+                    app.prefs_dirty = false;
+                } else {
+                    log::error!("Cannot save preferences: config store or runtime not initialized");
+                }
+            }
+        };
         // Handle forced refresh flag
         if self.needs_refresh {
             self.needs_refresh = false;
@@ -5429,12 +5466,36 @@ impl App for Tabular {
             ctx.request_repaint();
         }
 
-        // Apply global UI visuals based on selected theme
-        if self.is_dark_mode {
-            ctx.set_visuals(egui::Visuals::dark());
-        } else {
-            ctx.set_visuals(egui::Visuals::light());
+        // Lazy load preferences once (before applying visuals)
+        if self.config_store.is_none() && !self.prefs_loaded {
+            if let Some(rt) = &self.runtime {
+                match rt.block_on(crate::config::ConfigStore::new()) {
+                    Ok(store) => {
+                        let prefs = rt.block_on(store.load());
+                        self.is_dark_mode = prefs.is_dark_mode;
+                        self.link_editor_theme = prefs.link_editor_theme;
+                        self.advanced_editor.theme = match prefs.editor_theme.as_str() {
+                            "GITHUB_LIGHT" => ColorTheme::GITHUB_LIGHT,
+                            "GRUVBOX" => ColorTheme::GRUVBOX,
+                            _ => ColorTheme::GITHUB_DARK,
+                        };
+                        self.advanced_editor.font_size = prefs.font_size;
+                        self.advanced_editor.word_wrap = prefs.word_wrap;
+                        self.config_store = Some(store);
+                        self.last_saved_prefs = Some(prefs);
+                        self.prefs_loaded = true;
+                        log::info!("Preferences loaded successfully on startup");
+                    }
+                    Err(e) => {
+                        log::error!("Failed to initialize config store: {}", e);
+                        self.prefs_loaded = true; // Don't retry every frame
+                    }
+                }
+            }
         }
+
+        // Apply global UI visuals based on (possibly loaded) theme
+        if self.is_dark_mode { ctx.set_visuals(egui::Visuals::dark()); } else { ctx.set_visuals(egui::Visuals::light()); }
         // Sync editor theme only if linking enabled
         if self.link_editor_theme {
             let desired_editor_theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
@@ -5546,7 +5607,7 @@ impl App for Tabular {
         }
         
         // Render settings window if open
-        if self.show_settings_window {
+    if self.show_settings_window {
             let mut open_flag = true; // local to satisfy borrow rules
             egui::Window::new("Preferences")
                 .open(&mut open_flag)
@@ -5559,13 +5620,17 @@ impl App for Tabular {
                     ui.horizontal(|ui| {
                         ui.label("Choose theme:");
                         let prev = self.is_dark_mode;
-                        if ui.radio_value(&mut self.is_dark_mode, true, "🌙 Dark").clicked() { 
+                        if ui.radio_value(&mut self.is_dark_mode, true, "🌙 Dark").clicked() {
                             ctx.set_visuals(egui::Visuals::dark());
                             if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_DARK; }
+                            self.prefs_dirty = true;
+                            try_save_prefs(self);
                         }
-                        if ui.radio_value(&mut self.is_dark_mode, false, "☀️ Light").clicked() { 
+                        if ui.radio_value(&mut self.is_dark_mode, false, "☀️ Light").clicked() {
                             ctx.set_visuals(egui::Visuals::light());
                             if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_LIGHT; }
+                            self.prefs_dirty = true;
+                            try_save_prefs(self);
                         }
                         if self.is_dark_mode != prev { 
                             ctx.request_repaint(); 
@@ -5576,12 +5641,18 @@ impl App for Tabular {
                     ui.add_space(6.0);
                     ui.heading("Editor Theme");
                     ui.horizontal(|ui| {
-                        if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() && self.link_editor_theme { // re-apply default
-                            self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
+                        if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() {
+                            if self.link_editor_theme { // re-apply default
+                                self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
+                            }
+                            self.prefs_dirty = true;
+                            try_save_prefs(self);
                         }
                         if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
                             self.link_editor_theme = true;
                             self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
+                            self.prefs_dirty = true;
+                            try_save_prefs(self);
                         }
                     });
                     if self.link_editor_theme { ui.label(egui::RichText::new("(Editor theme follows application theme; uncheck to customize)").size(11.0).color(egui::Color32::from_gray(120))); }
@@ -5600,6 +5671,8 @@ impl App for Tabular {
                                 self.advanced_editor.theme = *theme;
                                 // manual selection breaks link (unless matches desired and link already true)
                                 if self.link_editor_theme { self.link_editor_theme = false; }
+                                self.prefs_dirty = true;
+                                try_save_prefs(self);
                             }
                             if selected { ui.label(egui::RichText::new("✓").color(egui::Color32::from_rgb(0,150,255))); }
                         });
@@ -5613,10 +5686,25 @@ impl App for Tabular {
                         let mut fs = self.advanced_editor.font_size as i32;
                         if ui.add(egui::DragValue::new(&mut fs).range(8..=32)).changed() {
                             self.advanced_editor.font_size = fs as f32;
+                            self.prefs_dirty = true;
+                            try_save_prefs(self);
                         }
                         ui.separator();
-                        ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers");
-                        ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap");
+                        if ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed() { /* not persisted currently */ }
+                        if ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap").changed() { self.prefs_dirty = true; try_save_prefs(self); }
+                    });
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("💾 Save Preferences").clicked() {
+                            self.prefs_dirty = true; // force save
+                            try_save_prefs(self);
+                            self.prefs_save_feedback = Some("Saved".to_string());
+                            self.prefs_last_saved_at = Some(std::time::Instant::now());
+                        }
+                        if let Some(msg) = &self.prefs_save_feedback {
+                            ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0,150,0)));
+                        }
                     });
                 });
             if !open_flag { self.show_settings_window = false; }
@@ -5678,6 +5766,10 @@ impl App for Tabular {
     dialog::render_index_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
+
+        // Persist preferences if dirty and config store ready (outside of window render to avoid borrow issues)
+    // Final attempt (in case any change slipped through)
+    try_save_prefs(self);
 
         egui::SidePanel::left("sidebar")
             .resizable(true)
@@ -5975,12 +6067,6 @@ impl App for Tabular {
                             }
                         });
                 });
-                // Custom thin separator instead of default (default looked too dark in light mode)
-                let sep_y = ui.cursor().top();
-                let sep_w = ui.available_width();
-                let sep_rect = egui::Rect::from_min_size(egui::pos2(bar_rect.left(), sep_y), egui::vec2(sep_w, 1.0));
-                ui.painter().rect_filled(sep_rect, 0.0, if ui.visuals().dark_mode { egui::Color32::from_rgb(45,45,45) } else { egui::Color32::from_rgb(225,225,225) });
-                ui.add_space(3.0);
 
                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                     if tab.content != self.editor_text { tab.content = self.editor_text.clone(); tab.is_modified = true; }

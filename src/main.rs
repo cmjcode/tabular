@@ -19,6 +19,7 @@ mod sidebar_query;
 mod editor;
 mod editor_autocomplete;
 mod dialog;
+mod config;
 
 fn main() -> Result<(), eframe::Error> {
     dotenv::dotenv().ok();

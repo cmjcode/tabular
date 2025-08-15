@@ -204,6 +204,12 @@ impl ShallowForCache for Tabular {
             pending_drop_index_name: None,
             pending_drop_index_stmt: None,
             link_editor_theme: self.link_editor_theme,
+            config_store: None,
+            last_saved_prefs: None,
+            prefs_dirty: false,
+            prefs_save_feedback: None,
+            prefs_last_saved_at: None,
+            prefs_loaded: true,
         })
     }
 }
