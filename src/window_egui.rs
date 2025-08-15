@@ -172,6 +172,12 @@ pub struct Tabular {
     pub new_index_method: String,
     pub new_index_unique: bool,
     pub new_index_columns: String,
+    // SQL filter/where clause for data table
+    pub sql_filter_text: String,
+    // Flag to indicate if current data is from table browse (true) or manual query (false)
+    pub is_table_browse_mode: bool,
+    // Store original query for manual queries (to apply filters)
+    pub original_query: String,
 }
 
 
@@ -404,6 +410,9 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             new_index_method: String::new(),
             new_index_unique: false,
             new_index_columns: String::new(),
+            sql_filter_text: String::new(),
+            is_table_browse_mode: false,
+            original_query: String::new(),
             config_store: None,
             last_saved_prefs: None,
             prefs_dirty: false,
@@ -563,6 +572,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             self.current_table_data = data.clone();
                             self.all_table_data = data;
                             self.current_table_name = tab_title;
+                            self.is_table_browse_mode = false; // Disable filter for manual queries
                             self.total_rows = self.all_table_data.len();
                             self.current_page = 0;
                         }
@@ -861,6 +871,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             self.current_table_data = data.clone();
                             self.all_table_data = data;
                             self.current_table_name = format!("Table: {} (Database: {})", table_name, database_name.as_deref().unwrap_or("Unknown"));
+                            self.is_table_browse_mode = true; // Enable filter for table browse
+                            self.sql_filter_text.clear(); // Clear any previous filter
                             self.total_rows = self.all_table_data.len();
                             self.current_page = 0;
                         }
@@ -4345,6 +4357,28 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             
             // Show grid whenever we have headers (even if 0 rows) so user sees column structure
             if !self.current_table_headers.is_empty() {
+                // Add SQL filter textbox above the table, but only for table browse mode
+                if self.is_table_browse_mode {
+                    ui.horizontal(|ui| {
+                        ui.label("WHERE clause:");
+                        let filter_response = ui.add_sized(
+                            [ui.available_width() - 50.0, 25.0],
+                            egui::TextEdit::singleline(&mut self.sql_filter_text)
+                                .hint_text("Enter SQL WHERE condition (e.g., column1 = 'value' AND column2 > 100)")
+                        );
+                        
+                        if ui.button("🔄").on_hover_text("Apply filter").clicked() || (filter_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                            self.apply_sql_filter();
+                        }
+                        
+                        if ui.button("❌").on_hover_text("Clear filter").clicked() {
+                            self.sql_filter_text.clear();
+                            self.apply_sql_filter();
+                        }
+                    });
+                    ui.separator();
+                }
+                
                 // Store sort state locally to avoid borrowing issues
                 let current_sort_column = self.sort_column;
                 let current_sort_ascending = self.sort_ascending;
@@ -4834,6 +4868,105 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             sort_direction,
             self.all_table_data.len()
         );
+    }
+
+    fn apply_sql_filter(&mut self) {
+        // If no connection or table name available, can't apply filter
+        let Some(connection_id) = self.current_connection_id else { return; };
+        
+        // Use the existing helper function to get clean table name
+        let table_name = self.infer_current_table_name();
+        
+        // Skip if no table name
+        if table_name.is_empty() {
+            return;
+        }
+        
+        // Get connection info
+        let Some(connection) = self.connections.iter()
+            .find(|c| c.id == Some(connection_id))
+            .cloned() else { return; };
+
+        // Get database name from active tab or connection
+        let database_name = self.query_tabs.get(self.active_tab_index)
+            .and_then(|t| t.database_name.clone())
+            .unwrap_or_else(|| connection.database.clone());
+
+        // Build SQL query based on database type and filter
+        let sql_query = if self.sql_filter_text.trim().is_empty() {
+            // No filter - get all data
+            match connection.connection_type {
+                models::enums::DatabaseType::MySQL => {
+                    if database_name.is_empty() {
+                        format!("SELECT * FROM `{}`", table_name)
+                    } else {
+                        format!("USE `{}`;\nSELECT * FROM `{}`", database_name, table_name)
+                    }
+                }
+                models::enums::DatabaseType::PostgreSQL => {
+                    if database_name.is_empty() {
+                        format!("SELECT * FROM \"{}\"", table_name)
+                    } else {
+                        format!("SELECT * FROM \"{}\".\"{}\"", database_name, table_name)
+                    }
+                }
+                models::enums::DatabaseType::SQLite => {
+                    format!("SELECT * FROM `{}`", table_name)
+                }
+                models::enums::DatabaseType::MSSQL => {
+                    Self::build_mssql_select_query(database_name, table_name).replace("SELECT TOP 100 *", "SELECT *")
+                }
+                _ => return, // Other database types not supported for filtering
+            }
+        } else {
+            // Apply WHERE clause filter
+            match connection.connection_type {
+                models::enums::DatabaseType::MySQL => {
+                    if database_name.is_empty() {
+                        format!("SELECT * FROM `{}` WHERE {}", table_name, self.sql_filter_text)
+                    } else {
+                        format!("USE `{}`;\nSELECT * FROM `{}` WHERE {}", database_name, table_name, self.sql_filter_text)
+                    }
+                }
+                models::enums::DatabaseType::PostgreSQL => {
+                    if database_name.is_empty() {
+                        format!("SELECT * FROM \"{}\" WHERE {}", table_name, self.sql_filter_text)
+                    } else {
+                        format!("SELECT * FROM \"{}\".\"{}\" WHERE {}", database_name, table_name, self.sql_filter_text)
+                    }
+                }
+                models::enums::DatabaseType::SQLite => {
+                    format!("SELECT * FROM `{}` WHERE {}", table_name, self.sql_filter_text)
+                }
+                models::enums::DatabaseType::MSSQL => {
+                    let base_query = Self::build_mssql_select_query(database_name, table_name).replace("SELECT TOP 100 *", "SELECT *");
+                    if base_query.contains("WHERE") {
+                        format!("{} AND ({})", base_query, self.sql_filter_text)
+                    } else {
+                        format!("{} WHERE {}", base_query.trim_end_matches(';'), self.sql_filter_text)
+                    }
+                }
+                _ => return, // Other database types not supported for filtering
+            }
+        };
+
+        debug!("🔍 Applying SQL filter: {}", sql_query);
+
+        // Execute the filtered query
+        if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, sql_query) {
+            self.current_table_headers = headers;
+            self.current_table_data = data.clone();
+            self.all_table_data = data;
+            self.total_rows = self.all_table_data.len();
+            self.current_page = 0; // Reset to first page
+            self.update_current_page_data();
+            
+            debug!("✅ Filter applied successfully, {} rows returned", self.total_rows);
+        } else {
+            self.error_message = "Failed to apply filter. Please check your WHERE clause syntax.".to_string();
+            self.show_error_message = true;
+            debug!("❌ Failed to apply SQL filter");
+        }
     }
 
     // Fetch structure (columns & indexes) metadata for current table for Structure tab.
@@ -6047,6 +6180,7 @@ impl App for Tabular {
                                         if let Some((headers, data)) = connection::execute_query_with_connection(self, history_item.connection_id, history_item.query.clone()) {
                                             self.current_table_headers = headers;
                                             self.current_table_data = data;
+                                            self.is_table_browse_mode = false; // Disable filter for manual queries
                                             if self.current_table_data.is_empty() {
                                                 self.current_table_name = "Query executed successfully (no results)".to_string();
                                             } else {
