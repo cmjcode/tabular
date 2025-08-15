@@ -99,23 +99,55 @@ pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui:
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(500.0)
                 .show(ctx, |ui| {
-                    ui.label("Enter filename:");
-                    ui.text_edit_singleline(&mut tabular.save_filename);
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() && !tabular.save_filename.is_empty() {
-                            if let Err(err) = editor::save_current_tab_with_name(tabular,tabular.save_filename.clone()) {
-                                error!("Failed to save: {}", err);
-                            }
-                            tabular.show_save_dialog = false;
-                            tabular.save_filename.clear();
-                        }
+                    ui.vertical(|ui| {
+                        ui.add_space(5.0);
                         
-                        if ui.button("Cancel").clicked() {
-                            tabular.show_save_dialog = false;
-                            tabular.save_filename.clear();
-                        }
+                        // Current save directory display
+                        ui.label("Save location:");
+                        ui.horizontal(|ui| {
+                            let display_path = if !tabular.save_directory.is_empty() {
+                                &tabular.save_directory
+                            } else {
+                                "Using default query directory"
+                            };
+                            ui.label(egui::RichText::new(display_path).weak().monospace());
+                            
+                            if ui.button("📁 Browse").clicked() {
+                                tabular.handle_save_directory_picker();
+                            }
+                        });
+                        
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+                        
+                        // Filename input
+                        ui.label("Enter filename:");
+                        ui.text_edit_singleline(&mut tabular.save_filename);
+                        
+                        ui.add_space(10.0);
+                        
+                        // Action buttons
+                        ui.horizontal(|ui| {
+                            if ui.button("Save").clicked() && !tabular.save_filename.is_empty() {
+                                if let Err(err) = editor::save_current_tab_with_name(tabular, tabular.save_filename.clone()) {
+                                    error!("Failed to save: {}", err);
+                                }
+                                tabular.show_save_dialog = false;
+                                tabular.save_filename.clear();
+                                // Reset save directory for next save
+                                tabular.save_directory.clear();
+                            }
+                            
+                            if ui.button("Cancel").clicked() {
+                                tabular.show_save_dialog = false;
+                                tabular.save_filename.clear();
+                                // Reset save directory for next save
+                                tabular.save_directory.clear();
+                            }
+                        });
                     });
                 });
         }

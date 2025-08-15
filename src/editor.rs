@@ -136,6 +136,12 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
                 if !tabular.save_filename.ends_with(".sql") {
                     tabular.save_filename.push_str(".sql");
                 }
+                
+                // Initialize save directory with config query directory
+                if tabular.save_directory.is_empty() {
+                    tabular.save_directory = crate::directory::get_query_dir().to_string_lossy().to_string();
+                }
+                
                 tabular.show_save_dialog = true;
                 Ok(())
             }
@@ -146,16 +152,22 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
 
  pub(crate) fn save_current_tab_with_name(tabular: &mut window_egui::Tabular, filename: String) -> Result<(), String> {
         if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-            // Get query directory and ensure it exists
-            let query_dir = directory::get_query_dir();
-            std::fs::create_dir_all(&query_dir).map_err(|e| format!("Failed to create query directory: {}", e))?;
+            // Use selected save directory or fallback to query directory
+            let target_dir = if !tabular.save_directory.is_empty() {
+                std::path::PathBuf::from(&tabular.save_directory)
+            } else {
+                directory::get_query_dir()
+            };
+            
+            // Ensure the target directory exists
+            std::fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create target directory: {}", e))?;
             
             let mut clean_filename = filename.trim().to_string();
             if !clean_filename.ends_with(".sql") {
                 clean_filename.push_str(".sql");
             }
             
-            let file_path = query_dir.join(&clean_filename);
+            let file_path = target_dir.join(&clean_filename);
             
             std::fs::write(&file_path, &tab.content)
                 .map_err(|e| format!("Failed to save file: {}", e))?;

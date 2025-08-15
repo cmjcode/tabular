@@ -65,6 +65,8 @@ pub struct Tabular {
     // Save dialog
     pub show_save_dialog: bool,
     pub save_filename: String,
+    pub save_directory: String,
+    pub save_directory_picker_result: Option<std::sync::mpsc::Receiver<String>>,
     // Connection selection dialog
     pub show_connection_selector: bool,
     pub pending_query: String, // Store query to execute after connection is selected
@@ -323,6 +325,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             next_tab_id: 1,
             show_save_dialog: false,
             save_filename: String::new(),
+            save_directory: String::new(),
+            save_directory_picker_result: None,
             show_connection_selector: false,
             pending_query: String::new(),
             auto_execute_after_connection: false,
@@ -5310,33 +5314,32 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         let cols: Vec<String> = cols_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         if cols.is_empty() { return; }
         let method = self.new_index_method.trim();
-    // Prepare index creation statement buffer when user requests creating an index.
-    let mut stmt = String::new();
-        match conn.connection_type {
+        // Prepare index creation statement buffer when user requests creating an index.
+        let mut stmt = match conn.connection_type {
             models::enums::DatabaseType::MySQL => {
                 // ALTER TABLE add index for consistency (so it can run with other alters)
                 let algo_clause = if method.is_empty() { "".to_string() } else { format!(" USING {}", method.to_uppercase()) };
                 let unique = if self.new_index_unique { "UNIQUE " } else { "" };
-                stmt = format!("ALTER TABLE `{}` ADD {}INDEX `{}` ({}){};", table_name, unique, idx_name, cols.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", "), algo_clause);
+                format!("ALTER TABLE `{}` ADD {}INDEX `{}` ({}){};", table_name, unique, idx_name, cols.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", "), algo_clause)
             }
             models::enums::DatabaseType::PostgreSQL => {
                 let unique = if self.new_index_unique { "UNIQUE " } else { "" };
                 let using_clause = if method.is_empty() { "".to_string() } else { format!(" USING {}", method) };
-                stmt = format!("CREATE {}INDEX \"{}\" ON \"{}\"{} ({});", unique, idx_name, table_name, using_clause, cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", "));
+                format!("CREATE {}INDEX \"{}\" ON \"{}\"{} ({});", unique, idx_name, table_name, using_clause, cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", "))
             }
             models::enums::DatabaseType::MSSQL => {
                 let unique = if self.new_index_unique { "UNIQUE " } else { "" };
                 // SQL Server: CREATE [UNIQUE] [NONCLUSTERED] INDEX idx ON table(col,...)
-                stmt = format!("CREATE {}INDEX [{}] ON [{}] ({});", unique, idx_name, table_name, cols.join(", "));
+                format!("CREATE {}INDEX [{}] ON [{}] ({});", unique, idx_name, table_name, cols.join(", "))
             }
             models::enums::DatabaseType::SQLite => {
                 let unique = if self.new_index_unique { "UNIQUE " } else { "" };
-                stmt = format!("CREATE {}INDEX IF NOT EXISTS `{}` ON `{}` ({});", unique, idx_name, table_name, cols.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", "));
+                format!("CREATE {}INDEX IF NOT EXISTS `{}` ON `{}` ({});", unique, idx_name, table_name, cols.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", "))
             }
             _ => {
-                stmt = "-- Create index not supported for this database type".to_string();
+                "-- Create index not supported for this database type".to_string()
             }
-        }
+        };
         if !stmt.starts_with("--") { self.editor_text.push('\n'); }
         self.editor_text.push_str(&stmt);
         // Append optimistic row
@@ -5403,6 +5406,29 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
         });
         self.show_directory_picker = false;
+    }
+
+    // Handle save directory picker dialog
+    pub(crate) fn handle_save_directory_picker(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.save_directory_picker_result = Some(receiver);
+        
+        // Spawn directory picker in a separate thread to avoid blocking UI
+        let default_dir = if !self.save_directory.is_empty() {
+            self.save_directory.clone()
+        } else {
+            crate::directory::get_query_dir().to_string_lossy().to_string()
+        };
+        
+        std::thread::spawn(move || {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Pilih Lokasi Penyimpanan Query")
+                .set_directory(&default_dir)
+                .pick_folder()
+            {
+                let _ = sender.send(path.to_string_lossy().to_string());
+            }
+        });
     }
 
     // Refresh data directory from current environment/config
@@ -5580,6 +5606,14 @@ impl App for Tabular {
         
         // Handle keyboard shortcuts
         ctx.input(|i| {
+            // CMD+S or CTRL+S to save current tab
+            if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::S) && !self.query_tabs.is_empty() {
+                if let Err(error) = editor::save_current_tab(self) {
+                    self.error_message = format!("Save failed: {}", error);
+                    self.show_error_message = true;
+                }
+            }
+            
             // CMD+W or CTRL+W to close current tab
             if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::W) && !self.query_tabs.is_empty() {
                 editor::close_tab(self, self.active_tab_index);
@@ -5810,44 +5844,9 @@ impl App for Tabular {
                         }
                         
                         if ui.button("Reset to Default").clicked() {
-                            // Reset to default directory
-                            let default_dir = dirs::home_dir()
+                            self.temp_data_directory = dirs::home_dir()
                                 .map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() })
                                 .unwrap_or_else(|| ".".to_string());
-                            
-                            // Remove saved config location and reset environment
-                            match crate::config::reset_config_location() {
-                                Ok(()) => {
-                                    self.temp_data_directory = default_dir;
-                                    
-                                    // Update current data directory immediately
-                                    self.refresh_data_directory();
-                                    
-                                    // Force save preferences
-                                    self.prefs_dirty = true;
-                                    try_save_prefs(self);
-                                    
-                                    // Reinitialize config store to use new location
-                                    if let Some(rt) = &self.runtime {
-                                        match rt.block_on(crate::config::ConfigStore::new()) {
-                                            Ok(new_store) => {
-                                                self.config_store = Some(new_store);
-                                                log::info!("Config store reinitialized for default data directory");
-                                            }
-                                            Err(e) => {
-                                                log::error!("Failed to reinitialize config store: {}", e);
-                                            }
-                                        }
-                                    }
-                                    
-                                    self.prefs_save_feedback = Some("Data directory reset to default successfully!".to_string());
-                                    self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                }
-                                Err(e) => {
-                                    self.error_message = format!("Failed to reset data directory: {}", e);
-                                    self.show_error_message = true;
-                                }
-                            }
                         }
                     });
                     
@@ -5876,6 +5875,14 @@ impl App for Tabular {
             if let Ok(selected_path) = receiver.try_recv() {
                 self.temp_data_directory = selected_path;
                 self.directory_picker_result = None; // Clean up the receiver
+            }
+        }
+
+        // Check for save directory picker results
+        if let Some(receiver) = &self.save_directory_picker_result {
+            if let Ok(selected_path) = receiver.try_recv() {
+                self.save_directory = selected_path;
+                self.save_directory_picker_result = None; // Clean up the receiver
             }
         }
 
