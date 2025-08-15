@@ -126,6 +126,11 @@ pub struct Tabular {
     pub prefs_save_feedback: Option<String>,
     pub prefs_last_saved_at: Option<std::time::Instant>,
     pub prefs_loaded: bool,
+    // Data directory setting
+    pub data_directory: String,
+    pub temp_data_directory: String,
+    pub show_directory_picker: bool,
+    pub directory_picker_result: Option<std::sync::mpsc::Receiver<String>>,
     // Logo texture
     pub logo_texture: Option<egui::TextureHandle>,
     // Database cache for performance
@@ -401,6 +406,11 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             prefs_save_feedback: None,
             prefs_last_saved_at: None,
             prefs_loaded: false,
+            // Data directory settings
+            data_directory: crate::config::get_data_dir().to_string_lossy().to_string(),
+            temp_data_directory: String::new(),
+            show_directory_picker: false,
+            directory_picker_result: None,
         };
         
         // Clear any old cached pools
@@ -5376,6 +5386,30 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             });
     }
 
+    // Handle directory picker dialog
+    fn handle_directory_picker(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.directory_picker_result = Some(receiver);
+        
+        // Spawn directory picker in a separate thread to avoid blocking UI
+        let current_dir = self.data_directory.clone();
+        std::thread::spawn(move || {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Pilih Lokasi Data Directory")
+                .set_directory(&current_dir)
+                .pick_folder()
+            {
+                let _ = sender.send(path.to_string_lossy().to_string());
+            }
+        });
+        self.show_directory_picker = false;
+    }
+
+    // Refresh data directory from current environment/config
+    fn refresh_data_directory(&mut self) {
+        self.data_directory = crate::config::get_data_dir().to_string_lossy().to_string();
+    }
+
     // Generic bordered grid renderer (lighter reuse of render_table_data look & feel)
     fn render_structure_grid(&mut self, ui: &mut egui::Ui, id_prefix: &str, headers: &[&str], widths: &mut [f32], rows: &[Vec<String>]) {
         // Basic, reliable layout (horizontal rows) to avoid overlap issues.
@@ -5445,9 +5479,14 @@ impl App for Tabular {
                         },
                         font_size: app.advanced_editor.font_size,
                         word_wrap: app.advanced_editor.word_wrap,
+                        data_directory: if app.data_directory != crate::config::get_data_dir().to_string_lossy() { 
+                            Some(app.data_directory.clone()) 
+                        } else { 
+                            None 
+                        },
                     };
                     rt.block_on(store.save(&prefs));
-                    log::info!("Preferences saved successfully");
+                    log::info!("Preferences saved successfully to: {}", crate::config::get_data_dir().display());
                     app.last_saved_prefs = Some(prefs);
                     app.prefs_dirty = false;
                 } else {
@@ -5481,6 +5520,16 @@ impl App for Tabular {
                         };
                         self.advanced_editor.font_size = prefs.font_size;
                         self.advanced_editor.word_wrap = prefs.word_wrap;
+                        // Load custom data directory if set
+                        if let Some(custom_dir) = &prefs.data_directory {
+                            self.data_directory = custom_dir.clone();
+                            // Apply the custom directory
+                            if let Err(e) = crate::config::set_data_dir(custom_dir) {
+                                log::error!("Failed to set custom data directory '{}': {}", custom_dir, e);
+                                // Fallback to default
+                                self.data_directory = crate::config::get_data_dir().to_string_lossy().to_string();
+                            }
+                        }
                         self.config_store = Some(store);
                         self.last_saved_prefs = Some(prefs);
                         self.prefs_loaded = true;
@@ -5695,6 +5744,118 @@ impl App for Tabular {
                     });
                     ui.add_space(8.0);
                     ui.separator();
+                    ui.add_space(6.0);
+                    ui.heading("Data Directory");
+                    ui.label("Choose where Tabular stores its data (connections, queries, history):");
+                    ui.add_space(4.0);
+                    
+                    // Initialize temp_data_directory if empty
+                    if self.temp_data_directory.is_empty() {
+                        self.temp_data_directory = self.data_directory.clone();
+                    }
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Current location:");
+                        ui.monospace(&self.data_directory);
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("New location:");
+                        ui.text_edit_singleline(&mut self.temp_data_directory);
+                        if ui.button("📁 Browse").clicked() {
+                            self.handle_directory_picker();
+                        }
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        let changed = self.temp_data_directory != self.data_directory;
+                        let valid_path = !self.temp_data_directory.trim().is_empty() && 
+                                       std::path::Path::new(&self.temp_data_directory).is_absolute();
+                        
+                        if ui.add_enabled(changed && valid_path, egui::Button::new("Apply Changes")).clicked() {
+                            match crate::config::set_data_dir(&self.temp_data_directory) {
+                                Ok(()) => {
+                                    // Update the current data directory from environment
+                                    self.refresh_data_directory();
+                                    
+                                    // Force save preferences with new data directory
+                                    self.prefs_dirty = true;
+                                    try_save_prefs(self);
+                                    
+                                    // Reinitialize config store to use new location
+                                    if let Some(rt) = &self.runtime {
+                                        match rt.block_on(crate::config::ConfigStore::new()) {
+                                            Ok(new_store) => {
+                                                self.config_store = Some(new_store);
+                                                log::info!("Config store reinitialized for new data directory");
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to reinitialize config store: {}", e);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Update the display to show the new current location
+                                    self.prefs_save_feedback = Some("Data directory updated successfully!".to_string());
+                                    self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                    
+                                    // Update any internal references to use new directory
+                                    log::info!("Data directory changed to: {}", self.data_directory);
+                                }
+                                Err(e) => {
+                                    self.error_message = format!("Failed to change data directory: {}", e);
+                                    self.show_error_message = true;
+                                }
+                            }
+                        }
+                        
+                        if ui.button("Reset to Default").clicked() {
+                            // Reset to default directory
+                            let default_dir = dirs::home_dir()
+                                .map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() })
+                                .unwrap_or_else(|| ".".to_string());
+                            
+                            // Remove saved config location and reset environment
+                            match crate::config::reset_config_location() {
+                                Ok(()) => {
+                                    self.temp_data_directory = default_dir;
+                                    
+                                    // Update current data directory immediately
+                                    self.refresh_data_directory();
+                                    
+                                    // Force save preferences
+                                    self.prefs_dirty = true;
+                                    try_save_prefs(self);
+                                    
+                                    // Reinitialize config store to use new location
+                                    if let Some(rt) = &self.runtime {
+                                        match rt.block_on(crate::config::ConfigStore::new()) {
+                                            Ok(new_store) => {
+                                                self.config_store = Some(new_store);
+                                                log::info!("Config store reinitialized for default data directory");
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to reinitialize config store: {}", e);
+                                            }
+                                        }
+                                    }
+                                    
+                                    self.prefs_save_feedback = Some("Data directory reset to default successfully!".to_string());
+                                    self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                }
+                                Err(e) => {
+                                    self.error_message = format!("Failed to reset data directory: {}", e);
+                                    self.show_error_message = true;
+                                }
+                            }
+                        }
+                    });
+                    
+                    ui.label(egui::RichText::new("⚠️ Changing data directory will require restarting the application")
+                        .size(11.0).color(egui::Color32::from_rgb(200, 150, 0)));
+                    
+                    ui.add_space(8.0);
+                    ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("💾 Save Preferences").clicked() {
                             self.prefs_dirty = true; // force save
@@ -5708,6 +5869,14 @@ impl App for Tabular {
                     });
                 });
             if !open_flag { self.show_settings_window = false; }
+        }
+
+        // Check for directory picker results
+        if let Some(receiver) = &self.directory_picker_result {
+            if let Ok(selected_path) = receiver.try_recv() {
+                self.temp_data_directory = selected_path;
+                self.directory_picker_result = None; // Clean up the receiver
+            }
         }
 
         // Check for background task results

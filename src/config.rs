@@ -3,6 +3,10 @@ use log::info;
 use dirs::home_dir;
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::fs;
+
+/// File name to store the current data directory location
+const CONFIG_LOCATION_FILE: &str = "config_location.txt";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppPreferences {
@@ -11,6 +15,7 @@ pub struct AppPreferences {
     pub editor_theme: String,
     pub font_size: f32,
     pub word_wrap: bool,
+    pub data_directory: Option<String>,
 }
 
 impl AppPreferences {
@@ -86,7 +91,8 @@ impl ConfigStore {
                 link_editor_theme: true, 
                 editor_theme: "GITHUB_DARK".into(), 
                 font_size: 14.0, 
-                word_wrap: true 
+                word_wrap: true,
+                data_directory: None,
             };
             
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences").fetch_all(pool).await {
@@ -99,13 +105,14 @@ impl ConfigStore {
                         "editor_theme" => prefs.editor_theme = v,
                         "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
                         "word_wrap" => prefs.word_wrap = v == "1",
+                        "data_directory" => prefs.data_directory = if v.is_empty() { None } else { Some(v) },
                         _ => {}
                     }
                 }
             }
             
-            info!("Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}", 
-                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap);
+            info!("Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}", 
+                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory);
             return prefs;
         }
         
@@ -115,19 +122,20 @@ impl ConfigStore {
     pub async fn save(&self, prefs: &AppPreferences) {
         if self.use_json_fallback {
             let _ = self.save_to_json(prefs);
-            info!("Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}", 
-                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap);
+            info!("Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}", 
+                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory);
             return;
         }
         
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
-            let entries: [(&str,&str);5] = [
+            let entries: [(&str,&str);6] = [
                 ("is_dark_mode", if prefs.is_dark_mode {"1"} else {"0"}),
                 ("link_editor_theme", if prefs.link_editor_theme {"1"} else {"0"}),
                 ("editor_theme", prefs.editor_theme.as_str()),
                 ("font_size", &font_size_string),
                 ("word_wrap", if prefs.word_wrap {"1"} else {"0"}),
+                ("data_directory", prefs.data_directory.as_deref().unwrap_or("")),
             ];
             
             for (k,v) in entries.iter() {
@@ -135,8 +143,8 @@ impl ConfigStore {
                     .bind(k).bind(v).execute(pool).await;
             }
             
-            info!("Saved prefs to SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}", 
-                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap);
+            info!("Saved prefs to SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}", 
+                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory);
         }
     }
 
@@ -150,8 +158,8 @@ impl ConfigStore {
         let path = Self::json_path();
         let content = std::fs::read_to_string(path)?;
         let prefs: AppPreferences = serde_json::from_str(&content)?;
-        info!("Loaded prefs from JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}", 
-              prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap);
+        info!("Loaded prefs from JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}", 
+              prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory);
         Ok(prefs)
     }
 
@@ -163,10 +171,158 @@ impl ConfigStore {
     }
 }
 
-fn config_dir() -> PathBuf {
+/// Get the default tabular directory in home folder
+fn get_default_tabular_dir() -> PathBuf {
     if let Some(mut hd) = home_dir() {
         hd.push(".tabular");
-        return hd
+        hd
+    } else {
+        PathBuf::from(".tabular")
+    }
+}
+
+/// Save the current data directory location to ~/.tabular/config_location.txt
+fn save_config_location(data_dir: &str) -> Result<(), String> {
+    let default_dir = get_default_tabular_dir();
+    
+    // Create ~/.tabular directory if it doesn't exist
+    if let Err(e) = fs::create_dir_all(&default_dir) {
+        return Err(format!("Cannot create default directory {}: {}", default_dir.display(), e));
+    }
+    
+    let config_file = default_dir.join(CONFIG_LOCATION_FILE);
+    
+    // Write the new data directory location
+    if let Err(e) = fs::write(&config_file, data_dir) {
+        return Err(format!("Cannot write config location file: {}", e));
+    }
+    
+    log::info!("Saved config location: {} -> {}", config_file.display(), data_dir);
+    Ok(())
+}
+
+/// Load the saved data directory location from ~/.tabular/config_location.txt
+fn load_config_location() -> Option<String> {
+    let default_dir = get_default_tabular_dir();
+    let config_file = default_dir.join(CONFIG_LOCATION_FILE);
+    
+    if config_file.exists() {
+        match fs::read_to_string(&config_file) {
+            Ok(content) => {
+                let path = content.trim();
+                if !path.is_empty() && PathBuf::from(path).exists() {
+                    log::info!("Loaded config location from {}: {}", config_file.display(), path);
+                    return Some(path.to_string());
+                } else {
+                    log::warn!("Config location file contains invalid path: {}", path);
+                    // Remove invalid config file
+                    let _ = fs::remove_file(&config_file);
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to read config location file {}: {}", config_file.display(), e);
+            }
+        }
+    }
+    None
+}
+
+/// Initialize data directory from saved config or environment variable
+pub fn init_data_dir() {
+    // First check if there's a saved config location
+    if let Some(saved_location) = load_config_location() {
+        log::info!("Using saved config location: {}", saved_location);
+        unsafe {
+            std::env::set_var("TABULAR_DATA_DIR", &saved_location);
+        }
+        return;
+    }
+    
+    // If no saved location, check environment variable
+    if let Ok(env_dir) = std::env::var("TABULAR_DATA_DIR") {
+        log::info!("Using environment variable TABULAR_DATA_DIR: {}", env_dir);
+        return;
+    }
+    
+    // Otherwise use default ~/.tabular
+    let default_dir = get_default_tabular_dir();
+    log::info!("Using default data directory: {}", default_dir.display());
+}
+
+fn config_dir() -> PathBuf {
+    get_data_dir()
+}
+
+pub fn get_data_dir() -> PathBuf {
+    // Try to get custom data directory from environment variable first
+    if let Ok(custom_dir) = std::env::var("TABULAR_DATA_DIR") {
+        let path = PathBuf::from(custom_dir);
+        if path.is_absolute() {
+            return path;
+        }
+    }
+    
+    // Default to ~/.tabular
+    if let Some(mut hd) = home_dir() {
+        hd.push(".tabular");
+        return hd;
     }
     PathBuf::from(".")
+}
+
+/// Remove the saved config location file (reset to default ~/.tabular)
+pub fn reset_config_location() -> Result<(), String> {
+    let default_dir = get_default_tabular_dir();
+    let config_file = default_dir.join(CONFIG_LOCATION_FILE);
+    
+    if config_file.exists() {
+        if let Err(e) = fs::remove_file(&config_file) {
+            return Err(format!("Cannot remove config location file: {}", e));
+        }
+        log::info!("Removed config location file: {}", config_file.display());
+    }
+    
+    // Also remove environment variable
+    unsafe {
+        std::env::remove_var("TABULAR_DATA_DIR");
+    }
+    
+    Ok(())
+}
+
+pub fn set_data_dir(new_path: &str) -> Result<(), String> {
+    let path = PathBuf::from(new_path);
+    
+    // Validate that the path is absolute and accessible
+    if !path.is_absolute() {
+        return Err("Path must be absolute".to_string());
+    }
+    
+    // Try to create the directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(&path) {
+        return Err(format!("Cannot create directory: {}", e));
+    }
+    
+    // Check if we can write to the directory
+    let test_file = path.join(".test_write");
+    if let Err(e) = std::fs::write(&test_file, "test") {
+        return Err(format!("Cannot write to directory: {}", e));
+    }
+    
+    // Clean up test file
+    let _ = std::fs::remove_file(&test_file);
+    
+    // Save the location persistently to ~/.tabular/config_location.txt
+    if let Err(e) = save_config_location(new_path) {
+        log::error!("Failed to save config location: {}", e);
+        // Continue anyway, at least set environment variable
+    }
+    
+    // Set environment variable for this session
+    unsafe {
+        std::env::set_var("TABULAR_DATA_DIR", new_path);
+    }
+    
+    log::info!("Data directory changed to: {}", new_path);
+    Ok(())
 }

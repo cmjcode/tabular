@@ -23,11 +23,18 @@ mod config;
 
 fn main() -> Result<(), eframe::Error> {
     dotenv::dotenv().ok();
-    // Initialize logger with filter to suppress winit debug logs
+    
+    // Initialize logger first so we can see logs from init_data_dir
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
         .filter_module("tabular", log::LevelFilter::Debug)
         .init();
+    
+    // Initialize data directory configuration
+    config::init_data_dir();
+    
+    // Log the final data directory being used
+    log::info!("Application starting with data directory: {}", config::get_data_dir().display());
     
     let mut options = eframe::NativeOptions::default();
     

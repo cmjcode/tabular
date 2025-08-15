@@ -7,3 +7,5 @@ data/connections copy.db
 dist/
 build.sh
 Makefile
+notarize-simple.sh
+notarize.sh

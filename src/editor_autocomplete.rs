@@ -210,6 +210,11 @@ impl ShallowForCache for Tabular {
             prefs_save_feedback: None,
             prefs_last_saved_at: None,
             prefs_loaded: true,
+            // Data directory settings
+            data_directory: String::new(),
+            temp_data_directory: String::new(),
+            show_directory_picker: false,
+            directory_picker_result: None,
         })
     }
 }

@@ -1,12 +1,12 @@
 [package]
 name = "tabular"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 
 # Cargo.toml
 [package.metadata.bundle]
 name = "Tabular"
-identifier = "id.tabular.data"
+identifier = "id.tabular.database"
 icon = ["assets/AppIcon.icns"]
 category = "Developer Tool"
 copyright = "Copyright © 2025 Y.N Pamungkas Jayuda" 
