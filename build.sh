@@ -6,7 +6,8 @@
 set -e
 
 APP_NAME="Tabular"
-VERSION="0.1.0"
+# Ambil versi dari Cargo.toml supaya sinkron
+VERSION=$(grep '^version' Cargo.toml | head -n1 | cut -d '"' -f2)
 
 # Colors for output
 RED='\033[0;31m'
@@ -57,10 +58,11 @@ show_help() {
     echo "Usage: $0 [PLATFORM] [OPTIONS]"
     echo ""
     echo "Platforms:"
-    echo "  macos     - Build universal macOS binary and .app bundle"
-    echo "  linux     - Build Linux binaries for x86_64 and aarch64"
-    echo "  windows   - Build Windows binaries for x86_64 and aarch64"
-    echo "  all       - Build for all platforms (default)"
+    echo "  macos        - Build macOS universal + .app (DMG optional)"
+    echo "  macos-pkg    - Build macOS .app lalu signed .pkg (App Store / distribusi)"
+    echo "  linux        - Build + package Linux (x86_64 + aarch64)"
+    echo "  windows      - Build + package Windows (x86_64 + aarch64)"
+    echo "  all          - Release build semua platform"
     echo ""
     echo "Options:"
     echo "  --deps    - Install build dependencies first"
@@ -76,12 +78,13 @@ show_help() {
 
 # Parse command line arguments
 PLATFORM="all"
+BUILD_PKG=false
 INSTALL_DEPS=false
 CLEAN_FIRST=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        macos|linux|windows|all)
+    macos|macos-pkg|linux|windows|all)
             PLATFORM="$1"
             shift
             ;;
@@ -126,9 +129,30 @@ main() {
     # Build based on platform
     case $PLATFORM in
         macos)
-            print_status "Building macOS universal binary..."
+            print_status "Building macOS universal binary and App Store ready bundle..."
+            echo "If you want codesign + notarize, export environment variables before running, e.g.:"
+            echo "  export APPLE_ID='appleid@example.com'"
+            echo "  export APPLE_PASSWORD='app-specific-password'"
+            echo "  export APPLE_TEAM_ID='TEAMID'"
+            echo "  export APPLE_BUNDLE_ID='id.tabular.data'"
+            echo "  export APPLE_IDENTITY='Developer ID Application: Your Name (TEAMID)'"
+            echo "  export NOTARIZE=1"
             make bundle-macos
             print_success "macOS build completed!"
+            ;;
+        macos-pkg)
+            print_status "Building macOS .app + signed .pkg"
+            if [ -z "$APPLE_IDENTITY" ]; then
+                print_warning "APPLE_IDENTITY belum diset. Contoh: export APPLE_IDENTITY='Apple Distribution: Nama (TEAMID)'"
+            fi
+            if [ -z "$APPLE_BUNDLE_ID" ]; then
+                print_warning "APPLE_BUNDLE_ID belum diset (contoh: id.tabular.data)"
+            fi
+            make pkg-macos-store || {
+                print_error "Gagal membuat pkg. Pastikan env & provisioning profile benar."
+                exit 1
+            }
+            print_success "macOS pkg build completed!"
             ;;
         linux)
             print_status "Building Linux binaries..."
@@ -158,7 +182,7 @@ main() {
     print_status "📦 Generated files:"
     
     if [ -d "dist" ]; then
-        find dist -type f \( -name "*.dmg" -o -name "*.app" -o -name "*.tar.gz" -o -name "*.zip" \) | while read -r file; do
+        find dist -type f \( -name "*.dmg" -o -name "*.pkg" -o -name "*.app" -o -name "*.tar.gz" -o -name "*.zip" \) | while read -r file; do
             size=$(ls -lh "$file" | awk '{print $5}')
             echo "  📁 $file ($size)"
         done

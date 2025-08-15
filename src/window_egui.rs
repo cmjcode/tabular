@@ -5778,7 +5778,9 @@ impl App for Tabular {
 
         // Central panel (main editor / data / structure)
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin::ZERO))
+            .frame(egui::Frame::default()
+                .fill(if ctx.style().visuals.dark_mode { egui::Color32::from_rgb(20,20,20) } else { egui::Color32::from_rgb(250,250,250) })
+                .inner_margin(egui::Margin::ZERO))
             .show(ctx, |ui| {
                 let full_table_tab = self
                     .query_tabs
@@ -5814,6 +5816,14 @@ impl App for Tabular {
                 let top_bar_height = 26.0;
                 let available_width = ui.available_width();
                 let (bar_rect, _resp) = ui.allocate_exact_size(egui::vec2(available_width, top_bar_height), egui::Sense::hover());
+                // Paint background untuk top bar agar mengikuti tema.
+                // Sebelumnya area ini tidak di-fill sehingga pada mode light tetap terlihat gelap.
+                let bar_bg = if ui.visuals().dark_mode { egui::Color32::from_rgb(25,25,25) } else { egui::Color32::from_rgb(245,245,245) };
+                ui.painter().rect_filled(bar_rect, 0.0, bar_bg);
+                // Garis bawah tipis sebagai pemisah dari area editor.
+                let bottom_y = bar_rect.bottom();
+                // Single subtle bottom border (avoid double-thick dark line in light mode)
+                ui.painter().hline(bar_rect.x_range(), bottom_y-0.5, egui::Stroke::new(1.0, if ui.visuals().dark_mode { egui::Color32::from_rgb(55,55,55) } else { egui::Color32::from_rgb(200,200,200) }));
                 let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
                 left_ui.allocate_ui_with_layout(bar_rect.size(), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
@@ -5917,8 +5927,12 @@ impl App for Tabular {
                             }
                         });
                 });
-                ui.add_space(2.0);
-                ui.separator();
+                // Custom thin separator instead of default (default looked too dark in light mode)
+                let sep_y = ui.cursor().top();
+                let sep_w = ui.available_width();
+                let sep_rect = egui::Rect::from_min_size(egui::pos2(bar_rect.left(), sep_y), egui::vec2(sep_w, 1.0));
+                ui.painter().rect_filled(sep_rect, 0.0, if ui.visuals().dark_mode { egui::Color32::from_rgb(45,45,45) } else { egui::Color32::from_rgb(225,225,225) });
+                ui.add_space(3.0);
 
                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                     if tab.content != self.editor_text { tab.content = self.editor_text.clone(); tab.is_modified = true; }

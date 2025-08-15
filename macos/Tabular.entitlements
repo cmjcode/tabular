@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Enable App Sandbox (required for Mac App Store) -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Allow outgoing network connections (remote databases) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Allow the user to open/save files they choose (SQLite exports/imports) -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Allow reading documents the user selects (if stricter needed) -->
+    <!-- <key>com.apple.security.files.user-selected.read-only</key><true/> -->
+
+    <!-- If you later add automatic updates (Sparkle etc) you may need additional entitlements. -->
+    <!-- Add ONLY what you need; extra entitlements can cause review rejection. -->
+</dict>
+</plist>
