@@ -112,13 +112,8 @@ build-linux: create-dirs
 	
 	# Build for x86_64
 	@echo "Building for x86_64-unknown-linux-gnu..."
-	cross build --release --target $(LINUX_X86_TARGET)
+	cargo build --release --target $(LINUX_X86_TARGET)
 	cp $(BUILD_DIR)/$(LINUX_X86_TARGET)/release/tabular $(LINUX_DIR)/tabular-x86_64
-	
-	# Build for aarch64
-	@echo "Building for aarch64-unknown-linux-gnu..."
-	cross build --release --target $(LINUX_ARM_TARGET)
-	cp $(BUILD_DIR)/$(LINUX_ARM_TARGET)/release/tabular $(LINUX_DIR)/tabular-aarch64
 	
 	@echo "✅ Linux binaries built successfully!"
 
