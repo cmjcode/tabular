@@ -1,5 +1,6 @@
 
 use eframe::{egui, App, Frame};
+use egui_code_editor::ColorTheme; // for integrated editor theme selection
 use sqlx::SqlitePool;
 use std::collections::{HashMap, BTreeSet};
 use std::sync::Arc;
@@ -87,6 +88,7 @@ pub struct Tabular {
     // Flag to request theme selector on next frame
     pub request_theme_selector: bool,
     pub is_dark_mode: bool,
+    pub link_editor_theme: bool, // when true editor theme follows app theme
     // Settings window visibility
     pub show_settings_window: bool,
     // Database search functionality
@@ -326,6 +328,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             request_theme_selector: false,
             // Dark / Light UI theme setting (default dark)
             is_dark_mode: true,
+            link_editor_theme: true,
             show_settings_window: false,
             // Database search functionality
             database_search_text: String::new(),
@@ -5284,7 +5287,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         let cols: Vec<String> = cols_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         if cols.is_empty() { return; }
         let method = self.new_index_method.trim();
-        let mut stmt = String::new();
+    // Prepare index creation statement buffer when user requests creating an index.
+    let mut stmt = String::new();
         match conn.connection_type {
             models::enums::DatabaseType::MySQL => {
                 // ALTER TABLE add index for consistency (so it can run with other alters)
@@ -5431,6 +5435,13 @@ impl App for Tabular {
         } else {
             ctx.set_visuals(egui::Visuals::light());
         }
+        // Sync editor theme only if linking enabled
+        if self.link_editor_theme {
+            let desired_editor_theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
+            if self.advanced_editor.theme != desired_editor_theme {
+                self.advanced_editor.theme = desired_editor_theme;
+            }
+        }
         
         // Periodic cleanup of stale connection pools (every 10 minutes to reduce overhead)
         if self.last_cleanup_time.elapsed().as_secs() > 600 { // 10 minutes instead of 5
@@ -5536,39 +5547,79 @@ impl App for Tabular {
         
         // Render settings window if open
         if self.show_settings_window {
-            egui::Window::new("Appearance Settings")
+            let mut open_flag = true; // local to satisfy borrow rules
+            egui::Window::new("Preferences")
+                .open(&mut open_flag)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .default_width(320.0)
+                .default_width(420.0)
                 .show(ctx, |ui| {
-                    ui.heading("Theme");
+                    ui.heading("Application Theme");
                     ui.horizontal(|ui| {
                         ui.label("Choose theme:");
                         let prev = self.is_dark_mode;
                         if ui.radio_value(&mut self.is_dark_mode, true, "🌙 Dark").clicked() { 
-                            ctx.set_visuals(egui::Visuals::dark()); 
+                            ctx.set_visuals(egui::Visuals::dark());
+                            if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_DARK; }
                         }
                         if ui.radio_value(&mut self.is_dark_mode, false, "☀️ Light").clicked() { 
-                            ctx.set_visuals(egui::Visuals::light()); 
+                            ctx.set_visuals(egui::Visuals::light());
+                            if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_LIGHT; }
                         }
                         if self.is_dark_mode != prev { 
                             ctx.request_repaint(); 
                         }
                     });
-                    
-                    ui.add_space(8.0);
+                    ui.add_space(10.0);
                     ui.separator();
-                    ui.add_space(8.0);
-                    
-                    // Future appearance settings can be added here
-                    ui.label("💡 More appearance options coming soon...");
-                    
-                    ui.add_space(12.0);
-                    if ui.button("Close").clicked() { 
-                        self.show_settings_window = false; 
+                    ui.add_space(6.0);
+                    ui.heading("Editor Theme");
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() && self.link_editor_theme { // re-apply default
+                            self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
+                        }
+                        if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
+                            self.link_editor_theme = true;
+                            self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
+                        }
+                    });
+                    if self.link_editor_theme { ui.label(egui::RichText::new("(Editor theme follows application theme; uncheck to customize)").size(11.0).color(egui::Color32::from_gray(120))); }
+                    ui.label("Choose syntax highlighting theme for SQL editor");
+                    ui.add_space(4.0);
+                    // Theme options
+                    let themes: &[(ColorTheme, &str, &str)] = &[
+                        (ColorTheme::GITHUB_DARK, "GitHub Dark", "Dark theme with blue accents"),
+                        (ColorTheme::GITHUB_LIGHT, "GitHub Light", "Clean light theme"),
+                        (ColorTheme::GRUVBOX, "Gruvbox", "Warm earthy retro palette"),
+                    ];
+                    for (theme, name, desc) in themes {
+                        ui.horizontal(|ui| {
+                            let selected = self.advanced_editor.theme == *theme;
+                            if ui.selectable_label(selected, *name).clicked() {
+                                self.advanced_editor.theme = *theme;
+                                // manual selection breaks link (unless matches desired and link already true)
+                                if self.link_editor_theme { self.link_editor_theme = false; }
+                            }
+                            if selected { ui.label(egui::RichText::new("✓").color(egui::Color32::from_rgb(0,150,255))); }
+                        });
+                        ui.label(egui::RichText::new(*desc).size(11.0).color(egui::Color32::from_gray(120)));
+                        ui.add_space(4.0);
                     }
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Font size:");
+                        let mut fs = self.advanced_editor.font_size as i32;
+                        if ui.add(egui::DragValue::new(&mut fs).range(8..=32)).changed() {
+                            self.advanced_editor.font_size = fs as f32;
+                        }
+                        ui.separator();
+                        ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers");
+                        ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap");
+                    });
                 });
+            if !open_flag { self.show_settings_window = false; }
         }
 
         // Check for background task results
@@ -5870,10 +5921,7 @@ impl App for Tabular {
                             self.show_settings_window = true;
                             ui.close_menu();
                         }
-                        if ui.button("Editor Theme").clicked() {
-                            self.request_theme_selector = true;
-                            ui.close_menu();
-                        }
+                        // Editor Theme now merged into Preferences window
                         ui.separator();
                         if ui.button("About").clicked() {
                             self.show_about_dialog = true;

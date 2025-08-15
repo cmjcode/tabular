@@ -203,6 +203,7 @@ impl ShallowForCache for Tabular {
             new_index_columns: String::new(),
             pending_drop_index_name: None,
             pending_drop_index_stmt: None,
+            link_editor_theme: self.link_editor_theme,
         })
     }
 }
