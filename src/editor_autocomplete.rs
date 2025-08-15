@@ -104,6 +104,8 @@ fn extract_tables(full_text: &str) -> Vec<String> {
 /// - Jika token sebelumnya SELECT/WHERE atau pasangan GROUP BY -> daftar kolom dari tabel setelah FROM
 /// - Selain itu -> SQL_KEYWORDS
 pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: &str) -> Vec<String> {
+    let is_upper = prefix.chars().all(|c| c.is_uppercase());
+
     if prefix.is_empty() { return Vec::new(); }
     let (_cur_pref, start_idx) = current_prefix(full_text, cursor); // ensure prefix matches
     let before = &full_text[..start_idx.min(full_text.len())];
@@ -168,6 +170,12 @@ pub fn build_suggestions(app: &Tabular, full_text: &str, cursor: usize, prefix: 
     let mut seen = std::collections::HashSet::new();
     out.retain(|s| seen.insert(s.to_lowercase()));
     out.sort_unstable();
+
+    if is_upper {
+        out = out.into_iter().map(|s| s.to_uppercase()).collect();
+    } else {
+        out = out.into_iter().map(|s| s.to_lowercase()).collect();
+    }
     out
 }
 
