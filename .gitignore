@@ -5,3 +5,5 @@ data/connections copy.db
 .vscode/
 .DS_Store
 dist/
+build.sh
+Makefile
