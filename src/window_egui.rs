@@ -86,6 +86,9 @@ pub struct Tabular {
     pub theme_selector_selected_index: usize,
     // Flag to request theme selector on next frame
     pub request_theme_selector: bool,
+    pub is_dark_mode: bool,
+    // Settings window visibility
+    pub show_settings_window: bool,
     // Database search functionality
     pub database_search_text: String,
     pub filtered_items_tree: Vec<models::structs::TreeNode>,
@@ -321,6 +324,9 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             command_palette_selected_index: 0,
             theme_selector_selected_index: 0,
             request_theme_selector: false,
+            // Dark / Light UI theme setting (default dark)
+            is_dark_mode: true,
+            show_settings_window: false,
             // Database search functionality
             database_search_text: String::new(),
             filtered_items_tree: Vec::new(),
@@ -5418,6 +5424,13 @@ impl App for Tabular {
             // Request UI repaint
             ctx.request_repaint();
         }
+
+        // Apply global UI visuals based on selected theme
+        if self.is_dark_mode {
+            ctx.set_visuals(egui::Visuals::dark());
+        } else {
+            ctx.set_visuals(egui::Visuals::light());
+        }
         
         // Periodic cleanup of stale connection pools (every 10 minutes to reduce overhead)
         if self.last_cleanup_time.elapsed().as_secs() > 600 { // 10 minutes instead of 5
@@ -5491,7 +5504,9 @@ impl App for Tabular {
             
             // Escape to close overlays or clear table selections
             if i.key_pressed(egui::Key::Escape) {
-                if self.show_theme_selector {
+                if self.show_settings_window {
+                    self.show_settings_window = false;
+                } else if self.show_theme_selector {
                     self.show_theme_selector = false;
                 } else if self.show_command_palette {
                     self.show_command_palette = false;
@@ -5517,6 +5532,43 @@ impl App for Tabular {
         // Render theme selector if open
         if self.show_theme_selector {
             editor::render_theme_selector(self, ctx);
+        }
+        
+        // Render settings window if open
+        if self.show_settings_window {
+            egui::Window::new("Appearance Settings")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(320.0)
+                .show(ctx, |ui| {
+                    ui.heading("Theme");
+                    ui.horizontal(|ui| {
+                        ui.label("Choose theme:");
+                        let prev = self.is_dark_mode;
+                        if ui.radio_value(&mut self.is_dark_mode, true, "🌙 Dark").clicked() { 
+                            ctx.set_visuals(egui::Visuals::dark()); 
+                        }
+                        if ui.radio_value(&mut self.is_dark_mode, false, "☀️ Light").clicked() { 
+                            ctx.set_visuals(egui::Visuals::light()); 
+                        }
+                        if self.is_dark_mode != prev { 
+                            ctx.request_repaint(); 
+                        }
+                    });
+                    
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    
+                    // Future appearance settings can be added here
+                    ui.label("💡 More appearance options coming soon...");
+                    
+                    ui.add_space(12.0);
+                    if ui.button("Close").clicked() { 
+                        self.show_settings_window = false; 
+                    }
+                });
         }
 
         // Check for background task results
@@ -5769,7 +5821,7 @@ impl App for Tabular {
                     for (i, tab) in self.query_tabs.iter().enumerate() {
                         let active = i == self.active_tab_index;
                         let color = if active { egui::Color32::from_rgb(255,60,0) } else { ui.visuals().text_color() };
-                        let bg = egui::Color32::BLACK;
+                        let bg = if ui.visuals().dark_mode { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(240,240,240) };
                         let mut title = tab.title.clone();
                         if let Some(cid) = tab.connection_id { if let Some(n) = self.get_connection_name(cid) { title = format!("{} [{}]", title, n); } }
                         let resp = ui.add_sized([120.0,20.0], egui::Button::new(egui::RichText::new(title).color(color).size(12.0)).fill(bg).stroke(egui::Stroke::NONE));
@@ -5778,41 +5830,76 @@ impl App for Tabular {
                             if ui.add_sized([16.0,16.0], egui::Button::new("×").fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::NONE)).clicked() { to_close = Some(i); }
                         }
                     }
-                    if ui.add_sized([20.0,20.0], egui::Button::new("+").fill(egui::Color32::BLACK)).clicked() { editor::create_new_tab(self, "Untitled Query".to_string(), String::new()); }
+                    let plus_bg = if ui.visuals().dark_mode { egui::Color32::from_rgb(50,50,50) } else { egui::Color32::from_rgb(220,220,220) };
+                    if ui.add_sized([20.0,20.0], egui::Button::new("+").fill(plus_bg)).clicked() { editor::create_new_tab(self, "Untitled Query".to_string(), String::new()); }
                     if let Some(i) = to_close { editor::close_tab(self, i); }
                     if let Some(i) = to_switch { editor::switch_to_tab(self, i); }
                 });
                 // Right side overlay for selectors
-                let selectors_width = 360.0; // 160 + 160 + padding
+                let selectors_width = 400.0; // widened to fit gear + combos
                 let selectors_rect = egui::Rect::from_min_size(egui::pos2(bar_rect.right() - selectors_width, bar_rect.top()), egui::vec2(selectors_width, top_bar_height));
                 let mut right_ui = ui.new_child(egui::UiBuilder::new().max_rect(selectors_rect));
                 right_ui.allocate_ui_with_layout(selectors_rect.size(), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    
+                    // Settings (gear) button on far right with left-click context menu
+                    let gear_bg = if ui.visuals().dark_mode { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(220,220,220) };
+                    let gear_btn = egui::Button::new("⚙").fill(gear_bg);
+                    let gear_response = ui.add_sized([24.0,20.0], gear_btn).on_hover_text("Settings");
+                    if gear_response.clicked() {
+                        gear_response.request_focus();
+                        ui.memory_mut(|mem| {
+                            mem.open_popup(egui::Id::new("settings_popup"));
+                        });
+                    }
+                    
+                    // Show popup menu when clicked
+                    egui::popup::popup_below_widget(ui, egui::Id::new("settings_popup"), &gear_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                        ui.set_min_width(150.0);
+                        if ui.button("Appearance").clicked() {
+                            self.show_settings_window = true;
+                            ui.close_menu();
+                        }
+                        if ui.button("Editor Theme").clicked() {
+                            self.request_theme_selector = true;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("About").clicked() {
+                            self.show_about_dialog = true;
+                            ui.close_menu();
+                        }
+                    });
+                    
+                    // Small gap between gear and selectors
+                    ui.add_space(4.0);
+                    
                     let conn_list: Vec<(i64,String)> = self.connections.iter().filter_map(|c| c.id.map(|id| (id, c.name.clone()))).collect();
                     // Use per-tab connection
                     let (tab_conn_id, tab_db_name) = self.query_tabs.get(self.active_tab_index).map(|t| (t.connection_id, t.database_name.clone())).unwrap_or((None, None));
                     let current_conn_name = if let Some(cid) = tab_conn_id { self.get_connection_name(cid).unwrap_or_else(|| "(conn)".to_string()) } else { "Select Connection".to_string() };
-                    // Add right margin so database combobox not flush to window edge
-                    ui.add_space(5.0);
-                    // Database selector first (rightmost)
+                    
+                    // Database selector (placed right of connection due to right_to_left order)
                     if let Some(cid) = tab_conn_id {
                         let mut dbs = self.get_databases_cached(cid);
                         if dbs.is_empty() { dbs.push("(default)".to_string()); }
                         let active_db = tab_db_name.clone().unwrap_or_else(|| "(default)".to_string());
                         egui::ComboBox::from_id_salt("query_db_select")
-                            .width(150.0)
+                            .width(140.0)
                             .selected_text(active_db.clone())
                             .show_ui(ui, |ui| {
                                 for db in &dbs {
                                     if ui.selectable_label(active_db==*db, db).clicked() {
                                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) { tab.database_name = if db=="(default)" { None } else { Some(db.clone()) }; }
-                                        // clear results only if tab was using different db
                                         self.current_table_headers.clear();
                                         self.current_table_data.clear();
                                     }
                                 }
                             });
-                        ui.add_space(8.0);
+                        ui.add_space(6.0);
                     }
+                    
+                    // Connection selector
                     egui::ComboBox::from_id_salt("query_conn_select")
                         .width(150.0)
                         .selected_text(current_conn_name)
@@ -5824,7 +5911,6 @@ impl App for Tabular {
                                         tab.connection_id = Some(*cid);
                                         tab.database_name = None; // reset db for new connection
                                     }
-                                    // do not touch global current_connection_id here (keep for tree / structure context)
                                     self.current_table_headers.clear();
                                     self.current_table_data.clear();
                                 }
