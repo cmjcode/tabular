@@ -6245,8 +6245,30 @@ impl App for Tabular {
             self.show_theme_selector = true;
         }
         
-        // Handle keyboard shortcuts
+        // Handle keyboard shortcuts (collect copy intent inside closure, execute after)
+        let mut do_copy = false; // whether to perform copy after closure
+        let mut copy_mode: u8 = 0; // 1=cell 2=rows 3=cols
+        let mut snapshot_cell: Option<(usize,usize)> = None;
+        let mut snapshot_value: Option<String> = None; // only for cell
+        let mut snapshot_rows_csv: Option<String> = None;
+        let mut snapshot_cols_csv: Option<String> = None;
+
         ctx.input(|i| {
+            // Detect Copy event (Cmd/Ctrl+C) which on some platforms (macOS) may emit Event::Copy instead of Key::C with modifiers
+            let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+            let key_combo = (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
+            if copy_event || key_combo {
+                debug!("🛈 copy intent detected (event_copy={} key_combo={}) selected_cell={:?} rows={} cols={} mac_cmd={} ctrl={}", copy_event, key_combo, self.selected_cell, self.selected_rows.len(), self.selected_columns.len(), i.modifiers.mac_cmd, i.modifiers.ctrl);
+                if let Some((r,c)) = self.selected_cell {
+                    if let Some(row_vec) = self.current_table_data.get(r) { if c < row_vec.len() { snapshot_cell = Some((r,c)); snapshot_value = Some(row_vec[c].clone()); copy_mode = 1; do_copy = true; } }
+                } else if !self.selected_rows.is_empty() {
+                    if let Some(csv) = self.copy_selected_rows_as_csv() { snapshot_rows_csv = Some(csv); copy_mode = 2; do_copy = true; }
+                } else if !self.selected_columns.is_empty() {
+                    if let Some(csv) = self.copy_selected_columns_as_csv() { snapshot_cols_csv = Some(csv); copy_mode = 3; do_copy = true; }
+                } else {
+                    debug!("⚠️ copy intent but no selection");
+                }
+            }
             // CMD+S or CTRL+S to save current tab
             if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::S) && !self.query_tabs.is_empty() {
                 if let Err(error) = editor::save_current_tab(self) {
@@ -6264,6 +6286,8 @@ impl App for Tabular {
             if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::Q) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+
+            // (No direct copy execution here; performed after closure)
             
             // CMD+SHIFT+P to open command palette (on macOS)
             if i.modifiers.mac_cmd && i.modifiers.shift && i.key_pressed(egui::Key::P) {
@@ -6319,6 +6343,19 @@ impl App for Tabular {
                 }
             }
         });
+
+        // Execute deferred copy outside of input closure to avoid potential stalls during event processing
+        if do_copy {
+            match copy_mode {
+                1 => if let (Some((r,c)), Some(val)) = (snapshot_cell, snapshot_value) {
+                    ctx.copy_text(val.clone());
+                    debug!("📋 Copied cell (r{},c{}) len={} chars", r, c, val.len());
+                },
+                2 => if let Some(csv) = snapshot_rows_csv { ctx.copy_text(csv.clone()); debug!("📋 Copied {} row(s) CSV ({} chars)", self.selected_rows.len(), csv.len()); },
+                3 => if let Some(csv) = snapshot_cols_csv { ctx.copy_text(csv.clone()); debug!("📋 Copied {} col(s) CSV ({} chars)", self.selected_columns.len(), csv.len()); },
+                _ => {}
+            }
+        }
 
         // Render command palette if open
         if self.show_command_palette {
