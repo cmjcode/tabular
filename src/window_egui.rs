@@ -4784,96 +4784,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     fn render_table_data(&mut self, ui: &mut egui::Ui) {
         if !self.current_table_headers.is_empty() || !self.current_table_name.is_empty() {
             // This function now only renders DATA grid (toggle handled at higher level for table tabs)
-            // Render pagination controls at the top - show even when no data but headers exist
-            if self.total_rows > 0 || !self.current_table_headers.is_empty() {
-                ui.horizontal(|ui| {
-                    // Display different information based on pagination mode
-                    if self.use_server_pagination && self.actual_total_rows.is_some() {
-                        let actual_total = self.actual_total_rows.unwrap_or(0);
-                        let start_row = self.current_page * self.page_size + 1;
-                        let end_row = ((self.current_page + 1) * self.page_size).min(actual_total);
-                        ui.label(format!("Showing rows {}-{} of {} total", start_row, end_row, actual_total));
-                        ui.colored_label(egui::Color32::GREEN, "📡 Server pagination");
-                    } else {
-                        ui.label(format!("Total rows: {}", self.total_rows));
-                        if !self.use_server_pagination {
-                            ui.colored_label(egui::Color32::YELLOW, "💾 Client pagination");
-                        }
-                    }
-                    ui.separator();
-                    
-                    // Page size selector
-                    ui.label("Rows per page:");
-                    let mut page_size_str = self.page_size.to_string();
-                    if ui.text_edit_singleline(&mut page_size_str).changed() {
-                        if let Ok(new_size) = page_size_str.parse::<usize>() {
-                            if new_size > 0 && new_size <= 10000 {
-                                self.set_page_size(new_size);
-                            }
-                        }
-                    }
-                    
-                    ui.separator();
-                    
-                    // Navigation buttons - disable when no data
-                    let has_data = if self.use_server_pagination {
-                        self.actual_total_rows.unwrap_or(0) > 0
-                    } else {
-                        self.total_rows > 0
-                    };
-                    
-                    let total_pages = if self.use_server_pagination {
-                        self.get_total_pages_server()
-                    } else {
-                        self.get_total_pages()
-                    };
-                                        
-                    ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("⏮ First"))
-                        .clicked()
-                        .then(|| self.go_to_page(0));
-                    
-                    ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("◀ Prev"))
-                        .clicked()
-                        .then(|| self.previous_page());
-                    
-                    ui.label(format!("Page {} of {}", self.current_page + 1, total_pages.max(1)));
-                    
-                    ui.add_enabled(has_data && self.current_page < total_pages.saturating_sub(1), egui::Button::new("Next >"))
-                        .clicked()
-                        .then(|| self.next_page());
-                    
-                    ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
-                        .clicked()
-                        .then(|| {
-                            let last_page = total_pages.saturating_sub(1);
-                            self.go_to_page(last_page);
-                        });
-                    
-                    ui.separator();
-                    if ui.button("Clear selection").clicked() {
-                        self.selected_rows.clear();
-                        self.selected_columns.clear();
-                        self.selected_row = None;
-                        self.selected_cell = None;
-                        self.last_clicked_row = None;
-                        self.last_clicked_column = None;
-                    }
-                    
-                    // Quick page jump - disable when no data
-                    ui.label("Go to page:");
-                    let mut page_input = (self.current_page + 1).to_string();
-                    ui.add_enabled(has_data, egui::TextEdit::singleline(&mut page_input))
-                        .changed()
-                        .then(|| {
-                            if let Ok(page_num) = page_input.parse::<usize>() {
-                                if page_num > 0 {
-                                    self.go_to_page(page_num - 1);
-                                }
-                            }
-                        });
-                });
-                ui.separator();
-            }
             
             // Show grid whenever we have headers (even if 0 rows) so user sees column structure
             if !self.current_table_headers.is_empty() {
@@ -4930,6 +4840,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])
+                    .max_height(ui.available_height() - 25.0) // Very tight spacing
                     .show(ui, |ui| {
                         let grid_response = egui::Grid::new("table_data_grid")
                             .striped(true)
@@ -5327,6 +5238,97 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new("0 rows").italics().weak());
                 }
+                
+                // Render pagination controls at the bottom - INSIDE the headers condition but OUTSIDE ScrollArea
+                if self.total_rows > 0 || !self.current_table_headers.is_empty() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0; // Tighter horizontal spacing
+                ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0); // Smaller button padding
+                
+                // Display different information based on pagination mode
+                if self.use_server_pagination && self.actual_total_rows.is_some() {
+                    let actual_total = self.actual_total_rows.unwrap_or(0);
+                    let start_row = self.current_page * self.page_size + 1;
+                    let end_row = ((self.current_page + 1) * self.page_size).min(actual_total);
+                    ui.label(format!("Showing rows {}-{} of {} total", start_row, end_row, actual_total));
+                    ui.colored_label(egui::Color32::GREEN, "📡 Server pagination");
+                } else {
+                    ui.label(format!("Total rows: {}", self.total_rows));
+                    if !self.use_server_pagination {
+                        ui.colored_label(egui::Color32::YELLOW, "💾 Client pagination");
+                    }
+                }
+                ui.separator();
+                
+                // Page size selector
+                ui.label("Rows per page:");
+                let mut page_size_str = self.page_size.to_string();
+                if ui.text_edit_singleline(&mut page_size_str).changed() {
+                    if let Ok(new_size) = page_size_str.parse::<usize>() {
+                        if new_size > 0 && new_size <= 10000 {
+                            self.set_page_size(new_size);
+                        }
+                    }
+                }
+                
+                ui.separator();
+                
+                // Navigation buttons - disable when no data
+                let has_data = if self.use_server_pagination {
+                    self.actual_total_rows.unwrap_or(0) > 0
+                } else {
+                    self.total_rows > 0
+                };
+                
+                let total_pages = if self.use_server_pagination {
+                    self.get_total_pages_server()
+                } else {
+                    self.get_total_pages()
+                };
+                                    
+                ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("⏮ First"))
+                    .clicked()
+                    .then(|| self.go_to_page(0));
+                
+                ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("◀ Prev"))
+                    .clicked()
+                    .then(|| self.previous_page());
+                
+                ui.label(format!("Page {} of {}", self.current_page + 1, total_pages.max(1)));
+                
+                ui.add_enabled(has_data && self.current_page < total_pages.saturating_sub(1), egui::Button::new("Next ▶"))
+                    .clicked()
+                    .then(|| self.next_page());
+                
+                ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
+                    .clicked()
+                    .then(|| {
+                        let last_page = total_pages.saturating_sub(1);
+                        self.go_to_page(last_page);
+                    });
+                
+                ui.separator();
+                if ui.button("Clear selection").clicked() {
+                    self.selected_rows.clear();
+                    self.selected_columns.clear();
+                    self.selected_row = None;
+                    self.selected_cell = None;
+                    self.last_clicked_row = None;
+                    self.last_clicked_column = None;
+                }
+                
+                // Quick page jump - disable when no data
+                ui.label("Go to page:");
+                let mut page_input = (self.current_page + 1).to_string();
+                if ui.add_enabled(has_data, egui::TextEdit::singleline(&mut page_input)).changed() {
+                    if let Ok(page_num) = page_input.parse::<usize>() {
+                        if page_num > 0 {
+                            self.go_to_page(page_num - 1);
+                        }
+                    }
+                }
+            });
+        }
             } else if self.current_table_name.starts_with("Failed") {
                 ui.colored_label(egui::Color32::RED, &self.current_table_name);
             } else {
