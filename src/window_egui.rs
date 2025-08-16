@@ -6258,7 +6258,6 @@ impl App for Tabular {
             let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             let key_combo = (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
             if copy_event || key_combo {
-                debug!("🛈 copy intent detected (event_copy={} key_combo={}) selected_cell={:?} rows={} cols={} mac_cmd={} ctrl={}", copy_event, key_combo, self.selected_cell, self.selected_rows.len(), self.selected_columns.len(), i.modifiers.mac_cmd, i.modifiers.ctrl);
                 if let Some((r,c)) = self.selected_cell {
                     if let Some(row_vec) = self.current_table_data.get(r) { if c < row_vec.len() { snapshot_cell = Some((r,c)); snapshot_value = Some(row_vec[c].clone()); copy_mode = 1; do_copy = true; } }
                 } else if !self.selected_rows.is_empty() {
