@@ -3643,7 +3643,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
     pub fn get_total_pages(&self) -> usize {
         if self.total_rows == 0 {
-            0
+            // Return 1 page if we have headers (table structure exists) but no data
+            if !self.current_table_headers.is_empty() {
+                1
+            } else {
+                0
+            }
         } else {
             (self.total_rows + self.page_size - 1) / self.page_size
         }
@@ -4292,8 +4297,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     fn render_table_data(&mut self, ui: &mut egui::Ui) {
         if !self.current_table_headers.is_empty() || !self.current_table_name.is_empty() {
             // This function now only renders DATA grid (toggle handled at higher level for table tabs)
-            // Render pagination controls at the top
-            if self.total_rows > 0 {
+            // Render pagination controls at the top - show even when no data but headers exist
+            if self.total_rows > 0 || !self.current_table_headers.is_empty() {
                 ui.horizontal(|ui| {
                     ui.label(format!("Total rows: {}", self.total_rows));
                     ui.separator();
@@ -4311,25 +4316,28 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     
                     ui.separator();
                     
-                    // Navigation buttons
-                    if ui.button("⏮ First").clicked() {
-                        self.go_to_page(0);
-                    }
+                    // Navigation buttons - disable when no data
+                    let has_data = self.total_rows > 0;
+                    ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("⏮ First"))
+                        .clicked()
+                        .then(|| self.go_to_page(0));
                     
-                    ui.add_enabled(self.current_page > 0, egui::Button::new("◀ Prev"))
+                    ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("◀ Prev"))
                         .clicked()
                         .then(|| self.previous_page());
                     
-                    ui.label(format!("Page {} of {}", self.current_page + 1, self.get_total_pages()));
+                    ui.label(format!("Page {} of {}", self.current_page + 1, self.get_total_pages().max(1)));
                     
-                    ui.add_enabled(self.current_page < self.get_total_pages().saturating_sub(1), egui::Button::new("Next >"))
+                    ui.add_enabled(has_data && self.current_page < self.get_total_pages().saturating_sub(1), egui::Button::new("Next >"))
                         .clicked()
                         .then(|| self.next_page());
                     
-                    if ui.button("Last ⏭").clicked() {
-                        let last_page = self.get_total_pages().saturating_sub(1);
-                        self.go_to_page(last_page);
-                    }
+                    ui.add_enabled(has_data && self.get_total_pages() > 1, egui::Button::new("Last ⏭"))
+                        .clicked()
+                        .then(|| {
+                            let last_page = self.get_total_pages().saturating_sub(1);
+                            self.go_to_page(last_page);
+                        });
                     
                     ui.separator();
                     if ui.button("Clear selection").clicked() {
@@ -4341,16 +4349,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         self.last_clicked_column = None;
                     }
                     
-                    // Quick page jump
+                    // Quick page jump - disable when no data
                     ui.label("Go to page:");
                     let mut page_input = (self.current_page + 1).to_string();
-                    if ui.text_edit_singleline(&mut page_input).changed() {
-                        if let Ok(page_num) = page_input.parse::<usize>() {
-                            if page_num > 0 {
-                                self.go_to_page(page_num - 1);
+                    ui.add_enabled(has_data, egui::TextEdit::singleline(&mut page_input))
+                        .changed()
+                        .then(|| {
+                            if let Ok(page_num) = page_input.parse::<usize>() {
+                                if page_num > 0 {
+                                    self.go_to_page(page_num - 1);
+                                }
                             }
-                        }
-                    }
+                        });
                 });
                 ui.separator();
             }
@@ -4952,8 +4962,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
         debug!("🔍 Applying SQL filter: {}", sql_query);
 
+        // Apply auto-limit to the filtered query
+        let final_query = crate::connection::add_auto_limit_if_needed(&sql_query, &connection.connection_type);
+        debug!("🚀 Final query with auto-limit: {}", final_query);
+
         // Execute the filtered query
-        if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, sql_query) {
+        if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, final_query) {
             self.current_table_headers = headers;
             self.current_table_data = data.clone();
             self.all_table_data = data;

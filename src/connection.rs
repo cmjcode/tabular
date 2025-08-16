@@ -11,6 +11,80 @@ use redis::{Client, aio::ConnectionManager};
 use mongodb::{Client as MongoClient, bson::doc};
 use log::{debug};
 
+// Helper function to add auto LIMIT if not present
+pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseType) -> String {
+    let trimmed_query = query.trim();
+    
+    // Don't add LIMIT if the entire query already has LIMIT/TOP
+    let upper_query = trimmed_query.to_uppercase();
+    if upper_query.contains("LIMIT") || upper_query.contains(" TOP ") {
+        return query.to_string();
+    }
+    
+    // Skip if it's a single utility query (but allow multi-statement with USE + SELECT)
+    if !upper_query.contains("SELECT") {
+        return query.to_string();
+    }
+    
+    // Split by semicolon to handle multiple statements
+    let statements: Vec<&str> = trimmed_query.split(';').collect();
+    let mut result_statements = Vec::new();
+    
+    for statement in statements {
+        let trimmed_stmt = statement.trim();
+        if trimmed_stmt.is_empty() {
+            continue;
+        }
+        
+        let upper_stmt = trimmed_stmt.to_uppercase();
+        
+        // Skip utility statements (SHOW, DESCRIBE, PRAGMA, USE, etc.)
+        if upper_stmt.starts_with("SHOW ") ||
+           upper_stmt.starts_with("DESCRIBE ") ||
+           upper_stmt.starts_with("EXPLAIN ") ||
+           upper_stmt.starts_with("PRAGMA ") ||
+           upper_stmt.starts_with("USE ") ||
+           upper_stmt.starts_with("SET ") ||
+           upper_stmt.starts_with("CREATE ") ||
+           upper_stmt.starts_with("DROP ") ||
+           upper_stmt.starts_with("ALTER ") ||
+           upper_stmt.starts_with("INSERT ") ||
+           upper_stmt.starts_with("UPDATE ") ||
+           upper_stmt.starts_with("DELETE ") {
+            result_statements.push(trimmed_stmt.to_string());
+            continue;
+        }
+        
+        // Only add LIMIT to SELECT statements that don't already have LIMIT/TOP
+        if upper_stmt.starts_with("SELECT") && 
+           !upper_stmt.contains("LIMIT") && 
+           !upper_stmt.contains(" TOP ") {
+            
+            match db_type {
+                models::enums::DatabaseType::MSSQL => {
+                    // For MSSQL, we need to add TOP after SELECT
+                    // Handle both "SELECT" and "SELECT DISTINCT" cases
+                    if upper_stmt.starts_with("SELECT DISTINCT") {
+                        let modified = trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 1000");
+                        result_statements.push(modified);
+                    } else {
+                        let modified = trimmed_stmt.replace("SELECT", "SELECT TOP 1000");
+                        result_statements.push(modified);
+                    }
+                }
+                _ => {
+                    // For MySQL, PostgreSQL, SQLite - add LIMIT at the end
+                    result_statements.push(format!("{} LIMIT 1000", trimmed_stmt));
+                }
+            }
+        } else {
+            result_statements.push(trimmed_stmt.to_string());
+        }
+    }
+    
+    result_statements.join(";\n")
+}
+
 
 
 pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Context) {
@@ -185,6 +259,15 @@ pub(crate) fn execute_query_with_connection(tabular: &mut Tabular, connection_id
                  }
           }
 
+          // Add auto LIMIT 1000 if no LIMIT is present in SELECT queries
+          let original_query = final_query.clone();
+          final_query = add_auto_limit_if_needed(&final_query, &connection.connection_type);
+          
+          if original_query != final_query {
+              debug!("Auto LIMIT applied. Original: {}", original_query);
+              debug!("Modified: {}", final_query);
+          }
+
           execute_table_query_sync(tabular, connection_id, &connection, &final_query)
        } else {
        debug!("Connection not found for ID: {}", connection_id);
@@ -284,13 +367,64 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
 
                                                           match sqlx::query(trimmed).fetch_all(&mut conn).await {
                                                                  Ok(rows) => {
-                                                                        if !rows.is_empty() && i == statements.len() - 1 {
-                                                                               final_headers = rows[0]
-                                                                                      .columns()
-                                                                                      .iter()
-                                                                                      .map(|c| c.name().to_string())
-                                                                                      .collect();
-                                                                               final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
+                                                                        if i == statements.len() - 1 {
+                                                                               // Get headers from metadata, even if no rows
+                                                                               if !rows.is_empty() {
+                                                                                      final_headers = rows[0]
+                                                                                             .columns()
+                                                                                             .iter()
+                                                                                             .map(|c| c.name().to_string())
+                                                                                             .collect();
+                                                                                      final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
+                                                                               } else {
+                                                                                      // Query executed successfully but returned no rows
+                                                                                      // For MySQL, try to get column info using DESCRIBE if it's a table query
+                                                                                      if trimmed.to_uppercase().contains("FROM") {
+                                                                                             // Extract table name for DESCRIBE
+                                                                                             let words: Vec<&str> = trimmed.split_whitespace().collect();
+                                                                                             if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM") {
+                                                                                                    if let Some(table_name) = words.get(from_idx + 1) {
+                                                                                                           let describe_query = format!("DESCRIBE {}", table_name);
+                                                                                                           match sqlx::query(&describe_query).fetch_all(&mut conn).await {
+                                                                                                                  Ok(desc_rows) => {
+                                                                                                                         if !desc_rows.is_empty() {
+                                                                                                                                // For DESCRIBE, the first column contains field names
+                                                                                                                                final_headers = desc_rows.iter().map(|row| {
+                                                                                                                                       match row.try_get::<String, _>(0) {
+                                                                                                                                              Ok(field_name) => field_name,
+                                                                                                                                              Err(_) => "Field".to_string(),
+                                                                                                                                       }
+                                                                                                                                }).collect();
+                                                                                                                         }
+                                                                                                                  }
+                                                                                                                  Err(_) => {
+                                                                                                                         // DESCRIBE failed, try LIMIT 0 as fallback
+                                                                                                                         let info_query = format!("{} LIMIT 0", trimmed);
+                                                                                                                         match sqlx::query(&info_query).fetch_all(&mut conn).await {
+                                                                                                                                Ok(info_rows) => {
+                                                                                                                                       if !info_rows.is_empty() {
+                                                                                                                                              final_headers = info_rows[0]
+                                                                                                                                                     .columns()
+                                                                                                                                                     .iter()
+                                                                                                                                                     .map(|c| c.name().to_string())
+                                                                                                                                                     .collect();
+                                                                                                                                       }
+                                                                                                                                }
+                                                                                                                                Err(_) => {
+                                                                                                                                       // Both methods failed
+                                                                                                                                       final_headers = Vec::new();
+                                                                                                                                }
+                                                                                                                         }
+                                                                                                                  }
+                                                                                                           }
+                                                                                                    }
+                                                                                             }
+                                                                                      } else {
+                                                                                             // Non-table query, just return empty result
+                                                                                             final_headers = Vec::new();
+                                                                                      }
+                                                                                      final_data = Vec::new(); // Empty data but possibly with headers
+                                                                               }
                                                                         }
                                                                  }
                                                                  Err(e) => {
@@ -338,15 +472,63 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                             for (i, statement) in statements.iter().enumerate() {
                                                    match sqlx::query(statement).fetch_all(pg_pool.as_ref()).await {
                                                           Ok(rows) => {
-                                                                 if !rows.is_empty() && i == statements.len() - 1 {
-                                                                        final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                                                                        final_data = rows.iter().map(|row| {
-                                                                               (0..row.len()).map(|j| match row.try_get::<Option<String>, _>(j) {
-                                                                                      Ok(Some(v)) => v,
-                                                                                      Ok(None) => "NULL".to_string(),
-                                                                                      Err(_) => "Error".to_string(),
-                                                                               }).collect()
-                                                                        }).collect();
+                                                                 if i == statements.len() - 1 {
+                                                                        // For the last statement, try to get headers even if no rows
+                                                                        if !rows.is_empty() {
+                                                                               final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
+                                                                               final_data = rows.iter().map(|row| {
+                                                                                      (0..row.len()).map(|j| match row.try_get::<Option<String>, _>(j) {
+                                                                                             Ok(Some(v)) => v,
+                                                                                             Ok(None) => "NULL".to_string(),
+                                                                                             Err(_) => "Error".to_string(),
+                                                                                      }).collect()
+                                                                               }).collect();
+                                                                        } else {
+                                                                               // Query executed successfully but returned no rows
+                                                                               // For PostgreSQL, try to get column info from information_schema
+                                                                               if statement.to_uppercase().contains("FROM") {
+                                                                                      // Extract table name for information_schema query
+                                                                                      let words: Vec<&str> = statement.split_whitespace().collect();
+                                                                                      if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM") {
+                                                                                             if let Some(table_name) = words.get(from_idx + 1) {
+                                                                                                    let clean_table = table_name.trim_matches('"').trim_matches('`');
+                                                                                                    let info_query = format!(
+                                                                                                           "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position",
+                                                                                                           clean_table
+                                                                                                    );
+                                                                                                    match sqlx::query(&info_query).fetch_all(pg_pool.as_ref()).await {
+                                                                                                           Ok(info_rows) => {
+                                                                                                                  final_headers = info_rows.iter().map(|row| {
+                                                                                                                         match row.try_get::<String, _>(0) {
+                                                                                                                                Ok(col_name) => col_name,
+                                                                                                                                Err(_) => "Column".to_string(),
+                                                                                                                         }
+                                                                                                                  }).collect();
+                                                                                                           }
+                                                                                                           Err(_) => {
+                                                                                                                  // information_schema failed, try LIMIT 0 as fallback
+                                                                                                                  let limit_query = format!("{} LIMIT 0", statement);
+                                                                                                                  match sqlx::query(&limit_query).fetch_all(pg_pool.as_ref()).await {
+                                                                                                                         Ok(limit_rows) => {
+                                                                                                                                if !limit_rows.is_empty() {
+                                                                                                                                       final_headers = limit_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
+                                                                                                                                }
+                                                                                                                         }
+                                                                                                                         Err(_) => {
+                                                                                                                                // Both methods failed
+                                                                                                                                final_headers = Vec::new();
+                                                                                                                         }
+                                                                                                                  }
+                                                                                                           }
+                                                                                                    }
+                                                                                             }
+                                                                                      }
+                                                                               } else {
+                                                                                      // Non-table query, just return empty result
+                                                                                      final_headers = Vec::new();
+                                                                               }
+                                                                               final_data = Vec::new(); // Empty data but possibly with headers
+                                                                        }
                                                                  }
                                                           }
                                                           Err(e) => {
@@ -372,9 +554,56 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                             for (i, statement) in statements.iter().enumerate() {
                                                    match sqlx::query(statement).fetch_all(sqlite_pool.as_ref()).await {
                                                           Ok(rows) => {
-                                                                 if !rows.is_empty() && i == statements.len() - 1 {
-                                                                        final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                                                                        final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
+                                                                 if i == statements.len() - 1 {
+                                                                        // For the last statement, try to get headers even if no rows
+                                                                        if !rows.is_empty() {
+                                                                               final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
+                                                                               final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
+                                                                        } else {
+                                                                               // Query executed successfully but returned no rows
+                                                                               // For SQLite, try to get column info using PRAGMA table_info
+                                                                               if statement.to_uppercase().contains("FROM") {
+                                                                                      // Extract table name for PRAGMA table_info
+                                                                                      let words: Vec<&str> = statement.split_whitespace().collect();
+                                                                                      if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM") {
+                                                                                             if let Some(table_name) = words.get(from_idx + 1) {
+                                                                                                    let clean_table = table_name.trim_matches('"').trim_matches('`').trim_matches('[').trim_matches(']');
+                                                                                                    let pragma_query = format!("PRAGMA table_info({})", clean_table);
+                                                                                                    match sqlx::query(&pragma_query).fetch_all(sqlite_pool.as_ref()).await {
+                                                                                                           Ok(pragma_rows) => {
+                                                                                                                  final_headers = pragma_rows.iter().map(|row| {
+                                                                                                                         // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
+                                                                                                                         // We want the name column (index 1)
+                                                                                                                         match row.try_get::<String, _>(1) {
+                                                                                                                                Ok(col_name) => col_name,
+                                                                                                                                Err(_) => "Column".to_string(),
+                                                                                                                         }
+                                                                                                                  }).collect();
+                                                                                                           }
+                                                                                                           Err(_) => {
+                                                                                                                  // PRAGMA failed, try LIMIT 0 as fallback
+                                                                                                                  let limit_query = format!("{} LIMIT 0", statement);
+                                                                                                                  match sqlx::query(&limit_query).fetch_all(sqlite_pool.as_ref()).await {
+                                                                                                                         Ok(limit_rows) => {
+                                                                                                                                if !limit_rows.is_empty() {
+                                                                                                                                       final_headers = limit_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
+                                                                                                                                }
+                                                                                                                         }
+                                                                                                                         Err(_) => {
+                                                                                                                                // Both methods failed
+                                                                                                                                final_headers = Vec::new();
+                                                                                                                         }
+                                                                                                                  }
+                                                                                                           }
+                                                                                                    }
+                                                                                             }
+                                                                                      }
+                                                                               } else {
+                                                                                      // Non-table query, just return empty result
+                                                                                      final_headers = Vec::new();
+                                                                               }
+                                                                               final_data = Vec::new(); // Empty data but possibly with headers
+                                                                        }
                                                                  }
                                                           }
                                                           Err(e) => {

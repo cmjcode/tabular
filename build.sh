@@ -130,17 +130,36 @@ main() {
     case $PLATFORM in
         macos)
             print_status "Building macOS universal binary and App Store ready bundle..."
-            echo "If you want codesign + notarize, export environment variables before running, e.g.:"
-            echo "  export APPLE_ID='appleid@example.com'"
-            echo "  export APPLE_PASSWORD='app-specific-password'"
-            echo "  export APPLE_TEAM_ID='TEAMID'"
-            echo "  export APPLE_BUNDLE_ID='id.tabular.data'"
-            echo "  export APPLE_IDENTITY='Developer ID Application: Your Name (TEAMID)'"
-            echo "  export NOTARIZE=1"
+            print_status "Setting up environment variables for code signing..."
+            
+            # Export environment variables for code signing
+            export APPLE_ID='nunung.pamungkas@vneu.co.id'
+            export APPLE_TEAM_ID='YD4J5Z6A4G'
+            export APPLE_BUNDLE_ID='id.tabular.database'
+            export PASSWORD='Simbok21AMIDAMA'
+            export APPLE_IDENTITY='Developer ID Application: PT. VNEU TEKNOLOGI INDONESIA (YD4J5Z6A4G)'
+            export APPLE_IDENTITY_INS='Developer ID Installer: PT. VNEU TEKNOLOGI INDONESIA (YD4J5Z6A4G)'
+            export APPLE_APP_IDENTITY='3rd Party Mac Developer Application: PT. VNEU TEKNOLOGI INDONESIA (YD4J5Z6A4G)'
+            
+            # Note: APPLE_PASSWORD dan NOTARIZE=1 perlu di-set manual jika mau notarize
+            echo "✅ Environment variables set for code signing"
+            echo "📝 Note: For notarization, manually set APPLE_PASSWORD and NOTARIZE=1"
+            
+            make clean
             make bundle-macos
+            make pkg-macos-store
+            sh notarize.sh
             print_success "macOS build completed!"
             ;;
         macos-pkg)
+
+            # Export environment variables for code signing
+            export APPLE_ID='nunung.pamungkas@vneu.co.id'
+            export APPLE_TEAM_ID='YD4J5Z6A4G'
+            export APPLE_BUNDLE_ID='id.tabular.database'
+            export PASSWORD='Simbok21AMIDAMA'
+            # export APPLE_IDENTITY='Developer ID Application: PT. VNEU TEKNOLOGI INDONESIA (YD4J5Z6A4G)'
+            export APPLE_IDENTITY='Developer ID Installer: PT. VNEU TEKNOLOGI INDONESIA (YD4J5Z6A4G)'
             print_status "Building macOS .app + signed .pkg"
             if [ -z "$APPLE_IDENTITY" ]; then
                 print_warning "APPLE_IDENTITY belum diset. Contoh: export APPLE_IDENTITY='Apple Distribution: Nama (TEAMID)'"
