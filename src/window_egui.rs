@@ -6970,34 +6970,8 @@ impl App for Tabular {
                 .fill(if ctx.style().visuals.dark_mode { egui::Color32::from_rgb(20,20,20) } else { egui::Color32::from_rgb(250,250,250) })
                 .inner_margin(egui::Margin::ZERO))
             .show(ctx, |ui| {
-                let full_table_tab = self
-                    .query_tabs
-                    .get(self.active_tab_index)
-                    .map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:"))
-                    .unwrap_or(false);
-
-                if full_table_tab {
-                    ui.horizontal(|ui| {
-                        let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
-                        if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() {
-                            self.table_bottom_view = models::structs::TableBottomView::Data;
-                        }
-                        let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
-                        if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() {
-                            self.table_bottom_view = models::structs::TableBottomView::Structure;
-                            if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); }
-                        }
-                    });
-                    ui.separator();
-                    if self.table_bottom_view == models::structs::TableBottomView::Structure {
-                        self.render_structure_view(ui);
-                    } else {
-                        self.render_table_data(ui);
-                    }
-                    // Render confirmation overlay if any (must be before return)
-                    self.render_drop_index_confirmation(ui.ctx());
-                    return; // done (only for table/collection tabs)
-                }
+                // Remove the full_table_tab logic - all tabs will now show query editor + results
+                // Table tabs will just have additional Data/Structure toggle in the bottom panel
 
                 // Normal query tab: tab bar, editor, toggle, content
                 // Compact top bar: tabs on left, selectors on right, single row
@@ -7121,18 +7095,66 @@ impl App for Tabular {
                     if tab.content != self.editor_text { tab.content = self.editor_text.clone(); tab.is_modified = true; }
                 }
 
-                let is_table_tab = self.query_tabs.get(self.active_tab_index).map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:")).unwrap_or(false);
+                // Check if this is a table/collection tab for different layout
+                let is_table_tab = self.query_tabs.get(self.active_tab_index)
+                    .map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:"))
+                    .unwrap_or(false);
+                
                 if is_table_tab {
-                    ui.horizontal(|ui| {
-                        let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
-                        if ui.add(egui::SelectableLabel::new(is_data, "Data")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Data; }
-                        let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
-                        if ui.add(egui::SelectableLabel::new(is_struct, "Structure")).clicked() { self.table_bottom_view = models::structs::TableBottomView::Structure; if self.structure_columns.is_empty() { self.load_structure_info_for_current_table(); } }
+                    // Table tabs: Direct Data/Structure view without query editor
+                    ui.vertical(|ui| {
+                        // Data/Structure toggle at the top
+                        ui.horizontal(|ui| {
+                            let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
+                            if ui.add(egui::SelectableLabel::new(is_data, "📊 Data")).clicked() {
+                                self.table_bottom_view = models::structs::TableBottomView::Data;
+                            }
+                            let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
+                            if ui.add(egui::SelectableLabel::new(is_struct, "🏗 Structure")).clicked() {
+                                self.table_bottom_view = models::structs::TableBottomView::Structure;
+                                if self.structure_columns.is_empty() { 
+                                    self.load_structure_info_for_current_table(); 
+                                }
+                            }
+                        });
+                        
+                        ui.separator();
+                        
+                        // // Show SQL filter for data view
+                        // if self.table_bottom_view == models::structs::TableBottomView::Data {
+                        //     ui.horizontal(|ui| {
+                        //         ui.label("🔍 WHERE clause:");
+                        //         if ui.text_edit_singleline(&mut self.sql_filter_text).changed() {
+                        //             // Auto-apply filter as user types (with small delay to avoid too many requests)
+                        //         }
+                        //         if ui.button("Apply Filter").clicked() {
+                        //             self.apply_sql_filter();
+                        //         }
+                        //         if ui.button("Clear").clicked() {
+                        //             self.sql_filter_text.clear();
+                        //             self.apply_sql_filter(); // Re-load all data
+                        //         }
+                        //     });
+                        //     ui.separator();
+                        // }
+                        
+                        // Main content area takes remaining space
+                        let remaining_height = ui.available_height();
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), remaining_height),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                // Render Data or Structure based on toggle
+                                if self.table_bottom_view == models::structs::TableBottomView::Structure {
+                                    self.render_structure_view(ui);
+                                } else {
+                                    self.render_table_data(ui);
+                                }
+                            }
+                        );
                     });
-                    ui.separator();
-                    if self.table_bottom_view == models::structs::TableBottomView::Structure { self.render_structure_view(ui); } else { self.render_table_data(ui); }
                 } else {
-                    // Query tab: editor on top, results (if any) below
+                    // Regular query tabs: editor on top, results below
                     // Query tab logic: show bottom panel if we have any headers/data, a status name/message, or tab executed at least once
                     let avail = ui.available_height();
                     let executed = self.query_tabs.get(self.active_tab_index).map(|t| t.has_executed_query).unwrap_or(false);
@@ -7195,7 +7217,9 @@ impl App for Tabular {
                             ui.memory_mut(|m| m.request_focus(handle_id));
                         }
                         ui.add_space(2.0);
-                        self.render_table_data(ui); // show query results / messages under editor
+                        
+                        // Regular query result display
+                        self.render_table_data(ui);
                     }
                 }
 
