@@ -298,3 +298,49 @@ pub(crate) fn get_columns_from_cache(tabular: &mut window_egui::Tabular, connect
        None
        }
 }
+
+pub(crate) fn get_primary_keys_from_cache(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, table_name: &str) -> Option<Vec<String>> {
+       if let Some(ref pool) = tabular.db_pool {
+       let pool_clone = pool.clone();
+       let rt = tokio::runtime::Runtime::new().unwrap();
+       
+       let result = rt.block_on(async {
+              sqlx::query_as::<_, (String,)>("SELECT column_name FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND is_primary_key = 1 ORDER BY ordinal_position")
+              .bind(connection_id)
+              .bind(database_name)
+              .bind(table_name)
+              .fetch_all(pool_clone.as_ref())
+              .await
+       });
+       
+       match result {
+              Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
+              Err(_) => None,
+       }
+       } else {
+       None
+       }
+}
+
+pub(crate) fn get_indexed_columns_from_cache(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, table_name: &str) -> Option<Vec<String>> {
+       if let Some(ref pool) = tabular.db_pool {
+       let pool_clone = pool.clone();
+       let rt = tokio::runtime::Runtime::new().unwrap();
+       
+       let result = rt.block_on(async {
+              sqlx::query_as::<_, (String,)>("SELECT DISTINCT column_name FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND is_indexed = 1 ORDER BY column_name")
+              .bind(connection_id)
+              .bind(database_name)
+              .bind(table_name)
+              .fetch_all(pool_clone.as_ref())
+              .await
+       });
+       
+       match result {
+              Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
+              Err(_) => None,
+       }
+       } else {
+       None
+       }
+}

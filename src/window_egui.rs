@@ -545,7 +545,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             .map(|conn| conn.name.clone())
     }
 
-    fn render_tree(&mut self, ui: &mut egui::Ui, nodes: &mut [models::structs::TreeNode]) -> Vec<(String, String, String)> {
+    fn render_tree(&mut self, ui: &mut egui::Ui, nodes: &mut [models::structs::TreeNode], is_search_mode: bool) -> Vec<(String, String, String)> {
         let mut expansion_requests = Vec::new();
         let mut tables_to_expand = Vec::new();
         let mut context_menu_requests = Vec::new();
@@ -556,7 +556,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         let mut query_files_to_open = Vec::new();
         
         for (index, node) in nodes.iter_mut().enumerate() {
-            let (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_for_removal, parent_for_creation, folder_removal_mapping, dba_click_request, index_click_request, create_index_request) = Self::render_tree_node_with_table_expansion(ui, node, &mut self.editor_text, index, &self.refreshing_connections);
+            let (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_for_removal, parent_for_creation, folder_removal_mapping, dba_click_request, index_click_request, create_index_request) = Self::render_tree_node_with_table_expansion(ui, node, &mut self.editor_text, index, &self.refreshing_connections, is_search_mode);
             if let Some(expansion_req) = expansion_request {
                 expansion_requests.push(expansion_req);
             }
@@ -1088,7 +1088,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
     fn render_tree_node_with_table_expansion(
             ui: &mut egui::Ui, node: &mut models::structs::TreeNode, 
             editor_text: &mut String, node_index: usize, 
-            refreshing_connections: &std::collections::HashSet<i64>
+            refreshing_connections: &std::collections::HashSet<i64>,
+            is_search_mode: bool
         ) -> (
             Option<models::structs::ExpansionRequest>, Option<(usize, i64, String)>, 
             Option<i64>, Option<(i64, String)>, Option<i64>, 
@@ -1146,7 +1147,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     }
                     
                     // If this is a table or view node and not loaded, request column expansion
-                    if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && !node.is_loaded && node.is_expanded {
+                    // In search mode, always allow expansion even if already loaded
+                    if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
+                       node.is_expanded && 
+                       ((!node.is_loaded) || is_search_mode) {
                         if let Some(conn_id) = node.connection_id {
                             table_expansion = Some((node_index, conn_id, node.name.clone()));
                         }
@@ -1187,7 +1191,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 
                 let icon = match node.node_type {
                     models::enums::NodeType::Database => "🗄",
-                    models::enums::NodeType::Table => "📋",
+                    models::enums::NodeType::Table => "",
                     // Use a plain bullet to avoid emoji font issues for column icons
                     models::enums::NodeType::Column => "•",
                     models::enums::NodeType::ColumnsFolder => "📑",
@@ -1330,7 +1334,9 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 // Handle clicks on table/view labels to load data - open in new tab
                 if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && response.clicked() {
                     if let Some(conn_id) = node.connection_id {
-                        table_click_request = Some((conn_id, node.name.clone()));
+                        // Use table_name field if available (for search results), otherwise use node.name
+                        let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                        table_click_request = Some((conn_id, actual_table_name));
                     }
                 }
 
@@ -1410,7 +1416,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     response.context_menu(|ui| {
                         if ui.button("📊 View Data").clicked() {
                             if let Some(conn_id) = node.connection_id {
-                                table_click_request = Some((conn_id, node.name.clone()));
+                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                table_click_request = Some((conn_id, actual_table_name));
                             }
                             ui.close_menu();
                         }
@@ -1420,22 +1427,25 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             ui.close_menu();
                         }
                         if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
-                            *editor_text = format!("SELECT COUNT(*) FROM {};", node.name);
+                            let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
+                            *editor_text = format!("SELECT COUNT(*) FROM {};", actual_table_name);
                             ui.close_menu();
                         }
                         if ui.button("📝 DESCRIBE Query (Current Tab)").clicked() {
+                            let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
                             // Different DESCRIBE syntax for different database types
                             if node.database_name.is_some() {
-                                *editor_text = format!("DESCRIBE {};", node.name);
+                                *editor_text = format!("DESCRIBE {};", actual_table_name);
                             } else {
-                                *editor_text = format!("PRAGMA table_info({});", node.name); // SQLite syntax
+                                *editor_text = format!("PRAGMA table_info({});", actual_table_name); // SQLite syntax
                             }
                             ui.close_menu();
                         }
                         ui.separator();
                         if ui.button("➕ Add Index (New Tab)").clicked() {
                             if let Some(conn_id) = node.connection_id {
-                                create_index_request = Some((conn_id, node.database_name.clone(), Some(node.name.clone())));
+                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                create_index_request = Some((conn_id, node.database_name.clone(), Some(actual_table_name)));
                             }
                             ui.close_menu();
                         }
@@ -1455,7 +1465,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     response.context_menu(|ui| {
                         if ui.button("📊 View Data").clicked() {
                             if let Some(conn_id) = node.connection_id {
-                                table_click_request = Some((conn_id, node.name.clone()));
+                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                table_click_request = Some((conn_id, actual_table_name));
                             }
                             ui.close_menu();
                         }
@@ -1465,7 +1476,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             ui.close_menu();
                         }
                         if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
-                            *editor_text = format!("SELECT COUNT(*) FROM {};", node.name);
+                            let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
+                            *editor_text = format!("SELECT COUNT(*) FROM {};", actual_table_name);
                             ui.close_menu();
                         }
                         if ui.button("📝 DESCRIBE View (Current Tab)").clicked() {
@@ -1520,7 +1532,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 let is_history_date_folder = node.node_type == models::enums::NodeType::HistoryDateFolder;
                 if is_history_date_folder {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
-                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click, child_create_index_request) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click, child_create_index_request) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections, is_search_mode);
                         if let Some(child_expansion) = child_expansion_request { expansion_request = Some(child_expansion); }
                         if table_expansion.is_none() { if let Some((child_index, child_conn_id, table_name)) = child_table_expansion { if let Some(conn_id) = node.connection_id { table_expansion = Some((child_index, conn_id, table_name)); } else { table_expansion = Some((child_index, child_conn_id, table_name)); } } }
                         if let Some((conn_id, table_name)) = child_table_click { table_click_request = Some((conn_id, table_name)); }
@@ -1532,7 +1544,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 } else {
                     ui.indent(id, |ui| {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
-                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click, child_create_index_request) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections);
+                        let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click, child_create_index_request) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections, is_search_mode);
                         
                         // Handle child expansion requests - propagate to parent
                         if let Some(child_expansion) = child_expansion_request {
@@ -1601,7 +1613,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 ui.horizontal(|ui| {
                     let icon = match node.node_type {
                         models::enums::NodeType::Database => "🗄",
-                        models::enums::NodeType::Table => "📋",
+                        models::enums::NodeType::Table => "",
                         // Use a plain bullet again for columns in fallback rendering
                         models::enums::NodeType::Column => "•",
                         models::enums::NodeType::Query => "🔍",
@@ -1644,7 +1656,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             // Don't modify current editor_text, we'll create a new tab
                             // Just trigger table data loading 
                             if let Some(conn_id) = node.connection_id {
-                                table_click_request = Some((conn_id, node.name.clone()));
+                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                table_click_request = Some((conn_id, actual_table_name));
                             }
                         },
                         // DBA quick views: emit a click request to be handled by parent (needs self)
@@ -3271,19 +3284,16 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             let database_name = self.find_table_database_name(nodes, table_name, connection_id)
                 .unwrap_or_else(|| connection.database.clone());
             
-            // Load columns for this table without creating new runtime
-            // Build subfolders: Columns, Indexes, Primary Keys
-            let columns_children = self.load_table_columns_sync(connection_id, table_name, &connection, &database_name);
-
-            let indexes_list = self.fetch_index_names_for_table(connection_id, &connection, &database_name, table_name);
-            let pk_columns = self.fetch_primary_key_columns_for_table(connection_id, &connection, &database_name, table_name);
+            // Load columns, indexes, and primary keys from cache instead of querying server
+            let columns_from_cache = self.load_table_columns_from_cache(connection_id, table_name, &database_name);
+            let (indexes_list, pk_columns) = self.extract_indexes_and_pks_from_cache(connection_id, &database_name, table_name);
 
             let mut columns_folder = models::structs::TreeNode::new("Columns".to_string(), models::enums::NodeType::ColumnsFolder);
             columns_folder.connection_id = Some(connection_id);
             columns_folder.database_name = Some(database_name.clone());
             columns_folder.table_name = Some(table_name.to_string());
             columns_folder.is_loaded = true;
-            columns_folder.children = columns_children;
+            columns_folder.children = columns_from_cache;
 
             let mut indexes_folder = models::structs::TreeNode::new("Indexes".to_string(), models::enums::NodeType::IndexesFolder);
             indexes_folder.connection_id = Some(connection_id);
@@ -3352,6 +3362,106 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
         }
         false
+    }
+
+    fn find_table_node_in_main_tree(&self, table_name: &str, connection_id: i64) -> Option<models::structs::TreeNode> {
+        self.find_table_node_recursive(&self.items_tree, table_name, connection_id)
+    }
+
+    fn find_table_node_recursive(&self, nodes: &[models::structs::TreeNode], table_name: &str, connection_id: i64) -> Option<models::structs::TreeNode> {
+        for node in nodes {
+            // If this is the table node we're looking for
+            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
+               node.name == table_name && 
+               node.connection_id == Some(connection_id) {
+                return Some(node.clone());
+            }
+            
+            // Recursively search in children
+            if let Some(found_node) = self.find_table_node_recursive(&node.children, table_name, connection_id) {
+                return Some(found_node);
+            }
+        }
+        None
+    }
+
+    fn load_table_columns_from_cache(&mut self, connection_id: i64, table_name: &str, database_name: &str) -> Vec<models::structs::TreeNode> {
+        // First try to get columns from cache
+        let columns_from_cache = crate::cache_data::get_columns_from_cache(self, connection_id, database_name, table_name);
+        
+        if let Some(columns_data) = columns_from_cache {
+            if !columns_data.is_empty() {
+                // If cache has data, use it
+                return columns_data.into_iter().map(|(column_name, data_type)| {
+                    let mut column_node = models::structs::TreeNode::new(
+                        format!("{} ({})", column_name, data_type), 
+                        models::enums::NodeType::Column
+                    );
+                    column_node.connection_id = Some(connection_id);
+                    column_node.database_name = Some(database_name.to_string());
+                    column_node.table_name = Some(table_name.to_string());
+                    column_node
+                }).collect();
+            }
+        }
+        
+        // If cache doesn't have data or is empty, fallback to server query
+        if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
+            let connection = connection.clone();
+            self.load_table_columns_sync(connection_id, table_name, &connection, database_name)
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn extract_indexes_and_pks_from_cache(&mut self, connection_id: i64, database_name: &str, table_name: &str) -> (Vec<String>, Vec<String>) {
+        // Try to get primary keys from cache first
+        let pk_columns = if let Some(pks) = cache_data::get_primary_keys_from_cache(self, connection_id, database_name, table_name) {
+            if !pks.is_empty() {
+                pks
+            } else {
+                // Cache is empty, fallback to server query
+                if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
+                    let connection = connection.clone();
+                    self.fetch_primary_key_columns_for_table(connection_id, &connection, database_name, table_name)
+                } else {
+                    Vec::new()
+                }
+            }
+        } else {
+            // Cache doesn't have data, fallback to server query
+            if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
+                let connection = connection.clone();
+                self.fetch_primary_key_columns_for_table(connection_id, &connection, database_name, table_name)
+            } else {
+                Vec::new()
+            }
+        };
+        
+        // Try to get indexed columns from cache first  
+        let indexes_list = if let Some(indexes) = cache_data::get_indexed_columns_from_cache(self, connection_id, database_name, table_name) {
+            if !indexes.is_empty() {
+                indexes
+            } else {
+                // Cache is empty, fallback to server query
+                if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
+                    let connection = connection.clone();
+                    self.fetch_index_names_for_table(connection_id, &connection, database_name, table_name)
+                } else {
+                    Vec::new()
+                }
+            }
+        } else {
+            // Cache doesn't have data, fallback to server query
+            if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
+                let connection = connection.clone();
+                self.fetch_index_names_for_table(connection_id, &connection, database_name, table_name)
+            } else {
+                Vec::new()
+            }
+        };
+            
+        (indexes_list, pk_columns)
     }
 
     // Fetch index names per database type
@@ -3701,14 +3811,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         if self.show_search_results && !self.database_search_text.trim().is_empty() {
             // Show search results
             let mut filtered_tree = std::mem::take(&mut self.filtered_items_tree);
-            let _ = self.render_tree(ui, &mut filtered_tree);
+            let _ = self.render_tree(ui, &mut filtered_tree, true);
             self.filtered_items_tree = filtered_tree;
         } else {
             // Show normal tree
             // Use slice to avoid borrowing issues
             let mut items_tree = std::mem::take(&mut self.items_tree);
             
-            let _ = self.render_tree(ui, &mut items_tree);
+            let _ = self.render_tree(ui, &mut items_tree, false);
             
             // Check if tree was refreshed inside render_tree
             if self.items_tree.is_empty() {
@@ -3741,24 +3851,23 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
         }
         
-        // If we have an active connection, also search in its database/table cache
-        if let Some(connection_id) = self.current_connection_id {
+        // Search in all connections' cached data
+        let connection_ids: Vec<i64> = self.connections.iter()
+            .filter_map(|c| c.id)
+            .collect();
+            
+        for connection_id in connection_ids {
             self.search_in_connection_data(connection_id, &search_text);
         }
-        // Note: We don't search all connections to avoid borrowing issues
-        // Users can select a specific connection to search within it
     }
     
     fn filter_node_with_like_search(&self, node: &models::structs::TreeNode, search_text: &str) -> Option<models::structs::TreeNode> {
         let mut matches = false;
         let mut filtered_children = Vec::new();
         
-        // Check if current node matches using case-insensitive LIKE search
-        let node_name_lower = node.name.to_lowercase();
-        let search_lower = search_text.to_lowercase();
-        
+        // Check if current node matches using case-sensitive LIKE search
         // LIKE search: if search text is contained anywhere in the node name
-        if node_name_lower.contains(&search_lower) {
+        if node.name.contains(search_text) {
             matches = true;
         }
         
@@ -3772,8 +3881,28 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         
         if matches {
             let mut filtered_node = node.clone();
-            filtered_node.children = filtered_children;
-            filtered_node.is_expanded = true; // Auto-expand search results
+            
+            // For table nodes, preserve loaded state and children from main tree
+            if (filtered_node.node_type == models::enums::NodeType::Table || 
+                filtered_node.node_type == models::enums::NodeType::View) && 
+               filtered_node.connection_id.is_some() {
+                if let Some(main_tree_node) = self.find_table_node_in_main_tree(&filtered_node.name, filtered_node.connection_id.unwrap()) {
+                    filtered_node.is_loaded = main_tree_node.is_loaded;
+                    filtered_node.is_expanded = main_tree_node.is_expanded;
+                    if main_tree_node.is_loaded {
+                        filtered_node.children = main_tree_node.children.clone();
+                    } else {
+                        filtered_node.children = filtered_children;
+                    }
+                } else {
+                    filtered_node.children = filtered_children;
+                    filtered_node.is_expanded = true; // Auto-expand search results
+                }
+            } else {
+                filtered_node.children = filtered_children;
+                filtered_node.is_expanded = true; // Auto-expand search results
+            }
+            
             Some(filtered_node)
         } else {
             None
@@ -3816,7 +3945,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     let mut conn = redis_manager.as_ref().clone();
                     
                     // Use flexible pattern for LIKE search - search text can appear anywhere
-                    let pattern = format!("*{}*", search_text.to_lowercase());
+                    let pattern = format!("*{}*", search_text);
                     let mut cursor = 0u64;
                     let mut found_keys = Vec::new();
                     
@@ -3832,11 +3961,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             .await;
                             
                         if let Ok((new_cursor, keys)) = scan_result {
-                            // Additional filtering for case-insensitive LIKE search
-                            let search_lower = search_text.to_lowercase();
+                            // Additional filtering for case-sensitive LIKE search
                             for key in keys {
-                                let key_lower = key.to_lowercase();
-                                if key_lower.contains(&search_lower) {
+                                if key.contains(search_text) {
                                     found_keys.push(key);
                                 }
                             }
@@ -3846,39 +3973,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             }
                         } else {
                             break;
-                        }
-                    }
-                    
-                    // Also try case-insensitive pattern if not found enough results
-                    if found_keys.len() < 10 {
-                        let upper_pattern = format!("*{}*", search_text.to_uppercase());
-                        cursor = 0u64;
-                        
-                        for _iteration in 0..10 {
-                            let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
-                                .arg(cursor)
-                                .arg("MATCH")
-                                .arg(&upper_pattern)
-                                .arg("COUNT")
-                                .arg(100)
-                                .query_async(&mut conn)
-                                .await;
-                                
-                            if let Ok((new_cursor, keys)) = scan_result {
-                                let search_lower = search_text.to_lowercase();
-                                for key in keys {
-                                    let key_lower = key.to_lowercase();
-                                    if key_lower.contains(&search_lower) && !found_keys.contains(&key) {
-                                        found_keys.push(key);
-                                    }
-                                }
-                                cursor = new_cursor;
-                                if cursor == 0 {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
                         }
                     }
                     
@@ -3918,65 +4012,156 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
     
     fn search_sql_tables(&mut self, connection_id: i64, search_text: &str, db_type: &models::enums::DatabaseType) {
-        // Search through cached table data first
+        // Search through cached table data and column data
         if let Some(ref pool) = self.db_pool {
             let pool_clone = pool.clone();
-            let search_pattern = format!("%{}%", search_text);
+            let search_pattern = format!("*{}*", search_text); // Using GLOB pattern for case-sensitive search
             let rt = tokio::runtime::Runtime::new().unwrap();
             
-            let search_results = rt.block_on(async {
+            // Search tables
+            let table_search_results = rt.block_on(async {
                 let query = match db_type {
                     models::enums::DatabaseType::SQLite => {
-                        "SELECT table_name, database_name, table_type FROM table_cache WHERE connection_id = ? AND table_name LIKE ? ORDER BY table_name"
+                        "SELECT table_name, database_name, table_type FROM table_cache WHERE connection_id = ? AND table_name GLOB ? ORDER BY table_name"
                     }
                     _ => {
-                        "SELECT table_name, database_name, table_type FROM table_cache WHERE connection_id = ? AND table_name LIKE ? ORDER BY database_name, table_name"
+                        "SELECT table_name, database_name, table_type FROM table_cache WHERE connection_id = ? AND table_name LIKE ? COLLATE BINARY ORDER BY database_name, table_name"
                     }
+                };
+                
+                let search_param = match db_type {
+                    models::enums::DatabaseType::SQLite => &search_pattern,
+                    _ => &format!("%{}%", search_text), // For non-SQLite, use LIKE with COLLATE BINARY for case sensitivity
                 };
                 
                 sqlx::query_as::<_, (String, String, String)>(query)
                     .bind(connection_id)
-                    .bind(&search_pattern)
+                    .bind(search_param)
                     .fetch_all(pool_clone.as_ref())
                     .await
                     .unwrap_or_default()
             });
             
-            // Group results by database
-            let mut results_by_db: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-            for (table_name, database_name, _table_type) in search_results {
-                results_by_db.entry(database_name).or_default().push(table_name);
+            // Search columns
+            let column_search_results = rt.block_on(async {
+                let query = match db_type {
+                    models::enums::DatabaseType::SQLite => {
+                        "SELECT DISTINCT table_name, database_name, column_name, data_type FROM column_cache WHERE connection_id = ? AND column_name GLOB ? ORDER BY table_name"
+                    }
+                    _ => {
+                        "SELECT DISTINCT table_name, database_name, column_name, data_type FROM column_cache WHERE connection_id = ? AND column_name LIKE ? COLLATE BINARY ORDER BY database_name, table_name"
+                    }
+                };
+                
+                let search_param = match db_type {
+                    models::enums::DatabaseType::SQLite => &search_pattern,
+                    _ => &format!("%{}%", search_text), // For non-SQLite, use LIKE with COLLATE BINARY for case sensitivity
+                };
+                
+                sqlx::query_as::<_, (String, String, String, String)>(query)
+                    .bind(connection_id)
+                    .bind(search_param)
+                    .fetch_all(pool_clone.as_ref())
+                    .await
+                    .unwrap_or_default()
+            });
+            
+            // Group table results by database
+            let mut table_results_by_db: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+            for (table_name, database_name, _table_type) in table_search_results {
+                table_results_by_db.entry(database_name).or_default().push(table_name);
+            }
+            
+            // Group column results by database and table
+            let mut column_results_by_db: std::collections::HashMap<String, std::collections::HashMap<String, Vec<(String, String)>>> = std::collections::HashMap::new();
+            for (table_name, database_name, column_name, data_type) in column_search_results {
+                column_results_by_db
+                    .entry(database_name)
+                    .or_default()
+                    .entry(table_name)
+                    .or_default()
+                    .push((column_name, data_type));
             }
             
             // Add search results to filtered tree
-            if !results_by_db.is_empty() {
+            if !table_results_by_db.is_empty() || !column_results_by_db.is_empty() {
                 let connection_name = self.connections.iter()
                     .find(|c| c.id == Some(connection_id))
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| "Unknown Connection".to_string());
                 
-                let total_tables: usize = results_by_db.values().map(|v| v.len()).sum();
+                let total_tables: usize = table_results_by_db.values().map(|v| v.len()).sum();
+                let total_columns: usize = column_results_by_db.values()
+                    .flat_map(|db| db.values())
+                    .map(|cols| cols.len())
+                    .sum();
+                
                 let mut search_result_node = models::structs::TreeNode::new(
-                    format!("🔍 Search Results in {} ({} tables)", connection_name, total_tables), 
+                    format!("🔍 Search Results in {} ({} tables, {} columns)", connection_name, total_tables, total_columns), 
                     models::enums::NodeType::CustomFolder
                 );
                 search_result_node.connection_id = Some(connection_id);
                 search_result_node.is_expanded = true;
                 
-                // Add databases and their tables
-                for (database_name, tables) in results_by_db {
+                // Combine all databases from both searches
+                let mut all_databases: std::collections::HashSet<String> = std::collections::HashSet::new();
+                all_databases.extend(table_results_by_db.keys().cloned());
+                all_databases.extend(column_results_by_db.keys().cloned());
+                
+                // Add databases and their tables/columns
+                for database_name in all_databases {
+                    let tables = table_results_by_db.get(&database_name).cloned().unwrap_or_default();
+                    let column_tables = column_results_by_db.get(&database_name).cloned().unwrap_or_default();
+                    
                     let mut db_node = models::structs::TreeNode::new(
-                        format!("📁 {} ({} tables)", database_name, tables.len()),
+                        format!("📁 {} ({} tables, {} column matches)", 
+                               database_name, 
+                               tables.len(), 
+                               column_tables.values().map(|cols| cols.len()).sum::<usize>()),
                         models::enums::NodeType::Database
                     );
                     db_node.connection_id = Some(connection_id);
                     db_node.database_name = Some(database_name.clone());
                     db_node.is_expanded = true;
                     
+                    // Add tables found by table name search
                     for table_name in tables {
-                        let mut table_node = models::structs::TreeNode::new(table_name.clone(), models::enums::NodeType::Table);
+                        let mut table_node = models::structs::TreeNode::new(
+                            format!("📋 {} (table name match)", table_name), 
+                            models::enums::NodeType::Table
+                        );
                         table_node.connection_id = Some(connection_id);
                         table_node.database_name = Some(database_name.clone());
+                        // Store the actual table name without icon for query generation
+                        table_node.table_name = Some(table_name);
+                        db_node.children.push(table_node);
+                    }
+                    
+                    // Add tables found by column name search
+                    for (table_name, columns) in column_tables {
+                        let mut table_node = models::structs::TreeNode::new(
+                            format!("📋 {} ({} column matches)", table_name, columns.len()), 
+                            models::enums::NodeType::Table
+                        );
+                        table_node.connection_id = Some(connection_id);
+                        table_node.database_name = Some(database_name.clone());
+                        // Store the actual table name without icon for query generation
+                        table_node.table_name = Some(table_name.clone());
+                        
+                        // Add matching columns as children
+                        for (column_name, data_type) in columns {
+                            let mut column_node = models::structs::TreeNode::new(
+                                format!("🔧 {} ({})", column_name, data_type), 
+                                models::enums::NodeType::Column
+                            );
+                            column_node.connection_id = Some(connection_id);
+                            column_node.database_name = Some(database_name.clone());
+                            // For columns, we can store the table name in table_name field
+                            // The actual column name is already in the display name without icon
+                            column_node.table_name = Some(table_name.clone());
+                            table_node.children.push(column_node);
+                        }
+                        
                         db_node.children.push(table_node);
                     }
                     
@@ -4144,8 +4329,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         // Look for the table in the tree structure to find its database context
         
         // Check if this node is a table with the matching name and connection
-    if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
-           node.name == table_name &&
+        // Use table_name field if available (for search results), otherwise use node.name
+        let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
+        if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
+           actual_table_name == table_name &&
            node.connection_id == Some(connection_id) {
             return node.database_name.clone();
         }
@@ -6364,12 +6551,12 @@ impl App for Tabular {
                                 
                                 // Render the queries tree normally
                                 let mut queries_tree = std::mem::take(&mut self.queries_tree);
-                                let _ = self.render_tree(ui, &mut queries_tree);
+                                let _ = self.render_tree(ui, &mut queries_tree, false);
                                 self.queries_tree = queries_tree;
                             },
                             "History" => {
                                 let mut history_tree = std::mem::take(&mut self.history_tree);
-                                let query_files_to_open = self.render_tree(ui, &mut history_tree);
+                                let query_files_to_open = self.render_tree(ui, &mut history_tree, false);
                                 self.history_tree = history_tree;
                                 
                                 // Handle history item clicks
