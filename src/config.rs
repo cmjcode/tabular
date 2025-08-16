@@ -20,9 +20,6 @@ pub struct AppPreferences {
     pub use_server_pagination: bool,
 }
 
-impl AppPreferences {
-    pub fn editor_theme_enum(&self) -> String { self.editor_theme.clone() }
-}
 
 pub struct ConfigStore { 
     pub pool: Option<Pool<Sqlite>>,
@@ -278,25 +275,6 @@ pub fn get_data_dir() -> PathBuf {
     PathBuf::from(".")
 }
 
-/// Remove the saved config location file (reset to default ~/.tabular)
-pub fn reset_config_location() -> Result<(), String> {
-    let default_dir = get_default_tabular_dir();
-    let config_file = default_dir.join(CONFIG_LOCATION_FILE);
-    
-    if config_file.exists() {
-        if let Err(e) = fs::remove_file(&config_file) {
-            return Err(format!("Cannot remove config location file: {}", e));
-        }
-        log::info!("Removed config location file: {}", config_file.display());
-    }
-    
-    // Also remove environment variable
-    unsafe {
-        std::env::remove_var("TABULAR_DATA_DIR");
-    }
-    
-    Ok(())
-}
 
 pub fn set_data_dir(new_path: &str) -> Result<(), String> {
     let path = PathBuf::from(new_path);

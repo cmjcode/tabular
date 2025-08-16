@@ -213,7 +213,6 @@ impl ShallowForCache for Tabular {
             new_index_columns: String::new(),
             sql_filter_text: String::new(),
             is_table_browse_mode: false,
-            original_query: String::new(),
             pending_drop_index_name: None,
             pending_drop_index_stmt: None,
             link_editor_theme: self.link_editor_theme,

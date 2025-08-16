@@ -181,7 +181,6 @@ pub struct Tabular {
     // Flag to indicate if current data is from table browse (true) or manual query (false)
     pub is_table_browse_mode: bool,
     // Store original query for manual queries (to apply filters)
-    pub original_query: String,
     // Self-update functionality
     pub update_info: Option<crate::self_update::UpdateInfo>,
     pub show_update_dialog: bool,
@@ -429,7 +428,6 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             new_index_columns: String::new(),
             sql_filter_text: String::new(),
             is_table_browse_mode: false,
-            original_query: String::new(),
             config_store: None,
             last_saved_prefs: None,
             prefs_dirty: false,
@@ -515,35 +513,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
 
 
 
-    fn get_active_tab_title(&self) -> String {
-        if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-            if tab.is_modified {
-                format!("● {}", tab.title)
-            } else {
-                tab.title.clone()
-            }
-        } else {
-            "No Tab".to_string()
-        }
-    }
-
-    pub fn set_active_tab_connection(&mut self, connection_id: Option<i64>) {
-        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-            tab.connection_id = connection_id;
-            // Reset database when changing connection
-            tab.database_name = None;
-        }
-    }
 
     pub fn set_active_tab_connection_with_database(&mut self, connection_id: Option<i64>, database_name: Option<String>) {
         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
             tab.connection_id = connection_id;
-            tab.database_name = database_name;
-        }
-    }
-
-    pub fn set_active_tab_database(&mut self, database_name: Option<String>) {
-        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
             tab.database_name = database_name;
         }
     }
@@ -3941,96 +3914,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         Some(10000)
     }
 
-    fn build_count_query(&self) -> String {
-        if self.current_base_query.is_empty() {
-            return String::new();
-        }
-
-        debug!("🔍 Building count query from base: {}", self.current_base_query);
-
-        let query_upper = self.current_base_query.to_uppercase();
-        
-        // Handle queries with USE statements (mainly MySQL)
-        if query_upper.contains("USE ") && query_upper.contains("SELECT") {
-            // Extract the USE statement and the SELECT part
-            let parts: Vec<&str> = self.current_base_query.split('\n').collect();
-            let use_part = parts.first().unwrap_or(&"");
-            let select_part = parts.iter().skip(1).cloned().collect::<Vec<_>>().join("\n");
-            
-            debug!("🔍 USE case detected - use_part: '{}', select_part: '{}'", use_part, select_part);
-            
-            if select_part.to_uppercase().contains("FROM") {
-                // Try to extract table name from SELECT part
-                if let Some(from_pos) = select_part.to_uppercase().find("FROM") {
-                    let after_from = &select_part[(from_pos + 4)..];
-                    let table_name = after_from
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .trim_matches('`')
-                        .trim_matches('"')
-                        .trim_matches('[')
-                        .trim_matches(']');
-
-                    if !table_name.is_empty() {
-                        let result = format!("{};\nSELECT COUNT(*) FROM {}", use_part, table_name);
-                        debug!("🔍 Built count query: {}", result);
-                        return result;
-                    }
-                }
-            }
-        }
-        
-        // Handle different query patterns for simple queries
-        if query_upper.contains("FROM") && !query_upper.contains("USE ") {
-            // For simple SELECT queries, try to extract table name
-            if query_upper.starts_with("SELECT") && !query_upper.contains("UNION") && !query_upper.contains("EXCEPT") && !query_upper.contains("INTERSECT") {
-                if let Some(from_pos) = query_upper.find("FROM") {
-                    let after_from = &self.current_base_query[(from_pos + 4)..];
-                    
-                    // Find the table name (stop at WHERE, GROUP BY, ORDER BY, JOIN, etc.)
-                    let stop_words = ["WHERE", "GROUP", "ORDER", "HAVING", "UNION", "LIMIT", "OFFSET", "JOIN", "INNER", "LEFT", "RIGHT", "FULL"];
-                    let mut table_part = after_from.trim();
-                    
-                    for word in stop_words {
-                        if let Some(pos) = table_part.to_uppercase().find(word) {
-                            table_part = &table_part[..pos];
-                        }
-                    }
-                    
-                    let table_name = table_part
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .trim_matches('`')
-                        .trim_matches('"')
-                        .trim_matches('[')
-                        .trim_matches(']');
-
-                    if !table_name.is_empty() {
-                        // Handle potential WHERE clause from original query
-                        if let Some(where_pos) = query_upper.find("WHERE") {
-                            let where_clause = &self.current_base_query[where_pos..];
-                            // Stop at ORDER BY, GROUP BY, etc.
-                            let mut final_where = where_clause;
-                            for word in ["ORDER BY", "GROUP BY", "HAVING", "LIMIT", "OFFSET"] {
-                                if let Some(pos) = final_where.to_uppercase().find(word) {
-                                    final_where = &final_where[..pos];
-                                }
-                            }
-                            return format!("SELECT COUNT(*) FROM {} {}", table_name, final_where.trim());
-                        } else {
-                            return format!("SELECT COUNT(*) FROM {}", table_name);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Fallback: This shouldn't happen for table browsing, but handle it anyway
-        debug!("⚠️ Using fallback count query approach for: {}", self.current_base_query);
-        format!("SELECT COUNT(*) FROM your_table_name -- MANUAL COUNT NEEDED")
-    }
 
     fn initialize_server_pagination(&mut self, base_query: String) {
         debug!("🚀 Initializing server pagination with base query: {}", base_query);
@@ -6097,55 +5980,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         self.data_directory = crate::config::get_data_dir().to_string_lossy().to_string();
     }
 
-    // Generic bordered grid renderer (lighter reuse of render_table_data look & feel)
-    fn render_structure_grid(&mut self, ui: &mut egui::Ui, id_prefix: &str, headers: &[&str], widths: &mut [f32], rows: &[Vec<String>]) {
-        // Basic, reliable layout (horizontal rows) to avoid overlap issues.
-        for w in widths.iter_mut() { if *w < 40.0 { *w = 80.0; } }
-        let dark = ui.visuals().dark_mode;
-        let border = if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) };
-        let stroke = egui::Stroke::new(0.5, border);
-        let header_text_col = if dark { egui::Color32::from_rgb(220,220,255) } else { egui::Color32::from_rgb(60,60,120) };
-        let header_bg = if dark { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::from_gray(240) };
-        let row_h = 24.0f32;
-        let header_h = 28.0f32;
-
-        egui::ScrollArea::both().id_salt(format!("{}_scroll", id_prefix)).auto_shrink([false,false]).show(ui, |ui| {
-            // HEADER
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for (i,h) in headers.iter().enumerate() {
-                    let w = widths[i].clamp(40.0, 2000.0);
-                    let (rect, _resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 0.0, header_bg);
-                    ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
-                    ui.painter().text(rect.left_center() + egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, *h, egui::FontId::proportional(13.0), header_text_col);
-                    // resize handle
-                    let handle = egui::Rect::from_min_max(egui::pos2(rect.max.x - 4.0, rect.min.y), rect.max);
-                    let rh = ui.interact(handle, egui::Id::new((id_prefix,"resize",i)), egui::Sense::drag());
-                    if rh.dragged() { widths[i] = (widths[i] + rh.drag_delta().x).clamp(40.0, 2000.0); ui.ctx().request_repaint(); }
-                    if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
-                }
-            });
-            ui.add_space(2.0);
-
-            // ROWS
-            for (ri,row) in rows.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    for (c,cell) in row.iter().enumerate() {
-                        let w = widths[c].clamp(40.0, 2000.0);
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
-                        // background stripe
-                        if ri % 2 == 1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect, 0.0, bg); }
-                        ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
-                        if resp.hovered() { ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(100,150,255)), egui::StrokeKind::Outside); }
-                        let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
-                        ui.painter().text(rect.left_center() + egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, cell, egui::FontId::proportional(13.0), txt_col);
-                    }
-                });
-            }
-        });
-    }
 
     // Self-update functionality
     pub fn check_for_updates(&mut self, manual: bool) {

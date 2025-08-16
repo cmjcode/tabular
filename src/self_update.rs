@@ -11,10 +11,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
-    name: String,
     body: String,
-    draft: bool,
-    prerelease: bool,
     assets: Vec<GitHubAsset>,
     html_url: String,
     published_at: Option<String>,
@@ -24,8 +21,6 @@ struct GitHubRelease {
 struct GitHubAsset {
     name: String,
     browser_download_url: String,
-    size: u64,
-    content_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +39,6 @@ pub struct UpdateInfo {
 pub enum UpdateError {
     NetworkError(String),
     ParseError(String),
-    NoUpdateAvailable,
     UnsupportedPlatform,
     UpdateFailed(String),
 }
@@ -54,7 +48,6 @@ impl fmt::Display for UpdateError {
         match self {
             UpdateError::NetworkError(msg) => write!(f, "Network error: {}", msg),
             UpdateError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            UpdateError::NoUpdateAvailable => write!(f, "No update available"),
             UpdateError::UnsupportedPlatform => write!(f, "Unsupported platform for auto-update"),
             UpdateError::UpdateFailed(msg) => write!(f, "Update failed: {}", msg),
         }

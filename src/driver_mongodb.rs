@@ -6,6 +6,24 @@ use mongodb::{bson::{doc, Bson}, Client};
 
 use crate::{connection, models, window_egui::Tabular};
 
+// fn bson_type_name(v: &Bson) -> String {
+//     match v {
+//         Bson::Double(_) => "double",
+//         Bson::String(_) => "string",
+//         Bson::Array(_) => "array",
+//         Bson::Document(_) => "document",
+//         Bson::Boolean(_) => "bool",
+//         Bson::Int32(_) => "int32",
+//         Bson::Int64(_) => "int64",
+//         Bson::Decimal128(_) => "decimal128",
+//         Bson::ObjectId(_) => "objectId",
+//         Bson::DateTime(_) => "date",
+//         Bson::Null => "null",
+//         _ => "any",
+//     }
+//     .to_string()
+// }
+
 // Cache full structure for a MongoDB connection: databases and their collections
 pub async fn fetch_mongodb_data(
     connection_id: i64,
@@ -127,50 +145,3 @@ pub fn sample_collection_documents(
     })
 }
 
-// Infer columns by sampling a single document's top-level fields
-pub fn infer_columns_from_sample(
-    tabular: &mut Tabular,
-    connection_id: i64,
-    database_name: &str,
-    collection_name: &str,
-) -> Option<Vec<(String, String)>> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
-    rt.block_on(async {
-        if let Some(pool) = connection::get_or_create_connection_pool(tabular, connection_id).await {
-            if let models::enums::DatabasePool::MongoDB(client) = pool {
-                let coll = client.database(database_name).collection::<mongodb::bson::Document>(collection_name);
-                match coll.find(doc!{},).limit(1).await {
-                    Ok(mut cursor) => {
-                        if let Some(doc) = cursor.try_next().await.unwrap_or(None) {
-                            let cols: Vec<(String, String)> = doc
-                                .into_iter()
-                                .map(|(k, v)| (k, bson_type_name(&v)))
-                                .collect();
-                            return Some(cols);
-                        }
-                        None
-                    }
-                    Err(_) => None,
-                }
-            } else { None }
-        } else { None }
-    })
-}
-
-fn bson_type_name(v: &Bson) -> String {
-    match v {
-        Bson::Double(_) => "double",
-        Bson::String(_) => "string",
-        Bson::Array(_) => "array",
-        Bson::Document(_) => "document",
-        Bson::Boolean(_) => "bool",
-        Bson::Int32(_) => "int32",
-        Bson::Int64(_) => "int64",
-        Bson::Decimal128(_) => "decimal128",
-        Bson::ObjectId(_) => "objectId",
-        Bson::DateTime(_) => "date",
-        Bson::Null => "null",
-        _ => "any",
-    }
-    .to_string()
-}
