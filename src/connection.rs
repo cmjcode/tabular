@@ -55,32 +55,32 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
             continue;
         }
         
-       //  // Only add LIMIT to SELECT statements that don't already have LIMIT/TOP
-       //  if upper_stmt.starts_with("SELECT") && 
-       //     !upper_stmt.contains("LIMIT") && 
-       //     !upper_stmt.contains(" TOP ") {
+        // Only add LIMIT to SELECT statements that don't already have LIMIT/TOP
+        if upper_stmt.starts_with("SELECT") && 
+           !upper_stmt.contains("LIMIT") && 
+           !upper_stmt.contains(" TOP ") {
             
-       //      match db_type {
-       //          models::enums::DatabaseType::MSSQL => {
-       //              // For MSSQL, we need to add TOP after SELECT
-       //              // Handle both "SELECT" and "SELECT DISTINCT" cases
-       //              if upper_stmt.starts_with("SELECT DISTINCT") {
-       //                  let modified = trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 1000");
-       //                  result_statements.push(modified);
-       //              } else {
-       //                  let modified = trimmed_stmt.replace("SELECT", "SELECT TOP 1000");
-       //                  result_statements.push(modified);
-       //              }
-       //          }
-       //          _ => {
-       //              // For MySQL, PostgreSQL, SQLite - add LIMIT at the end
-       //              result_statements.push(format!("{} LIMIT 1000", trimmed_stmt));
-       //          }
-       //      }
-       //  } else {
-       //      result_statements.push(trimmed_stmt.to_string());
-       //  }
-       result_statements.push(trimmed_stmt.to_string());
+            match db_type {
+                models::enums::DatabaseType::MSSQL => {
+                    // For MSSQL, we need to add TOP after SELECT
+                    // Handle both "SELECT" and "SELECT DISTINCT" cases
+                    if upper_stmt.starts_with("SELECT DISTINCT") {
+                        let modified = trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 10000");
+                        result_statements.push(modified);
+                    } else {
+                        let modified = trimmed_stmt.replace("SELECT", "SELECT TOP 10000");
+                        result_statements.push(modified);
+                    }
+                }
+                _ => {
+                    // For MySQL, PostgreSQL, SQLite - add LIMIT at the end
+                    // Use smaller limit for better performance on large tables
+                    result_statements.push(format!("{} LIMIT 10000", trimmed_stmt));
+                }
+            }
+        } else {
+            result_statements.push(trimmed_stmt.to_string());
+        }
     }
     
     result_statements.join(";\n")
@@ -341,7 +341,7 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                           let upper = trimmed.to_uppercase();
 
                                                           if upper.starts_with("USE ") {
-                                                                 // Parse target database and reconnect instead of executing USE (not supported in prepared protocol)
+                                                                 // Parse target database name
                                                                  let db_part = trimmed[3..].trim();
                                                                  let db_name = db_part
                                                                         .trim_matches('`')
@@ -349,18 +349,29 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                         .trim_matches('[')
                                                                         .trim_matches(']')
                                                                         .trim();
-                                                                 let new_dsn = format!(
-                                                                        "mysql://{}:{}@{}:{}/{}",
-                                                                        encoded_username, encoded_password, connection.host, connection.port, db_name
-                                                                 );
-                                                                 match MySqlConnection::connect(&new_dsn).await {
-                                                                        Ok(new_conn) => {
-                                                                               debug!("Switched MySQL database by reconnecting to '{}'.", db_name);
-                                                                               conn = new_conn;
+                                                                 
+                                                                 // Try to execute USE statement directly first (faster)
+                                                                 match sqlx::query(&format!("USE `{}`", db_name)).execute(&mut conn).await {
+                                                                        Ok(_) => {
+                                                                               debug!("✅ Switched MySQL database using USE statement to '{}'.", db_name);
                                                                         }
-                                                                        Err(e) => {
-                                                                               error_message = format!("USE failed (reconnect): {}", e);
-                                                                               break;
+                                                                        Err(_) => {
+                                                                               // Fallback: reconnect only if USE statement fails
+                                                                               debug!("⚠️ USE statement failed, falling back to reconnection...");
+                                                                               let new_dsn = format!(
+                                                                                      "mysql://{}:{}@{}:{}/{}",
+                                                                                      encoded_username, encoded_password, connection.host, connection.port, db_name
+                                                                               );
+                                                                               match MySqlConnection::connect(&new_dsn).await {
+                                                                                      Ok(new_conn) => {
+                                                                                             debug!("🔄 Switched MySQL database by reconnecting to '{}'.", db_name);
+                                                                                             conn = new_conn;
+                                                                                      }
+                                                                                      Err(e) => {
+                                                                                             error_message = format!("USE failed (reconnect): {}", e);
+                                                                                             break;
+                                                                                      }
+                                                                               }
                                                                         }
                                                                  }
                                                                  continue;
@@ -368,6 +379,9 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
 
                                                           match sqlx::query(trimmed).fetch_all(&mut conn).await {
                                                                  Ok(rows) => {
+                                                                        // Log query execution time and row count for performance monitoring
+                                                                        debug!("✅ Query executed successfully: {} rows returned", rows.len());
+                                                                        
                                                                         if i == statements.len() - 1 {
                                                                                // Get headers from metadata, even if no rows
                                                                                if !rows.is_empty() {
@@ -771,16 +785,20 @@ pub(crate) async fn get_or_create_connection_pool(tabular: &mut Tabular, connect
               
               // Configure MySQL pool with improved settings for stability
               let pool_result = MySqlPoolOptions::new()
-                     .max_connections(20)  // Increase max connections
-                     .min_connections(1)   // Start with fewer minimum connections
-                     .acquire_timeout(std::time::Duration::from_secs(60))  // Longer timeout for complex queries
-                     .idle_timeout(std::time::Duration::from_secs(300))    // 5 minute idle timeout
-                     .max_lifetime(std::time::Duration::from_secs(1800))   // 30 minute max lifetime
-                     .test_before_acquire(false)  // Disable pre-test for better performance
+                     .max_connections(10)  // Reduced from 20 for better resource management
+                     .min_connections(2)   // Maintain some ready connections
+                     .acquire_timeout(std::time::Duration::from_secs(30))  // Reduced timeout to fail faster
+                     .idle_timeout(std::time::Duration::from_secs(600))    // 10 minute idle timeout (longer)
+                     .max_lifetime(std::time::Duration::from_secs(3600))   // 60 minute max lifetime (longer)
+                     .test_before_acquire(true)  // Enable connection testing for reliability
                      .after_connect(|conn, _| Box::pin(async move {
-                         // Set connection-specific settings for better stability
-                         let _ = sqlx::query("SET SESSION wait_timeout = 300").execute(&mut *conn).await;
-                         let _ = sqlx::query("SET SESSION interactive_timeout = 300").execute(&mut *conn).await;
+                         // Set connection-specific settings for better stability and performance
+                         let _ = sqlx::query("SET SESSION wait_timeout = 600").execute(&mut *conn).await;
+                         let _ = sqlx::query("SET SESSION interactive_timeout = 600").execute(&mut *conn).await;
+                         let _ = sqlx::query("SET SESSION net_read_timeout = 60").execute(&mut *conn).await;
+                         let _ = sqlx::query("SET SESSION net_write_timeout = 60").execute(&mut *conn).await;
+                         // Optimize for performance
+                         let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'").execute(&mut *conn).await;
                          Ok(())
                      }))
                      .connect(&connection_string)
@@ -1013,20 +1031,37 @@ pub(crate) async fn create_database_pool(connection: &models::structs::Connectio
               encoded_username, encoded_password, connection.host, connection.port, connection.database
               );
               
-              match MySqlPoolOptions::new()
-              .max_connections(3) // Reduced from 5 to 3
-              .min_connections(1)
-              .acquire_timeout(std::time::Duration::from_secs(10))
-              .idle_timeout(std::time::Duration::from_secs(300))
-              .connect(&connection_string)
-              .await
-              {
-              Ok(pool) => {
-                     Some(models::enums::DatabasePool::MySQL(Arc::new(pool)))
-              }
-              Err(_e) => {
-                     None
-              }
+              // Configure MySQL pool with optimized settings for large queries
+              let pool_result = MySqlPoolOptions::new()
+                     .max_connections(3) // Reduced from 5 to 3 - fewer but more stable connections
+                     .min_connections(1)
+                     .acquire_timeout(std::time::Duration::from_secs(30)) // Faster timeout to fail fast
+                     .idle_timeout(std::time::Duration::from_secs(600))   // 10 minutes idle timeout
+                     .max_lifetime(std::time::Duration::from_secs(3600))  // 1 hour max lifetime
+                     .test_before_acquire(true) // Test connections before use
+                     .after_connect(|conn, _| Box::pin(async move {
+                         // Optimize MySQL settings for performance with large datasets
+                         let _ = sqlx::query("SET SESSION wait_timeout = 600").execute(&mut *conn).await;
+                         let _ = sqlx::query("SET SESSION interactive_timeout = 600").execute(&mut *conn).await;
+                         let _ = sqlx::query("SET SESSION net_read_timeout = 120").execute(&mut *conn).await;
+                         let _ = sqlx::query("SET SESSION net_write_timeout = 120").execute(&mut *conn).await;
+                         // Increase max packet size for large result sets
+                         let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824").execute(&mut *conn).await; // 1GB
+                         // Optimize query cache and buffer settings
+                         let _ = sqlx::query("SET SESSION query_cache_type = ON").execute(&mut *conn).await;
+                         let _ = sqlx::query("SET SESSION read_buffer_size = 2097152").execute(&mut *conn).await; // 2MB
+                         Ok(())
+                     }))
+                     .connect(&connection_string)
+                     .await;
+              
+              match pool_result {
+                     Ok(pool) => {
+                            Some(models::enums::DatabasePool::MySQL(Arc::new(pool)))
+                     }
+                     Err(_e) => {
+                            None
+                     }
               }
        }
        models::enums::DatabaseType::PostgreSQL => {
