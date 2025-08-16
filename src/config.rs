@@ -17,6 +17,7 @@ pub struct AppPreferences {
     pub word_wrap: bool,
     pub data_directory: Option<String>,
     pub auto_check_updates: bool,
+    pub use_server_pagination: bool,
 }
 
 impl AppPreferences {
@@ -95,6 +96,7 @@ impl ConfigStore {
                 word_wrap: true,
                 data_directory: None,
                 auto_check_updates: true,
+                use_server_pagination: true, // Default to true for better performance
             };
             
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences").fetch_all(pool).await {
@@ -109,13 +111,14 @@ impl ConfigStore {
                         "word_wrap" => prefs.word_wrap = v == "1",
                         "data_directory" => prefs.data_directory = if v.is_empty() { None } else { Some(v) },
                         "auto_check_updates" => prefs.auto_check_updates = v == "1",
+                        "use_server_pagination" => prefs.use_server_pagination = v == "1",
                         _ => {}
                     }
                 }
             }
             
-            info!("Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}", 
-                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory, prefs.auto_check_updates);
+            info!("Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}", 
+                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory, prefs.auto_check_updates, prefs.use_server_pagination);
             return prefs;
         }
         
@@ -125,14 +128,14 @@ impl ConfigStore {
     pub async fn save(&self, prefs: &AppPreferences) {
         if self.use_json_fallback {
             let _ = self.save_to_json(prefs);
-            info!("Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}", 
-                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory, prefs.auto_check_updates);
+            info!("Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}", 
+                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory, prefs.auto_check_updates, prefs.use_server_pagination);
             return;
         }
         
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
-            let entries: [(&str,&str);7] = [
+            let entries: [(&str,&str);8] = [
                 ("is_dark_mode", if prefs.is_dark_mode {"1"} else {"0"}),
                 ("link_editor_theme", if prefs.link_editor_theme {"1"} else {"0"}),
                 ("editor_theme", prefs.editor_theme.as_str()),
@@ -140,6 +143,7 @@ impl ConfigStore {
                 ("word_wrap", if prefs.word_wrap {"1"} else {"0"}),
                 ("data_directory", prefs.data_directory.as_deref().unwrap_or("")),
                 ("auto_check_updates", if prefs.auto_check_updates {"1"} else {"0"}),
+                ("use_server_pagination", if prefs.use_server_pagination {"1"} else {"0"}),
             ];
             
             for (k,v) in entries.iter() {

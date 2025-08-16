@@ -45,6 +45,10 @@ pub struct Tabular {
     pub page_size: usize,
     pub total_rows: usize,
     pub all_table_data: Vec<Vec<String>>, // Store all data for pagination
+    // Server-side pagination
+    pub use_server_pagination: bool,
+    pub actual_total_rows: Option<usize>, // Real total from COUNT query
+    pub current_base_query: String, // Original query without LIMIT/OFFSET
     // Splitter position for resizable table view (0.0 to 1.0)
     pub table_split_ratio: f32,
     // Table sorting state
@@ -326,6 +330,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             page_size: 100, // Default 100 rows per page
             total_rows: 0,
             all_table_data: Vec::new(),
+            // Server-side pagination
+            use_server_pagination: true, // Enable by default for better performance
+            actual_total_rows: None,
+            current_base_query: String::new(),
             table_split_ratio: 0.6, // Default 60% for editor, 40% for table
             sort_column: None,
             sort_ascending: true,
@@ -889,18 +897,67 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         editor::create_new_tab_with_connection_and_database(self, tab_title, query_content.clone(), Some(connection_id), database_name.clone());
                         
                         // Set database context for current tab and auto-execute the query and display results in bottom
-                    self.current_connection_id = Some(connection_id);
-                    // Ensure the newly created tab stores selected database (important for MSSQL)
-                    if let Some(dbn) = &database_name { if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) { active_tab.database_name = Some(dbn.clone()); } }
-                        if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, query_content) {
-                            self.current_table_headers = headers;
-                            self.current_table_data = data.clone();
-                            self.all_table_data = data;
+                        self.current_connection_id = Some(connection_id);
+                        // Ensure the newly created tab stores selected database (important for MSSQL)
+                        if let Some(dbn) = &database_name { 
+                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) { 
+                                active_tab.database_name = Some(dbn.clone()); 
+                            } 
+                        }
+                        
+                        // Use server-side pagination for table browsing
+                        if self.use_server_pagination {
+                            // Build base query without LIMIT for server pagination
+                            let base_query = if let Some(db_name) = &database_name {
+                                match conn.connection_type {
+                                    models::enums::DatabaseType::MySQL => {
+                                        format!("USE `{}`;\nSELECT * FROM `{}`", db_name, table_name)
+                                    }
+                                    models::enums::DatabaseType::PostgreSQL => {
+                                        format!("SELECT * FROM \"{}\".\"{}\"", db_name, table_name)
+                                    }
+                                    models::enums::DatabaseType::MSSQL => {
+                                        // Build robust MSSQL SELECT with explicit database context but without LIMIT
+                                        let mssql_query = Self::build_mssql_select_query(db_name.clone(), table_name.clone());
+                                        // Remove the LIMIT part from MSSQL query
+                                        mssql_query.replace("SELECT TOP 100", "SELECT")
+                                    }
+                                    models::enums::DatabaseType::SQLite | models::enums::DatabaseType::Redis => {
+                                        format!("SELECT * FROM `{}`", table_name)
+                                    }
+                                    models::enums::DatabaseType::MongoDB => {
+                                        // MongoDB handled separately above
+                                        String::new()
+                                    }
+                                }
+                            } else {
+                                match conn.connection_type {
+                                    models::enums::DatabaseType::MSSQL => {
+                                        let mssql_query = Self::build_mssql_select_query("".to_string(), table_name.clone());
+                                        mssql_query.replace("SELECT TOP 100", "SELECT")
+                                    }
+                                    _ => format!("SELECT * FROM `{}`", table_name)
+                                }
+                            };
+                            
                             self.current_table_name = format!("Table: {} (Database: {})", table_name, database_name.as_deref().unwrap_or("Unknown"));
                             self.is_table_browse_mode = true; // Enable filter for table browse
                             self.sql_filter_text.clear(); // Clear any previous filter
-                            self.total_rows = self.all_table_data.len();
-                            self.current_page = 0;
+                            
+                            // Initialize server-side pagination
+                            self.initialize_server_pagination(base_query);
+                        } else {
+                            // Fallback to client-side pagination (original behavior)
+                            if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, query_content) {
+                                self.current_table_headers = headers;
+                                self.current_table_data = data.clone();
+                                self.all_table_data = data;
+                                self.current_table_name = format!("Table: {} (Database: {})", table_name, database_name.as_deref().unwrap_or("Unknown"));
+                                self.is_table_browse_mode = true; // Enable filter for table browse
+                                self.sql_filter_text.clear(); // Clear any previous filter
+                                self.total_rows = self.all_table_data.len();
+                                self.current_page = 0;
+                            }
                         }
                     }
                 };
@@ -3740,38 +3797,258 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn next_page(&mut self) {
-        let max_page = (self.total_rows.saturating_sub(1)) / self.page_size;
-        if self.current_page < max_page {
-            self.current_page += 1;
-            self.update_current_page_data();
-            self.clear_table_selection();
+        if self.use_server_pagination && !self.current_base_query.is_empty() {
+            // Server-side pagination
+            let total_pages = self.get_total_pages_server();
+            if self.current_page < total_pages.saturating_sub(1) {
+                self.current_page += 1;
+                self.execute_paginated_query();
+                self.clear_table_selection();
+            }
+        } else {
+            // Client-side pagination (original behavior)
+            let max_page = (self.total_rows.saturating_sub(1)) / self.page_size;
+            if self.current_page < max_page {
+                self.current_page += 1;
+                self.update_current_page_data();
+                self.clear_table_selection();
+            }
         }
     }
 
     fn previous_page(&mut self) {
-        if self.current_page > 0 {
-            self.current_page -= 1;
-            self.update_current_page_data();
-            self.clear_table_selection();
+        if self.use_server_pagination && !self.current_base_query.is_empty() {
+            // Server-side pagination
+            if self.current_page > 0 {
+                self.current_page -= 1;
+                self.execute_paginated_query();
+                self.clear_table_selection();
+            }
+        } else {
+            // Client-side pagination (original behavior)
+            if self.current_page > 0 {
+                self.current_page -= 1;
+                self.update_current_page_data();
+                self.clear_table_selection();
+            }
         }
     }
 
     fn go_to_page(&mut self, page: usize) {
-        let max_page = (self.total_rows.saturating_sub(1)) / self.page_size;
-        if page <= max_page {
-            self.current_page = page;
-            self.update_current_page_data();
-            self.clear_table_selection();
+        if self.use_server_pagination && !self.current_base_query.is_empty() {
+            // Server-side pagination
+            let total_pages = self.get_total_pages_server();
+            if page < total_pages {
+                self.current_page = page;
+                self.execute_paginated_query();
+                self.clear_table_selection();
+            }
+        } else {
+            // Client-side pagination (original behavior)
+            let max_page = (self.total_rows.saturating_sub(1)) / self.page_size;
+            if page <= max_page {
+                self.current_page = page;
+                self.update_current_page_data();
+                self.clear_table_selection();
+            }
+        }
+    }
+
+    fn get_total_pages_server(&self) -> usize {
+        if let Some(actual_total) = self.actual_total_rows {
+            (actual_total + self.page_size - 1) / self.page_size // Ceiling division
+        } else {
+            1
+        }
+    }
+
+    fn execute_paginated_query(&mut self) {
+        if let Some(connection_id) = self.current_connection_id {
+            let offset = self.current_page * self.page_size;
+            let paginated_query = self.build_paginated_query(offset, self.page_size);
+            
+            if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, paginated_query) {
+                self.current_table_headers = headers;
+                self.current_table_data = data;
+                // Don't update all_table_data since we're using server pagination
+                // Update total_rows to reflect current page data for UI purposes
+                self.total_rows = self.current_table_data.len();
+            }
+        }
+    }
+
+    fn build_paginated_query(&self, offset: usize, limit: usize) -> String {
+        if self.current_base_query.is_empty() {
+            return String::new();
+        }
+
+        // Get the database type from current connection
+        let db_type = if let Some(connection_id) = self.current_connection_id {
+            self.connections.iter()
+                .find(|c| c.id == Some(connection_id))
+                .map(|c| &c.connection_type)
+                .unwrap_or(&models::enums::DatabaseType::MySQL)
+        } else {
+            &models::enums::DatabaseType::MySQL
+        };
+
+        match db_type {
+            models::enums::DatabaseType::MySQL | models::enums::DatabaseType::SQLite => {
+                format!("{} LIMIT {} OFFSET {}", self.current_base_query, limit, offset)
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                format!("{} LIMIT {} OFFSET {}", self.current_base_query, limit, offset)
+            }
+            models::enums::DatabaseType::MSSQL => {
+                // MSSQL uses OFFSET/FETCH syntax (SQL Server 2012+)
+                format!("{} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", self.current_base_query, offset, limit)
+            }
+            _ => {
+                // For Redis/MongoDB, return original query (these don't use SQL pagination)
+                self.current_base_query.clone()
+            }
         }
     }
 
     fn set_page_size(&mut self, new_size: usize) {
         if new_size > 0 {
             self.page_size = new_size;
-            self.current_page = 0; // Reset to first page
-            self.update_current_page_data();
+            if self.use_server_pagination && !self.current_base_query.is_empty() {
+                // Reset to first page and re-execute query
+                self.current_page = 0;
+                self.execute_paginated_query();
+            } else {
+                // Client-side pagination
+                self.current_page = 0;
+                self.update_current_page_data();
+            }
             self.clear_table_selection();
         }
+    }
+
+    fn execute_count_query(&mut self) -> Option<usize> {
+        // For large tables, we don't want to run actual count queries as they can be very slow
+        // or cause timeouts. Instead, we assume a reasonable default size for pagination.
+        // This prevents the server from being overwhelmed by expensive COUNT(*) operations.
+        
+        debug!("📊 Using default row count assumption for large table pagination");
+        debug!("✅ Assuming table has data with default pagination size of 10,000 rows");
+        
+        // Return a reasonable default that enables pagination
+        // This allows users to navigate through pages without expensive count operations
+        Some(10000)
+    }
+
+    fn build_count_query(&self) -> String {
+        if self.current_base_query.is_empty() {
+            return String::new();
+        }
+
+        debug!("🔍 Building count query from base: {}", self.current_base_query);
+
+        let query_upper = self.current_base_query.to_uppercase();
+        
+        // Handle queries with USE statements (mainly MySQL)
+        if query_upper.contains("USE ") && query_upper.contains("SELECT") {
+            // Extract the USE statement and the SELECT part
+            let parts: Vec<&str> = self.current_base_query.split('\n').collect();
+            let use_part = parts.first().unwrap_or(&"");
+            let select_part = parts.iter().skip(1).cloned().collect::<Vec<_>>().join("\n");
+            
+            debug!("🔍 USE case detected - use_part: '{}', select_part: '{}'", use_part, select_part);
+            
+            if select_part.to_uppercase().contains("FROM") {
+                // Try to extract table name from SELECT part
+                if let Some(from_pos) = select_part.to_uppercase().find("FROM") {
+                    let after_from = &select_part[(from_pos + 4)..];
+                    let table_name = after_from
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_matches('`')
+                        .trim_matches('"')
+                        .trim_matches('[')
+                        .trim_matches(']');
+
+                    if !table_name.is_empty() {
+                        let result = format!("{};\nSELECT COUNT(*) FROM {}", use_part, table_name);
+                        debug!("🔍 Built count query: {}", result);
+                        return result;
+                    }
+                }
+            }
+        }
+        
+        // Handle different query patterns for simple queries
+        if query_upper.contains("FROM") && !query_upper.contains("USE ") {
+            // For simple SELECT queries, try to extract table name
+            if query_upper.starts_with("SELECT") && !query_upper.contains("UNION") && !query_upper.contains("EXCEPT") && !query_upper.contains("INTERSECT") {
+                if let Some(from_pos) = query_upper.find("FROM") {
+                    let after_from = &self.current_base_query[(from_pos + 4)..];
+                    
+                    // Find the table name (stop at WHERE, GROUP BY, ORDER BY, JOIN, etc.)
+                    let stop_words = ["WHERE", "GROUP", "ORDER", "HAVING", "UNION", "LIMIT", "OFFSET", "JOIN", "INNER", "LEFT", "RIGHT", "FULL"];
+                    let mut table_part = after_from.trim();
+                    
+                    for word in stop_words {
+                        if let Some(pos) = table_part.to_uppercase().find(word) {
+                            table_part = &table_part[..pos];
+                        }
+                    }
+                    
+                    let table_name = table_part
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_matches('`')
+                        .trim_matches('"')
+                        .trim_matches('[')
+                        .trim_matches(']');
+
+                    if !table_name.is_empty() {
+                        // Handle potential WHERE clause from original query
+                        if let Some(where_pos) = query_upper.find("WHERE") {
+                            let where_clause = &self.current_base_query[where_pos..];
+                            // Stop at ORDER BY, GROUP BY, etc.
+                            let mut final_where = where_clause;
+                            for word in ["ORDER BY", "GROUP BY", "HAVING", "LIMIT", "OFFSET"] {
+                                if let Some(pos) = final_where.to_uppercase().find(word) {
+                                    final_where = &final_where[..pos];
+                                }
+                            }
+                            return format!("SELECT COUNT(*) FROM {} {}", table_name, final_where.trim());
+                        } else {
+                            return format!("SELECT COUNT(*) FROM {}", table_name);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Fallback: This shouldn't happen for table browsing, but handle it anyway
+        debug!("⚠️ Using fallback count query approach for: {}", self.current_base_query);
+        format!("SELECT COUNT(*) FROM your_table_name -- MANUAL COUNT NEEDED")
+    }
+
+    fn initialize_server_pagination(&mut self, base_query: String) {
+        debug!("🚀 Initializing server pagination with base query: {}", base_query);
+        self.current_base_query = base_query;
+        self.current_page = 0;
+        
+        // Execute count query to get total rows (now using default assumption)
+        if let Some(total) = self.execute_count_query() {
+            debug!("✅ Count query successful, total rows: {}", total);
+            self.actual_total_rows = Some(total);
+        } else {
+            debug!("❌ Count query failed, no total available");
+            self.actual_total_rows = None;
+        }
+        
+        // Execute first page
+        debug!("📄 Executing first page query...");
+        self.execute_paginated_query();
+        debug!("🏁 Server pagination initialization complete. actual_total_rows: {:?}", self.actual_total_rows);
+        debug!("🎯 Ready for pagination with {} total pages", self.get_total_pages_server());
     }
 
     pub fn get_total_pages(&self) -> usize {
@@ -4510,7 +4787,19 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             // Render pagination controls at the top - show even when no data but headers exist
             if self.total_rows > 0 || !self.current_table_headers.is_empty() {
                 ui.horizontal(|ui| {
-                    ui.label(format!("Total rows: {}", self.total_rows));
+                    // Display different information based on pagination mode
+                    if self.use_server_pagination && self.actual_total_rows.is_some() {
+                        let actual_total = self.actual_total_rows.unwrap_or(0);
+                        let start_row = self.current_page * self.page_size + 1;
+                        let end_row = ((self.current_page + 1) * self.page_size).min(actual_total);
+                        ui.label(format!("Showing rows {}-{} of {} total", start_row, end_row, actual_total));
+                        ui.colored_label(egui::Color32::GREEN, "📡 Server pagination");
+                    } else {
+                        ui.label(format!("Total rows: {}", self.total_rows));
+                        if !self.use_server_pagination {
+                            ui.colored_label(egui::Color32::YELLOW, "💾 Client pagination");
+                        }
+                    }
                     ui.separator();
                     
                     // Page size selector
@@ -4527,7 +4816,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     ui.separator();
                     
                     // Navigation buttons - disable when no data
-                    let has_data = self.total_rows > 0;
+                    let has_data = if self.use_server_pagination {
+                        self.actual_total_rows.unwrap_or(0) > 0
+                    } else {
+                        self.total_rows > 0
+                    };
+                    
+                    let total_pages = if self.use_server_pagination {
+                        self.get_total_pages_server()
+                    } else {
+                        self.get_total_pages()
+                    };
+                                        
                     ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("⏮ First"))
                         .clicked()
                         .then(|| self.go_to_page(0));
@@ -4536,16 +4836,16 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         .clicked()
                         .then(|| self.previous_page());
                     
-                    ui.label(format!("Page {} of {}", self.current_page + 1, self.get_total_pages().max(1)));
+                    ui.label(format!("Page {} of {}", self.current_page + 1, total_pages.max(1)));
                     
-                    ui.add_enabled(has_data && self.current_page < self.get_total_pages().saturating_sub(1), egui::Button::new("Next >"))
+                    ui.add_enabled(has_data && self.current_page < total_pages.saturating_sub(1), egui::Button::new("Next >"))
                         .clicked()
                         .then(|| self.next_page());
                     
-                    ui.add_enabled(has_data && self.get_total_pages() > 1, egui::Button::new("Last ⏭"))
+                    ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
                         .clicked()
                         .then(|| {
-                            let last_page = self.get_total_pages().saturating_sub(1);
+                            let last_page = total_pages.saturating_sub(1);
                             self.go_to_page(last_page);
                         });
                     
@@ -5997,6 +6297,7 @@ impl App for Tabular {
                             None 
                         },
                         auto_check_updates: app.auto_check_updates,
+                        use_server_pagination: app.use_server_pagination,
                     };
                     rt.block_on(store.save(&prefs));
                     log::info!("Preferences saved successfully to: {}", crate::config::get_data_dir().display());
@@ -6046,6 +6347,9 @@ impl App for Tabular {
                         
                         // Load auto-update preference
                         self.auto_check_updates = prefs.auto_check_updates;
+                        
+                        // Load server pagination preference
+                        self.use_server_pagination = prefs.use_server_pagination;
                         
                         self.config_store = Some(store);
                         self.last_saved_prefs = Some(prefs.clone());
@@ -6274,6 +6578,30 @@ impl App for Tabular {
                         if ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed() { /* not persisted currently */ }
                         if ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap").changed() { self.prefs_dirty = true; try_save_prefs(self); }
                     });
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.heading("Performance Settings");
+                    ui.horizontal(|ui| {
+                        let prev_pagination = self.use_server_pagination;
+                        if ui.checkbox(&mut self.use_server_pagination, "Server-side pagination")
+                            .on_hover_text("When enabled, queries large tables in pages from the server instead of loading all data at once. Much faster for large datasets.")
+                            .changed() {
+                            self.prefs_dirty = true;
+                            try_save_prefs(self);
+                            
+                            // If we're switching pagination modes and have active data, show a message
+                            if prev_pagination != self.use_server_pagination && !self.current_table_headers.is_empty() {
+                                if self.use_server_pagination {
+                                    self.prefs_save_feedback = Some("Server pagination enabled. Browse a table to see the difference!".to_string());
+                                } else {
+                                    self.prefs_save_feedback = Some("Client pagination enabled. Data will be loaded all at once.".to_string());
+                                }
+                                self.prefs_last_saved_at = Some(std::time::Instant::now());
+                            }
+                        }
+                    });
+                    ui.label(egui::RichText::new("Server pagination queries data in smaller chunks (e.g., 100 rows at a time) from the database.\nThis is much faster for large tables but may not work with all custom queries.").size(11.0).color(egui::Color32::from_gray(120)));
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(6.0);

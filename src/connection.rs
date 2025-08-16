@@ -55,31 +55,32 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
             continue;
         }
         
-        // Only add LIMIT to SELECT statements that don't already have LIMIT/TOP
-        if upper_stmt.starts_with("SELECT") && 
-           !upper_stmt.contains("LIMIT") && 
-           !upper_stmt.contains(" TOP ") {
+       //  // Only add LIMIT to SELECT statements that don't already have LIMIT/TOP
+       //  if upper_stmt.starts_with("SELECT") && 
+       //     !upper_stmt.contains("LIMIT") && 
+       //     !upper_stmt.contains(" TOP ") {
             
-            match db_type {
-                models::enums::DatabaseType::MSSQL => {
-                    // For MSSQL, we need to add TOP after SELECT
-                    // Handle both "SELECT" and "SELECT DISTINCT" cases
-                    if upper_stmt.starts_with("SELECT DISTINCT") {
-                        let modified = trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 1000");
-                        result_statements.push(modified);
-                    } else {
-                        let modified = trimmed_stmt.replace("SELECT", "SELECT TOP 1000");
-                        result_statements.push(modified);
-                    }
-                }
-                _ => {
-                    // For MySQL, PostgreSQL, SQLite - add LIMIT at the end
-                    result_statements.push(format!("{} LIMIT 1000", trimmed_stmt));
-                }
-            }
-        } else {
-            result_statements.push(trimmed_stmt.to_string());
-        }
+       //      match db_type {
+       //          models::enums::DatabaseType::MSSQL => {
+       //              // For MSSQL, we need to add TOP after SELECT
+       //              // Handle both "SELECT" and "SELECT DISTINCT" cases
+       //              if upper_stmt.starts_with("SELECT DISTINCT") {
+       //                  let modified = trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 1000");
+       //                  result_statements.push(modified);
+       //              } else {
+       //                  let modified = trimmed_stmt.replace("SELECT", "SELECT TOP 1000");
+       //                  result_statements.push(modified);
+       //              }
+       //          }
+       //          _ => {
+       //              // For MySQL, PostgreSQL, SQLite - add LIMIT at the end
+       //              result_statements.push(format!("{} LIMIT 1000", trimmed_stmt));
+       //          }
+       //      }
+       //  } else {
+       //      result_statements.push(trimmed_stmt.to_string());
+       //  }
+       result_statements.push(trimmed_stmt.to_string());
     }
     
     result_statements.join(";\n")
