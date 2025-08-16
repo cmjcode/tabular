@@ -47,3 +47,7 @@ dotenv = "0.15.0"
 tiberius = { version = "0.12", default-features = false, features = ["rustls"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7.16", features = ["compat"] }
+# Self-update dependencies
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+semver = "1.0"
+self_update = { version = "0.40", features = ["archive-tar", "archive-zip"], default-features = false }

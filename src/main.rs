@@ -20,6 +20,7 @@ mod editor;
 mod editor_autocomplete;
 mod dialog;
 mod config;
+mod self_update;
 
 fn main() -> Result<(), eframe::Error> {
     dotenv::dotenv().ok();

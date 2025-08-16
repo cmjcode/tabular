@@ -226,6 +226,14 @@ impl ShallowForCache for Tabular {
             temp_data_directory: String::new(),
             show_directory_picker: false,
             directory_picker_result: None,
+            // Self-update settings
+            update_info: None,
+            show_update_dialog: false,
+            update_check_in_progress: false,
+            update_check_error: None,
+            last_update_check: None,
+            update_download_in_progress: false,
+            auto_check_updates: false,
         })
     }
 }

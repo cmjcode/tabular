@@ -16,6 +16,7 @@ pub struct AppPreferences {
     pub font_size: f32,
     pub word_wrap: bool,
     pub data_directory: Option<String>,
+    pub auto_check_updates: bool,
 }
 
 impl AppPreferences {
@@ -93,6 +94,7 @@ impl ConfigStore {
                 font_size: 14.0, 
                 word_wrap: true,
                 data_directory: None,
+                auto_check_updates: true,
             };
             
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences").fetch_all(pool).await {
@@ -106,13 +108,14 @@ impl ConfigStore {
                         "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
                         "word_wrap" => prefs.word_wrap = v == "1",
                         "data_directory" => prefs.data_directory = if v.is_empty() { None } else { Some(v) },
+                        "auto_check_updates" => prefs.auto_check_updates = v == "1",
                         _ => {}
                     }
                 }
             }
             
-            info!("Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}", 
-                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory);
+            info!("Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}", 
+                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory, prefs.auto_check_updates);
             return prefs;
         }
         
@@ -122,20 +125,21 @@ impl ConfigStore {
     pub async fn save(&self, prefs: &AppPreferences) {
         if self.use_json_fallback {
             let _ = self.save_to_json(prefs);
-            info!("Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}", 
-                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory);
+            info!("Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}", 
+                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory, prefs.auto_check_updates);
             return;
         }
         
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
-            let entries: [(&str,&str);6] = [
+            let entries: [(&str,&str);7] = [
                 ("is_dark_mode", if prefs.is_dark_mode {"1"} else {"0"}),
                 ("link_editor_theme", if prefs.link_editor_theme {"1"} else {"0"}),
                 ("editor_theme", prefs.editor_theme.as_str()),
                 ("font_size", &font_size_string),
                 ("word_wrap", if prefs.word_wrap {"1"} else {"0"}),
                 ("data_directory", prefs.data_directory.as_deref().unwrap_or("")),
+                ("auto_check_updates", if prefs.auto_check_updates {"1"} else {"0"}),
             ];
             
             for (k,v) in entries.iter() {
@@ -143,8 +147,8 @@ impl ConfigStore {
                     .bind(k).bind(v).execute(pool).await;
             }
             
-            info!("Saved prefs to SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}", 
-                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory);
+            info!("Saved prefs to SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}", 
+                  prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory, prefs.auto_check_updates);
         }
     }
 
@@ -158,8 +162,8 @@ impl ConfigStore {
         let path = Self::json_path();
         let content = std::fs::read_to_string(path)?;
         let prefs: AppPreferences = serde_json::from_str(&content)?;
-        info!("Loaded prefs from JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}", 
-              prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory);
+        info!("Loaded prefs from JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}", 
+              prefs.is_dark_mode, prefs.link_editor_theme, prefs.editor_theme, prefs.font_size, prefs.word_wrap, prefs.data_directory, prefs.auto_check_updates);
         Ok(prefs)
     }
 

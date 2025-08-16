@@ -31,6 +31,8 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
             // Load logo texture if not already loaded
             load_logo_texture(tabular, ctx);
             
+            let mut should_check_updates = false;
+            
             egui::Window::new("About Tabular")
                 .collapsible(false)
                 .resizable(false)
@@ -60,6 +62,11 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                         ui.label("Credit : Jayuda");
                         ui.add_space(10.0);
                         
+                        // Update check button
+                        if ui.button("🔄 Check for Updates").clicked() {
+                            should_check_updates = true;
+                        }
+                        ui.add_space(10.0);
                        
                         ui.hyperlink_to("https://github.com/tabular-id/tabular", "https://github.com/tabular-id/tabular");
                         ui.add_space(10.0);
@@ -67,6 +74,10 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                         ui.add_space(15.0);
                     });
                 });
+            
+            if should_check_updates {
+                tabular.check_for_updates();
+            }
         }
     }
 

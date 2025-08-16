@@ -51,11 +51,15 @@ pub enum NodeType {
 #[derive(Debug, Clone)]
 pub enum BackgroundTask {
     RefreshConnection { connection_id: i64 },
+    CheckForUpdates,
 }
 
 #[derive(Debug, Clone)]
 pub enum BackgroundResult {
     RefreshComplete { connection_id: i64, success: bool },
+    UpdateCheckComplete { 
+        result: Result<crate::self_update::UpdateInfo, String> 
+    },
 }
 
 

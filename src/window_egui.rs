@@ -178,6 +178,14 @@ pub struct Tabular {
     pub is_table_browse_mode: bool,
     // Store original query for manual queries (to apply filters)
     pub original_query: String,
+    // Self-update functionality
+    pub update_info: Option<crate::self_update::UpdateInfo>,
+    pub show_update_dialog: bool,
+    pub update_check_in_progress: bool,
+    pub update_check_error: Option<String>,
+    pub last_update_check: Option<std::time::Instant>,
+    pub update_download_in_progress: bool,
+    pub auto_check_updates: bool,
 }
 
 
@@ -424,6 +432,14 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             temp_data_directory: String::new(),
             show_directory_picker: false,
             directory_picker_result: None,
+            // Self-update settings
+            update_info: None,
+            show_update_dialog: false,
+            update_check_in_progress: false,
+            update_check_error: None,
+            last_update_check: None,
+            update_download_in_progress: false,
+            auto_check_updates: true,
         };
         
         // Clear any old cached pools
@@ -470,6 +486,16 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         let _ = result_sender.send(models::enums::BackgroundResult::RefreshComplete {
                             connection_id,
                             success,
+                        });
+                    }
+                    models::enums::BackgroundTask::CheckForUpdates => {
+                        let result = rt.block_on(async {
+                            crate::self_update::check_for_updates().await
+                                .map_err(|e| e.to_string())
+                        });
+                        
+                        let _ = result_sender.send(models::enums::BackgroundResult::UpdateCheckComplete {
+                            result,
                         });
                     }
                 }
@@ -3422,7 +3448,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let n: Option<&str> = r.get(0); if let Some(nm) = n { list.push(nm.to_string()); } } }
                     Ok::<_, String>(list)
                 });
-                match rt_res { Ok(v) => v, Err(_) => Vec::new() }
+                rt_res.unwrap_or_default()
             }
             models::enums::DatabaseType::Redis => Vec::new(),
             models::enums::DatabaseType::MongoDB => {
@@ -3430,10 +3456,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 rt.block_on(async {
                     if let Some(models::enums::DatabasePool::MongoDB(client)) = connection::get_or_create_connection_pool(self, connection_id).await {
                         let coll = client.database(database_name).collection::<mongodb::bson::Document>(table_name);
-                        match coll.list_index_names().await {
-                            Ok(names) => names,
-                            Err(_) => Vec::new(),
-                        }
+                        (coll.list_index_names().await).unwrap_or_default()
                     } else { Vec::new() }
                 })
             }
@@ -3536,7 +3559,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let n: Option<&str> = r.get(0); if let Some(nm) = n { list.push(nm.to_string()); } } }
                     Ok::<_, String>(list)
                 });
-                match rt_res { Ok(v) => v, Err(_) => Vec::new() }
+                rt_res.unwrap_or_default()
             }
             models::enums::DatabaseType::Redis => Vec::new(),
             models::enums::DatabaseType::MongoDB => vec!["_id".to_string()],
@@ -3922,7 +3945,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             // Group results by database
             let mut results_by_db: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
             for (table_name, database_name, _table_type) in search_results {
-                results_by_db.entry(database_name).or_insert_with(Vec::new).push(table_name);
+                results_by_db.entry(database_name).or_default().push(table_name);
             }
             
             // Add search results to filtered tree
@@ -5462,7 +5485,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         if cols.is_empty() { return; }
         let method = self.new_index_method.trim();
         // Prepare index creation statement buffer when user requests creating an index.
-        let mut stmt = match conn.connection_type {
+        let stmt = match conn.connection_type {
             models::enums::DatabaseType::MySQL => {
                 // ALTER TABLE add index for consistency (so it can run with other alters)
                 let algo_clause = if method.is_empty() { "".to_string() } else { format!(" USING {}", method.to_uppercase()) };
@@ -5633,6 +5656,135 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         });
     }
 
+    // Self-update functionality
+    pub fn check_for_updates(&mut self) {
+        if self.update_check_in_progress {
+            return; // Already checking
+        }
+
+        self.update_check_in_progress = true;
+        self.update_check_error = None;
+        self.last_update_check = Some(std::time::Instant::now());
+
+        // Send background task to check for updates
+        if let Some(sender) = &self.background_sender {
+            let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
+        }
+    }
+
+    fn render_update_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_update_dialog {
+            return;
+        }
+
+        egui::Window::new("Software Update")
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(400.0);
+
+                if self.update_check_in_progress {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Checking for updates...");
+                    });
+                } else if let Some(error) = &self.update_check_error {
+                    ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+                    ui.separator();
+                    if ui.button("Close").clicked() {
+                        self.show_update_dialog = false;
+                    }
+                } else if let Some(update_info) = &self.update_info.clone() {
+                    if update_info.update_available {
+                        ui.heading("Update Available!");
+                        ui.separator();
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Current version:");
+                            ui.strong(&update_info.current_version);
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Latest version:");
+                            ui.strong(&update_info.latest_version);
+                        });
+                        
+                        if let Some(published_at) = &update_info.published_at {
+                            ui.label(format!("Released: {}", published_at));
+                        }
+                        
+                        ui.separator();
+                        
+                        ui.label("Release Notes:");
+                        egui::ScrollArea::vertical()
+                            .max_height(200.0)
+                            .show(ui, |ui| {
+                                ui.text_edit_multiline(&mut update_info.release_notes.clone());
+                            });
+                        
+                        ui.separator();
+                        
+                        ui.horizontal(|ui| {
+                            if update_info.download_url.is_some() {
+                                if self.update_download_in_progress {
+                                    ui.add_enabled(false, egui::Button::new("Downloading..."));
+                                    ui.spinner();
+                                } else if ui.button("Update Now").clicked() {
+                                    self.start_update_download();
+                                }
+                            }
+                            
+                            if ui.button("View Release").clicked() {
+                                crate::self_update::open_release_page(update_info);
+                            }
+                            
+                            if ui.button("Later").clicked() {
+                                self.show_update_dialog = false;
+                            }
+                        });
+                    } else {
+                        ui.heading("You're up to date!");
+                        ui.separator();
+                        ui.label(format!("Tabular {} is the latest version.", update_info.current_version));
+                        ui.separator();
+                        if ui.button("Close").clicked() {
+                            self.show_update_dialog = false;
+                        }
+                    }
+                } else {
+                    ui.label("No update information available.");
+                    if ui.button("Close").clicked() {
+                        self.show_update_dialog = false;
+                    }
+                }
+            });
+    }
+
+    fn start_update_download(&mut self) {
+        if let Some(update_info) = &self.update_info {
+            self.update_download_in_progress = true;
+            
+            let update_info_clone = update_info.clone();
+            if let Some(runtime) = &self.runtime {
+                let rt = runtime.clone();
+                std::thread::spawn(move || {
+                    rt.block_on(async {
+                        match crate::self_update::download_and_install_update(&update_info_clone).await {
+                            Ok(()) => {
+                                log::info!("Update completed successfully");
+                                // The application should restart automatically
+                            }
+                            Err(e) => {
+                                log::error!("Update failed: {}", e);
+                            }
+                        }
+                    });
+                });
+            }
+        }
+    }
+
 
 }
 
@@ -5657,6 +5809,7 @@ impl App for Tabular {
                         } else { 
                             None 
                         },
+                        auto_check_updates: app.auto_check_updates,
                     };
                     rt.block_on(store.save(&prefs));
                     log::info!("Preferences saved successfully to: {}", crate::config::get_data_dir().display());
@@ -5703,10 +5856,21 @@ impl App for Tabular {
                                 self.data_directory = crate::config::get_data_dir().to_string_lossy().to_string();
                             }
                         }
+                        
+                        // Load auto-update preference
+                        self.auto_check_updates = prefs.auto_check_updates;
+                        
                         self.config_store = Some(store);
-                        self.last_saved_prefs = Some(prefs);
+                        self.last_saved_prefs = Some(prefs.clone());
                         self.prefs_loaded = true;
                         log::info!("Preferences loaded successfully on startup");
+                        
+                        // Check for updates on startup if enabled
+                        if prefs.auto_check_updates {
+                            if let Some(sender) = &self.background_sender {
+                                let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
+                            }
+                        }
                     }
                     Err(e) => {
                         log::error!("Failed to initialize config store: {}", e);
@@ -6002,6 +6166,19 @@ impl App for Tabular {
                     
                     ui.add_space(8.0);
                     ui.separator();
+                    ui.add_space(6.0);
+                    ui.heading("Updates");
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut self.auto_check_updates, "Automatically check for updates on startup").changed() {
+                            self.prefs_dirty = true;
+                            try_save_prefs(self);
+                        }
+                    });
+                    ui.label(egui::RichText::new("When enabled, Tabular will check for new versions from GitHub releases")
+                        .size(11.0).color(egui::Color32::from_gray(120)));
+                    
+                    ui.add_space(8.0);
+                    ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("💾 Save Preferences").clicked() {
                             self.prefs_dirty = true; // force save
@@ -6057,6 +6234,23 @@ impl App for Tabular {
                             debug!("Background refresh failed for connection {}", connection_id);
                         }
                     }
+                    models::enums::BackgroundResult::UpdateCheckComplete { result } => {
+                        self.update_check_in_progress = false;
+                        
+                        match result {
+                            Ok(update_info) => {
+                                self.update_info = Some(update_info);
+                                self.show_update_dialog = true;
+                                self.update_check_error = None;
+                            }
+                            Err(error) => {
+                                self.update_check_error = Some(error);
+                                self.show_update_dialog = true;
+                            }
+                        }
+                        
+                        ctx.request_repaint();
+                    }
                 }
             }
         }
@@ -6089,6 +6283,8 @@ impl App for Tabular {
     dialog::render_index_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
+        // Update dialog
+        self.render_update_dialog(ctx);
 
         // Persist preferences if dirty and config store ready (outside of window render to avoid borrow issues)
     // Final attempt (in case any change slipped through)
@@ -6339,6 +6535,10 @@ impl App for Tabular {
                         }
                         // Editor Theme now merged into Preferences window
                         ui.separator();
+                        if ui.button("Check for Updates").clicked() {
+                            self.check_for_updates();
+                            ui.close_menu();
+                        }
                         if ui.button("About").clicked() {
                             self.show_about_dialog = true;
                             ui.close_menu();
