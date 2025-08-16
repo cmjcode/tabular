@@ -190,6 +190,7 @@ pub struct Tabular {
     pub last_update_check: Option<std::time::Instant>,
     pub update_download_in_progress: bool,
     pub auto_check_updates: bool,
+    pub manual_update_check: bool, // Track if update check was manually triggered
 }
 
 
@@ -448,6 +449,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             last_update_check: None,
             update_download_in_progress: false,
             auto_check_updates: true,
+            manual_update_check: false,
         };
         
         // Clear any old cached pools
@@ -6146,7 +6148,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     // Self-update functionality
-    pub fn check_for_updates(&mut self) {
+    pub fn check_for_updates(&mut self, manual: bool) {
         if self.update_check_in_progress {
             return; // Already checking
         }
@@ -6154,6 +6156,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         self.update_check_in_progress = true;
         self.update_check_error = None;
         self.last_update_check = Some(std::time::Instant::now());
+        self.manual_update_check = manual;
 
         // Send background task to check for updates
         if let Some(sender) = &self.background_sender {
@@ -6753,16 +6756,21 @@ impl App for Tabular {
                     }
                     models::enums::BackgroundResult::UpdateCheckComplete { result } => {
                         self.update_check_in_progress = false;
+                        let was_manual = self.manual_update_check;
+                        self.manual_update_check = false; // Reset flag
                         
                         match result {
                             Ok(update_info) => {
+                                // Show dialog if there's an update available OR if it was a manual check
+                                if update_info.update_available || was_manual {
+                                    self.show_update_dialog = true;
+                                }
                                 self.update_info = Some(update_info);
-                                self.show_update_dialog = true;
                                 self.update_check_error = None;
                             }
                             Err(error) => {
                                 self.update_check_error = Some(error);
-                                self.show_update_dialog = true;
+                                self.show_update_dialog = true; // Always show errors
                             }
                         }
                         
@@ -7053,7 +7061,7 @@ impl App for Tabular {
                         // Editor Theme now merged into Preferences window
                         ui.separator();
                         if ui.button("Check for Updates").clicked() {
-                            self.check_for_updates();
+                            self.check_for_updates(true); // Manual check
                             ui.close_menu();
                         }
                         if ui.button("About").clicked() {

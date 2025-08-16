@@ -236,6 +236,7 @@ impl ShallowForCache for Tabular {
             last_update_check: None,
             update_download_in_progress: false,
             auto_check_updates: false,
+            manual_update_check: false,
         })
     }
 }

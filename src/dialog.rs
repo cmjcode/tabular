@@ -76,7 +76,7 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                 });
             
             if should_check_updates {
-                tabular.check_for_updates();
+                tabular.check_for_updates(false); // Automatic check at startup
             }
         }
     }
