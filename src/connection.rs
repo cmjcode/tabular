@@ -209,6 +209,14 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                             // Mark active tab as having executed a query
                             if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
                                    tab.has_executed_query = true;
+                                   tab.result_headers = tabular.current_table_headers.clone();
+                                   tab.result_all_rows = tabular.all_table_data.clone();
+                                   tab.result_rows = tabular.current_table_data.clone();
+                                   tab.result_table_name = tabular.current_table_name.clone();
+                                   tab.is_table_browse_mode = tabular.is_table_browse_mode;
+                                   tab.current_page = tabular.current_page;
+                                   tab.page_size = tabular.page_size;
+                                   tab.total_rows = tabular.total_rows;
                             }
                      }
                      

@@ -912,6 +912,16 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 self.current_table_name = format!("Redis {}", table_name);
                                 self.total_rows = self.all_table_data.len();
                                 self.current_page = 0;
+                                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                    active_tab.result_headers = self.current_table_headers.clone();
+                                    active_tab.result_rows = self.current_table_data.clone();
+                                    active_tab.result_all_rows = self.all_table_data.clone();
+                                    active_tab.result_table_name = self.current_table_name.clone();
+                                    active_tab.is_table_browse_mode = self.is_table_browse_mode;
+                                    active_tab.current_page = self.current_page;
+                                    active_tab.page_size = self.page_size;
+                                    active_tab.total_rows = self.total_rows;
+                                }
                             }
                         }
                     }
@@ -928,6 +938,16 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 self.current_table_name = tab_title;
                                 self.total_rows = self.all_table_data.len();
                                 self.current_page = 0;
+                                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                    active_tab.result_headers = self.current_table_headers.clone();
+                                    active_tab.result_rows = self.current_table_data.clone();
+                                    active_tab.result_all_rows = self.all_table_data.clone();
+                                    active_tab.result_table_name = self.current_table_name.clone();
+                                    active_tab.is_table_browse_mode = self.is_table_browse_mode;
+                                    active_tab.current_page = self.current_page;
+                                    active_tab.page_size = self.page_size;
+                                    active_tab.total_rows = self.total_rows;
+                                }
                             }
                         } else {
                             self.error_message = "MongoDB requires a database; please select a database.".to_string();
@@ -1027,6 +1047,16 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 self.sql_filter_text.clear(); // Clear any previous filter
                                 self.total_rows = self.all_table_data.len();
                                 self.current_page = 0;
+                                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                    active_tab.result_headers = self.current_table_headers.clone();
+                                    active_tab.result_rows = self.current_table_data.clone();
+                                    active_tab.result_all_rows = self.all_table_data.clone();
+                                    active_tab.result_table_name = self.current_table_name.clone();
+                                    active_tab.is_table_browse_mode = self.is_table_browse_mode;
+                                    active_tab.current_page = self.current_page;
+                                    active_tab.page_size = self.page_size;
+                                    active_tab.total_rows = self.total_rows;
+                                }
                             }
                         }
                     }

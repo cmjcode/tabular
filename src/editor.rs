@@ -21,6 +21,14 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
             connection_id: None, // No connection assigned by default
             database_name: None, // No database assigned by default
             has_executed_query: false, // New tab hasn't executed any query yet
+            result_headers: Vec::new(),
+            result_rows: Vec::new(),
+            result_all_rows: Vec::new(),
+            result_table_name: String::new(),
+            is_table_browse_mode: false,
+            current_page: 0,
+            page_size: 0,
+            total_rows: 0,
         };
         
         tabular.query_tabs.push(new_tab);
@@ -50,6 +58,14 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
             connection_id,
             database_name,
             has_executed_query: false, // New tab hasn't executed any query yet
+            result_headers: Vec::new(),
+            result_rows: Vec::new(),
+            result_all_rows: Vec::new(),
+            result_table_name: String::new(),
+            is_table_browse_mode: false,
+            current_page: 0,
+            page_size: 0,
+            total_rows: 0,
         };
         
         tabular.query_tabs.push(new_tab);
@@ -103,12 +119,30 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
                     current_tab.content = tabular.editor_text.clone();
                     current_tab.is_modified = true;
                 }
+                // Persist current global result state into the tab before switching
+                current_tab.result_headers = tabular.current_table_headers.clone();
+                current_tab.result_rows = tabular.current_table_data.clone();
+                current_tab.result_all_rows = tabular.all_table_data.clone();
+                current_tab.result_table_name = tabular.current_table_name.clone();
+                current_tab.is_table_browse_mode = tabular.is_table_browse_mode;
+                current_tab.current_page = tabular.current_page;
+                current_tab.page_size = tabular.page_size;
+                current_tab.total_rows = tabular.total_rows;
             }
             
             // Switch to new tab
             tabular.active_tab_index = tab_index;
             if let Some(new_tab) = tabular.query_tabs.get(tab_index) {
                 tabular.editor_text = new_tab.content.clone();
+                // Restore per-tab result state into global display
+                tabular.current_table_headers = new_tab.result_headers.clone();
+                tabular.current_table_data = new_tab.result_rows.clone();
+                tabular.all_table_data = new_tab.result_all_rows.clone();
+                tabular.current_table_name = new_tab.result_table_name.clone();
+                tabular.is_table_browse_mode = new_tab.is_table_browse_mode;
+                tabular.current_page = new_tab.current_page;
+                tabular.page_size = new_tab.page_size;
+                tabular.total_rows = new_tab.total_rows;
             }
         }
     }
@@ -906,12 +940,31 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                 } else {
                     debug!("Skip saving to history karena hasil error");
                 }
+                // Persist into tab state
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.result_headers = tabular.current_table_headers.clone();
+                    tab.result_rows = tabular.current_table_data.clone();
+                    tab.result_all_rows = tabular.all_table_data.clone();
+                    tab.result_table_name = tabular.current_table_name.clone();
+                    tab.is_table_browse_mode = tabular.is_table_browse_mode;
+                    tab.current_page = tabular.current_page;
+                    tab.page_size = tabular.page_size;
+                    tab.total_rows = tabular.total_rows;
+                }
             } else {
                 tabular.current_table_name = "Query execution failed".to_string();
                 tabular.current_table_headers.clear();
                 tabular.current_table_data.clear();
                 tabular.all_table_data.clear();
                 tabular.total_rows = 0;
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.result_headers.clear();
+                    tab.result_rows.clear();
+                    tab.result_all_rows.clear();
+                    tab.result_table_name = tabular.current_table_name.clone();
+                    tab.total_rows = 0;
+                    tab.current_page = 0;
+                }
             }
     }
     }

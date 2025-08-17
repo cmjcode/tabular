@@ -74,6 +74,15 @@ pub struct QueryTab {
     pub connection_id: Option<i64>, // Each tab can have its own database connection
     pub database_name: Option<String>, // Each tab can have its own database selection
     pub has_executed_query: bool, // Track if this tab has ever executed a query
+    // NEW: per-tab result state so switching tabs restores its own data
+    pub result_headers: Vec<String>,
+    pub result_rows: Vec<Vec<String>>, // current page (or all rows if client side)
+    pub result_all_rows: Vec<Vec<String>>, // full dataset for client pagination
+    pub result_table_name: String, // caption/status e.g. Table: ... or Query Results
+    pub is_table_browse_mode: bool, // was this produced by table browse
+    pub current_page: usize,
+    pub page_size: usize,
+    pub total_rows: usize,
 }
 
 

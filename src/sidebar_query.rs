@@ -252,6 +252,14 @@ pub(crate)fn open_query_file(tabular: &mut window_egui::Tabular, file_path: &str
             connection_id: None, // File queries don't have connection by default
             database_name: None, // File queries don't have database by default
             has_executed_query: false, // New tab hasn't executed any query yet
+            result_headers: Vec::new(),
+            result_rows: Vec::new(),
+            result_all_rows: Vec::new(),
+            result_table_name: String::new(),
+            is_table_browse_mode: false,
+            current_page: 0,
+            page_size: 0,
+            total_rows: 0,
         };
         
         tabular.query_tabs.push(new_tab);
