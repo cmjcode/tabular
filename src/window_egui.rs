@@ -195,6 +195,21 @@ pub struct Tabular {
 
 
 impl Tabular {
+    // Ensure a shared Tokio runtime exists (lazy init) to avoid spawning many runtimes
+    fn get_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
+        if self.runtime.is_none() {
+            // Multi-threaded runtime so we can run blocking DB IO without freezing UI thread completely
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(4)
+                .thread_name("tabular-rt")
+                .build()
+                .expect("Failed to build global runtime");
+            self.runtime = Some(Arc::new(rt));
+            debug!("🌐 Global runtime initialized");
+        }
+        self.runtime.as_ref().unwrap().clone()
+    }
 
 // Small painter-drawn triangle toggle to avoid font glyph issues
 fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
@@ -602,7 +617,9 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         }
         
         // Handle connection clicks (create new tab with that connection)
-        for connection_id in connection_click_requests {
+    // We'll collect connection IDs needing eager pool creation to process after loop
+    let mut pools_to_create: Vec<i64> = Vec::new();
+    for connection_id in connection_click_requests {
             // Find connection name for tab title
             let connection_name = self.connections.iter()
                 .find(|conn| conn.id == Some(connection_id))
@@ -614,6 +631,84 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             editor::create_new_tab_with_connection(self, tab_title, String::new(), Some(connection_id));
             
             debug!("Created new tab with connection ID: {}", connection_id);
+
+            // NEW: Immediately (lazily-once) create the underlying connection pool so that
+            // first table/data click feels faster. Previously pool was only created
+            // when executing a query or expanding tables.
+            if !self.connection_pools.contains_key(&connection_id) { pools_to_create.push(connection_id); }
+            else { debug!("✅ Connection pool already exists for {} (click)", connection_id); }
+        }
+
+        // Now create pools (after mutable/immutable borrows ended)
+        if !pools_to_create.is_empty() {
+            // We'll create a temporary runtime once (not per connection) to run async pool creations.
+            if let Ok(temp_rt) = tokio::runtime::Runtime::new() {
+                // Collect needed connection configs first to avoid borrowing self mutably inside block_on closure repeatedly.
+                let mut configs: Vec<(i64, models::structs::ConnectionConfig)> = Vec::new();
+                for cid in &pools_to_create { if let Some(cfg) = self.connections.iter().find(|c| c.id == Some(*cid)).cloned() { configs.push((*cid, cfg)); } }
+                for (cid, cfg) in configs.into_iter() {
+                    if self.connection_pools.contains_key(&cid) { continue; }
+                    let result_pool = temp_rt.block_on(async {
+                        match cfg.connection_type {
+                            models::enums::DatabaseType::MySQL => {
+                                let encoded_username = crate::modules::url_encode(&cfg.username);
+                                let encoded_password = crate::modules::url_encode(&cfg.password);
+                                let conn_str = format!("mysql://{}:{}@{}:{}/{}", encoded_username, encoded_password, cfg.host, cfg.port, cfg.database);
+                                match sqlx::mysql::MySqlPoolOptions::new()
+                                    .max_connections(5)
+                                    .min_connections(1)
+                                    .acquire_timeout(std::time::Duration::from_secs(15))
+                                    .test_before_acquire(true)
+                                    .connect(&conn_str).await {
+                                        Ok(pool) => Some(models::enums::DatabasePool::MySQL(std::sync::Arc::new(pool))),
+                                        Err(e) => { debug!("MySQL eager connect failed ({}): {}", cid, e); None }
+                                    }
+                            }
+                            models::enums::DatabaseType::PostgreSQL => {
+                                let conn_str = format!("postgresql://{}:{}@{}:{}/{}", cfg.username, cfg.password, cfg.host, cfg.port, cfg.database);
+                                match sqlx::postgres::PgPoolOptions::new()
+                                    .max_connections(5)
+                                    .min_connections(1)
+                                    .acquire_timeout(std::time::Duration::from_secs(15))
+                                    .connect(&conn_str).await {
+                                        Ok(pool) => Some(models::enums::DatabasePool::PostgreSQL(std::sync::Arc::new(pool))),
+                                        Err(e) => { debug!("PostgreSQL eager connect failed ({}): {}", cid, e); None }
+                                    }
+                            }
+                            models::enums::DatabaseType::SQLite => {
+                                let conn_str = format!("sqlite:{}", cfg.host);
+                                match sqlx::sqlite::SqlitePoolOptions::new()
+                                    .max_connections(3)
+                                    .min_connections(1)
+                                    .acquire_timeout(std::time::Duration::from_secs(15))
+                                    .connect(&conn_str).await {
+                                        Ok(pool) => Some(models::enums::DatabasePool::SQLite(std::sync::Arc::new(pool))),
+                                        Err(e) => { debug!("SQLite eager connect failed ({}): {}", cid, e); None }
+                                    }
+                            }
+                            models::enums::DatabaseType::Redis => {
+                                let conn_str = if cfg.password.is_empty() { format!("redis://{}:{}", cfg.host, cfg.port) } else { format!("redis://{}:{}@{}:{}", cfg.username, cfg.password, cfg.host, cfg.port) };
+                                match redis::Client::open(conn_str) { Ok(client) => match redis::aio::ConnectionManager::new(client).await { Ok(m) => Some(models::enums::DatabasePool::Redis(std::sync::Arc::new(m))), Err(e) => { debug!("Redis eager connect failed ({}): {}", cid, e); None } }, Err(e) => { debug!("Redis client build failed ({}): {}", cid, e); None } }
+                            }
+                            models::enums::DatabaseType::MongoDB => {
+                                let uri = if cfg.username.is_empty() { format!("mongodb://{}:{}", cfg.host, cfg.port) } else if cfg.password.is_empty() { format!("mongodb://{}@{}:{}", cfg.username, cfg.host, cfg.port) } else { let enc_user = crate::modules::url_encode(&cfg.username); let enc_pass = crate::modules::url_encode(&cfg.password); format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, cfg.host, cfg.port) };
+                                match mongodb::Client::with_uri_str(uri).await { Ok(client) => Some(models::enums::DatabasePool::MongoDB(std::sync::Arc::new(client))), Err(e) => { debug!("MongoDB eager connect failed ({}): {}", cid, e); None } }
+                            }
+                            models::enums::DatabaseType::MSSQL => {
+                                // For MSSQL we store config wrapper only (no network call yet) to keep behavior consistent.
+                                let cfgw = crate::driver_mssql::MssqlConfigWrapper::new(cfg.host.clone(), cfg.port.clone(), cfg.database.clone(), cfg.username.clone(), cfg.password.clone());
+                                Some(models::enums::DatabasePool::MSSQL(std::sync::Arc::new(cfgw)))
+                            }
+                        }
+                    });
+                    if let Some(pool) = result_pool {
+                        self.connection_pools.insert(cid, pool);
+                        debug!("🔌 Eager pool created for connection {}", cid);
+                    } else {
+                        debug!("⚠️ Eager pool creation failed for connection {}", cid);
+                    }
+                }
+            }
         }
         
         // Handle expansions after rendering
@@ -2122,6 +2217,22 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
         debug!("Loading connection tables for ID: {}", connection_id);
 
+        // Ensure a connection pool is opened/initialized before proceeding.
+        if !self.connection_pools.contains_key(&connection_id) {
+            let rt = self.get_runtime();
+            let start_time = std::time::Instant::now();
+            let pool_res = rt.block_on(async {
+                crate::connection::get_or_create_connection_pool(self, connection_id).await
+            });
+            match pool_res {
+                Some(_) => debug!("✅ Connection pool ready for {} (took {:?})", connection_id, start_time.elapsed()),
+                None => debug!("❌ Failed to initialize connection pool for {}", connection_id),
+            }
+        } else {
+            debug!("🔁 Reusing existing connection pool for {}", connection_id);
+        }
+
+
         // First check if we have cached data
         if let Some(databases) = cache_data::get_databases_from_cache(self, connection_id) {
             debug!("Found cached databases for connection {}: {:?}", connection_id, databases);
@@ -2135,7 +2246,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         debug!("🔄 Cache empty or not found, fetching databases from server for connection {}", connection_id);
         
         // Try to fetch from actual database server
-        if let Some(fresh_databases) = connection::fetch_databases_from_connection(self, connection_id) {
+        // Use async variant with shared runtime to avoid creating a new runtime per call
+        let fresh_databases_opt = {
+            let rt = self.get_runtime();
+            rt.block_on(async { crate::connection::fetch_databases_from_connection_async(self, connection_id).await })
+        };
+        if let Some(fresh_databases) = fresh_databases_opt {
             debug!("✅ Successfully fetched {} databases from server", fresh_databases.len());
             // Save to cache for future use
             cache_data::save_databases_to_cache(self, connection_id, &fresh_databases);

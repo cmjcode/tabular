@@ -1374,6 +1374,68 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
        })
 }
 
+// Async version to avoid creating a new runtime each call; preferred for internal use
+pub(crate) async fn fetch_databases_from_connection_async(tabular: &mut window_egui::Tabular, connection_id: i64) -> Option<Vec<String>> {
+       // Find the connection configuration
+       let _connection = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
+
+       // Get or create connection pool
+       let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
+       match pool {
+              models::enums::DatabasePool::MySQL(mysql_pool) => {
+                     let result = sqlx::query_as::<_, (String,)>(
+                            "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS schema_name FROM INFORMATION_SCHEMA.SCHEMATA"
+                     )
+                     .fetch_all(mysql_pool.as_ref())
+                     .await;
+                     match result {
+                            Ok(rows) => Some(rows.into_iter().map(|(db_name,)| db_name)
+                                   .filter(|db| !["information_schema", "performance_schema", "mysql", "sys"].contains(&db.as_str()))
+                                   .collect()),
+                            Err(e) => { debug!("Error querying MySQL databases via INFORMATION_SCHEMA: {}", e); None }
+                     }
+              }
+              models::enums::DatabasePool::PostgreSQL(pg_pool) => {
+                     let result = sqlx::query_as::<_, (String,)>(
+                            "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1')"
+                     )
+                     .fetch_all(pg_pool.as_ref()).await;            
+                     match result { Ok(rows) => Some(rows.into_iter().map(|(db_name,)| db_name).collect()), Err(e) => { debug!("Error querying PostgreSQL databases: {}", e); None } }
+              }
+              models::enums::DatabasePool::SQLite(sqlite_pool) => {
+                     let result = sqlx::query_as::<_, (String,)>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+                            .fetch_all(sqlite_pool.as_ref()).await;            
+                     match result { Ok(_rows) => Some(vec!["main".to_string()]), Err(e) => { debug!("Error querying SQLite tables: {}", e); Some(vec!["main".to_string()]) } }
+              }
+              models::enums::DatabasePool::Redis(redis_manager) => {
+                     let mut conn = redis_manager.as_ref().clone();
+                     let max_databases = match redis::cmd("CONFIG").arg("GET").arg("databases").query_async::<_, Vec<String>>(&mut conn).await {
+                            Ok(config_result) if config_result.len() >= 2 => config_result[1].parse::<i32>().unwrap_or(16),
+                            _ => 16
+                     };
+                     let mut databases = Vec::with_capacity(max_databases as usize);
+                     for db_num in 0..max_databases { databases.push(format!("db{}", db_num)); }
+                     Some(databases)
+              }
+              models::enums::DatabasePool::MSSQL(ref mssql_cfg) => {
+                     use tokio_util::compat::TokioAsyncWriteCompatExt; use tiberius::{AuthMethod, Config};
+                     let mssql_cfg = mssql_cfg.clone();
+                     let host = mssql_cfg.host.clone(); let port = mssql_cfg.port; let user = mssql_cfg.username.clone(); let pass = mssql_cfg.password.clone();
+                     let rt_res = async move {
+                            let mut config = Config::new(); config.host(host.clone()); config.port(port); config.authentication(AuthMethod::sql_server(user.clone(), pass.clone())); config.trust_cert(); config.database("master");
+                            let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?; tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                            let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?; let mut dbs = Vec::new();
+                            let mut stream = client.simple_query("SELECT name FROM sys.databases ORDER BY name").await.map_err(|e| e.to_string())?; use futures_util::TryStreamExt; while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); if let Some(n) = name { dbs.push(n.to_string()); } } }
+                            Ok::<_, String>(dbs)
+                     }.await;
+                     match rt_res { Ok(mut list) => { if list.is_empty() { Some(vec![mssql_cfg.database.clone()]) } else { let system = ["master", "model", "msdb", "tempdb"]; list.sort(); let mut user_dbs: Vec<String> = list.iter().filter(|d| !system.contains(&d.as_str())).cloned().collect(); let mut sys_dbs: Vec<String> = list.into_iter().filter(|d| system.contains(&d.as_str())).collect(); user_dbs.append(&mut sys_dbs); Some(user_dbs) } }, Err(e) => { debug!("Failed to fetch MSSQL databases: {}", e); Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()]) } }
+              }
+              models::enums::DatabasePool::MongoDB(client) => {
+                     match client.list_database_names().await { Ok(dbs) => Some(dbs), Err(e) => { debug!("MongoDB list databases error: {}", e); None } }
+              }
+       }
+}
+
 
 
 
