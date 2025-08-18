@@ -195,6 +195,8 @@ pub struct Tabular {
     pub update_download_started: bool,
     pub update_installed: bool,
     pub update_install_receiver: Option<std::sync::mpsc::Receiver<bool>>, // receive success flag
+    // Auto updater instance
+    pub auto_updater: Option<crate::auto_updater::AutoUpdater>,
     // Preferences window active tab
     pub settings_active_pref_tab: PrefTab,
 }
@@ -484,6 +486,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             update_download_started: false,
             update_installed: false,
             update_install_receiver: None,
+            auto_updater: crate::auto_updater::AutoUpdater::new().ok(),
             settings_active_pref_tab: PrefTab::ApplicationTheme,
         };
         
@@ -534,10 +537,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         });
                     }
                     models::enums::BackgroundTask::CheckForUpdates => {
-                        let result = rt.block_on(async {
-                            crate::self_update::check_for_updates().await
-                                .map_err(|e| e.to_string())
-                        });
+                        let result = rt.block_on(crate::self_update::check_for_updates())
+                            .map_err(|e| e.to_string());
                         
                         let _ = result_sender.send(models::enums::BackgroundResult::UpdateCheckComplete {
                             result,
@@ -1467,7 +1468,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 // New: Allow clicking the label to also expand/collapse for expandable nodes
                 if response.clicked() {
                     // We toggle on label click for expandable/container nodes, but not for Table/View (they open data)
-                    let allow_label_toggle = (has_children
+                    let allow_label_toggle = has_children
                         || matches!(node.node_type,
                             models::enums::NodeType::Connection
                             | models::enums::NodeType::Database
@@ -1487,8 +1488,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             | models::enums::NodeType::IndexesFolder
                             | models::enums::NodeType::PrimaryKeysFolder)
                         && node.node_type != models::enums::NodeType::Table
-                        && node.node_type != models::enums::NodeType::View
-                    );
+                        && node.node_type != models::enums::NodeType::View;
 
                     if allow_label_toggle {
                         node.is_expanded = !node.is_expanded;
@@ -4146,7 +4146,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             // Check if "TOP" follows
             let remaining_lower = &lower[scan_pos..];
             if remaining_lower.starts_with("top") {
-                let top_start = scan_pos;
                 let top_end = scan_pos + 3; // "top".len()
                 
                 // Skip whitespace after TOP
@@ -6439,6 +6438,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                 } else if ui.button("Update Now").clicked() {
                                     self.start_update_download();
                                 }
+                            } else {
+                                // No download URL available - show manual download option
+                                ui.colored_label(egui::Color32::YELLOW, "Auto-update not available for this platform");
                             }
                             
                             if ui.button("View Release").clicked() {
@@ -6468,30 +6470,68 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn start_update_download(&mut self) {
+        log::info!("🚀 Starting auto update process...");
+        
+        // Prevent multiple simultaneous downloads
+        if self.update_download_in_progress {
+            log::warn!("⚠️ Download already in progress, ignoring request");
+            return;
+        }
+        
+        // Prevent re-downloading if already completed
+        if self.update_installed {
+            log::warn!("⚠️ Update already downloaded, ignoring request");
+            return;
+        }
+
         if let Some(update_info) = &self.update_info {
-            self.update_download_in_progress = true;
-            // Prepare channel to receive completion signal
-            let (tx, rx) = std::sync::mpsc::channel();
-            self.update_install_receiver = Some(rx);
-            
-            let update_info_clone = update_info.clone();
-            if let Some(runtime) = &self.runtime {
-                let rt = runtime.clone();
+            if let Some(auto_updater) = &self.auto_updater {
+                log::info!("📦 Update info available: {} -> {}", 
+                           update_info.current_version, update_info.latest_version);
+                log::info!("📥 Download URL: {:?}", update_info.download_url);
+                log::info!("📄 Asset name: {:?}", update_info.asset_name);
+                
+                self.update_download_in_progress = true;
+                // Prepare channel to receive completion signal
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.update_install_receiver = Some(rx);
+                
+                let update_info_clone = update_info.clone();
+                let auto_updater_clone = auto_updater.clone();
+                
                 std::thread::spawn(move || {
-                    rt.block_on(async {
-                        match crate::self_update::download_and_install_update(&update_info_clone).await {
-                            Ok(()) => {
-                                log::info!("Update completed successfully");
-                                let _ = tx.send(true);
-                            }
-                            Err(e) => {
-                                log::error!("Update failed: {}", e);
-                                let _ = tx.send(false);
-                            }
+                    log::info!("🔄 Background update thread started (auto updater)");
+                    
+                    // Create a completely new, independent Tokio runtime for the update process
+                    let rt = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build() 
+                    {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            log::error!("❌ Failed to create update runtime: {}", e);
+                            let _ = tx.send(false);
+                            return;
                         }
-                    });
+                    };
+                    
+                    match rt.block_on(auto_updater_clone.download_and_stage_update(&update_info_clone)) {
+                        Ok(()) => {
+                            log::info!("✅ Update staged successfully");
+                            let _ = tx.send(true);
+                        }
+                        Err(e) => {
+                            log::error!("❌ Update failed: {}", e);
+                            let _ = tx.send(false);
+                        }
+                    }
                 });
+            } else {
+                log::error!("❌ Auto updater not available");
+                self.update_download_in_progress = false;
             }
+        } else {
+            log::error!("❌ No update info available");
         }
     }
 
@@ -6765,10 +6805,10 @@ impl App for Tabular {
                         // Accent color (red) can adapt for light/dark if needed
                         let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 60, 0) } else { egui::Color32::from_rgb(180,30,30) };
                         let inactive_fg = ui.visuals().text_color();
-                        let mut draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
+                        let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
                             let selected = *current == me;
                             let (bg, fg) = if selected { (accent, egui::Color32::WHITE) } else { (egui::Color32::TRANSPARENT, inactive_fg) };
-                            let mut button = egui::Button::new(egui::RichText::new(label).color(fg).size(13.0))
+                            let button = egui::Button::new(egui::RichText::new(label).color(fg).size(13.0))
                                 .fill(bg)
                                 .stroke(if selected { egui::Stroke { width: 1.0, color: accent } } else { egui::Stroke { width: 1.0, color: ui.visuals().widgets.inactive.bg_stroke.color } })
                                 .min_size(egui::vec2(0.0, 24.0));
@@ -6996,6 +7036,7 @@ impl App for Tabular {
         if let Some(rx) = &self.update_install_receiver {
             if let Ok(success) = rx.try_recv() {
                 self.update_download_in_progress = false;
+                self.update_download_started = false; // Reset this flag to prevent loop
                 self.update_installed = success;
                 self.show_update_notification = true; // show completion toast
                 self.update_install_receiver = None; // cleanup
@@ -7022,24 +7063,44 @@ impl App for Tabular {
                         if downloading {
                             ui.horizontal(|ui| { ui.spinner(); ui.label(format!("Downloading update {}...", info.latest_version)); });
                         } else if installed {
-                            ui.label(egui::RichText::new("Update installed. Restart Tabular to apply.").strong());
-                            if ui.button("Restart Now").clicked() {
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new("✅ Update downloaded successfully!").strong());
+                                
                                 #[cfg(target_os = "macos")]
-                                {
-                                    if let Ok(current_exe) = std::env::current_exe() { let _ = std::process::Command::new(current_exe).spawn(); }
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
+                                ui.label(egui::RichText::new("DMG file opened for installation").size(12.0));
+                                
                                 #[cfg(target_os = "linux")]
-                                {
-                                    if let Ok(current_exe) = std::env::current_exe() { let _ = std::process::Command::new(current_exe).spawn(); }
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
+                                ui.label(egui::RichText::new("Update downloaded to Downloads folder").size(12.0));
+                                
                                 #[cfg(target_os = "windows")]
-                                {
-                                    if let Ok(current_exe) = std::env::current_exe() { let _ = std::process::Command::new("cmd").args(["/C", current_exe.to_string_lossy().as_ref()]).spawn(); }
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
-                            }
+                                ui.label(egui::RichText::new("Installer opened for installation").size(12.0));
+                                
+                                ui.horizontal(|ui| {
+                                    if ui.button("Open Downloads Folder").clicked() {
+                                        #[cfg(target_os = "macos")]
+                                        {
+                                            let _ = std::process::Command::new("open")
+                                                .arg(dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("/")))
+                                                .spawn();
+                                        }
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            let _ = std::process::Command::new("xdg-open")
+                                                .arg(dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("/")))
+                                                .spawn();
+                                        }
+                                        #[cfg(target_os = "windows")]
+                                        {
+                                            let _ = std::process::Command::new("explorer")
+                                                .arg(dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("C:\\")))
+                                                .spawn();
+                                        }
+                                    }
+                                    if ui.button("Dismiss").clicked() {
+                                        self.show_update_notification = false;
+                                    }
+                                });
+                            });
                         } else if info.update_available {
                             ui.horizontal(|ui| {
                                 ui.label(format!("Update {} available", info.latest_version));

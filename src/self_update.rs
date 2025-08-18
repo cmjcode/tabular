@@ -1,4 +1,3 @@
-use reqwest;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -116,16 +115,32 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
 fn find_asset_for_platform(assets: &[GitHubAsset]) -> (Option<String>, Option<String>) {
     let platform = get_platform_info();
     
+    debug!("🔍 Searching for asset matching platform: {}", platform);
+    debug!("📦 Available assets:");
+    for asset in assets {
+        debug!("  - {}", asset.name);
+    }
+    
     for asset in assets {
         let asset_name_lower = asset.name.to_lowercase();
         
         if platform.matches(&asset_name_lower) {
-            debug!("Found matching asset: {}", asset.name);
+            debug!("✅ Found matching asset: {}", asset.name);
             return (Some(asset.browser_download_url.clone()), Some(asset.name.clone()));
         }
     }
     
-    warn!("No matching asset found for platform: {}", platform);
+    // Fallback: for macOS, try to find any .dmg file
+    if platform.os == "macos" {
+        for asset in assets {
+            if asset.name.to_lowercase().ends_with(".dmg") {
+                warn!("🔄 Using fallback .dmg asset: {}", asset.name);
+                return (Some(asset.browser_download_url.clone()), Some(asset.name.clone()));
+            }
+        }
+    }
+    
+    warn!("❌ No matching asset found for platform: {}", platform);
     (None, None)
 }
 
@@ -138,11 +153,22 @@ struct PlatformInfo {
 impl PlatformInfo {
     fn matches(&self, asset_name: &str) -> bool {
         let os_matches = match self.os {
-            "macos" => asset_name.contains("macos") || asset_name.contains("darwin") || asset_name.contains(".dmg"),
+            "macos" => {
+                // More flexible matching for macOS
+                asset_name.contains("macos") 
+                || asset_name.contains("darwin") 
+                || asset_name.ends_with(".dmg")
+                || (asset_name.starts_with("tabular") && asset_name.ends_with(".dmg"))
+            },
             "linux" => asset_name.contains("linux"),
             "windows" => asset_name.contains("windows") || asset_name.contains(".exe") || asset_name.contains(".msi"),
             _ => false,
         };
+        
+        // For macOS .dmg files, we don't require architecture-specific naming
+        if self.os == "macos" && asset_name.ends_with(".dmg") {
+            return true;
+        }
         
         let arch_matches = match self.arch {
             "x86_64" => asset_name.contains("x86_64") || asset_name.contains("amd64"),
@@ -150,7 +176,7 @@ impl PlatformInfo {
             _ => true, // Fallback to any architecture if not specified
         };
         
-        os_matches && arch_matches
+        os_matches && (arch_matches || asset_name.ends_with(".dmg"))
     }
 }
 
@@ -186,25 +212,67 @@ pub async fn download_and_install_update(update_info: &UpdateInfo) -> Result<(),
     let download_url = update_info.download_url.as_ref()
         .ok_or(UpdateError::UnsupportedPlatform)?;
     
-    info!("Downloading update from: {}", download_url);
+    info!("🚀 Starting update process...");
+    info!("📥 Downloading update from: {}", download_url);
+    info!("📦 Asset name: {:?}", update_info.asset_name);
+    info!("🎯 Target platform: {}", target_triple());
     
-    // Use self_update crate for the actual update process
-    let result = self_update::backends::github::Update::configure()
-        .repo_owner("tabular-id")
-        .repo_name("tabular")
-        .bin_name("tabular")
-        .current_version(CURRENT_VERSION)
-        .target(target_triple())
-        .show_download_progress(true)
-        .build()
-        .map_err(|e| UpdateError::UpdateFailed(e.to_string()))?
-        .update()
-        .map_err(|e| UpdateError::UpdateFailed(e.to_string()))?;
+    // Download the file manually instead of using self_update crate
+    let client = reqwest::Client::new();
+    let response = client
+        .get(download_url)
+        .header("User-Agent", format!("Tabular/{}", CURRENT_VERSION))
+        .send()
+        .await
+        .map_err(|e| UpdateError::NetworkError(e.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(UpdateError::NetworkError(format!(
+            "Download failed with status: {}",
+            response.status()
+        )));
+    }
+
+    // Get the file content
+    let content = response
+        .bytes()
+        .await
+        .map_err(|e| UpdateError::UpdateFailed(format!("Failed to read download content: {}", e)))?;
+
+    info!("📦 Downloaded {} bytes", content.len());
+
+    // For macOS DMG files, we'll just save it to Downloads and notify the user
+    #[cfg(target_os = "macos")]
+    {
+        let asset_name = update_info.asset_name.as_ref()
+            .ok_or(UpdateError::UpdateFailed("No asset name available".to_string()))?;
+        
+        // Save to Downloads folder
+        let downloads_dir = dirs::download_dir()
+            .ok_or(UpdateError::UpdateFailed("Could not find Downloads directory".to_string()))?;
+        
+        let file_path = downloads_dir.join(asset_name);
+        
+        std::fs::write(&file_path, &content)
+            .map_err(|e| UpdateError::UpdateFailed(format!("Failed to save file: {}", e)))?;
+        
+        info!("✅ Update downloaded to: {}", file_path.display());
+        info!("� Please manually install the downloaded DMG file");
+        
+        // On macOS, open the Downloads folder to show the file
+        let _ = std::process::Command::new("open")
+            .arg("-R")
+            .arg(&file_path)
+            .spawn();
+        
+        Ok(())
+    }
     
-    info!("Update completed successfully");
-    info!("Update status: {:?}", result);
-    
-    Ok(())
+    #[cfg(not(target_os = "macos"))]
+    {
+        // For other platforms, we could implement automatic installation later
+        Err(UpdateError::UnsupportedPlatform)
+    }
 }
 
 fn target_triple() -> &'static str {
@@ -231,13 +299,13 @@ pub fn open_release_page(update_info: &UpdateInfo) {
     
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        let _ = std::process::Command::new("open")
             .arg(url)
             .spawn()
             .unwrap_or_else(|e| {
                 error!("Failed to open URL on macOS: {}", e);
                 std::process::exit(1);
-            });
+            }).wait();
     }
     
     #[cfg(target_os = "linux")]
