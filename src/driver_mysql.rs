@@ -348,7 +348,7 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
 
     // Fetch databases via INFORMATION_SCHEMA and skip system schemas
     let db_rows_res = sqlx::query_as::<_, (String,)>(
-        "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA"
+        "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA"
     ).fetch_all(pool).await;
 
     let db_rows = match db_rows_res { Ok(r) => r, Err(e) => { debug!("MySQL fetch_mysql_data: failed to list schemata: {}", e); return false; } };
@@ -366,7 +366,7 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
 
         // Fetch base tables using INFORMATION_SCHEMA
         let tables_res = sqlx::query_as::<_, (String,)>(
-            "SELECT CONVERT(TABLE_NAME USING utf8mb4) AS TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
         )
         .bind(&db_name)
         .fetch_all(pool)
@@ -386,7 +386,7 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
 
             // Fetch columns using INFORMATION_SCHEMA
             let cols_res = sqlx::query_as::<_, (String, String, i64)>(
-                "SELECT CONVERT(COLUMN_NAME USING utf8mb4) AS COLUMN_NAME, CONVERT(DATA_TYPE USING utf8mb4) AS DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
+                "SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
             )
             .bind(&db_name)
             .bind(&table_name)
@@ -426,14 +426,14 @@ pub(crate) fn fetch_tables_from_mysql_connection(tabular: &mut window_egui::Tabu
               models::enums::DatabasePool::MySQL(mysql_pool) => {
         let query = match table_type {
             "table" => format!(
-                "SELECT CONVERT(TABLE_NAME USING utf8mb4) AS TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{}' AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME",
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{}' AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME",
                 database_name.replace("'", "''")
             ),
-                     "view" => format!("SELECT CONVERT(table_name USING utf8mb4) AS table_name FROM information_schema.views WHERE table_schema = '{}'", database_name),
-                     "procedure" => format!("SELECT CONVERT(routine_name USING utf8mb4) AS routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'PROCEDURE'", database_name),
-                     "function" => format!("SELECT CONVERT(routine_name USING utf8mb4) AS routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'FUNCTION'", database_name),
-                     "trigger" => format!("SELECT CONVERT(trigger_name USING utf8mb4) AS trigger_name FROM information_schema.triggers WHERE trigger_schema = '{}'", database_name),
-                     "event" => format!("SELECT CONVERT(event_name USING utf8mb4) AS event_name FROM information_schema.events WHERE event_schema = '{}'", database_name),
+                     "view" => format!("SELECT table_name FROM information_schema.views WHERE table_schema = '{}'", database_name),
+                     "procedure" => format!("SELECT routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'PROCEDURE'", database_name),
+                     "function" => format!("SELECT routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'FUNCTION'", database_name),
+                     "trigger" => format!("SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = '{}'", database_name),
+                     "event" => format!("SELECT event_name FROM information_schema.events WHERE event_schema = '{}'", database_name),
                      _ => {
                      debug!("Unsupported table type: {}", table_type);
                      return None;

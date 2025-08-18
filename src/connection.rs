@@ -1476,7 +1476,9 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
               {
                      Ok(pool) => {
                      // Force text decoding to avoid VARBINARY/BLOB issues on some setups
-                     let query = "SELECT CONVERT(COLUMN_NAME USING utf8mb4) AS COLUMN_NAME, CONVERT(DATA_TYPE USING utf8mb4) AS DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+                     // Removed explicit CONVERT(... USING utf8mb4) to avoid collation conversion errors (e.g. 3988) when server / table
+                     // uses an incompatible collation (utf8mb4_* vs utf8mb3_*). Let the driver handle decoding.
+                     let query = "SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
                      match sqlx::query_as::<_, (String, String)>(query)
                             .bind(&database_name)
                             .bind(&table_name)

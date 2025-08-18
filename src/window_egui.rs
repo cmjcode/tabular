@@ -190,6 +190,11 @@ pub struct Tabular {
     pub update_download_in_progress: bool,
     pub auto_check_updates: bool,
     pub manual_update_check: bool, // Track if update check was manually triggered
+    // Lightweight notification (toast) instead of full dialog for auto updates
+    pub show_update_notification: bool,
+    pub update_download_started: bool,
+    pub update_installed: bool,
+    pub update_install_receiver: Option<std::sync::mpsc::Receiver<bool>>, // receive success flag
     // Preferences window active tab
     pub settings_active_pref_tab: PrefTab,
 }
@@ -475,6 +480,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             update_download_in_progress: false,
             auto_check_updates: true,
             manual_update_check: false,
+            show_update_notification: false,
+            update_download_started: false,
+            update_installed: false,
+            update_install_receiver: None,
             settings_active_pref_tab: PrefTab::ApplicationTheme,
         };
         
@@ -1322,7 +1331,9 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                        node.is_expanded && 
                        ((!node.is_loaded) || is_search_mode) {
                         if let Some(conn_id) = node.connection_id {
-                            table_expansion = Some((node_index, conn_id, node.name.clone()));
+                            // Use stored raw table_name if present; otherwise sanitize display name (strip emojis / annotations)
+                            let raw_name = node.table_name.clone().unwrap_or_else(|| Self::sanitize_display_table_name(&node.name));
+                            table_expansion = Some((node_index, conn_id, raw_name));
                         }
                     }
                     
@@ -1914,6 +1925,23 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         }
         
     (expansion_request, table_expansion, context_menu_request, table_click_request, connection_click_request, query_file_to_open, folder_name_for_removal, parent_folder_for_creation, folder_removal_mapping, dba_click_request, index_click_request, create_index_request)
+    }
+
+    // Sanitize a display table name (with icons / annotations) back to the raw table name suitable for SQL queries
+    fn sanitize_display_table_name(display: &str) -> String {
+        // Remove leading known emoji + whitespace
+        let mut s = display.trim_start();
+        for prefix in ["📋", "📁", "🔧", "🗄", "•", "#", "📑"] { // extend as needed
+            if s.starts_with(prefix) {
+                s = s[prefix.len()..].trim_start();
+            }
+        }
+        // Truncate at first " (" which denotes annotations like "(table name match)" or column counts
+        if let Some(pos) = s.find(" (") {
+            s[..pos].trim().to_string()
+        } else {
+            s.to_string()
+        }
     }
 
 
@@ -3522,10 +3550,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     fn find_table_database_name(&self, nodes: &[models::structs::TreeNode], table_name: &str, connection_id: i64) -> Option<String> {
         for node in nodes {
             // If this is the table node we're looking for
-            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
-               node.name == table_name && 
+            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) &&
                node.connection_id == Some(connection_id) {
-                return node.database_name.clone();
+                let matches = if let Some(raw) = &node.table_name {
+                    raw == table_name
+                } else {
+                    node.name == table_name || Self::sanitize_display_table_name(&node.name) == table_name
+                };
+                if matches { return node.database_name.clone(); }
             }
             
             // Recursively search in children
@@ -3539,12 +3571,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     fn update_table_node_with_columns_recursive(&mut self, nodes: &mut [models::structs::TreeNode], table_name: &str, columns: Vec<models::structs::TreeNode>, connection_id: i64) -> bool {
         for node in nodes.iter_mut() {
             // If this is the table node we're looking for
-            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
-               node.name == table_name && 
+            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) &&
                node.connection_id == Some(connection_id) {
-                node.children = columns;
-                node.is_loaded = true;
-                return true;
+                let matches = if let Some(raw) = &node.table_name { raw == table_name } else { node.name == table_name || Self::sanitize_display_table_name(&node.name) == table_name };
+                if matches {
+                    node.children = columns;
+                    node.is_loaded = true;
+                    return true;
+                }
             }
             
             // Recursively search in children
@@ -3562,10 +3596,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     fn find_table_node_recursive(&self, nodes: &[models::structs::TreeNode], table_name: &str, connection_id: i64) -> Option<models::structs::TreeNode> {
         for node in nodes {
             // If this is the table node we're looking for
-            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
-               node.name == table_name && 
+            if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) &&
                node.connection_id == Some(connection_id) {
-                return Some(node.clone());
+                let matches = if let Some(raw) = &node.table_name { raw == table_name } else { node.name == table_name || Self::sanitize_display_table_name(&node.name) == table_name };
+                if matches { return Some(node.clone()); }
             }
             
             // Recursively search in children
@@ -6249,6 +6283,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     fn start_update_download(&mut self) {
         if let Some(update_info) = &self.update_info {
             self.update_download_in_progress = true;
+            // Prepare channel to receive completion signal
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.update_install_receiver = Some(rx);
             
             let update_info_clone = update_info.clone();
             if let Some(runtime) = &self.runtime {
@@ -6258,10 +6295,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         match crate::self_update::download_and_install_update(&update_info_clone).await {
                             Ok(()) => {
                                 log::info!("Update completed successfully");
-                                // The application should restart automatically
+                                let _ = tx.send(true);
                             }
                             Err(e) => {
                                 log::error!("Update failed: {}", e);
+                                let _ = tx.send(false);
                             }
                         }
                     });
@@ -6730,28 +6768,113 @@ impl App for Tabular {
                         }
                     }
                     models::enums::BackgroundResult::UpdateCheckComplete { result } => {
+                        // Finish check state first
                         self.update_check_in_progress = false;
                         let was_manual = self.manual_update_check;
-                        self.manual_update_check = false; // Reset flag
-                        
+                        self.manual_update_check = false;
+
+                        // Defer actions requiring mutable self in separate block to avoid borrow overlap
                         match result {
-                            Ok(update_info) => {
-                                // Show dialog if there's an update available OR if it was a manual check
-                                if update_info.update_available || was_manual {
-                                    self.show_update_dialog = true;
-                                }
-                                self.update_info = Some(update_info);
+                            Ok(info) => {
+                                let update_available = info.update_available;
+                                self.update_info = Some(info.clone());
                                 self.update_check_error = None;
+                                if was_manual {
+                                    self.show_update_dialog = true;
+                                } else if update_available {
+                                    self.show_update_notification = true;
+                                    if !self.update_download_started && !self.update_download_in_progress {
+                                        self.update_download_started = true;
+                                        // Start download after loop ends via flag (can't call method that mutably borrows self again inside borrow scope)
+                                    }
+                                }
                             }
-                            Err(error) => {
-                                self.update_check_error = Some(error);
-                                self.show_update_dialog = true; // Always show errors
+                            Err(err) => {
+                                self.update_check_error = Some(err);
+                                self.show_update_dialog = true;
                             }
                         }
-                        
                         ctx.request_repaint();
                     }
                 }
+            }
+        }
+
+        // Kick off deferred auto download if flagged (done outside borrow loops)
+        if self.update_download_started && !self.update_download_in_progress {
+            self.start_update_download();
+        }
+
+        // Poll for update install completion (async thread sends on channel)
+        if let Some(rx) = &self.update_install_receiver {
+            if let Ok(success) = rx.try_recv() {
+                self.update_download_in_progress = false;
+                self.update_installed = success;
+                self.show_update_notification = true; // show completion toast
+                self.update_install_receiver = None; // cleanup
+                ctx.request_repaint();
+            }
+        }
+
+        // Render mini notification (toast) for update events
+        if self.show_update_notification {
+            // Clone minimal info to avoid borrow issues in closure
+            let info_clone = self.update_info.clone();
+            let downloading = self.update_download_in_progress;
+            let installed = self.update_installed;
+            let download_started = self.update_download_started;
+            let mut keep_open = true;
+            egui::Window::new("Update")
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
+                .collapsible(false)
+                .resizable(false)
+                .title_bar(false)
+                .frame(egui::Frame::window(&ctx.style()))
+                .show(ctx, |ui| {
+                    if let Some(info) = &info_clone {
+                        if downloading {
+                            ui.horizontal(|ui| { ui.spinner(); ui.label(format!("Downloading update {}...", info.latest_version)); });
+                        } else if installed {
+                            ui.label(egui::RichText::new("Update installed. Restart Tabular to apply.").strong());
+                            if ui.button("Restart Now").clicked() {
+                                #[cfg(target_os = "macos")]
+                                {
+                                    if let Ok(current_exe) = std::env::current_exe() { let _ = std::process::Command::new(current_exe).spawn(); }
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                                #[cfg(target_os = "linux")]
+                                {
+                                    if let Ok(current_exe) = std::env::current_exe() { let _ = std::process::Command::new(current_exe).spawn(); }
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                                #[cfg(target_os = "windows")]
+                                {
+                                    if let Ok(current_exe) = std::env::current_exe() { let _ = std::process::Command::new("cmd").args(["/C", current_exe.to_string_lossy().as_ref()]).spawn(); }
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                            }
+                        } else if info.update_available {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Update {} available", info.latest_version));
+                                if ui.button("Details").clicked() { ui.ctx().data_mut(|d| { d.insert_temp(egui::Id::new("trigger_update_details"), true); }); }
+                                if !download_started && ui.button("Download").clicked() {
+                                    ui.ctx().data_mut(|d| { d.insert_temp(egui::Id::new("trigger_manual_download"), true); });
+                                }
+                            });
+                        } else { keep_open = false; }
+                    } else { keep_open = false; }
+                });
+            if !keep_open { self.show_update_notification = false; }
+            // Check for manual download trigger flag set inside closure
+            if ctx.data(|d| d.get_temp::<bool>(egui::Id::new("trigger_manual_download")).unwrap_or(false)) {
+                ctx.data_mut(|d| { d.remove::<bool>(egui::Id::new("trigger_manual_download")); });
+                if !self.update_download_started && !self.update_download_in_progress {
+                    self.update_download_started = true; // Start next frame (handled by deferred block above)
+                }
+            }
+            if ctx.data(|d| d.get_temp::<bool>(egui::Id::new("trigger_update_details")).unwrap_or(false)) {
+                ctx.data_mut(|d| { d.remove::<bool>(egui::Id::new("trigger_update_details")); });
+                self.show_update_dialog = true;
             }
         }
 
