@@ -746,7 +746,11 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                      }
                                      models::enums::DatabasePool::MSSQL(mssql_cfg) => {
                                             debug!("Executing MSSQL query: {}", query);
-                                            match driver_mssql::execute_query(mssql_cfg.clone(), query).await {
+                                            let mut query_str = query.to_string();
+                                            if query_str.contains("TOP") && query_str.contains("ROWS FETCH NEXT") {
+                                                query_str = query_str.replace("TOP 10000", "");
+                                            }
+                                            match driver_mssql::execute_query(mssql_cfg.clone(), &query_str).await {
                                                    Ok((h, d)) => Some((h, d)),
                                                    Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]])),
                                             }

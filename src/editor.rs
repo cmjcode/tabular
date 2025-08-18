@@ -27,7 +27,7 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
             result_table_name: String::new(),
             is_table_browse_mode: false,
             current_page: 0,
-            page_size: 0,
+            page_size: 100, // default page size aligns with global default
             total_rows: 0,
         };
         
@@ -64,7 +64,7 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
             result_table_name: String::new(),
             is_table_browse_mode: false,
             current_page: 0,
-            page_size: 0,
+            page_size: 100, // default page size aligns with global default
             total_rows: 0,
         };
         

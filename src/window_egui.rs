@@ -1023,6 +1023,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
 
                         // Use server-side pagination for table browsing
                         if self.use_server_pagination {
+                            debug!("🚀 Taking server-side pagination path");
                             // Build base query without LIMIT for server pagination
                             let base_query = if let Some(db_name) = &database_name {
                                 match conn.connection_type {
@@ -1063,8 +1064,17 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             // Initialize server-side pagination
                             self.initialize_server_pagination(base_query);
                         } else {
+                            debug!("🔄 Taking client-side pagination fallback path");
                             // Fallback to client-side pagination (original behavior)
-                            if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, query_content) {
+                            // For MSSQL, we need to strip TOP from query_content to avoid conflicts
+                            let safe_query = if conn.connection_type == models::enums::DatabaseType::MSSQL {
+                                Self::sanitize_mssql_select_for_pagination(&query_content)
+                            } else {
+                                query_content.clone()
+                            };
+                            debug!("🔄 Client-side query after sanitization: {}", safe_query);
+                            
+                            if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, safe_query) {
                                 self.current_table_headers = headers;
                                 self.current_table_data = data.clone();
                                 self.all_table_data = data;
@@ -1469,10 +1479,16 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             | models::enums::NodeType::TriggersFolder
                             | models::enums::NodeType::EventsFolder
                             | models::enums::NodeType::DBAViewsFolder
-                            | models::enums::NodeType::QueryFolder))
+                            | models::enums::NodeType::UsersFolder
+                            | models::enums::NodeType::PrivilegesFolder
+                            | models::enums::NodeType::ProcessesFolder
+                            | models::enums::NodeType::StatusFolder
+                            | models::enums::NodeType::ColumnsFolder
+                            | models::enums::NodeType::IndexesFolder
+                            | models::enums::NodeType::PrimaryKeysFolder)
                         && node.node_type != models::enums::NodeType::Table
                         && node.node_type != models::enums::NodeType::View
-                    ;
+                    );
 
                     if allow_label_toggle {
                         node.is_expanded = !node.is_expanded;
@@ -4069,17 +4085,22 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn get_total_pages_server(&self) -> usize {
+        // Avoid division by zero if page_size was restored as 0 from an older tab/session
+        let ps = if self.page_size == 0 { 100 } else { self.page_size };
         if let Some(actual_total) = self.actual_total_rows {
-            (actual_total + self.page_size - 1) / self.page_size // Ceiling division
+            (actual_total + ps - 1) / ps // Ceiling division
         } else {
             1
         }
     }
 
     fn execute_paginated_query(&mut self) {
+        debug!("🔥 Starting execute_paginated_query()");
         if let Some(connection_id) = self.current_connection_id {
             let offset = self.current_page * self.page_size;
+            debug!("🔥 About to build paginated query with offset={}, page_size={}", offset, self.page_size);
             let paginated_query = self.build_paginated_query(offset, self.page_size);
+            debug!("🔥 Built paginated query: {}", paginated_query);
             
             if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, paginated_query) {
                 self.current_table_headers = headers;
@@ -4098,7 +4119,84 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     active_tab.is_table_browse_mode = true;
                 }
             }
+        } else {
+            debug!("🔥 No current_connection_id available for paginated query");
         }
+    }
+
+    // Helper: Remove TOP clauses from MSSQL SELECT for pagination compatibility
+    fn sanitize_mssql_select_for_pagination(select_part: &str) -> String {
+        let mut result = select_part.to_string();
+        
+        // Pattern: SELECT [whitespace] TOP [whitespace] number/expression [whitespace]
+        // Use simple case-insensitive string manipulation to avoid regex dependency
+        let lower = result.to_lowercase();
+        
+        // Find "select" followed by optional whitespace and "top"
+        if let Some(select_pos) = lower.find("select") {
+            let after_select = select_pos + "select".len();
+            
+            // Skip whitespace after SELECT
+            let mut scan_pos = after_select;
+            let bytes = result.as_bytes();
+            while scan_pos < bytes.len() && bytes[scan_pos].is_ascii_whitespace() {
+                scan_pos += 1;
+            }
+            
+            // Check if "TOP" follows
+            let remaining_lower = &lower[scan_pos..];
+            if remaining_lower.starts_with("top") {
+                let top_start = scan_pos;
+                let top_end = scan_pos + 3; // "top".len()
+                
+                // Skip whitespace after TOP
+                let mut after_top = top_end;
+                while after_top < bytes.len() && bytes[after_top].is_ascii_whitespace() {
+                    after_top += 1;
+                }
+                
+                // Skip the number/expression after TOP
+                let mut value_end = after_top;
+                
+                // Handle parenthesized expressions like TOP (100)
+                if after_top < bytes.len() && bytes[after_top] == b'(' {
+                    value_end += 1;
+                    while value_end < bytes.len() && bytes[value_end] != b')' {
+                        value_end += 1;
+                    }
+                    if value_end < bytes.len() { value_end += 1; } // include closing )
+                } else {
+                    // Handle simple numbers and PERCENT keyword
+                    while value_end < bytes.len() && (bytes[value_end].is_ascii_digit() || bytes[value_end] == b'%') {
+                        value_end += 1;
+                    }
+                    
+                    // Check for optional PERCENT keyword
+                    let mut temp_pos = value_end;
+                    while temp_pos < bytes.len() && bytes[temp_pos].is_ascii_whitespace() {
+                        temp_pos += 1;
+                    }
+                    if temp_pos < bytes.len() {
+                        let remaining = &lower[temp_pos..];
+                        if remaining.starts_with("percent") {
+                            value_end = temp_pos + "percent".len();
+                        }
+                    }
+                }
+                
+                // Skip trailing whitespace after the TOP value
+                while value_end < bytes.len() && bytes[value_end].is_ascii_whitespace() {
+                    value_end += 1;
+                }
+                
+                // Reconstruct: SELECT + everything after the TOP clause
+                let select_part = &result[..select_pos + "select".len()];
+                let remaining_part = &result[value_end..];
+                result = format!("{} {}", select_part, remaining_part.trim_start());
+            }
+        }
+        
+        result
     }
 
     fn build_paginated_query(&self, offset: usize, limit: usize) -> String {
@@ -4124,8 +4222,41 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 format!("{} LIMIT {} OFFSET {}", self.current_base_query, limit, offset)
             }
             models::enums::DatabaseType::MSSQL => {
-                // MSSQL uses OFFSET/FETCH syntax (SQL Server 2012+)
-                format!("{} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", self.current_base_query, offset, limit)
+                // MSSQL requires ORDER BY for OFFSET/FETCH. Inject ORDER BY 1 if missing.
+                // Handle optional leading USE statement separated by semicolon.
+                let mut base = self.current_base_query.clone();
+                debug!("🔍 MSSQL base query before processing: {}", base);
+                
+                let mut prefix = String::new();
+                // Separate USE ...; prefix if present so pagination applies only to SELECT part
+                if let Some(use_end) = base.find(";\nSELECT") {
+                    // include the semicolon in prefix
+                    prefix = base[..=use_end].to_string();
+                    base = base[use_end+2..].to_string(); // skip "\n" keeping SELECT...
+                }
+
+                
+                // Trim and remove trailing semicolons/spaces
+                let mut select_part = base.trim().trim_end_matches(';').to_string();
+                debug!("🔍 MSSQL select part before TOP removal: {}", select_part);
+
+                // Enhanced TOP removal using case-insensitive regex-like approach
+                select_part = Self::sanitize_mssql_select_for_pagination(&select_part);
+                debug!("🔍 MSSQL select part after TOP removal: {}", select_part);
+                
+                // Detect ORDER BY (case-insensitive)
+                let has_order = select_part.to_lowercase().contains("order by");
+                if !has_order {
+                    select_part.push_str(" ORDER BY 1");
+                }
+                let effective_limit = if limit == 0 { 100 } else { limit }; // safety
+                let mut final_query = format!("{}{} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", prefix, select_part, offset, effective_limit);
+                // check if contain TOP 1000 than replace it
+                final_query = final_query.replace("TOP 10000", "");
+                debug!(" *** final_query *** : {}", final_query);
+
+                debug!("🧪 MSSQL final paginated query: {}", final_query);
+                final_query
             }
             _ => {
                 // For Redis/MongoDB, return original query (these don't use SQL pagination)
