@@ -38,8 +38,6 @@ pub struct UpdateInfo {
 pub enum UpdateError {
     NetworkError(String),
     ParseError(String),
-    UnsupportedPlatform,
-    UpdateFailed(String),
 }
 
 impl fmt::Display for UpdateError {
@@ -47,8 +45,6 @@ impl fmt::Display for UpdateError {
         match self {
             UpdateError::NetworkError(msg) => write!(f, "Network error: {}", msg),
             UpdateError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            UpdateError::UnsupportedPlatform => write!(f, "Unsupported platform for auto-update"),
-            UpdateError::UpdateFailed(msg) => write!(f, "Update failed: {}", msg),
         }
     }
 }
@@ -206,91 +202,6 @@ fn get_platform_info() -> PlatformInfo {
     };
     
     PlatformInfo { os, arch }
-}
-
-pub async fn download_and_install_update(update_info: &UpdateInfo) -> Result<(), UpdateError> {
-    let download_url = update_info.download_url.as_ref()
-        .ok_or(UpdateError::UnsupportedPlatform)?;
-    
-    info!("🚀 Starting update process...");
-    info!("📥 Downloading update from: {}", download_url);
-    info!("📦 Asset name: {:?}", update_info.asset_name);
-    info!("🎯 Target platform: {}", target_triple());
-    
-    // Download the file manually instead of using self_update crate
-    let client = reqwest::Client::new();
-    let response = client
-        .get(download_url)
-        .header("User-Agent", format!("Tabular/{}", CURRENT_VERSION))
-        .send()
-        .await
-        .map_err(|e| UpdateError::NetworkError(e.to_string()))?;
-
-    if !response.status().is_success() {
-        return Err(UpdateError::NetworkError(format!(
-            "Download failed with status: {}",
-            response.status()
-        )));
-    }
-
-    // Get the file content
-    let content = response
-        .bytes()
-        .await
-        .map_err(|e| UpdateError::UpdateFailed(format!("Failed to read download content: {}", e)))?;
-
-    info!("📦 Downloaded {} bytes", content.len());
-
-    // For macOS DMG files, we'll just save it to Downloads and notify the user
-    #[cfg(target_os = "macos")]
-    {
-        let asset_name = update_info.asset_name.as_ref()
-            .ok_or(UpdateError::UpdateFailed("No asset name available".to_string()))?;
-        
-        // Save to Downloads folder
-        let downloads_dir = dirs::download_dir()
-            .ok_or(UpdateError::UpdateFailed("Could not find Downloads directory".to_string()))?;
-        
-        let file_path = downloads_dir.join(asset_name);
-        
-        std::fs::write(&file_path, &content)
-            .map_err(|e| UpdateError::UpdateFailed(format!("Failed to save file: {}", e)))?;
-        
-        info!("✅ Update downloaded to: {}", file_path.display());
-        info!("� Please manually install the downloaded DMG file");
-        
-        // On macOS, open the Downloads folder to show the file
-        let _ = std::process::Command::new("open")
-            .arg("-R")
-            .arg(&file_path)
-            .spawn();
-        
-        Ok(())
-    }
-    
-    #[cfg(not(target_os = "macos"))]
-    {
-        // For other platforms, we could implement automatic installation later
-        Err(UpdateError::UnsupportedPlatform)
-    }
-}
-
-fn target_triple() -> &'static str {
-    if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "x86_64-apple-darwin"
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "aarch64-apple-darwin"
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        "aarch64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
-        "aarch64-pc-windows-msvc"
-    } else {
-        "unknown"
-    }
 }
 
 pub fn open_release_page(update_info: &UpdateInfo) {
