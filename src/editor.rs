@@ -143,6 +143,14 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
                 tabular.current_page = new_tab.current_page;
                 tabular.page_size = new_tab.page_size;
                 tabular.total_rows = new_tab.total_rows;
+                // IMPORTANT: kembalikan connection id aktif sesuai tab baru
+                tabular.current_connection_id = new_tab.connection_id;
+
+                // Jika user sedang berada di tampilan Structure dan tab tujuan adalah tab Table, reload struktur tabel tsb.
+                if tabular.table_bottom_view == models::structs::TableBottomView::Structure && new_tab.title.starts_with("Table:") {
+                    // load_structure_info_for_current_table adalah metode pada Tabular (dibuat pub(crate))
+                    tabular.load_structure_info_for_current_table();
+                }
             }
         }
     }

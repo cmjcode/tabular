@@ -190,6 +190,18 @@ pub struct Tabular {
     pub update_download_in_progress: bool,
     pub auto_check_updates: bool,
     pub manual_update_check: bool, // Track if update check was manually triggered
+    // Preferences window active tab
+    pub settings_active_pref_tab: PrefTab,
+}
+
+// Preference tabs enumeration
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PrefTab {
+    ApplicationTheme,
+    EditorTheme,
+    Performance,
+    DataDirectory,
+    Update,
 }
 
 
@@ -463,6 +475,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             update_download_in_progress: false,
             auto_check_updates: true,
             manual_update_check: false,
+            settings_active_pref_tab: PrefTab::ApplicationTheme,
         };
         
         // Clear any old cached pools
@@ -5527,7 +5540,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     // Fetch structure (columns & indexes) metadata for current table for Structure tab.
-    fn load_structure_info_for_current_table(&mut self) {
+    pub(crate) fn load_structure_info_for_current_table(&mut self) {
         self.structure_columns.clear();
         self.structure_indexes.clear();
         let Some(conn_id) = self.current_connection_id else { return; };
@@ -6522,209 +6535,155 @@ impl App for Tabular {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(420.0)
                 .show(ctx, |ui| {
-                    ui.heading("Application Theme");
+                    // Tab bar
                     ui.horizontal(|ui| {
-                        ui.label("Choose theme:");
-                        let prev = self.is_dark_mode;
-                        if ui.radio_value(&mut self.is_dark_mode, true, "🌙 Dark").clicked() {
-                            ctx.set_visuals(egui::Visuals::dark());
-                            if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_DARK; }
-                            self.prefs_dirty = true;
-                            try_save_prefs(self);
-                        }
-                        if ui.radio_value(&mut self.is_dark_mode, false, "☀️ Light").clicked() {
-                            ctx.set_visuals(egui::Visuals::light());
-                            if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_LIGHT; }
-                            self.prefs_dirty = true;
-                            try_save_prefs(self);
-                        }
-                        if self.is_dark_mode != prev { 
-                            ctx.request_repaint(); 
-                        }
+                        // Accent color (red) can adapt for light/dark if needed
+                        let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 60, 0) } else { egui::Color32::from_rgb(180,30,30) };
+                        let inactive_fg = ui.visuals().text_color();
+                        let mut draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
+                            let selected = *current == me;
+                            let (bg, fg) = if selected { (accent, egui::Color32::WHITE) } else { (egui::Color32::TRANSPARENT, inactive_fg) };
+                            let mut button = egui::Button::new(egui::RichText::new(label).color(fg).size(13.0))
+                                .fill(bg)
+                                .stroke(if selected { egui::Stroke { width: 1.0, color: accent } } else { egui::Stroke { width: 1.0, color: ui.visuals().widgets.inactive.bg_stroke.color } })
+                                .min_size(egui::vec2(0.0, 24.0));
+                            // Attempt to use new corner radius API if available (ignore if not)
+                            // Rounding disabled for compatibility with current egui version
+                            let resp = ui.add(button);
+                            if resp.clicked() { *current = me; }
+                        };
+                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::ApplicationTheme, "Application Theme");
+                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::EditorTheme, "Editor Theme");
+                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Performance, "Performance Settings");
+                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::DataDirectory, "Data Directory");
+                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
                     });
-                    ui.add_space(10.0);
                     ui.separator();
-                    ui.add_space(6.0);
-                    ui.heading("Editor Theme");
-                    ui.horizontal(|ui| {
-                        if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() {
-                            if self.link_editor_theme { // re-apply default
-                                self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
-                            }
-                            self.prefs_dirty = true;
-                            try_save_prefs(self);
-                        }
-                        if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
-                            self.link_editor_theme = true;
-                            self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
-                            self.prefs_dirty = true;
-                            try_save_prefs(self);
-                        }
-                    });
-                    if self.link_editor_theme { ui.label(egui::RichText::new("(Editor theme follows application theme; uncheck to customize)").size(11.0).color(egui::Color32::from_gray(120))); }
-                    ui.label("Choose syntax highlighting theme for SQL editor");
                     ui.add_space(4.0);
-                    // Theme options
-                    let themes: &[(ColorTheme, &str, &str)] = &[
-                        (ColorTheme::GITHUB_DARK, "GitHub Dark", "Dark theme with blue accents"),
-                        (ColorTheme::GITHUB_LIGHT, "GitHub Light", "Clean light theme"),
-                        (ColorTheme::GRUVBOX, "Gruvbox", "Warm earthy retro palette"),
-                    ];
-                    for (theme, name, desc) in themes {
-                        ui.horizontal(|ui| {
-                            let selected = self.advanced_editor.theme == *theme;
-                            if ui.selectable_label(selected, *name).clicked() {
-                                self.advanced_editor.theme = *theme;
-                                // manual selection breaks link (unless matches desired and link already true)
-                                if self.link_editor_theme { self.link_editor_theme = false; }
-                                self.prefs_dirty = true;
-                                try_save_prefs(self);
-                            }
-                            if selected { ui.label(egui::RichText::new("✓").color(egui::Color32::from_rgb(0,150,255))); }
-                        });
-                        ui.label(egui::RichText::new(*desc).size(11.0).color(egui::Color32::from_gray(120)));
-                        ui.add_space(4.0);
-                    }
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Font size:");
-                        let mut fs = self.advanced_editor.font_size as i32;
-                        if ui.add(egui::DragValue::new(&mut fs).range(8..=32)).changed() {
-                            self.advanced_editor.font_size = fs as f32;
-                            self.prefs_dirty = true;
-                            try_save_prefs(self);
-                        }
-                        ui.separator();
-                        if ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed() { /* not persisted currently */ }
-                        if ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap").changed() { self.prefs_dirty = true; try_save_prefs(self); }
-                    });
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.heading("Performance Settings");
-                    ui.horizontal(|ui| {
-                        let prev_pagination = self.use_server_pagination;
-                        if ui.checkbox(&mut self.use_server_pagination, "Server-side pagination")
-                            .on_hover_text("When enabled, queries large tables in pages from the server instead of loading all data at once. Much faster for large datasets.")
-                            .changed() {
-                            self.prefs_dirty = true;
-                            try_save_prefs(self);
-                            
-                            // If we're switching pagination modes and have active data, show a message
-                            if prev_pagination != self.use_server_pagination && !self.current_table_headers.is_empty() {
-                                if self.use_server_pagination {
-                                    self.prefs_save_feedback = Some("Server pagination enabled. Browse a table to see the difference!".to_string());
-                                } else {
-                                    self.prefs_save_feedback = Some("Client pagination enabled. Data will be loaded all at once.".to_string());
+
+                    match self.settings_active_pref_tab {
+                        PrefTab::ApplicationTheme => {
+                            ui.heading("Application Theme");
+                            ui.horizontal(|ui| {
+                                ui.label("Choose theme:");
+                                let prev = self.is_dark_mode;
+                                if ui.radio_value(&mut self.is_dark_mode, true, "🌙 Dark").clicked() {
+                                    ctx.set_visuals(egui::Visuals::dark());
+                                    if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_DARK; }
+                                    self.prefs_dirty = true; try_save_prefs(self);
                                 }
-                                self.prefs_last_saved_at = Some(std::time::Instant::now());
-                            }
+                                if ui.radio_value(&mut self.is_dark_mode, false, "☀️ Light").clicked() {
+                                    ctx.set_visuals(egui::Visuals::light());
+                                    if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_LIGHT; }
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                }
+                                if self.is_dark_mode != prev { ctx.request_repaint(); }
+                            });
                         }
-                    });
-                    ui.label(egui::RichText::new("Server pagination queries data in smaller chunks (e.g., 100 rows at a time) from the database.\nThis is much faster for large tables but may not work with all custom queries.").size(11.0).color(egui::Color32::from_gray(120)));
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.heading("Data Directory");
-                    ui.label("Choose where Tabular stores its data (connections, queries, history):");
-                    ui.add_space(4.0);
-                    
-                    // Initialize temp_data_directory if empty
-                    if self.temp_data_directory.is_empty() {
-                        self.temp_data_directory = self.data_directory.clone();
-                    }
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Current location:");
-                        ui.monospace(&self.data_directory);
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("New location:");
-                        ui.text_edit_singleline(&mut self.temp_data_directory);
-                        if ui.button("📁 Browse").clicked() {
-                            self.handle_directory_picker();
-                        }
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        let changed = self.temp_data_directory != self.data_directory;
-                        let valid_path = !self.temp_data_directory.trim().is_empty() && 
-                                       std::path::Path::new(&self.temp_data_directory).is_absolute();
-                        
-                        if ui.add_enabled(changed && valid_path, egui::Button::new("Apply Changes")).clicked() {
-                            match crate::config::set_data_dir(&self.temp_data_directory) {
-                                Ok(()) => {
-                                    // Update the current data directory from environment
-                                    self.refresh_data_directory();
-                                    
-                                    // Force save preferences with new data directory
-                                    self.prefs_dirty = true;
-                                    try_save_prefs(self);
-                                    
-                                    // Reinitialize config store to use new location
-                                    if let Some(rt) = &self.runtime {
-                                        match rt.block_on(crate::config::ConfigStore::new()) {
-                                            Ok(new_store) => {
-                                                self.config_store = Some(new_store);
-                                                log::info!("Config store reinitialized for new data directory");
-                                            }
-                                            Err(e) => {
-                                                log::error!("Failed to reinitialize config store: {}", e);
-                                            }
-                                        }
+                        PrefTab::EditorTheme => {
+                            ui.heading("Editor Theme");
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() {
+                                    if self.link_editor_theme { self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT }; }
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                }
+                                if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
+                                    self.link_editor_theme = true;
+                                    self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                }
+                            });
+                            if self.link_editor_theme { ui.label(egui::RichText::new("(Editor theme follows application theme; uncheck to customize)").size(11.0).color(egui::Color32::from_gray(120))); }
+                            ui.label("Choose syntax highlighting theme for SQL editor");
+                            ui.add_space(4.0);
+                            let themes: &[(ColorTheme, &str, &str)] = &[
+                                (ColorTheme::GITHUB_DARK, "GitHub Dark", "Dark theme with blue accents"),
+                                (ColorTheme::GITHUB_LIGHT, "GitHub Light", "Clean light theme"),
+                                (ColorTheme::GRUVBOX, "Gruvbox", "Warm earthy retro palette"),
+                            ];
+                            for (theme, name, desc) in themes {
+                                ui.horizontal(|ui| {
+                                    let selected = self.advanced_editor.theme == *theme;
+                                    if ui.selectable_label(selected, *name).clicked() {
+                                        self.advanced_editor.theme = *theme;
+                                        if self.link_editor_theme { self.link_editor_theme = false; }
+                                        self.prefs_dirty = true; try_save_prefs(self);
                                     }
-                                    
-                                    // Update the display to show the new current location
-                                    self.prefs_save_feedback = Some("Data directory updated successfully!".to_string());
-                                    self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                    
-                                    // Update any internal references to use new directory
-                                    log::info!("Data directory changed to: {}", self.data_directory);
-                                }
-                                Err(e) => {
-                                    self.error_message = format!("Failed to change data directory: {}", e);
-                                    self.show_error_message = true;
-                                }
+                                    if selected { ui.label(egui::RichText::new("✓").color(egui::Color32::from_rgb(0,150,255))); }
+                                });
+                                ui.label(egui::RichText::new(*desc).size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.add_space(4.0);
                             }
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label("Font size:");
+                                let mut fs = self.advanced_editor.font_size as i32;
+                                if ui.add(egui::DragValue::new(&mut fs).range(8..=32)).changed() {
+                                    self.advanced_editor.font_size = fs as f32;
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                }
+                                ui.separator();
+                                if ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed() { }
+                                if ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap").changed() { self.prefs_dirty = true; try_save_prefs(self); }
+                            });
                         }
-                        
-                        if ui.button("Reset to Default").clicked() {
-                            self.temp_data_directory = dirs::home_dir()
-                                .map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() })
-                                .unwrap_or_else(|| ".".to_string());
+                        PrefTab::Performance => {
+                            ui.heading("Performance Settings");
+                            ui.horizontal(|ui| {
+                                let prev_pagination = self.use_server_pagination;
+                                if ui.checkbox(&mut self.use_server_pagination, "Server-side pagination")
+                                    .on_hover_text("When enabled, queries large tables in pages from the server instead of loading all data at once. Much faster for large datasets.")
+                                    .changed() {
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                    if prev_pagination != self.use_server_pagination && !self.current_table_headers.is_empty() {
+                                        if self.use_server_pagination { self.prefs_save_feedback = Some("Server pagination enabled. Browse a table to see the difference!".to_string()); }
+                                        else { self.prefs_save_feedback = Some("Client pagination enabled. Data will be loaded all at once.".to_string()); }
+                                        self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                    }
+                                }
+                            });
+                            ui.label(egui::RichText::new("Server pagination queries data in smaller chunks (e.g., 100 rows at a time) from the database.\nThis is much faster for large tables but may not work with all custom queries.").size(11.0).color(egui::Color32::from_gray(120)));
                         }
-                    });
-                    
-                    ui.label(egui::RichText::new("⚠️ Changing data directory will require restarting the application")
-                        .size(11.0).color(egui::Color32::from_rgb(200, 150, 0)));
-                    
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.heading("Updates");
-                    ui.horizontal(|ui| {
-                        if ui.checkbox(&mut self.auto_check_updates, "Automatically check for updates on startup").changed() {
-                            self.prefs_dirty = true;
-                            try_save_prefs(self);
+                        PrefTab::DataDirectory => {
+                            ui.heading("Data Directory");
+                            ui.label("Choose where Tabular stores its data (connections, queries, history):");
+                            ui.add_space(4.0);
+                            if self.temp_data_directory.is_empty() { self.temp_data_directory = self.data_directory.clone(); }
+                            ui.horizontal(|ui| { ui.label("Current location:"); ui.monospace(&self.data_directory); });
+                            ui.horizontal(|ui| { ui.label("New location:"); ui.text_edit_singleline(&mut self.temp_data_directory); if ui.button("📁 Browse").clicked() { self.handle_directory_picker(); } });
+                            ui.horizontal(|ui| {
+                                let changed = self.temp_data_directory != self.data_directory;
+                                let valid_path = !self.temp_data_directory.trim().is_empty() && std::path::Path::new(&self.temp_data_directory).is_absolute();
+                                if ui.add_enabled(changed && valid_path, egui::Button::new("Apply Changes")).clicked() {
+                                    match crate::config::set_data_dir(&self.temp_data_directory) {
+                                        Ok(()) => {
+                                            self.refresh_data_directory();
+                                            self.prefs_dirty = true; try_save_prefs(self);
+                                            if let Some(rt) = &self.runtime { if let Ok(new_store) = rt.block_on(crate::config::ConfigStore::new()) { self.config_store = Some(new_store); log::info!("Config store reinitialized for new data directory"); } }
+                                            self.prefs_save_feedback = Some("Data directory updated successfully!".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                            log::info!("Data directory changed to: {}", self.data_directory);
+                                        }
+                                        Err(e) => { self.error_message = format!("Failed to change data directory: {}", e); self.show_error_message = true; }
+                                    }
+                                }
+                                if ui.button("Reset to Default").clicked() { self.temp_data_directory = dirs::home_dir().map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() }).unwrap_or_else(|| ".".to_string()); }
+                            });
+                            ui.label(egui::RichText::new("⚠️ Changing data directory will require restarting the application").size(11.0).color(egui::Color32::from_rgb(200, 150, 0)));
                         }
-                    });
-                    ui.label(egui::RichText::new("When enabled, Tabular will check for new versions from GitHub releases")
-                        .size(11.0).color(egui::Color32::from_gray(120)));
-                    
+                        PrefTab::Update => {
+                            ui.heading("Updates");
+                            ui.horizontal(|ui| { if ui.checkbox(&mut self.auto_check_updates, "Automatically check for updates on startup").changed() { self.prefs_dirty = true; try_save_prefs(self); } });
+                            ui.label(egui::RichText::new("When enabled, Tabular will check for new versions from GitHub releases").size(11.0).color(egui::Color32::from_gray(120)));
+                        }
+                    }
+
                     ui.add_space(8.0);
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("💾 Save Preferences").clicked() {
-                            self.prefs_dirty = true; // force save
-                            try_save_prefs(self);
-                            self.prefs_save_feedback = Some("Saved".to_string());
-                            self.prefs_last_saved_at = Some(std::time::Instant::now());
+                            self.prefs_dirty = true; try_save_prefs(self); self.prefs_save_feedback = Some("Saved".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
                         }
-                        if let Some(msg) = &self.prefs_save_feedback {
-                            ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0,150,0)));
-                        }
+                        if let Some(msg) = &self.prefs_save_feedback { ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0,150,0))); }
                     });
                 });
             if !open_flag { self.show_settings_window = false; }
@@ -7014,9 +6973,7 @@ impl App for Tabular {
                         if let Some(cid) = tab.connection_id { if let Some(n) = self.get_connection_name(cid) { title = format!("{} [{}]", title, n); } }
                         let resp = ui.add_sized([120.0,20.0], egui::Button::new(egui::RichText::new(title).color(color).size(12.0)).fill(bg).stroke(egui::Stroke::NONE));
                         if resp.clicked() && !active { to_switch = Some(i); }
-                        if self.query_tabs.len() > 1 || !active {
-                            if ui.add_sized([16.0,16.0], egui::Button::new("×").fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::NONE)).clicked() { to_close = Some(i); }
-                        }
+                        if (self.query_tabs.len() > 1 || !active) && ui.add_sized([16.0,16.0], egui::Button::new("×").fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::NONE)).clicked() { to_close = Some(i); }
                     }
                     let plus_bg = if ui.visuals().dark_mode { egui::Color32::from_rgb(50,50,50) } else { egui::Color32::from_rgb(220,220,220) };
                     if ui.add_sized([20.0,20.0], egui::Button::new("+").fill(plus_bg)).clicked() { editor::create_new_tab(self, "Untitled Query".to_string(), String::new()); }
@@ -7044,17 +7001,17 @@ impl App for Tabular {
                     // Show popup menu when clicked
                     egui::popup::popup_below_widget(ui, egui::Id::new("settings_popup"), &gear_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
                         ui.set_min_width(150.0);
-                        if ui.button("Appearance").clicked() {
+                        if ui.add(egui::Button::new("Preferences").fill(egui::Color32::TRANSPARENT)).clicked() {
                             self.show_settings_window = true;
                             ui.close_menu();
                         }
                         // Editor Theme now merged into Preferences window
                         ui.separator();
-                        if ui.button("Check for Updates").clicked() {
+                        if ui.add(egui::Button::new("Check for Updates").fill(egui::Color32::TRANSPARENT)).clicked() {
                             self.check_for_updates(true); // Manual check
                             ui.close_menu();
                         }
-                        if ui.button("About").clicked() {
+                        if ui.add(egui::Button::new("About").fill(egui::Color32::TRANSPARENT)).clicked() {
                             self.show_about_dialog = true;
                             ui.close_menu();
                         }

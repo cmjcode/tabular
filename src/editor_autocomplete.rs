@@ -1,5 +1,5 @@
 use eframe::egui; 
-use crate::{window_egui::Tabular, models};
+use crate::{window_egui::{Tabular, PrefTab}, models};
 use crate::cache_data; // for table/column cache access
 use log::debug;
 
@@ -236,6 +236,7 @@ impl ShallowForCache for Tabular {
             update_download_in_progress: false,
             auto_check_updates: false,
             manual_update_check: false,
+            settings_active_pref_tab: PrefTab::ApplicationTheme,
         })
     }
 }
