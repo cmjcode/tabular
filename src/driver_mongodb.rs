@@ -99,13 +99,11 @@ pub fn fetch_collections_from_mongodb_connection(
 ) -> Option<Vec<String>> {
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
-        if let Some(pool) = connection::get_or_create_connection_pool(tabular, connection_id).await {
-            if let models::enums::DatabasePool::MongoDB(client) = pool {
-                match client.database(database_name).list_collection_names().await {
-                    Ok(cols) => Some(cols),
-                    Err(e) => { debug!("MongoDB list_collection_names error: {}", e); None }
-                }
-            } else { None }
+        if let Some(models::enums::DatabasePool::MongoDB(client)) = connection::get_or_create_connection_pool(tabular, connection_id).await {
+            match client.database(database_name).list_collection_names().await {
+                Ok(cols) => Some(cols),
+                Err(e) => { debug!("MongoDB list_collection_names error: {}", e); None }
+            }
         } else { None }
     })
 }
@@ -120,27 +118,25 @@ pub fn sample_collection_documents(
 ) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
-        if let Some(pool) = connection::get_or_create_connection_pool(tabular, connection_id).await {
-            if let models::enums::DatabasePool::MongoDB(client) = pool {
-                let coll = client.database(database_name).collection::<mongodb::bson::Document>(collection_name);
-                match coll.find(doc!{},).limit(limit).await {
-                    Ok(mut cursor) => {
-                        let mut rows = Vec::new();
-                        while let Some(item) = cursor.try_next().await.unwrap_or(None) {
-                            let json = match mongodb::bson::to_bson(&item) {
-                                Ok(Bson::Document(d)) => serde_json::to_string(&d).unwrap_or_else(|_| "{}".to_string()),
-                                Ok(other) => other.to_string(),
-                                Err(_) => "{}".to_string(),
-                            };
-                            rows.push(vec![json]);
-                        }
-                        Some((vec!["_json".to_string()], rows))
+        if let Some(models::enums::DatabasePool::MongoDB(client)) = connection::get_or_create_connection_pool(tabular, connection_id).await {
+            let coll = client.database(database_name).collection::<mongodb::bson::Document>(collection_name);
+            match coll.find(doc!{},).limit(limit).await {
+                Ok(mut cursor) => {
+                    let mut rows = Vec::new();
+                    while let Some(item) = cursor.try_next().await.unwrap_or(None) {
+                        let json = match mongodb::bson::to_bson(&item) {
+                            Ok(Bson::Document(d)) => serde_json::to_string(&d).unwrap_or_else(|_| "{}".to_string()),
+                            Ok(other) => other.to_string(),
+                            Err(_) => "{}".to_string(),
+                        };
+                        rows.push(vec![json]);
                     }
-                    Err(e) => {
-                        Some((vec!["Error".to_string()], vec![vec![format!("MongoDB find error: {}", e)]]))
-                    }
+                    Some((vec!["_json".to_string()], rows))
                 }
-            } else { None }
+                Err(e) => {
+                    Some((vec!["Error".to_string()], vec![vec![format!("MongoDB find error: {}", e)]]))
+                }
+            }
         } else { None }
     })
 }
