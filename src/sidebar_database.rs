@@ -47,7 +47,7 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
         "mysql" => models::enums::DatabaseType::MySQL,
         "postgres" | "postgresql" => models::enums::DatabaseType::PostgreSQL,
         "redis" => models::enums::DatabaseType::Redis,
-        "mssql" | "sqlserver" => models::enums::DatabaseType::MSSQL,
+        "mssql" | "sqlserver" => models::enums::DatabaseType::MsSQL,
     "mongodb" | "mongo" => models::enums::DatabaseType::MongoDB,
         _ => return None,
     };
@@ -100,7 +100,7 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
             models::enums::DatabaseType::MySQL => "3306".into(),
             models::enums::DatabaseType::PostgreSQL => "5432".into(),
             models::enums::DatabaseType::Redis => "6379".into(),
-            models::enums::DatabaseType::MSSQL => "1433".into(),
+            models::enums::DatabaseType::MsSQL => "1433".into(),
             models::enums::DatabaseType::SQLite => String::new(),
             models::enums::DatabaseType::MongoDB => "27017".into(),
         };
@@ -150,7 +150,7 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                     models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
                     models::enums::DatabaseType::SQLite => "SQLite",
                     models::enums::DatabaseType::Redis => "Redis",
-                    models::enums::DatabaseType::MSSQL => "MSSQL",
+                    models::enums::DatabaseType::MsSQL => "MsSQL",
                     models::enums::DatabaseType::MongoDB => "MongoDB",
                 })
                             .show_ui(ui, |ui| {
@@ -158,7 +158,7 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                    ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::PostgreSQL, "PostgreSQL");
                                    ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::SQLite, "SQLite");
                                    ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::Redis, "Redis");
-                                   ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::MSSQL, "MSSQL");
+                                   ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::MsSQL, "MsSQL");
                                    ui.selectable_value(&mut connection_data.connection_type, models::enums::DatabaseType::MongoDB, "MongoDB");
                             });
                      ui.end_row();
@@ -223,7 +223,7 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                              models::enums::DatabaseType::Redis => {
                                  if pass.is_empty() && user.is_empty() { format!("redis://{}:{}", host, port) } else if pass.is_empty() { format!("redis://{}@{}:{}", user, host, port) } else { format!("redis://{}:{}@{}:{}", user, pass, host, port) }
                              }
-                             models::enums::DatabaseType::MSSQL => {
+                             models::enums::DatabaseType::MsSQL => {
                                  let path = if db.is_empty() { String::new() } else { format!("/{}", db) };
                                  let auth = if user.is_empty() { String::new() } else if pass.is_empty() { format!("{}@", user) } else { format!("{}:{}@", user, pass) };
                                  format!("mssql://{}{}:{}{}", auth, host, port, path)
@@ -391,7 +391,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                      "MySQL" => models::enums::DatabaseType::MySQL,
                      "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
                      "Redis" => models::enums::DatabaseType::Redis,
-                     "MSSQL" => models::enums::DatabaseType::MSSQL,
+                     "MsSQL" => models::enums::DatabaseType::MsSQL,
                      "MongoDB" => models::enums::DatabaseType::MongoDB,
                      _ => models::enums::DatabaseType::SQLite,
                      },
@@ -626,7 +626,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
             // Best-effort migrations for new columns (idempotent): add flags to column_cache
             // Ignore errors if columns already exist
             if let Some(ref pool) = tabular.db_pool {
-                let _ = rt.block_on(async {
+                rt.block_on(async {
                     let _ = sqlx::query(
                         "ALTER TABLE column_cache ADD COLUMN is_primary_key INTEGER NOT NULL DEFAULT 0"
                     )
@@ -714,7 +714,7 @@ pub(crate) fn create_connections_folder_structure(tabular: &mut window_egui::Tab
                         models::enums::DatabaseType::Redis => {
                             redis_connections.push(node);
                         },
-                        models::enums::DatabaseType::MSSQL => {
+                        models::enums::DatabaseType::MsSQL => {
                             mssql_connections.push(node);
                         },
                         models::enums::DatabaseType::MongoDB => {
@@ -762,8 +762,8 @@ pub(crate) fn create_connections_folder_structure(tabular: &mut window_egui::Tab
             }
             if !mssql_connections.is_empty() {
                 let _ = mssql_connections.len();
-                // Correct NodeType for MSSQL folder (previously mistakenly used MySQLFolder)
-                let mut mssql_folder = models::structs::TreeNode::new("MSSQL".to_string(), models::enums::NodeType::MSSQLFolder);
+                // Correct NodeType for MsSQL folder (previously mistakenly used MySQLFolder)
+                let mut mssql_folder = models::structs::TreeNode::new("MsSQL".to_string(), models::enums::NodeType::MsSQLFolder);
                 mssql_folder.children = mssql_connections;
                 mssql_folder.is_expanded = false;
                 db_type_folders.push(mssql_folder);

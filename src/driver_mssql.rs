@@ -1,10 +1,10 @@
-// MSSQL driver module now built unconditionally (feature flag removed)
+// MsSQL driver module now built unconditionally (feature flag removed)
 use std::sync::Arc;
 use crate::models;
 use crate::window_egui; // for Tabular type
 use futures_util::StreamExt; // for next on tiberius QueryStream
 
-// We'll use tiberius for MSSQL. Tiberius uses async-std or tokio with the "rustls" feature.
+// We'll use tiberius for MsSQL. Tiberius uses async-std or tokio with the "rustls" feature.
 // For simplicity here we wrap the basic connection configuration and open connections per query.
 
 pub struct MssqlConfigWrapper {
@@ -74,7 +74,7 @@ pub(crate) fn load_mssql_structure(connection_id: i64, _connection: &models::str
     node.children = main_children;
 }
 
-/// Fetch MSSQL tables or views for a specific database (synchronous wrapper like other drivers)
+/// Fetch MsSQL tables or views for a specific database (synchronous wrapper like other drivers)
 pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, table_type: &str) -> Option<Vec<String>> {
     // Create a new runtime (pattern consistent with other drivers)
     let rt = tokio::runtime::Runtime::new().ok()?;
@@ -82,7 +82,7 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
         // Locate connection config
         let connection = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
 
-        // Open a direct MSSQL connection to the requested database (may differ from original)
+        // Open a direct MsSQL connection to the requested database (may differ from original)
         use tokio_util::compat::TokioAsyncWriteCompatExt;
         use tiberius::{AuthMethod, Config};
 
@@ -102,7 +102,7 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
         let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await {
             Ok(t) => t,
             Err(e) => {
-                log::debug!("MSSQL connect error for table fetch: {}", e);
+                log::debug!("MsSQL connect error for table fetch: {}", e);
                 return None;
             }
         };
@@ -110,7 +110,7 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
         let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await {
             Ok(c) => c,
             Err(e) => {
-                log::debug!("MSSQL client connect error: {}", e);
+                log::debug!("MsSQL client connect error: {}", e);
                 return None;
             }
         };
@@ -122,14 +122,14 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
             // Include schema for views so we can build fully-qualified names
             "view" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME".to_string(),
             _ => {
-                log::debug!("Unsupported MSSQL table_type: {}", table_type);
+                log::debug!("Unsupported MsSQL table_type: {}", table_type);
                 return None;
             }
         };
 
         let mut stream = match client.simple_query(query).await {
             Ok(s) => s,
-            Err(e) => { log::debug!("MSSQL list query error: {}", e); return None; }
+            Err(e) => { log::debug!("MsSQL list query error: {}", e); return None; }
         };
 
         let mut items = Vec::new();
@@ -147,7 +147,7 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
     })
 }
 
-/// Fetch MSSQL objects for a specific database by type: procedure | function | trigger
+/// Fetch MsSQL objects for a specific database by type: procedure | function | trigger
 pub(crate) fn fetch_objects_from_mssql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, object_type: &str) -> Option<Vec<String>> {
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
@@ -169,9 +169,9 @@ pub(crate) fn fetch_objects_from_mssql_connection(tabular: &mut window_egui::Tab
         config.trust_cert();
         if !db_name.is_empty() { config.database(db_name.clone()); }
 
-        let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await { Ok(t) => t, Err(e) => { log::debug!("MSSQL connect error for object fetch: {}", e); return None; } };
+        let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await { Ok(t) => t, Err(e) => { log::debug!("MsSQL connect error for object fetch: {}", e); return None; } };
         let _ = tcp.set_nodelay(true);
-        let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await { Ok(c) => c, Err(e) => { log::debug!("MSSQL client connect error: {}", e); return None; } };
+        let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await { Ok(c) => c, Err(e) => { log::debug!("MsSQL client connect error: {}", e); return None; } };
 
         let query = match object_type {
             // Stored procedures
@@ -200,10 +200,10 @@ pub(crate) fn fetch_objects_from_mssql_connection(tabular: &mut window_egui::Tab
                  WHERE t.type = 'U' \
                  ORDER BY tr.name".to_string()
             }
-            _ => { log::debug!("Unsupported MSSQL object_type: {}", object_type); return None; }
+            _ => { log::debug!("Unsupported MsSQL object_type: {}", object_type); return None; }
         };
 
-        let mut stream = match client.simple_query(query).await { Ok(s) => s, Err(e) => { log::debug!("MSSQL object list query error: {}", e); return None; } };
+        let mut stream = match client.simple_query(query).await { Ok(s) => s, Err(e) => { log::debug!("MsSQL object list query error: {}", e); return None; } };
 
         let mut items = Vec::new();
         use futures_util::TryStreamExt;

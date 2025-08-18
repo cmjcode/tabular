@@ -105,12 +105,11 @@ impl AutoUpdater {
         
         Ok(())
     }
-
 }
 
 #[cfg(target_os = "linux")]
 impl AutoUpdater {
-    async fn stage_linux_update(&self, content: &[u8], update_info: &UpdateInfo) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn stage_linux_update(&self, content: &[u8], update_info: &UpdateInfo) -> Result<(), Box<dyn std::error::Error>> {
         info!("🐧 Processing Linux update...");
         
         // Save to downloads folder
@@ -173,7 +172,7 @@ impl AutoUpdater {
 
 #[cfg(target_os = "windows")]
 impl AutoUpdater {
-    async fn stage_windows_update(&self, content: &[u8], update_info: &UpdateInfo) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn stage_windows_update(&self, content: &[u8], update_info: &UpdateInfo) -> Result<(), Box<dyn std::error::Error>> {
         info!("🪟 Processing Windows update...");
         
         // Save to downloads folder

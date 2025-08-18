@@ -1,7 +1,7 @@
 use crate::{
        connection, driver_mysql, driver_postgres, driver_redis, driver_sqlite, driver_mssql, models, modules, window_egui::{self, Tabular}
 };
-use futures_util::TryStreamExt; // for MSSQL try_next
+use futures_util::TryStreamExt; // for MsSQL try_next
 use eframe::egui;
 use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions, Column, Row, SqlitePool};
 use sqlx::mysql::MySqlConnection;
@@ -61,8 +61,8 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
            !upper_stmt.contains(" TOP ") {
             
             match db_type {
-                models::enums::DatabaseType::MSSQL => {
-                    // For MSSQL, we need to add TOP after SELECT
+                models::enums::DatabaseType::MsSQL => {
+                    // For MsSQL, we need to add TOP after SELECT
                     // Handle both "SELECT" and "SELECT DISTINCT" cases
                     if upper_stmt.starts_with("SELECT DISTINCT") {
                         let modified = trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 10000");
@@ -121,7 +121,7 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                             sfolder,
                             match connection.connection_type {
                             models::enums::DatabaseType::MySQL => "MySQL",
-                            models::enums::DatabaseType::MSSQL => "MSSQL",
+                            models::enums::DatabaseType::MsSQL => "MsSQL",
                             models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
                             models::enums::DatabaseType::SQLite => "SQLite",
                             models::enums::DatabaseType::Redis => "Redis",
@@ -248,11 +248,11 @@ pub(crate) fn execute_query_with_connection(tabular: &mut Tabular, connection_id
                  .and_then(|t| t.database_name.clone())
                  .filter(|s| !s.is_empty());
 
-          // Auto-prepend USE for MSSQL/MySQL if not already present
+          // Auto-prepend USE for MsSQL/MySQL if not already present
           let mut final_query = query.clone();
           if let Some(db_name) = selected_db {
                  match connection.connection_type {
-                        models::enums::DatabaseType::MSSQL => {
+                        models::enums::DatabaseType::MsSQL => {
                                let upper = final_query.to_uppercase();
                                if !upper.starts_with("USE ") {
                                       final_query = format!("USE [{}];\n{}", db_name, final_query);
@@ -744,8 +744,8 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                    _ => Some((vec!["Error".to_string()], vec![vec![format!("Unsupported Redis command: {}", parts[0])]])),
                                             }
                                      }
-                                     models::enums::DatabasePool::MSSQL(mssql_cfg) => {
-                                            debug!("Executing MSSQL query: {}", query);
+                                     models::enums::DatabasePool::MsSQL(mssql_cfg) => {
+                                            debug!("Executing MsSQL query: {}", query);
                                             let mut query_str = query.to_string();
                                             if query_str.contains("TOP") && query_str.contains("ROWS FETCH NEXT") {
                                                 query_str = query_str.replace("TOP 10000", "");
@@ -933,7 +933,7 @@ pub(crate) async fn get_or_create_connection_pool(tabular: &mut Tabular, connect
                      Err(e) => { debug!("Failed to create MongoDB client: {}", e); None }
               }
               }
-              models::enums::DatabaseType::MSSQL => {
+              models::enums::DatabaseType::MsSQL => {
                      let cfg = driver_mssql::MssqlConfigWrapper::new(
                             connection.host.clone(),
                             connection.port.clone(),
@@ -941,7 +941,7 @@ pub(crate) async fn get_or_create_connection_pool(tabular: &mut Tabular, connect
                             connection.username.clone(),
                             connection.password.clone()
                      );
-                     let database_pool = models::enums::DatabasePool::MSSQL(Arc::new(cfg));
+                     let database_pool = models::enums::DatabasePool::MsSQL(Arc::new(cfg));
                      tabular.connection_pools.insert(connection_id, database_pool.clone());
                      Some(database_pool)
               }
@@ -988,7 +988,7 @@ pub(crate) async fn refresh_connection_background_async(
                      "MySQL" => models::enums::DatabaseType::MySQL,
                      "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
                      "Redis" => models::enums::DatabaseType::Redis,
-                     "MSSQL" => models::enums::DatabaseType::MSSQL,
+                     "MsSQL" => models::enums::DatabaseType::MsSQL,
                      _ => models::enums::DatabaseType::SQLite,
               },
               folder: None, // Will be loaded from database later
@@ -1135,7 +1135,7 @@ pub(crate) async fn create_database_pool(connection: &models::structs::Connectio
               Err(_e) => None,
               }
        }
-       models::enums::DatabaseType::MSSQL => {
+       models::enums::DatabaseType::MsSQL => {
               let cfg = driver_mssql::MssqlConfigWrapper::new(
                      connection.host.clone(),
                      connection.port.clone(),
@@ -1143,7 +1143,7 @@ pub(crate) async fn create_database_pool(connection: &models::structs::Connectio
                      connection.username.clone(),
                      connection.password.clone(),
               );
-              Some(models::enums::DatabasePool::MSSQL(Arc::new(cfg)))
+              Some(models::enums::DatabasePool::MsSQL(Arc::new(cfg)))
        }
        models::enums::DatabaseType::MongoDB => {
               let uri = if connection.username.is_empty() {
@@ -1200,8 +1200,8 @@ async fn fetch_and_cache_all_data(
               false
               }
        }
-       models::enums::DatabaseType::MSSQL => {
-              if let models::enums::DatabasePool::MSSQL(mssql_cfg) = pool {
+       models::enums::DatabaseType::MsSQL => {
+              if let models::enums::DatabasePool::MsSQL(mssql_cfg) = pool {
                      driver_mssql::fetch_mssql_data(connection_id, mssql_cfg.clone(), cache_pool).await
               } else { false }
        }
@@ -1317,8 +1317,8 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
               debug!("Generated Redis databases: {:?}", databases);
               Some(databases)
               }
-              models::enums::DatabasePool::MSSQL(ref mssql_cfg) => {
-                     // Fetch list of databases from MSSQL server
+              models::enums::DatabasePool::MsSQL(ref mssql_cfg) => {
+                     // Fetch list of databases from MsSQL server
                      use tokio_util::compat::TokioAsyncWriteCompatExt;
                      use tiberius::{AuthMethod, Config};
                      {
@@ -1356,7 +1356,7 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
                             match rt_res {
                                    Ok(mut list) => {
                                           if list.is_empty() {
-                                                 debug!("MSSQL database list is empty; returning current database only");
+                                                 debug!("MsSQL database list is empty; returning current database only");
                                                  Some(vec![mssql_cfg.database.clone()])
                                           } else {
                                                  // Move system DBs (master, model, msdb, tempdb) to end for nicer UX
@@ -1369,7 +1369,7 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
                                           }
                                    }
                                    Err(e) => {
-                                          debug!("Failed to fetch MSSQL databases: {}", e);
+                                          debug!("Failed to fetch MsSQL databases: {}", e);
                                           // Fallback to default known system DBs so UI still shows something
                                           Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()])
                                    }
@@ -1429,7 +1429,7 @@ pub(crate) async fn fetch_databases_from_connection_async(tabular: &mut window_e
                      for db_num in 0..max_databases { databases.push(format!("db{}", db_num)); }
                      Some(databases)
               }
-              models::enums::DatabasePool::MSSQL(ref mssql_cfg) => {
+              models::enums::DatabasePool::MsSQL(ref mssql_cfg) => {
                      use tokio_util::compat::TokioAsyncWriteCompatExt; use tiberius::{AuthMethod, Config};
                      let mssql_cfg = mssql_cfg.clone();
                      let host = mssql_cfg.host.clone(); let port = mssql_cfg.port; let user = mssql_cfg.username.clone(); let pass = mssql_cfg.password.clone();
@@ -1440,7 +1440,7 @@ pub(crate) async fn fetch_databases_from_connection_async(tabular: &mut window_e
                             let mut stream = client.simple_query("SELECT name FROM sys.databases ORDER BY name").await.map_err(|e| e.to_string())?; use futures_util::TryStreamExt; while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); if let Some(n) = name { dbs.push(n.to_string()); } } }
                             Ok::<_, String>(dbs)
                      }.await;
-                     match rt_res { Ok(mut list) => { if list.is_empty() { Some(vec![mssql_cfg.database.clone()]) } else { let system = ["master", "model", "msdb", "tempdb"]; list.sort(); let mut user_dbs: Vec<String> = list.iter().filter(|d| !system.contains(&d.as_str())).cloned().collect(); let mut sys_dbs: Vec<String> = list.into_iter().filter(|d| system.contains(&d.as_str())).collect(); user_dbs.append(&mut sys_dbs); Some(user_dbs) } }, Err(e) => { debug!("Failed to fetch MSSQL databases: {}", e); Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()]) } }
+                     match rt_res { Ok(mut list) => { if list.is_empty() { Some(vec![mssql_cfg.database.clone()]) } else { let system = ["master", "model", "msdb", "tempdb"]; list.sort(); let mut user_dbs: Vec<String> = list.iter().filter(|d| !system.contains(&d.as_str())).cloned().collect(); let mut sys_dbs: Vec<String> = list.into_iter().filter(|d| system.contains(&d.as_str())).collect(); user_dbs.append(&mut sys_dbs); Some(user_dbs) } }, Err(e) => { debug!("Failed to fetch MsSQL databases: {}", e); Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()]) } }
               }
               models::enums::DatabasePool::MongoDB(client) => {
                      match client.list_database_names().await { Ok(dbs) => Some(dbs), Err(e) => { debug!("MongoDB list databases error: {}", e); None } }
@@ -1673,7 +1673,7 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                                      Err(_) => None,
                               }
                        }
-              models::enums::DatabaseType::MSSQL => {
+              models::enums::DatabaseType::MsSQL => {
               // Basic column metadata using INFORMATION_SCHEMA
               use tokio_util::compat::TokioAsyncWriteCompatExt;
               use tiberius::{Config, AuthMethod};
@@ -1693,7 +1693,7 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
                      tcp.set_nodelay(true).map_err(|e| e.to_string())?;
                      let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
-                     // Parse possible qualified MSSQL names like [schema].[table] or schema.table
+                     // Parse possible qualified MsSQL names like [schema].[table] or schema.table
                      let parse_qualified = |name: &str| -> (Option<String>, String) {
                             // Handle [schema].[table] or [schema].[table].[extra]
                             if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
@@ -1733,7 +1733,7 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); let dt: Option<&str> = r.get(1); if let (Some(n), Some(d)) = (name, dt) { cols.push((n.to_string(), d.to_string())); } } }
                      Ok::<_, String>(cols)
               }.await;
-              match rt_res { Ok(v) => Some(v), Err(e) => { debug!("MSSQL column fetch error: {}", e); None } }
+              match rt_res { Ok(v) => Some(v), Err(e) => { debug!("MsSQL column fetch error: {}", e); None } }
               }
               // MongoDB has been handled above; no additional branch here.
        }
@@ -1978,7 +1978,7 @@ pub(crate) fn test_database_connection(connection: &models::structs::ConnectionC
                         Err(e) => (false, format!("Redis client creation failed: {}", e)),
                     }
                             },
-                            models::enums::DatabaseType::MSSQL => {
+                            models::enums::DatabaseType::MsSQL => {
                                    // Simple test using tiberius
                                    let host = connection.host.clone();
                                    let port: u16 = connection.port.parse().unwrap_or(1433);
@@ -2001,7 +2001,7 @@ pub(crate) fn test_database_connection(connection: &models::structs::ConnectionC
                                           while let Some(item) = s.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(_r) = item { break; } }
                                           Ok::<_, String>(())
                                    }.await;
-                                   match res { Ok(_) => (true, "MSSQL connection successful!".to_string()), Err(e) => (false, format!("MSSQL connection failed: {}", e)) }
+                                   match res { Ok(_) => (true, "MsSQL connection successful!".to_string()), Err(e) => (false, format!("MsSQL connection failed: {}", e)) }
                             },
             }
         })

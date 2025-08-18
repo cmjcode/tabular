@@ -188,7 +188,7 @@ pub enum IndexDialogMode {
 pub struct IndexDialogState {
     pub mode: IndexDialogMode,
     pub connection_id: i64,
-    pub database_name: Option<String>, // For PG schema or MSSQL db context
+    pub database_name: Option<String>, // For PG schema or MsSQL db context
     pub table_name: String,
     pub existing_index_name: Option<String>,
     pub index_name: String,
@@ -200,14 +200,13 @@ pub struct IndexDialogState {
 
 // Bottom panel view mode for a selected table
 #[derive(Clone, Debug, PartialEq)]
+#[derive(Default)]
 pub enum TableBottomView {
+    #[default]
     Data,
     Structure,
 }
 
-impl Default for TableBottomView {
-    fn default() -> Self { TableBottomView::Data }
-}
 
 // Simplified column info for Structure tab (can be extended later per RDBMS)
 #[derive(Clone, Debug, Default)]
@@ -230,9 +229,26 @@ pub struct IndexStructInfo {
 
 // Sub view inside Structure (so kita tidak render dua tabel sekaligus)
 #[derive(Clone, Debug, PartialEq)]
+#[derive(Default)]
 pub enum StructureSubView {
+    #[default]
     Columns,
     Indexes,
 }
 
-impl Default for StructureSubView { fn default() -> Self { StructureSubView::Columns } }
+
+/// Type alias for the complex tuple returned by render_tree_node_with_table_expansion
+pub type RenderTreeNodeResult = (
+    Option<models::structs::ExpansionRequest>,
+    Option<(usize, i64, String)>,
+    Option<i64>,
+    Option<(i64, String)>,
+    Option<i64>,
+    Option<(String, String, String)>,
+    Option<String>,
+    Option<String>,
+    Option<(i64, String)>,
+    Option<(i64, models::enums::NodeType)>,
+    Option<(i64, String, Option<String>, Option<String>)>,
+    Option<(i64, Option<String>, Option<String>)>,
+);

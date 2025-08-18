@@ -256,7 +256,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
 
     response
 }
-    // Helper: build MSSQL SELECT ensuring database context and proper quoting.
+    // Helper: build MsSQL SELECT ensuring database context and proper quoting.
     // db_name: selected database (can be empty -> fallback to object-provided or omit USE)
     // raw_name: could be formats: table, [schema].[object], schema.object, [db].[schema].[object], db.schema.object
     fn build_mssql_select_query(db_name: String, raw_name: String) -> String {
@@ -717,10 +717,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 let uri = if cfg.username.is_empty() { format!("mongodb://{}:{}", cfg.host, cfg.port) } else if cfg.password.is_empty() { format!("mongodb://{}@{}:{}", cfg.username, cfg.host, cfg.port) } else { let enc_user = crate::modules::url_encode(&cfg.username); let enc_pass = crate::modules::url_encode(&cfg.password); format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, cfg.host, cfg.port) };
                                 match mongodb::Client::with_uri_str(uri).await { Ok(client) => Some(models::enums::DatabasePool::MongoDB(std::sync::Arc::new(client))), Err(e) => { debug!("MongoDB eager connect failed ({}): {}", cid, e); None } }
                             }
-                            models::enums::DatabaseType::MSSQL => {
-                                // For MSSQL we store config wrapper only (no network call yet) to keep behavior consistent.
+                            models::enums::DatabaseType::MsSQL => {
+                                // For MsSQL we store config wrapper only (no network call yet) to keep behavior consistent.
                                 let cfgw = crate::driver_mssql::MssqlConfigWrapper::new(cfg.host.clone(), cfg.port.clone(), cfg.database.clone(), cfg.username.clone(), cfg.password.clone());
-                                Some(models::enums::DatabasePool::MSSQL(std::sync::Arc::new(cfgw)))
+                                Some(models::enums::DatabasePool::MsSQL(std::sync::Arc::new(cfgw)))
                             }
                         }
                     });
@@ -852,7 +852,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 // Find the database name from the tree structure
                 let mut database_name: Option<String> = None;
                 for node in nodes.iter() {
-                    if let Some(db_name) = self.find_database_name_for_table(node, connection_id, &table_name) {
+                    if let Some(db_name) = Tabular::find_database_name_for_table(node, connection_id, &table_name) {
                         database_name = Some(db_name);
                         break;
                     }
@@ -872,7 +872,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         let mut key_type: Option<String> = None;
                         
                         for node in nodes.iter() {
-                            if let Some((_, k_type)) = self.find_redis_key_info(node, &table_name) {
+                            if let Some((_, k_type)) = Tabular::find_redis_key_info(node, &table_name) {
                                 key_type = Some(k_type.clone());
                                 is_redis_key = true;
                                 break;
@@ -987,8 +987,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 models::enums::DatabaseType::PostgreSQL => {
                                     format!("SELECT * FROM \"{}\".\"{}\" LIMIT 100;", db_name, table_name)
                                 }
-                                models::enums::DatabaseType::MSSQL => {
-                                    // Build robust MSSQL SELECT with explicit database context
+                                models::enums::DatabaseType::MsSQL => {
+                                    // Build robust MsSQL SELECT with explicit database context
                                     Self::build_mssql_select_query(db_name.clone(), table_name.clone())
                                 }
                                 models::enums::DatabaseType::SQLite | models::enums::DatabaseType::Redis => {
@@ -1001,7 +1001,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             }
                         } else {
                             match conn.connection_type {
-                                models::enums::DatabaseType::MSSQL => Self::build_mssql_select_query("".to_string(), table_name.clone()),
+                                models::enums::DatabaseType::MsSQL => Self::build_mssql_select_query("".to_string(), table_name.clone()),
                                 _ => format!("SELECT * FROM `{}` LIMIT 100;", table_name)
                             }
                         };
@@ -1011,7 +1011,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         
                         // Set database context for current tab and auto-execute the query and display results in bottom
                         self.current_connection_id = Some(connection_id);
-                        // Ensure the newly created tab stores selected database (important for MSSQL)
+                        // Ensure the newly created tab stores selected database (important for MsSQL)
                         if let Some(dbn) = &database_name { 
                             if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) { 
                                 active_tab.database_name = Some(dbn.clone()); 
@@ -1034,10 +1034,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                     models::enums::DatabaseType::PostgreSQL => {
                                         format!("SELECT * FROM \"{}\".\"{}\"", db_name, table_name)
                                     }
-                                    models::enums::DatabaseType::MSSQL => {
-                                        // Build robust MSSQL SELECT with explicit database context but without LIMIT
+                                    models::enums::DatabaseType::MsSQL => {
+                                        // Build robust MsSQL SELECT with explicit database context but without LIMIT
                                         let mssql_query = Self::build_mssql_select_query(db_name.clone(), table_name.clone());
-                                        // Remove the LIMIT part from MSSQL query
+                                        // Remove the LIMIT part from MsSQL query
                                         mssql_query.replace("SELECT TOP 100", "SELECT")
                                     }
                                     models::enums::DatabaseType::SQLite | models::enums::DatabaseType::Redis => {
@@ -1050,7 +1050,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 }
                             } else {
                                 match conn.connection_type {
-                                    models::enums::DatabaseType::MSSQL => {
+                                    models::enums::DatabaseType::MsSQL => {
                                         let mssql_query = Self::build_mssql_select_query("".to_string(), table_name.clone());
                                         mssql_query.replace("SELECT TOP 100", "SELECT")
                                     }
@@ -1067,8 +1067,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         } else {
                             debug!("🔄 Taking client-side pagination fallback path");
                             // Fallback to client-side pagination (original behavior)
-                            // For MSSQL, we need to strip TOP from query_content to avoid conflicts
-                            let safe_query = if conn.connection_type == models::enums::DatabaseType::MSSQL {
+                            // For MsSQL, we need to strip TOP from query_content to avoid conflicts
+                            let safe_query = if conn.connection_type == models::enums::DatabaseType::MsSQL {
                                 Self::sanitize_mssql_select_for_pagination(&query_content)
                             } else {
                                 query_content.clone()
@@ -1294,29 +1294,23 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         results
     }
 
+    
     fn render_tree_node_with_table_expansion(
-            ui: &mut egui::Ui, node: &mut models::structs::TreeNode, 
-            editor_text: &mut String, node_index: usize, 
-            refreshing_connections: &std::collections::HashSet<i64>,
-            is_search_mode: bool
-        ) -> (
-            Option<models::structs::ExpansionRequest>, Option<(usize, i64, String)>, 
-            Option<i64>, Option<(i64, String)>, Option<i64>, 
-            Option<(String, String, String)>, Option<String>, Option<String>, // Add parent folder for creation
-            Option<(i64, String)>, // Add mapping for folder removal: (hash, folder_path)
-            Option<(i64, models::enums::NodeType)>, // DBA quick view click (connection_id, node_type)
-            Option<(i64, String, Option<String>, Option<String>)>, // Index click (connection_id, index_name, database_name, table_name)
-            Option<(i64, Option<String>, Option<String>)> // Create index (connection_id, database_name, table_name)
-        ) {
-        let has_children = !node.children.is_empty();
-        let mut expansion_request = None;
-        let mut table_expansion = None;
-        let mut context_menu_request = None;
-        let mut table_click_request = None;
-        let mut folder_removal_mapping: Option<(i64, String)> = None;
-        let mut connection_click_request = None;
-        let mut query_file_to_open = None;
-        let mut folder_name_for_removal = None;
+                ui: &mut egui::Ui, node: &mut models::structs::TreeNode, 
+                editor_text: &mut String, node_index: usize, 
+                refreshing_connections: &std::collections::HashSet<i64>,
+                is_search_mode: bool
+            ) -> models::structs::RenderTreeNodeResult {
+
+    let has_children = !node.children.is_empty();
+    let mut expansion_request = None;
+    let mut table_expansion = None;
+    let mut context_menu_request = None;
+    let mut table_click_request = None;
+    let mut folder_removal_mapping: Option<(i64, String)> = None;
+    let mut connection_click_request = None;
+    let mut query_file_to_open = None;
+    let mut folder_name_for_removal = None;
     let mut parent_folder_for_creation = None;
     let mut dba_click_request: Option<(i64, models::enums::NodeType)> = None;
     let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
@@ -1437,7 +1431,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     models::enums::NodeType::CustomFolder => "📁",
                     models::enums::NodeType::QueryFolder => "📂",
                     models::enums::NodeType::HistoryDateFolder => "📅",
-                    models::enums::NodeType::MSSQLFolder => "🧰",
+                    models::enums::NodeType::MsSQLFolder => "🧰",
                 };
                 
                 let label_text = if icon.is_empty() { 
@@ -2036,27 +2030,27 @@ FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_n
                     _ => None,
                 }
             }
-            DatabaseType::MSSQL => {
+            DatabaseType::MsSQL => {
                 match node_type {
                     NodeType::UsersFolder => Some((
-                        format!("DBA: MSSQL Principals - {}", connection.name),
+                        format!("DBA: MsSQL Principals - {}", connection.name),
                         "SELECT name, type_desc, create_date, modify_date FROM sys.server_principals \
 WHERE type IN ('S','U','G') AND name NOT LIKE '##MS_%' ORDER BY name;".to_string()
                     )),
                     NodeType::PrivilegesFolder => Some((
-                        format!("DBA: MSSQL Server Permissions - {}", connection.name),
+                        format!("DBA: MsSQL Server Permissions - {}", connection.name),
                         "SELECT dp.name AS principal_name, sp.permission_name, sp.state_desc \
 FROM sys.server_permissions sp \
 JOIN sys.server_principals dp ON sp.grantee_principal_id = dp.principal_id \
 ORDER BY dp.name, sp.permission_name;".to_string()
                     )),
                     NodeType::ProcessesFolder => Some((
-                        format!("DBA: MSSQL Sessions - {}", connection.name),
+                        format!("DBA: MsSQL Sessions - {}", connection.name),
                         "SELECT session_id, login_name, host_name, status, program_name, cpu_time, memory_usage \
 FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     )),
                     NodeType::StatusFolder => Some((
-                        format!("DBA: MSSQL Performance Counters - {}", connection.name),
+                        format!("DBA: MsSQL Performance Counters - {}", connection.name),
                         "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;".to_string()
                     )),
                     _ => None,
@@ -2080,7 +2074,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     models::enums::DatabaseType::PostgreSQL => self.generate_postgresql_alter_table_template(&table_name),
                     models::enums::DatabaseType::SQLite => self.generate_sqlite_alter_table_template(&table_name),
                     models::enums::DatabaseType::Redis => "-- Redis does not support ALTER TABLE operations\n-- Redis is a key-value store, not a relational database".to_string(),
-                    models::enums::DatabaseType::MSSQL => self.generate_mysql_alter_table_template(&table_name).replace("MySQL", "MSSQL"),
+                    models::enums::DatabaseType::MsSQL => self.generate_mysql_alter_table_template(&table_name).replace("MySQL", "MsSQL"),
                     models::enums::DatabaseType::MongoDB => "-- MongoDB collections are schemaless; ALTER TABLE not applicable".to_string(),
                 };
                 
@@ -2095,7 +2089,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     models::enums::DatabaseType::PostgreSQL => "-- PostgreSQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD COLUMN new_column VARCHAR(255),\n  ALTER COLUMN existing_column TYPE INTEGER,\n  DROP COLUMN old_column;".to_string(),
                     models::enums::DatabaseType::SQLite => "-- SQLite ALTER TABLE template\n-- Note: SQLite has limited ALTER TABLE support\nALTER TABLE your_table_name\n  ADD COLUMN new_column TEXT;".to_string(),
                     models::enums::DatabaseType::Redis => "-- Redis does not support ALTER TABLE operations\n-- Redis is a key-value store, not a relational database\n-- Use Redis commands like SET, GET, HSET, etc.".to_string(),
-                    models::enums::DatabaseType::MSSQL => "-- MSSQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD new_column VARCHAR(255) NULL,\n  ALTER COLUMN existing_column INT,\n  DROP COLUMN old_column;".to_string(),
+                    models::enums::DatabaseType::MsSQL => "-- MsSQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD new_column VARCHAR(255) NULL,\n  ALTER COLUMN existing_column INT,\n  DROP COLUMN old_column;".to_string(),
                     models::enums::DatabaseType::MongoDB => "-- MongoDB does not support ALTER TABLE; modify documents with update operators".to_string(),
                 };
                 
@@ -2415,7 +2409,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 models::enums::DatabaseType::Redis => {
                     driver_redis::load_redis_structure(self, connection_id, &connection, node);
                 },
-                models::enums::DatabaseType::MSSQL => {
+                models::enums::DatabaseType::MsSQL => {
                     crate::driver_mssql::load_mssql_structure(connection_id, &connection, node);
                     },
                     models::enums::DatabaseType::MongoDB => {
@@ -2595,7 +2589,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     cache_data::build_redis_structure_from_cache(self, connection_id, node, databases);
                     return;
                 }
-                models::enums::DatabaseType::MSSQL => {
+                models::enums::DatabaseType::MsSQL => {
                     // Databases folder
                     let mut databases_folder = models::structs::TreeNode::new("Databases".to_string(), models::enums::NodeType::DatabasesFolder);
                     databases_folder.connection_id = Some(connection_id);
@@ -2622,7 +2616,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         fn_folder.connection_id = Some(connection_id);
                         fn_folder.database_name = Some(db_name.clone());
                         fn_folder.is_loaded = false;
-                        // Triggers folder (events not supported in MSSQL)
+                        // Triggers folder (events not supported in MsSQL)
                         let mut trg_folder = models::structs::TreeNode::new("Triggers".to_string(), models::enums::NodeType::TriggersFolder);
                         trg_folder.connection_id = Some(connection_id);
                         trg_folder.database_name = Some(db_name.clone());
@@ -2786,7 +2780,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             sp_folder.is_loaded = false;
                             db_children.push(sp_folder);
                         }
-                        models::enums::DatabaseType::MSSQL => {
+                        models::enums::DatabaseType::MsSQL => {
                             let mut sp_folder = models::structs::TreeNode::new("Stored Procedures".to_string(), models::enums::NodeType::StoredProceduresFolder);
                             sp_folder.connection_id = Some(connection_id);
                             sp_folder.database_name = Some(db_name.clone());
@@ -2825,7 +2819,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 models::enums::DatabaseType::PostgreSQL => vec!["postgres".to_string(), "template1".to_string(), "dvdrental".to_string()],
                 models::enums::DatabaseType::SQLite => vec!["main".to_string()],
                 models::enums::DatabaseType::Redis => vec!["redis".to_string(), "info".to_string()],
-                models::enums::DatabaseType::MSSQL => vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()],
+                models::enums::DatabaseType::MsSQL => vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()],
                 models::enums::DatabaseType::MongoDB => vec!["admin".to_string(), "local".to_string()],
             };
             
@@ -2890,8 +2884,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     events_folder.database_name = Some(db_name.clone());
                     events_folder.is_loaded = false;
                     db_children.push(events_folder);
-                } else if matches!(connection.connection_type, models::enums::DatabaseType::MSSQL) {
-                    // For MSSQL, add Procedures, Functions, and Triggers (no Events)
+                } else if matches!(connection.connection_type, models::enums::DatabaseType::MsSQL) {
+                    // For MsSQL, add Procedures, Functions, and Triggers (no Events)
                     let mut sp_folder = models::structs::TreeNode::new("Stored Procedures".to_string(), models::enums::NodeType::StoredProceduresFolder);
                     sp_folder.connection_id = Some(connection_id);
                     sp_folder.database_name = Some(db_name.clone());
@@ -3037,7 +3031,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         // Group keys by type
         let mut keys_by_type: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
         for (key, key_type) in keys_result {
-            keys_by_type.entry(key_type.clone()).or_insert_with(Vec::new).push((key, key_type));
+            keys_by_type.entry(key_type.clone()).or_default().push((key, key_type));
         }
         
         // Create folder structure for each Redis data type
@@ -3119,7 +3113,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 models::enums::DatabaseType::Redis => {
                     self.load_redis_folder_content(connection_id, &connection, node, folder_type);
                 }
-                models::enums::DatabaseType::MSSQL => {
+                models::enums::DatabaseType::MsSQL => {
                     self.load_mssql_folder_content(connection_id, &connection, node, folder_type);
                 }
                 models::enums::DatabaseType::MongoDB => {
@@ -3390,7 +3384,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn load_mssql_folder_content(&mut self, connection_id: i64, connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode, folder_type: models::enums::NodeType) {
-        debug!("Loading {:?} content for MSSQL", folder_type);
+        debug!("Loading {:?} content for MsSQL", folder_type);
         let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
 
         let (kind, node_mapper): (&str, fn(String) -> models::structs::TreeNode) = match folder_type {
@@ -3420,7 +3414,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 child
             }),
             _ => {
-                node.children = vec![models::structs::TreeNode::new("Unsupported folder for MSSQL".to_string(), models::enums::NodeType::Column)];
+                node.children = vec![models::structs::TreeNode::new("Unsupported folder for MsSQL".to_string(), models::enums::NodeType::Column)];
                 return;
             }
         };
@@ -3562,7 +3556,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             let connection = connection.clone();
             
             // Find the table node to get the correct database_name
-            let database_name = self.find_table_database_name(nodes, table_name, connection_id)
+            let database_name = Tabular::find_table_database_name(nodes, table_name, connection_id)
                 .unwrap_or_else(|| connection.database.clone());
             
             // Load columns, indexes, and primary keys from cache instead of querying server
@@ -3601,7 +3595,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             let subfolders = vec![columns_folder, indexes_folder, pks_folder];
 
             // Find the table node recursively and update it with subfolders
-            let updated = self.update_table_node_with_columns_recursive(nodes, table_name, subfolders, connection_id);
+            let updated = Self::update_table_node_with_columns_recursive(nodes, table_name, subfolders, connection_id);
             
             if !updated {
                 // Log only if update failed
@@ -3609,7 +3603,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         }
     }
 
-    fn find_table_database_name(&self, nodes: &[models::structs::TreeNode], table_name: &str, connection_id: i64) -> Option<String> {
+    fn find_table_database_name(nodes: &[models::structs::TreeNode], table_name: &str, connection_id: i64) -> Option<String> {
         for node in nodes {
             // If this is the table node we're looking for
             if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) &&
@@ -3623,14 +3617,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
             
             // Recursively search in children
-            if let Some(found_db) = self.find_table_database_name(&node.children, table_name, connection_id) {
+            if let Some(found_db) = Self::find_table_database_name(&node.children, table_name, connection_id) {
                 return Some(found_db);
             }
         }
         None
     }
 
-    fn update_table_node_with_columns_recursive(&mut self, nodes: &mut [models::structs::TreeNode], table_name: &str, columns: Vec<models::structs::TreeNode>, connection_id: i64) -> bool {
+    fn update_table_node_with_columns_recursive(nodes: &mut [models::structs::TreeNode], table_name: &str, columns: Vec<models::structs::TreeNode>, connection_id: i64) -> bool {
         for node in nodes.iter_mut() {
             // If this is the table node we're looking for
             if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) &&
@@ -3644,7 +3638,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
             
             // Recursively search in children
-            if self.update_table_node_with_columns_recursive(&mut node.children, table_name, columns.clone(), connection_id) {
+            if Self::update_table_node_with_columns_recursive(&mut node.children, table_name, columns.clone(), connection_id) {
                 return true;
             }
         }
@@ -3652,10 +3646,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn find_table_node_in_main_tree(&self, table_name: &str, connection_id: i64) -> Option<models::structs::TreeNode> {
-        self.find_table_node_recursive(&self.items_tree, table_name, connection_id)
+        Self::find_table_node_recursive(&self.items_tree, table_name, connection_id)
     }
 
-    fn find_table_node_recursive(&self, nodes: &[models::structs::TreeNode], table_name: &str, connection_id: i64) -> Option<models::structs::TreeNode> {
+    fn find_table_node_recursive(nodes: &[models::structs::TreeNode], table_name: &str, connection_id: i64) -> Option<models::structs::TreeNode> {
         for node in nodes {
             // If this is the table node we're looking for
             if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) &&
@@ -3665,7 +3659,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
             
             // Recursively search in children
-            if let Some(found_node) = self.find_table_node_recursive(&node.children, table_name, connection_id) {
+            if let Some(found_node) = Self::find_table_node_recursive(&node.children, table_name, connection_id) {
                 return Some(found_node);
             }
         }
@@ -3805,7 +3799,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     } else { Vec::new() }
                 })
             }
-            models::enums::DatabaseType::MSSQL => {
+            models::enums::DatabaseType::MsSQL => {
                 // Use tiberius
                 use tokio_util::compat::TokioAsyncWriteCompatExt;
                 use tiberius::{Config, AuthMethod};
@@ -3915,7 +3909,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     } else { Vec::new() }
                 })
             }
-            models::enums::DatabaseType::MSSQL => {
+            models::enums::DatabaseType::MsSQL => {
                 // Use tiberius
                 use tokio_util::compat::TokioAsyncWriteCompatExt;
                 use tiberius::{Config, AuthMethod};
@@ -4088,7 +4082,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         // Avoid division by zero if page_size was restored as 0 from an older tab/session
         let ps = if self.page_size == 0 { 100 } else { self.page_size };
         if let Some(actual_total) = self.actual_total_rows {
-            (actual_total + ps - 1) / ps // Ceiling division
+            actual_total.div_ceil(ps) // Ceiling division
         } else {
             1
         }
@@ -4124,7 +4118,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         }
     }
 
-    // Helper: Remove TOP clauses from MSSQL SELECT for pagination compatibility
+    // Helper: Remove TOP clauses from MsSQL SELECT for pagination compatibility
     fn sanitize_mssql_select_for_pagination(select_part: &str) -> String {
         let mut result = select_part.to_string();
         
@@ -4220,11 +4214,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             models::enums::DatabaseType::PostgreSQL => {
                 format!("{} LIMIT {} OFFSET {}", self.current_base_query, limit, offset)
             }
-            models::enums::DatabaseType::MSSQL => {
-                // MSSQL requires ORDER BY for OFFSET/FETCH. Inject ORDER BY 1 if missing.
+            models::enums::DatabaseType::MsSQL => {
+                // MsSQL requires ORDER BY for OFFSET/FETCH. Inject ORDER BY 1 if missing.
                 // Handle optional leading USE statement separated by semicolon.
                 let mut base = self.current_base_query.clone();
-                debug!("🔍 MSSQL base query before processing: {}", base);
+                debug!("🔍 MsSQL base query before processing: {}", base);
                 
                 let mut prefix = String::new();
                 // Separate USE ...; prefix if present so pagination applies only to SELECT part
@@ -4237,11 +4231,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 
                 // Trim and remove trailing semicolons/spaces
                 let mut select_part = base.trim().trim_end_matches(';').to_string();
-                debug!("🔍 MSSQL select part before TOP removal: {}", select_part);
+                debug!("🔍 MsSQL select part before TOP removal: {}", select_part);
 
                 // Enhanced TOP removal using case-insensitive regex-like approach
                 select_part = Self::sanitize_mssql_select_for_pagination(&select_part);
-                debug!("🔍 MSSQL select part after TOP removal: {}", select_part);
+                debug!("🔍 MsSQL select part after TOP removal: {}", select_part);
                 
                 // Detect ORDER BY (case-insensitive)
                 let has_order = select_part.to_lowercase().contains("order by");
@@ -4254,7 +4248,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 final_query = final_query.replace("TOP 10000", "");
                 debug!(" *** final_query *** : {}", final_query);
 
-                debug!("🧪 MSSQL final paginated query: {}", final_query);
+                debug!("🧪 MsSQL final paginated query: {}", final_query);
                 final_query
             }
             _ => {
@@ -4324,7 +4318,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 0
             }
         } else {
-            (self.total_rows + self.page_size - 1) / self.page_size
+            self.total_rows.div_ceil(self.page_size)
         }
     }
 
@@ -4464,7 +4458,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 models::enums::DatabaseType::MySQL | models::enums::DatabaseType::PostgreSQL | models::enums::DatabaseType::SQLite => {
                     self.search_sql_tables(connection_id, search_text, &conn_type);
                 }
-                models::enums::DatabaseType::MSSQL => {
+                models::enums::DatabaseType::MsSQL => {
                     // Basic table search (reuse SQL logic)
                     self.search_sql_tables(connection_id, search_text, &conn_type);
                 }
@@ -4481,46 +4475,42 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         let rt = tokio::runtime::Runtime::new().unwrap();
         
         let search_results = rt.block_on(async {
-            if let Some(pool) = connection::get_or_create_connection_pool(self, connection_id).await {
-                if let models::enums::DatabasePool::Redis(redis_manager) = pool {
-                    let mut conn = redis_manager.as_ref().clone();
-                    
-                    // Use flexible pattern for LIKE search - search text can appear anywhere
-                    let pattern = format!("*{}*", search_text);
-                    let mut cursor = 0u64;
-                    let mut found_keys = Vec::new();
-                    
-                    // First try exact pattern match
-                    for _iteration in 0..20 { // Increase iterations for more comprehensive search
-                        let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
-                            .arg(cursor)
-                            .arg("MATCH")
-                            .arg(&pattern)
-                            .arg("COUNT")
-                            .arg(100) // Increase count for better performance
-                            .query_async(&mut conn)
-                            .await;
-                            
-                        if let Ok((new_cursor, keys)) = scan_result {
-                            // Additional filtering for case-sensitive LIKE search
-                            for key in keys {
-                                if key.contains(search_text) {
-                                    found_keys.push(key);
-                                }
+            if let Some(models::enums::DatabasePool::Redis(redis_manager)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                let mut conn = redis_manager.as_ref().clone();
+
+                // Use flexible pattern for LIKE search - search text can appear anywhere
+                let pattern = format!("*{}*", search_text);
+                let mut cursor = 0u64;
+                let mut found_keys = Vec::new();
+
+                // First try exact pattern match
+                for _iteration in 0..20 { // Increase iterations for more comprehensive search
+                    let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
+                        .arg(cursor)
+                        .arg("MATCH")
+                        .arg(&pattern)
+                        .arg("COUNT")
+                        .arg(100) // Increase count for better performance
+                        .query_async(&mut conn)
+                        .await;
+
+                    if let Ok((new_cursor, keys)) = scan_result {
+                        // Additional filtering for case-sensitive LIKE search
+                        for key in keys {
+                            if key.contains(search_text) {
+                                found_keys.push(key);
                             }
-                            cursor = new_cursor;
-                            if cursor == 0 {
-                                break;
-                            }
-                        } else {
+                        }
+                        cursor = new_cursor;
+                        if cursor == 0 {
                             break;
                         }
+                    } else {
+                        break;
                     }
-                    
-                    found_keys
-                } else {
-                    Vec::new()
                 }
+
+                found_keys
             } else {
                 Vec::new()
             }
@@ -4823,7 +4813,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
 
-    fn find_redis_key_info(&self, node: &models::structs::TreeNode, key_name: &str) -> Option<(String, String)> {
+    fn find_redis_key_info(node: &models::structs::TreeNode, key_name: &str) -> Option<(String, String)> {
         // Check if this node is a type folder (like "Strings (5)")
         if node.node_type == models::enums::NodeType::TablesFolder {            
             // Extract the type from folder name
@@ -4858,7 +4848,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         
         // Recursively search in children
         for child in &node.children {
-            if let Some((db_name, key_type)) = self.find_redis_key_info(child, key_name) {
+            if let Some((db_name, key_type)) = Self::find_redis_key_info(child, key_name) {
                 return Some((db_name, key_type));
             }
         }
@@ -4866,7 +4856,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         None
     }
 
-    fn find_database_name_for_table(&self, node: &models::structs::TreeNode, connection_id: i64, table_name: &str) -> Option<String> {
+    fn find_database_name_for_table(node: &models::structs::TreeNode, connection_id: i64, table_name: &str) -> Option<String> {
         // Look for the table in the tree structure to find its database context
         
         // Check if this node is a table with the matching name and connection
@@ -4880,7 +4870,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         
         // Recursively search in children
         for child in &node.children {
-            if let Some(db_name) = self.find_database_name_for_table(child, connection_id, table_name) {
+            if let Some(db_name) = Self::find_database_name_for_table(child, connection_id, table_name) {
                 return Some(db_name);
             }
         }
@@ -5699,7 +5689,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 models::enums::DatabaseType::SQLite => {
                     format!("SELECT * FROM `{}`", table_name)
                 }
-                models::enums::DatabaseType::MSSQL => {
+                models::enums::DatabaseType::MsSQL => {
                     Self::build_mssql_select_query(database_name, table_name).replace("SELECT TOP 100 *", "SELECT *")
                 }
                 _ => return, // Other database types not supported for filtering
@@ -5724,7 +5714,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 models::enums::DatabaseType::SQLite => {
                     format!("SELECT * FROM `{}` WHERE {}", table_name, self.sql_filter_text)
                 }
-                models::enums::DatabaseType::MSSQL => {
+                models::enums::DatabaseType::MsSQL => {
                     let base_query = Self::build_mssql_select_query(database_name, table_name).replace("SELECT TOP 100 *", "SELECT *");
                     if base_query.contains("WHERE") {
                         format!("{} AND ({})", base_query, self.sql_filter_text)
@@ -5821,7 +5811,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     } else { Vec::new() }
                 })
             }
-            models::enums::DatabaseType::MSSQL => {
+            models::enums::DatabaseType::MsSQL => {
                 use tokio_util::compat::TokioAsyncWriteCompatExt; use tiberius::{Config, AuthMethod};
                 let host = connection.host.clone(); let port: u16 = connection.port.parse().unwrap_or(1433);
                 let user = connection.username.clone(); let pass = connection.password.clone();
@@ -5836,7 +5826,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     let mut stream = client.simple_query(q).await.map_err(|e| e.to_string())?; use futures_util::TryStreamExt; use tiberius::QueryItem; let mut list = Vec::new();
                     while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); let is_unique: Option<bool> = r.get(1); let type_desc: Option<&str> = r.get(2); let cols: Option<&str> = r.get(3); if let Some(nm)=name { list.push(models::structs::IndexStructInfo { name: nm.to_string(), method: type_desc.map(|s| s.to_string()), unique: is_unique.unwrap_or(false), columns: cols.unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() }); } } }
                     Ok::<_, String>(list)
-                }); match rt_res { Ok(v) => v, Err(_) => Vec::new() }
+                }); rt_res.unwrap_or_default()
             }
             models::enums::DatabaseType::SQLite => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -5939,7 +5929,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                             let table_name = self.infer_current_table_name();
                                             let drop_stmt = match conn.connection_type {
                                                 models::enums::DatabaseType::MySQL => format!("ALTER TABLE `{}` DROP INDEX `{}`;", table_name, ix.name),
-                                                models::enums::DatabaseType::MSSQL => format!("DROP INDEX [{}] ON [{}];", ix.name, table_name),
+                                                models::enums::DatabaseType::MsSQL => format!("DROP INDEX [{}] ON [{}];", ix.name, table_name),
                                                 models::enums::DatabaseType::PostgreSQL => format!("DROP INDEX IF EXISTS \"{}\";", ix.name),
                                                 models::enums::DatabaseType::SQLite => format!("DROP INDEX IF EXISTS `{}`;", ix.name),
                                                 models::enums::DatabaseType::MongoDB => format!("-- MongoDB drop index '{}' (executed via driver)", ix.name),
@@ -6176,7 +6166,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         }
         let null_clause = if self.new_column_nullable { "" } else { " NOT NULL" };
         let stmt = match conn.connection_type {
-            models::enums::DatabaseType::MySQL | models::enums::DatabaseType::MSSQL => format!("ALTER TABLE `{}` ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
+            models::enums::DatabaseType::MySQL | models::enums::DatabaseType::MsSQL => format!("ALTER TABLE `{}` ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
             models::enums::DatabaseType::PostgreSQL => format!("ALTER TABLE \"{}\" ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
             models::enums::DatabaseType::SQLite => format!("ALTER TABLE `{}` ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
             _ => "-- Add column not supported for this database type".to_string()
@@ -6209,7 +6199,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     fn infer_current_table_name(&self) -> String {
         // Priority 1: if current_table_name starts with "Table:" extract
         if self.current_table_name.starts_with("Table:") {
-            let after = self.current_table_name.splitn(2, ':').nth(1).unwrap_or("").trim();
+            let after = self.current_table_name.split_once(':').map(|x| x.1).unwrap_or("").trim();
             let mut cut = after.to_string();
             if let Some(p) = cut.find('(') { cut = cut[..p].trim().to_string(); }
             if !cut.is_empty() { return cut; }
@@ -6250,7 +6240,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 let using_clause = if method.is_empty() { "".to_string() } else { format!(" USING {}", method) };
                 format!("CREATE {}INDEX \"{}\" ON \"{}\"{} ({});", unique, idx_name, table_name, using_clause, cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", "))
             }
-            models::enums::DatabaseType::MSSQL => {
+            models::enums::DatabaseType::MsSQL => {
                 let unique = if self.new_index_unique { "UNIQUE " } else { "" };
                 // SQL Server: CREATE [UNIQUE] [NONCLUSTERED] INDEX idx ON table(col,...)
                 format!("CREATE {}INDEX [{}] ON [{}] ({});", unique, idx_name, table_name, cols.join(", "))
@@ -6277,7 +6267,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             if let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()) {
                 let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
                 if is_error {
-                    if let Some(first_row) = data.first() { if let Some(err) = first_row.get(0) { self.error_message = format!("Gagal CREATE INDEX: {}", err); self.show_error_message = true; } }
+                    if let Some(first_row) = data.first() { if let Some(err) = first_row.first() { self.error_message = format!("Gagal CREATE INDEX: {}", err); self.show_error_message = true; } }
                 } else {
                     self.load_structure_info_for_current_table();
                 }
@@ -6888,7 +6878,7 @@ impl App for Tabular {
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
                                 ui.separator();
-                                if ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed() { }
+                                ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed();
                                 if ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap").changed() { self.prefs_dirty = true; try_save_prefs(self); }
                             });
                         }
@@ -7507,8 +7497,7 @@ impl App for Tabular {
                     // Draggable splitter: when showing bottom, always reserve some min space; allow adjusting ratio
                     if show_bottom {
                         // Enforce bounds
-                        if self.table_split_ratio < 0.1 { self.table_split_ratio = 0.1; }
-                        if self.table_split_ratio > 0.9 { self.table_split_ratio = 0.9; }
+                        self.table_split_ratio = self.table_split_ratio.clamp(0.1, 0.9);
                     }
                     let editor_h = if show_bottom {
                         let mut h = avail * self.table_split_ratio;

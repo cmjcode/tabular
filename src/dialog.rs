@@ -239,7 +239,7 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                                                             });
                                                         working.method = Some(selected);
                                                     }
-                            crate::models::enums::DatabaseType::MSSQL => {
+                            crate::models::enums::DatabaseType::MsSQL => {
                                                         let options = ["NONCLUSTERED", "CLUSTERED"];
                                                         let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
                                                         egui::ComboBox::from_label("")
@@ -295,7 +295,7 @@ crate::models::enums::DatabaseType::MongoDB => todo!(),
                                                                     cols = working.columns,
                                                                 )
                                                             }
-                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MSSQL) => {
+                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MsSQL) => {
                                                                 let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
                                                                 let clustered = working.method.clone().unwrap_or("NONCLUSTERED".to_string());
                                                                 format!("USE [{db}];\nCREATE {unique} {clustered} INDEX [{name}] ON [dbo].[{table}] ({cols});",
@@ -339,7 +339,7 @@ crate::models::enums::DatabaseType::MongoDB => todo!(),
                                                                     idx = idx,
                                                                 )
                                                             }
-                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MSSQL) => {
+                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MsSQL) => {
                                                                 let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
                                                                 let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
                                                                 format!("USE [{db}];\nALTER INDEX [{idx}] ON [dbo].[{table}] REBUILD;\n-- To rename: EXEC sp_rename N'[dbo].[{idx}]', N'{new}', N'INDEX';",
