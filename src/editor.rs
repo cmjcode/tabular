@@ -29,6 +29,7 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
             current_page: 0,
             page_size: 100, // default page size aligns with global default
             total_rows: 0,
+            base_query: String::new(), // Empty base query initially
         };
         
         tabular.query_tabs.push(new_tab);
@@ -66,6 +67,7 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
             current_page: 0,
             page_size: 100, // default page size aligns with global default
             total_rows: 0,
+            base_query: String::new(), // Empty base query initially
         };
         
         tabular.query_tabs.push(new_tab);
@@ -128,6 +130,8 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
                 current_tab.current_page = tabular.current_page;
                 current_tab.page_size = tabular.page_size;
                 current_tab.total_rows = tabular.total_rows;
+                current_tab.base_query = tabular.current_base_query.clone(); // Save base query
+                debug!("💾 Saving tab {} state: base_query='{}'", tabular.active_tab_index, current_tab.base_query);
             }
             
             // Switch to new tab
@@ -143,6 +147,8 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
                 tabular.current_page = new_tab.current_page;
                 tabular.page_size = new_tab.page_size;
                 tabular.total_rows = new_tab.total_rows;
+                tabular.current_base_query = new_tab.base_query.clone(); // Restore base query
+                debug!("📂 Restoring tab {} state: base_query='{}', connection_id={:?}", tab_index, new_tab.base_query, new_tab.connection_id);
                 // IMPORTANT: kembalikan connection id aktif sesuai tab baru
                 tabular.current_connection_id = new_tab.connection_id;
 
@@ -942,6 +948,26 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                          tabular.total_rows, tabular.all_table_data.len());
                 debug!("============================");
                 
+                // Set the base query for pagination - this is crucial for regular queries!
+                // For regular queries, we set the base query to the executed query (without LIMIT)
+                let base_query_for_pagination = if !is_error_result && tabular.total_rows > 0 {
+                    // Simple LIMIT removal for pagination - remove LIMIT clause if present
+                    let mut clean_query = query.clone();
+                    if let Some(limit_pos) = clean_query.to_uppercase().rfind("LIMIT") {
+                        // Find the end of the LIMIT clause (look for semicolon or end of string)
+                        if let Some(semicolon_pos) = clean_query[limit_pos..].find(';') {
+                            clean_query = format!("{}{}", &clean_query[..limit_pos].trim(), &clean_query[limit_pos + semicolon_pos..]);
+                        } else {
+                            clean_query = clean_query[..limit_pos].trim().to_string();
+                        }
+                    }
+                    clean_query
+                } else {
+                    String::new()
+                };
+                tabular.current_base_query = base_query_for_pagination.clone();
+                debug!("📝 Set base_query for pagination: '{}'", base_query_for_pagination);
+                
                 // Save query to history hanya jika bukan hasil error
                 if !is_error_result {
                     sidebar_history::save_query_to_history(tabular, &query, connection_id);
@@ -958,6 +984,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                     tab.current_page = tabular.current_page;
                     tab.page_size = tabular.page_size;
                     tab.total_rows = tabular.total_rows;
+                    tab.base_query = tabular.current_base_query.clone(); // Save the base query to the tab
                 }
             } else {
                 tabular.current_table_name = "Query execution failed".to_string();
@@ -972,6 +999,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                     tab.result_table_name = tabular.current_table_name.clone();
                     tab.total_rows = 0;
                     tab.current_page = 0;
+                    tab.base_query.clear(); // Clear base query on failure
                 }
             }
     }

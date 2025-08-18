@@ -260,6 +260,7 @@ pub(crate)fn open_query_file(tabular: &mut window_egui::Tabular, file_path: &str
             current_page: 0,
             page_size: 0,
             total_rows: 0,
+            base_query: String::new(), // Empty base query for file queries
         };
         
         tabular.query_tabs.push(new_tab);

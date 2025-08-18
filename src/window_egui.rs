@@ -4023,7 +4023,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn next_page(&mut self) {
-        if self.use_server_pagination && !self.current_base_query.is_empty() {
+        // Check if we have a base query in the active tab for server-side pagination
+        let has_base_query = self.query_tabs
+            .get(self.active_tab_index)
+            .map(|tab| !tab.base_query.is_empty())
+            .unwrap_or(false);
+            
+        if self.use_server_pagination && has_base_query {
             // Server-side pagination
             let total_pages = self.get_total_pages_server();
             if self.current_page < total_pages.saturating_sub(1) {
@@ -4043,7 +4049,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn previous_page(&mut self) {
-        if self.use_server_pagination && !self.current_base_query.is_empty() {
+        // Check if we have a base query in the active tab for server-side pagination
+        let has_base_query = self.query_tabs
+            .get(self.active_tab_index)
+            .map(|tab| !tab.base_query.is_empty())
+            .unwrap_or(false);
+            
+        if self.use_server_pagination && has_base_query {
             // Server-side pagination
             if self.current_page > 0 {
                 self.current_page -= 1;
@@ -4061,7 +4073,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn go_to_page(&mut self, page: usize) {
-        if self.use_server_pagination && !self.current_base_query.is_empty() {
+        // Check if we have a base query in the active tab for server-side pagination
+        let has_base_query = self.query_tabs
+            .get(self.active_tab_index)
+            .map(|tab| !tab.base_query.is_empty())
+            .unwrap_or(false);
+            
+        if self.use_server_pagination && has_base_query {
             // Server-side pagination
             let total_pages = self.get_total_pages_server();
             if page < total_pages {
@@ -4092,9 +4110,16 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
     fn execute_paginated_query(&mut self) {
         debug!("🔥 Starting execute_paginated_query()");
-        if let Some(connection_id) = self.current_connection_id {
+        // Use connection from active tab, not global current_connection_id
+        let connection_id = self.query_tabs
+            .get(self.active_tab_index)
+            .and_then(|tab| tab.connection_id);
+            
+        debug!("🔥 execute_paginated_query: active_tab_index={}, connection_id={:?}", self.active_tab_index, connection_id);
+            
+        if let Some(connection_id) = connection_id {
             let offset = self.current_page * self.page_size;
-            debug!("🔥 About to build paginated query with offset={}, page_size={}", offset, self.page_size);
+            debug!("🔥 About to build paginated query with offset={}, page_size={}, connection_id={}", offset, self.page_size, connection_id);
             let paginated_query = self.build_paginated_query(offset, self.page_size);
             debug!("🔥 Built paginated query: {}", paginated_query);
             let prev_headers = self.current_table_headers.clone();
@@ -4133,7 +4158,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 }
             }
         } else {
-            debug!("🔥 No current_connection_id available for paginated query");
+            debug!("🔥 No connection_id available in active tab for paginated query");
         }
     }
 
@@ -4212,12 +4237,32 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
     }
 
     fn build_paginated_query(&self, offset: usize, limit: usize) -> String {
-        if self.current_base_query.is_empty() {
+        // Get the base query from the active tab - NO fallback to global state
+        let base_query = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
+            if tab.base_query.is_empty() {
+                None
+            } else {
+                Some(&tab.base_query)
+            }
+        } else {
+            None
+        };
+            
+        debug!("🔍 build_paginated_query: active_tab_index={}, base_query='{}'", 
+               self.active_tab_index, 
+               base_query.unwrap_or(&"<empty>".to_string()));
+            
+        let Some(base_query) = base_query else {
+            debug!("❌ build_paginated_query: base_query is empty, returning empty string");
             return String::new();
-        }
+        };
 
-        // Get the database type from current connection
-        let db_type = if let Some(connection_id) = self.current_connection_id {
+        // Get the database type from active tab's connection
+        let connection_id = self.query_tabs
+            .get(self.active_tab_index)
+            .and_then(|tab| tab.connection_id);
+            
+        let db_type = if let Some(connection_id) = connection_id {
             self.connections.iter()
                 .find(|c| c.id == Some(connection_id))
                 .map(|c| &c.connection_type)
@@ -4228,15 +4273,15 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
         match db_type {
             models::enums::DatabaseType::MySQL | models::enums::DatabaseType::SQLite => {
-                format!("{} LIMIT {} OFFSET {}", self.current_base_query, limit, offset)
+                format!("{} LIMIT {} OFFSET {}", base_query, limit, offset)
             }
             models::enums::DatabaseType::PostgreSQL => {
-                format!("{} LIMIT {} OFFSET {}", self.current_base_query, limit, offset)
+                format!("{} LIMIT {} OFFSET {}", base_query, limit, offset)
             }
             models::enums::DatabaseType::MsSQL => {
                 // MsSQL requires ORDER BY for OFFSET/FETCH. Inject ORDER BY 1 if missing.
                 // Handle optional leading USE statement separated by semicolon.
-                let mut base = self.current_base_query.clone();
+                let mut base = base_query.clone();
                 debug!("🔍 MsSQL base query before processing: {}", base);
                 
                 let mut prefix = String::new();
@@ -4272,15 +4317,21 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
             _ => {
                 // For Redis/MongoDB, return original query (these don't use SQL pagination)
-                self.current_base_query.clone()
+                base_query.clone()
             }
         }
     }
 
     fn set_page_size(&mut self, new_size: usize) {
         if new_size > 0 {
+            // Check if we have a base query in the active tab for server-side pagination
+            let has_base_query = self.query_tabs
+                .get(self.active_tab_index)
+                .map(|tab| !tab.base_query.is_empty())
+                .unwrap_or(false);
+                
             self.page_size = new_size;
-            if self.use_server_pagination && !self.current_base_query.is_empty() {
+            if self.use_server_pagination && has_base_query {
                 // Reset to first page and re-execute query
                 self.current_page = 0;
                 self.execute_paginated_query();
@@ -4309,8 +4360,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
     fn initialize_server_pagination(&mut self, base_query: String) {
         debug!("🚀 Initializing server pagination with base query: {}", base_query);
-        self.current_base_query = base_query;
+        self.current_base_query = base_query.clone();
         self.current_page = 0;
+        
+        // Also save the base query to the active tab
+        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            active_tab.base_query = base_query;
+        }
         
         // Execute count query to get total rows (now using default assumption)
         if let Some(total) = self.execute_count_query() {

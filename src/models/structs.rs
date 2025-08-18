@@ -83,6 +83,7 @@ pub struct QueryTab {
     pub current_page: usize,
     pub page_size: usize,
     pub total_rows: usize,
+    pub base_query: String, // Store the base query (without LIMIT/OFFSET) for pagination
 }
 
 
