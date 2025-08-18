@@ -1220,8 +1220,12 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 debug!("🔄 Refresh connection operation for connection: {}", connection_id);
                 if !processed_refreshes.contains(&connection_id) {
                     processed_refreshes.insert(connection_id);
+                    // Only refresh that single connection node without rebuilding the whole tree
                     self.refresh_connection(connection_id);
-                    needs_full_refresh = true;
+                    // Mark for repaint so spinner state shows immediately
+                    ui.ctx().request_repaint();
+                    // Do NOT trigger full tree rebuild here; preserving folder expansion avoids the
+                    // perception that the connection disappeared after refresh.
                 }
             } else if context_id > 0 {
                 // Positive ID means edit connection
@@ -1529,6 +1533,13 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         if ui.button("Copy Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(conn_id + 10000); // Use +10000 to indicate copy
+                            }
+                            ui.close_menu();
+                        }
+                        if ui.button("Refresh Connection").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                // Use +1000 range to indicate refresh (handled in render_tree handler)
+                                context_menu_request = Some(conn_id + 1000);
                             }
                             ui.close_menu();
                         }
@@ -2227,15 +2238,35 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         // Mark as refreshing
         self.refreshing_connections.insert(connection_id);
         
-        // Find the connection node in the tree and reset its loaded state
-        for node in &mut self.items_tree {
-            if node.node_type == models::enums::NodeType::Connection && node.connection_id == Some(connection_id) {
-                // Reset the connection node
-                node.is_loaded = false;
-                node.is_expanded = false;
-                node.children.clear();
-                debug!("Reset connection node: {}", node.name);
-                break;
+        // Find the connection node in the tree (recursively) and reset its loaded state
+        if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
+            conn_node.is_loaded = false;
+            // Keep current expansion state so it doesn't visually disappear; we'll repopulate on next expand
+            let was_expanded = conn_node.is_expanded;
+            conn_node.children.clear();
+            conn_node.is_expanded = was_expanded; // preserve state
+            debug!("🔄 Reset (cached cleared) connection node: {} (expanded: {})", conn_node.name, was_expanded);
+        } else {
+            debug!("⚠️ Could not locate connection node {} in primary tree; trying filtered tree / rebuild", connection_id);
+            // Try filtered tree (search results)
+            if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.filtered_items_tree, connection_id) {
+                let was_expanded = conn_node.is_expanded;
+                conn_node.children.clear();
+                conn_node.is_loaded = false;
+                conn_node.is_expanded = was_expanded;
+                debug!("🔄 Reset connection node in filtered tree: {} (expanded: {})", conn_node.name, was_expanded);
+            } else {
+                // As a last resort rebuild the whole tree then search again
+                crate::sidebar_database::refresh_connections_tree(self);
+                if let Some(conn_node2) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
+                    let was_expanded = conn_node2.is_expanded;
+                    conn_node2.children.clear();
+                    conn_node2.is_loaded = false;
+                    conn_node2.is_expanded = was_expanded;
+                    debug!("🔄 Reset connection node after rebuild: {} (expanded: {})", conn_node2.name, was_expanded);
+                } else {
+                    debug!("❌ Still could not locate connection node {} after rebuild. Existing connection IDs: {:?}", connection_id, self.connections.iter().filter_map(|c| c.id).collect::<Vec<_>>());
+                }
             }
         }
         

@@ -346,14 +346,23 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
 
 pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache_pool: &SqlitePool) -> bool {
 
-    // Fetch databases via INFORMATION_SCHEMA and skip system schemas
-    let db_rows_res = sqlx::query_as::<_, (String,)>(
-        "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA"
-    ).fetch_all(pool).await;
+    // Helper to decode a value in a row as String or bytes -> UTF8
+    fn decode_cell(row: &sqlx::mysql::MySqlRow, idx: usize) -> Option<String> {
+        if let Ok(s) = row.try_get::<String, _>(idx) { return Some(s); }
+        if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) { return Some(s); }
+        if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) { return Some(String::from_utf8_lossy(&bytes).to_string()); }
+        if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) { return Some(String::from_utf8_lossy(&bytes).to_string()); }
+        None
+    }
+
+    // Fetch databases via INFORMATION_SCHEMA and skip system schemas (robust to VARBINARY)
+    let db_rows_res = sqlx::query("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA")
+        .fetch_all(pool).await;
 
     let db_rows = match db_rows_res { Ok(r) => r, Err(e) => { debug!("MySQL fetch_mysql_data: failed to list schemata: {}", e); return false; } };
 
-    for (db_name,) in db_rows.into_iter() {
+    for row in db_rows.into_iter() {
+        let db_name = match decode_cell(&row, 0) { Some(v) => v, None => continue };
         if ["information_schema", "performance_schema", "mysql", "sys"].contains(&db_name.as_str()) { continue; }
 
         // Cache database
@@ -365,27 +374,30 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
         .await;
 
         // Fetch base tables using INFORMATION_SCHEMA
-        let tables_res = sqlx::query_as::<_, (String,)>(
+        let tables_res = sqlx::query(
             "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
         )
         .bind(&db_name)
         .fetch_all(pool)
         .await;
 
-        let tables = match tables_res { Ok(r) => r, Err(e) => { debug!("MySQL fetch_mysql_data: failed to list tables in {}: {}", db_name, e); continue; } };
+        let table_rows = match tables_res { Ok(r) => r, Err(e) => { debug!("MySQL fetch_mysql_data: failed to list tables in {}: {}", db_name, e); continue; } };
 
-        for (table_name,) in tables.into_iter() {
-            // Cache table
-            let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name) VALUES (?, ?, ?)"
-            )
-            .bind(connection_id)
-            .bind(&db_name)
-            .bind(&table_name)
-            .execute(cache_pool)
-            .await;
+        for row in table_rows.into_iter() {
+            let table_name = match decode_cell(&row, 0) { Some(v) => v, None => continue };
+            // Cache table (include table_type column we previously omitted) => table_type = 'table'
+            if let Err(e) = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)" )
+                .bind(connection_id)
+                .bind(&db_name)
+                .bind(&table_name)
+                .bind("table")
+                .execute(cache_pool)
+                .await {
+                debug!("MySQL fetch_mysql_data: failed to cache table {}.{}: {}", db_name, table_name, e);
+            }
 
             // Fetch columns using INFORMATION_SCHEMA
-            let cols_res = sqlx::query_as::<_, (String, String, i64)>(
+            let cols_res = sqlx::query(
                 "SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
             )
             .bind(&db_name)
@@ -394,18 +406,26 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
             .await;
 
             if let Ok(cols) = cols_res {
-                for (col_name, col_type, ord) in cols {
-                    let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)"
-                    )
-                    .bind(connection_id)
-                    .bind(&db_name)
-                    .bind(&table_name)
-                    .bind(&col_name)
-                    .bind(&col_type)
-                    .bind(ord)
-                    .execute(cache_pool)
-                    .await;
+                let mut count = 0usize;
+                for row_c in cols {
+                    let col_name = decode_cell(&row_c, 0).unwrap_or_default();
+                    let col_type = decode_cell(&row_c, 1).unwrap_or_default();
+                    let ord: i64 = row_c.try_get(2).unwrap_or(0);
+                    if let Err(e) = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)" )
+                        .bind(connection_id)
+                        .bind(&db_name)
+                        .bind(&table_name)
+                        .bind(&col_name)
+                        .bind(&col_type)
+                        .bind(ord)
+                        .execute(cache_pool)
+                        .await {
+                        debug!("MySQL fetch_mysql_data: failed to cache column {}.{}.{}: {}", db_name, table_name, col_name, e);
+                    } else { count += 1; }
                 }
+                debug!("MySQL fetch_mysql_data: cached {} columns for {}.{}", count, db_name, table_name);
+            } else if let Err(e) = cols_res {
+                debug!("MySQL fetch_mysql_data: failed to list columns in {}.{}: {}", db_name, table_name, e);
             }
         }
     }
@@ -414,53 +434,51 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
 }
 
 pub(crate) fn fetch_tables_from_mysql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, table_type: &str) -> Option<Vec<String>> {
-       
-       // Create a new runtime for the database query
-       let rt = tokio::runtime::Runtime::new().ok()?;
-       
-       rt.block_on(async {
-       // Get or create connection pool
-       let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
-       
-       match pool {
-              models::enums::DatabasePool::MySQL(mysql_pool) => {
-        let query = match table_type {
-            "table" => format!(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{}' AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME",
-                database_name.replace("'", "''")
-            ),
-                     "view" => format!("SELECT table_name FROM information_schema.views WHERE table_schema = '{}'", database_name),
-                     "procedure" => format!("SELECT routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'PROCEDURE'", database_name),
-                     "function" => format!("SELECT routine_name FROM information_schema.routines WHERE routine_schema = '{}' AND routine_type = 'FUNCTION'", database_name),
-                     "trigger" => format!("SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = '{}'", database_name),
-                     "event" => format!("SELECT event_name FROM information_schema.events WHERE event_schema = '{}'", database_name),
-                     _ => {
-                     debug!("Unsupported table type: {}", table_type);
-                     return None;
-                     }
-              };
-              
-              let result = sqlx::query_as::<_, (String,)>(&query)
-                     .fetch_all(mysql_pool.as_ref())
-                     .await;
-                     
-              match result {
-                     Ok(rows) => {
-                     let items: Vec<String> = rows.into_iter().map(|(name,)| name).collect();
-                     Some(items)
-                     },
-                     Err(e) => {
-                     debug!("Error querying MySQL {} from database {}: {}", table_type, database_name, e);
-                     None
-                     }
-              }
-              },
-              _ => {
-              debug!("Wrong pool type for MySQL connection");
-              None
-              }
-       }
-       })
+    // Build a temporary runtime (function is sync due to UI constraints)
+    let rt = tokio::runtime::Runtime::new().ok()?;
+    rt.block_on(async {
+        let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
+        match pool {
+            models::enums::DatabasePool::MySQL(mysql_pool) => {
+                // Safe decoder for first column (handles VARBINARY)
+                fn decode_row(row: &sqlx::mysql::MySqlRow) -> Option<String> {
+                    if let Ok(s) = row.try_get::<String, _>(0) { return Some(s); }
+                    if let Ok(Some(s)) = row.try_get::<Option<String>, _>(0) { return Some(s); }
+                    if let Ok(bytes) = row.try_get::<Vec<u8>, _>(0) { return Some(String::from_utf8_lossy(&bytes).to_string()); }
+                    if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(0) { return Some(String::from_utf8_lossy(&bytes).to_string()); }
+                    None
+                }
+
+                let query = match table_type {
+                    "table" => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME",
+                    "view" => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
+                    "procedure" => "SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'PROCEDURE' ORDER BY ROUTINE_NAME",
+                    "function" => "SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'FUNCTION' ORDER BY ROUTINE_NAME",
+                    "trigger" => "SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME",
+                    "event" => "SELECT EVENT_NAME FROM INFORMATION_SCHEMA.EVENTS WHERE EVENT_SCHEMA = ? ORDER BY EVENT_NAME",
+                    _ => { debug!("Unsupported table type: {}", table_type); return None; }
+                };
+
+                let rows_res = sqlx::query(query)
+                    .bind(database_name)
+                    .fetch_all(mysql_pool.as_ref())
+                    .await;
+
+                match rows_res {
+                    Ok(rows) => {
+                        let mut list: Vec<String> = rows.into_iter().filter_map(|r| decode_row(&r)).collect();
+                        list.sort();
+                        Some(list)
+                    }
+                    Err(e) => {
+                        debug!("Error querying MySQL {} from database {}: {}", table_type, database_name, e);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    })
 }
 
 
