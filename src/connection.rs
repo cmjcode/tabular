@@ -1474,27 +1474,64 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      .connect(&connection_string)
                      .await
               {
-                     Ok(pool) => {
-                     // Force text decoding to avoid VARBINARY/BLOB issues on some setups
-                     // Removed explicit CONVERT(... USING utf8mb4) to avoid collation conversion errors (e.g. 3988) when server / table
-                     // uses an incompatible collation (utf8mb4_* vs utf8mb3_*). Let the driver handle decoding.
-                     let query = "SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
-                     match sqlx::query_as::<_, (String, String)>(query)
-                            .bind(&database_name)
-                            .bind(&table_name)
-                            .fetch_all(&pool)
-                            .await
-                     {
-                            Ok(rows) => {
-                                   let columns: Vec<(String, String)> = rows.into_iter().collect();
-                                   Some(columns)
-                            },
-                            Err(e) => {
-                                   debug!("Error querying MySQL columns for table {}: {}", table_name, e);
-                                   None
-                            }
-                     }
-                     },
+                                          Ok(pool) => {
+                                                 // Query information_schema first
+                                                 let query = "SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+                                                 let result = sqlx::query(query)
+                                                        .bind(&database_name)
+                                                        .bind(&table_name)
+                                                        .fetch_all(&pool)
+                                                        .await;
+                                                 match result {
+                                                        Ok(rows) => {
+                                                               use sqlx::Row;
+                                                               let mut columns: Vec<(String,String)> = Vec::with_capacity(rows.len());
+                                                               for row in rows {
+                                                                      // Robust extraction: try String, then bytes -> utf8_lossy
+                                                                      let col_name: Option<String> = match row.try_get::<String,_>("COLUMN_NAME") { 
+                                                                             Ok(v) => Some(v),
+                                                                             Err(_) => row.try_get::<Vec<u8>,_>("COLUMN_NAME").ok().map(|b| String::from_utf8_lossy(&b).to_string())
+                                                                      };
+                                                                      let data_type: Option<String> = match row.try_get::<String,_>("DATA_TYPE") {
+                                                                             Ok(v) => Some(v),
+                                                                             Err(_) => row.try_get::<Vec<u8>,_>("DATA_TYPE").ok().map(|b| String::from_utf8_lossy(&b).to_string())
+                                                                      };
+                                                                      if let (Some(n), Some(t)) = (col_name, data_type) { columns.push((n,t)); }
+                                                               }
+                                                               if columns.is_empty() {
+                                                                      // Fallback to SHOW COLUMNS if nothing parsed (unexpected)
+                                                                      let show_q = format!("SHOW COLUMNS FROM `{}`.`{}`", database_name.replace('`', ""), table_name.replace('`', ""));
+                                                                      match sqlx::query(&show_q).fetch_all(&pool).await {
+                                                                             Ok(srows) => {
+                                                                                    for r in srows { 
+                                                                                           let name: Option<String> = r.try_get("Field").ok();
+                                                                                           let dtype: Option<String> = r.try_get("Type").ok();
+                                                                                           if let (Some(n), Some(t)) = (name, dtype) { columns.push((n,t)); }
+                                                                                    }
+                                                                             }
+                                                                             Err(e) => { debug!("MySQL fallback SHOW COLUMNS failed for {}: {}", table_name, e); }
+                                                                      }
+                                                               }
+                                                               Some(columns)
+                                                        }
+                                                        Err(e) => {
+                                                               debug!("Error querying MySQL columns for table {}: {}", table_name, e);
+                                                               // Fallback directly to SHOW COLUMNS
+                                                               let mut columns: Vec<(String,String)> = Vec::new();
+                                                               let show_q = format!("SHOW COLUMNS FROM `{}`.`{}`", database_name.replace('`', ""), table_name.replace('`', ""));
+                                                               if let Ok(srows) = sqlx::query(&show_q).fetch_all(&pool).await { 
+                                                                      use sqlx::Row; 
+                                                                      for r in srows { 
+                                                                             let name: Option<String> = r.try_get("Field").ok();
+                                                                             let dtype: Option<String> = r.try_get("Type").ok();
+                                                                             if let (Some(n), Some(t)) = (name, dtype) { columns.push((n,t)); }
+                                                                      }
+                                                                      if !columns.is_empty() { return Some(columns); }
+                                                               }
+                                                               None
+                                                        }
+                                                 }
+                                          },
                      Err(e) => {
                      debug!("Error connecting to MySQL database: {}", e);
                      None

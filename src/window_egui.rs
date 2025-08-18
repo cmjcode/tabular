@@ -1006,7 +1006,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         };
                         
                         let tab_title = format!("Table: {}", table_name);
-                        editor::create_new_tab_with_connection_and_database(self, tab_title, query_content.clone(), Some(connection_id), database_name.clone());
+                        editor::create_new_tab_with_connection_and_database(self, tab_title.clone(), query_content.clone(), Some(connection_id), database_name.clone());
                         
                         // Set database context for current tab and auto-execute the query and display results in bottom
                         self.current_connection_id = Some(connection_id);
@@ -1017,6 +1017,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             } 
                         }
                         
+                        // Set early so infer_current_table_name() bekerja saat Structure view aktif
+                        self.current_table_name = format!("Table: {} (Database: {})", table_name, database_name.as_deref().unwrap_or("Unknown"));
+                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) { active_tab.result_table_name = self.current_table_name.clone(); }
+
                         // Use server-side pagination for table browsing
                         if self.use_server_pagination {
                             // Build base query without LIMIT for server pagination
@@ -1052,7 +1056,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 }
                             };
                             
-                            self.current_table_name = format!("Table: {} (Database: {})", table_name, database_name.as_deref().unwrap_or("Unknown"));
+                            // current_table_name sudah diset lebih awal
                             self.is_table_browse_mode = true; // Enable filter for table browse
                             self.sql_filter_text.clear(); // Clear any previous filter
                             
@@ -1064,7 +1068,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 self.current_table_headers = headers;
                                 self.current_table_data = data.clone();
                                 self.all_table_data = data;
-                                self.current_table_name = format!("Table: {} (Database: {})", table_name, database_name.as_deref().unwrap_or("Unknown"));
+                                // current_table_name sudah diset lebih awal
                                 self.is_table_browse_mode = true; // Enable filter for table browse
                                 self.sql_filter_text.clear(); // Clear any previous filter
                                 self.total_rows = self.all_table_data.len();
@@ -1083,6 +1087,17 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         }
                     }
                 };
+            }
+
+            // FIX: Jika user sedang berada pada view Structure dan berpindah klik ke table lain,
+            // sebelumnya struktur tidak di-refresh sehingga masih menampilkan struktur table lama.
+            // Di sini kita paksa reload struktur untuk table baru.
+            if self.table_bottom_view == models::structs::TableBottomView::Structure {
+                self.load_structure_info_for_current_table();
+            } else {
+                // Pastikan struktur lama dibersihkan agar ketika user pindah ke Structure langsung memicu load.
+                self.structure_columns.clear();
+                self.structure_indexes.clear();
             }
         }
 
@@ -4072,6 +4087,16 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 // Don't update all_table_data since we're using server pagination
                 // Update total_rows to reflect current page data for UI purposes
                 self.total_rows = self.current_table_data.len();
+                // Sync ke tab aktif agar mode table tab (tanpa editor) bisa menampilkan Data
+                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                    active_tab.result_headers = self.current_table_headers.clone();
+                    active_tab.result_rows = self.current_table_data.clone();
+                    active_tab.result_all_rows = self.current_table_data.clone(); // single page snapshot
+                    active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
+                    active_tab.current_page = self.current_page;
+                    active_tab.page_size = self.page_size;
+                    active_tab.is_table_browse_mode = true;
+                }
             }
         }
     }
@@ -7239,9 +7264,8 @@ impl App for Tabular {
                             let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
                             if ui.add(egui::SelectableLabel::new(is_struct, "🏗 Structure")).clicked() {
                                 self.table_bottom_view = models::structs::TableBottomView::Structure;
-                                if self.structure_columns.is_empty() { 
-                                    self.load_structure_info_for_current_table(); 
-                                }
+                                // Selalu reload supaya tidak terjebak struktur kosong atau struktur tabel sebelumnya
+                                self.load_structure_info_for_current_table();
                             }
                         });
                         
