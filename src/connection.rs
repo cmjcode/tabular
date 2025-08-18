@@ -11,6 +11,76 @@ use redis::{Client, aio::ConnectionManager};
 use mongodb::{Client as MongoClient, bson::doc};
 use log::{debug};
 
+// Infer column headers from a SELECT statement when no rows are returned.
+// This is a best-effort parser handling simple SELECT lists (supports aliases, functions, qualified names).
+fn infer_select_headers(statement: &str) -> Vec<String> {
+       let lower = statement.to_lowercase();
+       let select_pos = match lower.find("select") { Some(p) => p, None => return Vec::new() };
+       // Find the matching FROM outside parentheses
+       let mut depth = 0usize;
+       let mut from_pos: Option<usize> = None;
+       for (i, ch) in statement.chars().enumerate().skip(select_pos + 6) { // after 'select'
+              match ch {
+                     '(' => depth += 1,
+                     ')' => depth = depth.saturating_sub(1),
+                     _ => {}
+              }
+              if depth == 0 && i + 4 <= statement.len() && lower[i..].starts_with("from") {
+                     from_pos = Some(i);
+                     break;
+              }
+       }
+       let from_pos = match from_pos { Some(p) => p, None => return Vec::new() };
+       let select_list = &statement[select_pos + 6..from_pos];
+       // Split by commas at top level (ignore commas inside parentheses)
+       let mut headers = Vec::new();
+       let mut current = String::new();
+       depth = 0;
+       for ch in select_list.chars() {
+              match ch {
+                     '(' => { depth += 1; current.push(ch); },
+                     ')' => { if depth>0 { depth -= 1; } current.push(ch); },
+                     ',' if depth == 0 => {
+                            let h = extract_alias_or_name(&current);
+                            if !h.is_empty() { headers.push(h); }
+                            current.clear();
+                     },
+                     _ => current.push(ch)
+              }
+       }
+       if !current.trim().is_empty() {
+              let h = extract_alias_or_name(&current);
+              if !h.is_empty() { headers.push(h); }
+       }
+       headers
+}
+
+fn extract_alias_or_name(fragment: &str) -> String {
+       let frag = fragment.trim();
+       if frag.is_empty() { return String::new(); }
+       let lower = frag.to_lowercase();
+       if let Some(as_pos) = lower.rfind(" as ") { // alias with AS
+              let alias = frag[as_pos + 4..].trim();
+              return clean_identifier(alias);
+       }
+       // Alias without AS: take last token after space if it is not a function call
+       let tokens: Vec<&str> = frag.split_whitespace().collect();
+       if tokens.len() > 1 {
+              let last = tokens.last().unwrap();
+              // Avoid returning keywords or expressions
+              if !last.contains('(') && !["distinct"].contains(&last.to_lowercase().as_str()) {
+                     return clean_identifier(last);
+              }
+       }
+       // Otherwise, strip qualification
+       if let Some(idx) = frag.rfind('.') { return clean_identifier(&frag[idx+1..]); }
+       clean_identifier(frag)
+}
+
+fn clean_identifier(id: &str) -> String {
+       id.trim().trim_matches('`').trim_matches('"').trim_matches('[').trim_matches(']').to_string()
+}
+
 // Helper function to add auto LIMIT if not present
 pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseType) -> String {
     let trimmed_query = query.trim();
@@ -400,8 +470,12 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                              .collect();
                                                                                       final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
                                                                                } else {
-                                                                                      // Query executed successfully but returned no rows
-                                                                                      // For MySQL, try to get column info using DESCRIBE if it's a table query
+                                                                                      // Zero rows: try to infer headers from SELECT list first
+                                                                                      if trimmed.to_uppercase().starts_with("SELECT") {
+                                                                                             let inferred = infer_select_headers(trimmed);
+                                                                                             if !inferred.is_empty() { final_headers = inferred; }
+                                                                                      }
+                                                                                      // For MySQL, try to get column info using DESCRIBE if it's a table query (fallback)
                                                                                       if trimmed.to_uppercase().contains("FROM") {
                                                                                              // Extract table name for DESCRIBE
                                                                                              let words: Vec<&str> = trimmed.split_whitespace().collect();
@@ -507,7 +581,11 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                       }).collect()
                                                                                }).collect();
                                                                         } else {
-                                                                               // Query executed successfully but returned no rows
+                                                                               // Zero rows: infer headers from SELECT list
+                                                                               if statement.to_uppercase().starts_with("SELECT") {
+                                                                                      let inferred = infer_select_headers(statement);
+                                                                                      if !inferred.is_empty() { final_headers = inferred; }
+                                                                               }
                                                                                // For PostgreSQL, try to get column info from information_schema
                                                                                if statement.to_uppercase().contains("FROM") {
                                                                                       // Extract table name for information_schema query
@@ -538,8 +616,8 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                                                                 }
                                                                                                                          }
                                                                                                                          Err(_) => {
-                                                                                                                                // Both methods failed
-                                                                                                                                final_headers = Vec::new();
+                                                                                                                                if final_headers.is_empty() { final_headers = infer_select_headers(statement); }
+                                                                                                                                if final_headers.is_empty() { final_headers = Vec::new(); }
                                                                                                                          }
                                                                                                                   }
                                                                                                            }
@@ -583,8 +661,12 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
                                                                                final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
                                                                         } else {
-                                                                               // Query executed successfully but returned no rows
-                                                                               // For SQLite, try to get column info using PRAGMA table_info
+                                                                               // Zero rows: infer headers from SELECT list
+                                                                               if statement.to_uppercase().starts_with("SELECT") {
+                                                                                      let inferred = infer_select_headers(statement);
+                                                                                      if !inferred.is_empty() { final_headers = inferred; }
+                                                                               }
+                                                                                // For SQLite, try to get column info using PRAGMA table_info
                                                                                if statement.to_uppercase().contains("FROM") {
                                                                                       // Extract table name for PRAGMA table_info
                                                                                       let words: Vec<&str> = statement.split_whitespace().collect();
@@ -976,23 +1058,23 @@ pub(crate) async fn refresh_connection_background_async(
        .await;
        
        if let Ok(Some((id, name, host, port, username, password, database_name, connection_type))) = connection_result {
-              let connection = models::structs::ConnectionConfig {
-              id: Some(id),
-              name,
-              host,
-              port,
-              username,
-              password,
-              database: database_name,
-              connection_type: match connection_type.as_str() {
-                     "MySQL" => models::enums::DatabaseType::MySQL,
-                     "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                     "Redis" => models::enums::DatabaseType::Redis,
-                     "MsSQL" => models::enums::DatabaseType::MsSQL,
-                     _ => models::enums::DatabaseType::SQLite,
-              },
-              folder: None, // Will be loaded from database later
-              };
+                             let connection = models::structs::ConnectionConfig {
+                                    id: Some(id),
+                                    name,
+                                    host,
+                                    port,
+                                    username,
+                                    password,
+                                    database: database_name,
+                                    connection_type: match connection_type.as_str() {
+                                           "MySQL" => models::enums::DatabaseType::MySQL,
+                                           "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
+                                           "Redis" => models::enums::DatabaseType::Redis,
+                                           "MsSQL" => models::enums::DatabaseType::MsSQL,
+                                           _ => models::enums::DatabaseType::SQLite,
+                                    },
+                                    folder: None, // Will be loaded from database later
+                             };
               
               // Clear cache
               let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
@@ -1005,10 +1087,10 @@ pub(crate) async fn refresh_connection_background_async(
               .execute(cache_pool_arc.as_ref())
               .await;
               
-              let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
-              .bind(connection_id)
-              .execute(cache_pool_arc.as_ref())
-              .await;
+                       let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
+                              .bind(connection_id)
+                              .execute(cache_pool_arc.as_ref())
+                              .await;
 
               // Create new connection pool
               match tokio::time::timeout(
@@ -1145,26 +1227,25 @@ pub(crate) async fn create_database_pool(connection: &models::structs::Connectio
               );
               Some(models::enums::DatabasePool::MsSQL(Arc::new(cfg)))
        }
-       models::enums::DatabaseType::MongoDB => {
-              let uri = if connection.username.is_empty() {
-                     format!("mongodb://{}:{}", connection.host, connection.port)
-              } else if connection.password.is_empty() {
-                     format!("mongodb://{}@{}:{}", connection.username, connection.host, connection.port)
-              } else {
-                     let enc_user = modules::url_encode(&connection.username);
-                     let enc_pass = modules::url_encode(&connection.password);
-                     format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection.host, connection.port)
-              };
-              match MongoClient::with_uri_str(uri).await {
-                     Ok(client) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
-                     Err(_) => None,
-              }
-       }
-       }
+          models::enums::DatabaseType::MongoDB => {
+                 let uri = if connection.username.is_empty() {
+                        format!("mongodb://{}:{}", connection.host, connection.port)
+                 } else if connection.password.is_empty() {
+                        format!("mongodb://{}@{}:{}", connection.username, connection.host, connection.port)
+                 } else {
+                        let enc_user = modules::url_encode(&connection.username);
+                        let enc_pass = modules::url_encode(&connection.password);
+                        format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection.host, connection.port)
+                 };
+                 match MongoClient::with_uri_str(uri).await {
+                        Ok(client) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
+                        Err(_e) => None,
+                 }
+          }
+          }
 }
 
-
-
+// Fetch and cache metadata for all databases/tables/columns per connection
 async fn fetch_and_cache_all_data(
        connection_id: i64,
        connection: &models::structs::ConnectionConfig,
@@ -1172,45 +1253,36 @@ async fn fetch_and_cache_all_data(
        cache_pool: &SqlitePool,
 ) -> bool {
        match &connection.connection_type {
-       models::enums::DatabaseType::MySQL => {
-              if let models::enums::DatabasePool::MySQL(mysql_pool) = pool {
-              driver_mysql::fetch_mysql_data(connection_id, mysql_pool, cache_pool).await
-              } else {
-              false
+              models::enums::DatabaseType::MySQL => {
+                     if let models::enums::DatabasePool::MySQL(mysql_pool) = pool {
+                            driver_mysql::fetch_mysql_data(connection_id, mysql_pool, cache_pool).await
+                     } else { false }
               }
-       }
-       models::enums::DatabaseType::SQLite => {
-              if let models::enums::DatabasePool::SQLite(sqlite_pool) = pool {
-              driver_sqlite::fetch_data(connection_id, sqlite_pool, cache_pool).await
-              } else {
-              false
+              models::enums::DatabaseType::SQLite => {
+                     if let models::enums::DatabasePool::SQLite(sqlite_pool) = pool {
+                            driver_sqlite::fetch_data(connection_id, sqlite_pool, cache_pool).await
+                     } else { false }
               }
-       }
-       models::enums::DatabaseType::PostgreSQL => {
-              if let models::enums::DatabasePool::PostgreSQL(postgres_pool) = pool {
-              driver_postgres::fetch_postgres_data(connection_id, postgres_pool, cache_pool).await
-              } else {
-              false
+              models::enums::DatabaseType::PostgreSQL => {
+                     if let models::enums::DatabasePool::PostgreSQL(postgres_pool) = pool {
+                            driver_postgres::fetch_postgres_data(connection_id, postgres_pool, cache_pool).await
+                     } else { false }
               }
-       }
-       models::enums::DatabaseType::Redis => {
-              if let models::enums::DatabasePool::Redis(redis_manager) = pool {
-              driver_redis::fetch_redis_data(connection_id, redis_manager, cache_pool).await
-              } else {
-              false
+              models::enums::DatabaseType::Redis => {
+                     if let models::enums::DatabasePool::Redis(redis_manager) = pool {
+                            driver_redis::fetch_redis_data(connection_id, redis_manager, cache_pool).await
+                     } else { false }
               }
-       }
-       models::enums::DatabaseType::MsSQL => {
-              if let models::enums::DatabasePool::MsSQL(mssql_cfg) = pool {
-                     driver_mssql::fetch_mssql_data(connection_id, mssql_cfg.clone(), cache_pool).await
-              } else { false }
-       }
-       models::enums::DatabaseType::MongoDB => {
-              if let models::enums::DatabasePool::MongoDB(client) = pool {
-                     // Use helper to populate cache
-                     crate::driver_mongodb::fetch_mongodb_data(connection_id, client.clone(), cache_pool).await
-              } else { false }
-       }
+              models::enums::DatabaseType::MsSQL => {
+                     if let models::enums::DatabasePool::MsSQL(mssql_cfg) = pool {
+                            driver_mssql::fetch_mssql_data(connection_id, mssql_cfg.clone(), cache_pool).await
+                     } else { false }
+              }
+              models::enums::DatabaseType::MongoDB => {
+                     if let models::enums::DatabasePool::MongoDB(client) = pool {
+                            crate::driver_mongodb::fetch_mongodb_data(connection_id, client.clone(), cache_pool).await
+                     } else { false }
+              }
        }
 }
 

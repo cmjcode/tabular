@@ -1024,6 +1024,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
 
                         // Use server-side pagination for table browsing
                         if self.use_server_pagination {
+                            println!("================== A ============================ ");
                             debug!("🚀 Taking server-side pagination path");
                             // Build base query without LIMIT for server pagination
                             let base_query = if let Some(db_name) = &database_name {
@@ -1065,6 +1066,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             // Initialize server-side pagination
                             self.initialize_server_pagination(base_query);
                         } else {
+                            println!("================== 1 ============================ ");
                             debug!("🔄 Taking client-side pagination fallback path");
                             // Fallback to client-side pagination (original behavior)
                             // For MsSQL, we need to strip TOP from query_content to avoid conflicts
@@ -4095,12 +4097,29 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             debug!("🔥 About to build paginated query with offset={}, page_size={}", offset, self.page_size);
             let paginated_query = self.build_paginated_query(offset, self.page_size);
             debug!("🔥 Built paginated query: {}", paginated_query);
+            let prev_headers = self.current_table_headers.clone();
+            let requested_page = self.current_page;
             
             if let Some((headers, data)) = connection::execute_query_with_connection(self, connection_id, paginated_query) {
-                self.current_table_headers = headers;
+                // If we navigated past the last page (offset beyond available rows), keep previous headers and revert page
+                if data.is_empty() && offset > 0 {
+                    // Heuristic: previous page had < page_size rows or actual_total_rows known and offset >= actual_total_rows
+                    let past_end = if let Some(total) = self.actual_total_rows { offset >= total } else { self.current_page > 0 && self.total_rows < self.page_size };
+                    if past_end {
+                        debug!("🔙 Requested page {} out of range (offset {}), reverting to previous page", requested_page + 1, offset);
+                        // Revert page index
+                        if requested_page > 0 { self.current_page = requested_page - 1; }
+                        // Keep previous headers and data (do not overwrite)
+                        self.current_table_headers = prev_headers;
+                        // No further sync needed
+                        return;
+                    }
+                }
+
+                // Normal assignment (including empty last page that is valid)
+                self.current_table_headers = if headers.is_empty() { if !prev_headers.is_empty() { prev_headers } else { headers } } else { headers };
                 self.current_table_data = data;
-                // Don't update all_table_data since we're using server pagination
-                // Update total_rows to reflect current page data for UI purposes
+                // For server pagination, total_rows represents current page row count only (used for UI row count display)
                 self.total_rows = self.current_table_data.len();
                 // Sync ke tab aktif agar mode table tab (tanpa editor) bisa menampilkan Data
                 if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
@@ -4317,6 +4336,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             } else {
                 0
             }
+        } else if self.page_size == 0 {
+            1 // Avoid division by zero, fallback to 1 page
         } else {
             self.total_rows.div_ceil(self.page_size)
         }
@@ -5092,10 +5113,24 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     }
                 }
 
+                // Tata letak: sisakan ruang khusus pagination supaya tidak tertimpa / tersembunyi walau data kosong.
+                // Pendekatan: alokasikan area scroll dengan tinggi pasti (avail - pagination_est) lalu render bar di bawahnya.
+                let avail_h = ui.available_height();
+                let pagination_height_est = ui.text_style_height(&egui::TextStyle::Body) + 14.0;
+                let scroll_h = (avail_h - pagination_height_est).max(50.0);
+                let (scroll_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), scroll_h),
+                    egui::Sense::hover()
+                );
+                let mut scroll_child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(scroll_rect)
+                        .layout(egui::Layout::top_down(egui::Align::LEFT))
+                );
                 egui::ScrollArea::both()
+                    .id_salt("table_data_scroll")
                     .auto_shrink([false, false])
-                    .max_height(ui.available_height() - 25.0) // Very tight spacing
-                    .show(ui, |ui| {
+                    .show(&mut scroll_child, |ui| {
                         let grid_response = egui::Grid::new("table_data_grid")
                             .striped(true)
                             .spacing([0.0, 0.0])
@@ -5488,107 +5523,125 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 }
                 for (column_index, ascending) in sort_requests { self.sort_table_data(column_index, ascending); }
                 // If there are no rows, display an explicit message under the header grid
-                if self.current_table_data.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new("0 rows").italics().weak());
-                }
+                // if self.current_table_data.is_empty() {
+                //     ui.add_space(4.0);
+                //     ui.label(egui::RichText::new("0 rows").italics().weak());
+                // }
                 
-                // Render pagination controls at the bottom - INSIDE the headers condition but OUTSIDE ScrollArea
-                if self.total_rows > 0 || !self.current_table_headers.is_empty() {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0; // Tighter horizontal spacing
-                ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0); // Smaller button padding
-                
-                // Display different information based on pagination mode
-                if self.use_server_pagination && self.actual_total_rows.is_some() {
-                    let actual_total = self.actual_total_rows.unwrap_or(0);
-                    let start_row = self.current_page * self.page_size + 1;
-                    let end_row = ((self.current_page + 1) * self.page_size).min(actual_total);
-                    ui.label(format!("Showing rows {}-{} of {} total", start_row, end_row, actual_total));
-                    ui.colored_label(egui::Color32::GREEN, "📡 Server pagination");
-                } else {
-                    ui.label(format!("Total rows: {}", self.total_rows));
-                    if !self.use_server_pagination {
-                        ui.colored_label(egui::Color32::YELLOW, "💾 Client pagination");
-                    }
-                }
-                ui.separator();
-                
-                // Page size selector
-                ui.label("Rows per page:");
-                let mut page_size_str = self.page_size.to_string();
-                if ui.text_edit_singleline(&mut page_size_str).changed() {
-                    if let Ok(new_size) = page_size_str.parse::<usize>() {
-                        if new_size > 0 && new_size <= 10000 {
-                            self.set_page_size(new_size);
-                        }
-                    }
-                }
-                
-                ui.separator();
-                
-                // Navigation buttons - disable when no data
-                let has_data = if self.use_server_pagination {
-                    self.actual_total_rows.unwrap_or(0) > 0
-                } else {
-                    self.total_rows > 0
-                };
-                
-                let total_pages = if self.use_server_pagination {
-                    self.get_total_pages_server()
-                } else {
-                    self.get_total_pages()
-                };
-                                    
-                ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("⏮ First"))
-                    .clicked()
-                    .then(|| self.go_to_page(0));
-                
-                ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("◀ Prev"))
-                    .clicked()
-                    .then(|| self.previous_page());
-                
-                ui.label(format!("Page {} of {}", self.current_page + 1, total_pages.max(1)));
-                
-                ui.add_enabled(has_data && self.current_page < total_pages.saturating_sub(1), egui::Button::new("Next ▶"))
-                    .clicked()
-                    .then(|| self.next_page());
-                
-                ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
-                    .clicked()
-                    .then(|| {
-                        let last_page = total_pages.saturating_sub(1);
-                        self.go_to_page(last_page);
-                    });
-                
-                ui.separator();
-                if ui.button("Clear selection").clicked() {
-                    self.selected_rows.clear();
-                    self.selected_columns.clear();
-                    self.selected_row = None;
-                    self.selected_cell = None;
-                    self.last_clicked_row = None;
-                    self.last_clicked_column = None;
-                }
-                
-                // Quick page jump - disable when no data
-                ui.label("Go to page:");
-                let mut page_input = (self.current_page + 1).to_string();
-                if ui.add_enabled(has_data, egui::TextEdit::singleline(&mut page_input)).changed() {
-                    if let Ok(page_num) = page_input.parse::<usize>() {
-                        if page_num > 0 {
-                            self.go_to_page(page_num - 1);
-                        }
-                    }
-                }
-            });
-        }
+                // (Pagination dipindahkan & kini dirender terpisah secara universal di akhir fungsi)
             } else if self.current_table_name.starts_with("Failed") {
                 ui.colored_label(egui::Color32::RED, &self.current_table_name);
             } else {
-                ui.label("No data available");
+                // Tampilkan header & pagination walaupun tidak ada data
+                // Ambil header dari tab aktif bila current_table_headers kosong
+                if self.current_table_headers.is_empty() {
+                    if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
+                        if !tab.result_headers.is_empty() {
+                            self.current_table_headers = tab.result_headers.clone();
+                        }
+                    }
+                }
+
+                if !self.current_table_headers.is_empty() {
+                    // Render grid header tanpa rows
+                    egui::ScrollArea::both().show(ui, |ui| {
+                        egui::Grid::new("empty_result_headers").striped(true).show(ui, |ui| {
+                            for h in &self.current_table_headers {
+                                ui.label(egui::RichText::new(h).strong());
+                            }
+                            ui.end_row();
+                        });
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("0 rows").italics().weak());
+                    });
+
+                } else {
+                    // Fallback asli kalau benar-benar tidak ada header
+                    ui.label("No data available - No Header available");
+                }
+
             }
+            // Pagination universal: jika belum ada header sama sekali tampilkan placeholder info sebelum bar
+            if self.current_table_headers.is_empty() {
+                ui.label(egui::RichText::new("No columns loaded yet").italics().weak());
+            }
+            // Pagination bar sticky: sudah di luar area scroll jadi otomatis menempel bawah container
+            self.render_pagination_bar(ui);
         }
+    }
+
+    // Helper baru: render pagination bar (dipakai baik ada data maupun kosong)
+    fn render_pagination_bar(&mut self, ui: &mut egui::Ui) {
+    // Tidak ada extra space supaya bar menempel konten / tepi bawah
+        ui.horizontal(|ui| {
+            let spacing = ui.spacing_mut();
+            spacing.item_spacing.x = 4.0;
+            spacing.button_padding = egui::vec2(6.0, 2.0);
+
+            if self.use_server_pagination && self.actual_total_rows.is_some() {
+                let actual_total = self.actual_total_rows.unwrap_or(0);
+                if actual_total > 0 {
+                    let start_row = self.current_page * self.page_size + 1;
+                    let end_row = ((self.current_page + 1) * self.page_size).min(actual_total);
+                    ui.label(format!("Showing rows {}-{} of {} total", start_row, end_row, actual_total));
+                } else {
+                    ui.label("0 rows");
+                }
+                ui.colored_label(egui::Color32::GREEN, "📡 Server pagination");
+            } else {
+                ui.label(format!("Total rows: {}", self.total_rows));
+                if !self.use_server_pagination {
+                    ui.colored_label(egui::Color32::YELLOW, "💾 Client pagination");
+                }
+            }
+            ui.separator();
+
+            // Page size selector
+            ui.label("Rows per page:");
+            let mut page_size_str = self.page_size.to_string();
+            // Batasi lebar input supaya tidak mengembang mengisi bar dan membuat gap
+            if ui.add(egui::TextEdit::singleline(&mut page_size_str).desired_width(60.0)).changed() {
+                if let Ok(new_size) = page_size_str.parse::<usize>() {
+                    if new_size > 0 && new_size <= 10000 { self.set_page_size(new_size); }
+                }
+            }
+
+            ui.separator();
+
+            // Navigation buttons
+            let has_data = if self.use_server_pagination { self.actual_total_rows.unwrap_or(0) > 0 } else { self.total_rows > 0 };
+            let total_pages = if self.use_server_pagination { self.get_total_pages_server() } else { self.get_total_pages() };
+
+            ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("⏮ First"))
+                .clicked()
+                .then(|| self.go_to_page(0));
+            ui.add_enabled(has_data && self.current_page > 0, egui::Button::new("◀ Prev"))
+                .clicked()
+                .then(|| self.previous_page());
+            ui.label(format!("Page {} of {}", self.current_page + 1, total_pages.max(1)));
+            ui.add_enabled(has_data && self.current_page < total_pages.saturating_sub(1), egui::Button::new("Next ▶"))
+                .clicked()
+                .then(|| self.next_page());
+            ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
+                .clicked()
+                .then(|| { let last_page = total_pages.saturating_sub(1); self.go_to_page(last_page); });
+
+            ui.separator();
+            if ui.button("Clear selection").clicked() {
+                self.selected_rows.clear();
+                self.selected_columns.clear();
+                self.selected_row = None;
+                self.selected_cell = None;
+                self.last_clicked_row = None;
+                self.last_clicked_column = None;
+            }
+
+            ui.label("Go to page:");
+            let mut page_input = (self.current_page + 1).to_string();
+            if ui.add_enabled(has_data, egui::TextEdit::singleline(&mut page_input)).changed() {
+                if let Ok(page_num) = page_input.parse::<usize>() { if page_num > 0 { self.go_to_page(page_num - 1); } }
+            }
+        });
     }
     
     fn sort_table_data(&mut self, column_index: usize, ascending: bool) {
