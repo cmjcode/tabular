@@ -282,6 +282,11 @@ async fn run_query(mut client: tiberius::Client<tokio_util::compat::Compat<tokio
                         ColumnData::DateTime(Some(dt)) => format!("{:?}", dt),
                         ColumnData::SmallDateTime(Some(dt)) => format!("{:?}", dt),
                         ColumnData::Xml(Some(x)) => x.to_string(),
+                        // Newer temporal types in recent tiberius versions
+                        ColumnData::Time(Some(t)) => format!("{:?}", t),
+                        ColumnData::Date(Some(d)) => format!("{:?}", d),
+                        ColumnData::DateTime2(Some(dt2)) => format!("{:?}", dt2),
+                        ColumnData::DateTimeOffset(Some(dto)) => format!("{:?}", dto),
                         // NULL variants
                         ColumnData::Bit(None)
                         | ColumnData::U8(None)
@@ -296,7 +301,11 @@ async fn run_query(mut client: tiberius::Client<tokio_util::compat::Compat<tokio
                         | ColumnData::Numeric(None)
                         | ColumnData::DateTime(None)
                         | ColumnData::SmallDateTime(None)
-                        | ColumnData::Xml(None) => "NULL".to_string(),
+                        | ColumnData::Xml(None)
+                        | ColumnData::Time(None)
+                        | ColumnData::Date(None)
+                        | ColumnData::DateTime2(None)
+                        | ColumnData::DateTimeOffset(None) => "NULL".to_string(),
                     };
                     row_vec.push(val);
                 }
