@@ -199,6 +199,8 @@ pub struct Tabular {
     pub auto_updater: Option<crate::auto_updater::AutoUpdater>,
     // Preferences window active tab
     pub settings_active_pref_tab: PrefTab,
+    // Lightweight settings context menu (gear popup)
+    pub show_settings_menu: bool,
 }
 
 // Preference tabs enumeration
@@ -488,6 +490,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             update_install_receiver: None,
             auto_updater: crate::auto_updater::AutoUpdater::new().ok(),
             settings_active_pref_tab: PrefTab::ApplicationTheme,
+            show_settings_menu: false,
         };
         
         // Clear any old cached pools
@@ -1561,26 +1564,26 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(conn_id + 10000); // Use +10000 to indicate copy
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("Refresh Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 // Use +1000 range to indicate refresh (handled in render_tree handler)
                                 context_menu_request = Some(conn_id + 1000);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("Edit Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(conn_id);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("Remove Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(-conn_id); // Negative ID indicates removal
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -1594,7 +1597,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             // Use ID range 50000+ for create folder in folder operations
                             let create_in_folder_id = 50000 + (node.name.len() as i64 % 1000);
                             context_menu_request = Some(create_in_folder_id);
-                            ui.close_menu();
+                            ui.close();
                         }
                         
                         if ui.button("🗑️ Remove Folder").clicked() {
@@ -1625,7 +1628,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 folder_removal_mapping = Some((hash, folder_name));
                                 context_menu_request = Some(remove_folder_id);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -1638,17 +1641,17 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
                                 table_click_request = Some((conn_id, actual_table_name));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("📋 SELECT Query (New Tab)").clicked() {
                             // We'll create a new tab instead of modifying current editor
                             // Store the request and handle it in render_tree
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
                             let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
                             *editor_text = format!("SELECT COUNT(*) FROM {};", actual_table_name);
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("📝 DESCRIBE Query (Current Tab)").clicked() {
                             let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
@@ -1658,7 +1661,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             } else {
                                 *editor_text = format!("PRAGMA table_info({});", actual_table_name); // SQLite syntax
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         if ui.button("➕ Add Index (New Tab)").clicked() {
@@ -1666,7 +1669,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
                                 create_index_request = Some((conn_id, node.database_name.clone(), Some(actual_table_name)));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         if ui.button("🔧 Alter Table").clicked() {
@@ -1674,7 +1677,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 // Use connection_id + 30000 to indicate alter table request
                                 context_menu_request = Some(conn_id + 30000);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -1687,17 +1690,17 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
                                 table_click_request = Some((conn_id, actual_table_name));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("📋 SELECT Query (New Tab)").clicked() {
                             // We'll create a new tab instead of modifying current editor  
                             // Store the request and handle it in render_tree
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
                             let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
                             *editor_text = format!("SELECT COUNT(*) FROM {};", actual_table_name);
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("📝 DESCRIBE View (Current Tab)").clicked() {
                             // Different DESCRIBE syntax for different database types
@@ -1706,7 +1709,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             } else {
                                 *editor_text = format!("PRAGMA table_info({});", node.name); // SQLite syntax
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         if ui.button("🗂️ Show Columns").clicked() {
@@ -1714,7 +1717,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             if let Some(conn_id) = node.connection_id {
                                 table_expansion = Some((0, conn_id, node.name.clone()));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -1726,7 +1729,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             if let Some(conn_id) = node.connection_id {
                                 create_index_request = Some((conn_id, node.database_name.clone(), node.table_name.clone()));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -1738,7 +1741,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             if let Some(conn_id) = node.connection_id {
                                 index_click_request = Some((conn_id, node.name.clone(), node.database_name.clone(), node.table_name.clone()));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -1825,7 +1828,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                 let available_width = ui.available_width();
                 ui.add_sized(
                     [available_width, ui.text_style_height(&egui::TextStyle::Body) * 3.0], // Allow up to 3 lines
-                    egui::SelectableLabel::new(false, &node.name)
+                    // Replaced deprecated SelectableLabel: for non-selectable history item just show label
+                    egui::Label::new(&node.name)
                 )
             } else {
                 // For all other node types, use horizontal layout with icons
@@ -1925,7 +1929,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 let edit_id = 20000 + (file_path.len() as i64 % 1000); // Simple deterministic ID
                                 context_menu_request = Some(edit_id);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         
                         if ui.button("Move to Folder").clicked() {
@@ -1934,7 +1938,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 let move_id = 40000 + (file_path.len() as i64 % 1000);
                                 context_menu_request = Some(move_id);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         
                         if ui.button("Remove Query").clicked() {
@@ -1944,7 +1948,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 let remove_id = -20000 - (file_path.len() as i64 % 1000); // Simple deterministic ID
                                 context_menu_request = Some(remove_id);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -1956,7 +1960,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             if let Some(conn_id) = node.connection_id {
                                 index_click_request = Some((conn_id, node.name.clone(), node.database_name.clone(), node.table_name.clone()));
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -5494,15 +5498,15 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     ui.vertical(|ui| {
                                                         if ui.button("📋 Copy Cell Value").clicked() {
                                                             ui.ctx().copy_text(cell.clone());
-                                                            ui.close_menu();
+                                                            ui.close();
                                                         }
                                                         if !self.selected_rows.is_empty() && ui.button("📄 Copy Selected Rows as CSV").clicked() {
                                                             if let Some(csv) = self.copy_selected_rows_as_csv() { ui.ctx().copy_text(csv); }
-                                                            ui.close_menu();
+                                                            ui.close();
                                                         }
                                                         if !self.selected_columns.is_empty() && ui.button("📄 Copy Selected Columns as CSV").clicked() {
                                                             if let Some(csv) = self.copy_selected_columns_as_csv() { ui.ctx().copy_text(csv); }
-                                                            ui.close_menu();
+                                                            ui.close();
                                                         }
                                                         if let Some(selected_row_idx) = self.selected_row {
                                                             if ui.button("📄 Copy Row as CSV").clicked() {
@@ -5519,17 +5523,17 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                                         .join(",");
                                                                     ui.ctx().copy_text(csv_row);
                                                                 }
-                                                                ui.close_menu();
+                                                                ui.close();
                                                             }
                                                         }
                                                         ui.separator();
                                                         if ui.button("📄 Export to CSV").clicked() {
                                                             export::export_to_csv(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
-                                                            ui.close_menu();
+                                                            ui.close();
                                                         }
                                                         if ui.button("📊 Export to XLSX").clicked() {
                                                             export::export_to_xlsx(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
-                                                            ui.close_menu();
+                                                            ui.close();
                                                         }
                                                     });
                                                 });
@@ -5544,20 +5548,20 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             ui.vertical(|ui| {
                                 if ui.button("📄 Export to CSV").clicked() {
                                     export::export_to_csv(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if ui.button("📊 Export to XLSX").clicked() {
                                     export::export_to_xlsx(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 ui.separator();
                                 if !self.selected_rows.is_empty() && ui.button("📋 Copy Selected Rows as CSV").clicked() {
                                     if let Some(csv) = self.copy_selected_rows_as_csv() { ui.ctx().copy_text(csv); }
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 if !self.selected_columns.is_empty() && ui.button("📋 Copy Selected Columns as CSV").clicked() {
                                     if let Some(csv) = self.copy_selected_columns_as_csv() { ui.ctx().copy_text(csv); }
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                         });
@@ -6003,9 +6007,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             resp.context_menu(|ui| {
                                 if ui.button("➕ Add Index").clicked() {
                                     if !self.adding_index { self.start_inline_add_index(); }
-                                    ui.close_menu();
+                                    ui.close();
                                 }
-                                if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close_menu(); }
+                                if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
                             });
                         }
                     });
@@ -6031,8 +6035,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                 let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; 
                                 ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                                 resp.context_menu(|ui| {
-                                    if ui.button("➕ Add Index").clicked() { if !self.adding_index { self.start_inline_add_index(); } ui.close_menu(); }
-                                    if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close_menu(); }
+                                    if ui.button("➕ Add Index").clicked() { if !self.adding_index { self.start_inline_add_index(); } ui.close(); }
+                                    if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
                                     if ui.button("❌ Drop Index").clicked() {
                                         if let Some(conn_id) = self.current_connection_id { if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
                                             let table_name = self.infer_current_table_name();
@@ -6048,7 +6052,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                             self.pending_drop_index_stmt = Some(drop_stmt.clone());
                                             self.editor_text.push('\n'); self.editor_text.push_str(&drop_stmt);
                                         }}
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
                             }
@@ -6113,9 +6117,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         ui.separator();
         ui.horizontal(|ui| {
             let active_cols = self.structure_sub_view == models::structs::StructureSubView::Columns;
-            if ui.add(egui::SelectableLabel::new(active_cols, "Columns")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Columns; }
+            if ui.selectable_label(active_cols, "Columns").clicked() { self.structure_sub_view = models::structs::StructureSubView::Columns; }
             let active_idx = self.structure_sub_view == models::structs::StructureSubView::Indexes;
-            if ui.add(egui::SelectableLabel::new(active_idx, "Indexes")).clicked() { self.structure_sub_view = models::structs::StructureSubView::Indexes; }
+            if ui.selectable_label(active_idx, "Indexes").clicked() { self.structure_sub_view = models::structs::StructureSubView::Indexes; }
         });
     }
 
@@ -6150,7 +6154,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
                     // Context menu on any header cell
                     resp.context_menu(|ui| {
-                        if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close_menu(); }
+                        if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
                         if ui.button("➕ Add Column").clicked() {
                             if !self.adding_column { // initialize add column row
                                 self.adding_column = true;
@@ -6159,7 +6163,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                 self.new_column_default.clear();
                                 self.new_column_nullable = true;
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
                 }
@@ -6189,7 +6193,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                         // Context menu on every cell
                         resp.context_menu(|ui| {
-                            if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close_menu(); }
+                            if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
                             if ui.button("➕ Add Column").clicked() {
                                 if !self.adding_column {
                                     self.adding_column = true;
@@ -6198,7 +6202,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                     self.new_column_default.clear();
                                     self.new_column_nullable = true;
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     }
@@ -7328,7 +7332,7 @@ impl App for Tabular {
                                 queries_response.context_menu(|ui| {
                                     if ui.button("📂 Create Folder").clicked() {
                                         self.show_create_folder_dialog = true;
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
                                 
@@ -7463,29 +7467,40 @@ impl App for Tabular {
                     let gear_response = ui.add_sized([24.0,20.0], gear_btn).on_hover_text("Settings");
                     if gear_response.clicked() {
                         gear_response.request_focus();
-                        ui.memory_mut(|mem| {
-                            mem.open_popup(egui::Id::new("settings_popup"));
-                        });
+                        self.show_settings_menu = !self.show_settings_menu;
                     }
-                    
-                    // Show popup menu when clicked
-                    egui::popup::popup_below_widget(ui, egui::Id::new("settings_popup"), &gear_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-                        ui.set_min_width(150.0);
-                        if ui.add(egui::Button::new("Preferences").fill(egui::Color32::TRANSPARENT)).clicked() {
-                            self.show_settings_window = true;
-                            ui.close_menu();
+                    if self.show_settings_menu {
+                        let pos = gear_response.rect.left_bottom();
+                        let mut menu_rect: Option<egui::Rect> = None;
+                        egui::Area::new(egui::Id::new("settings_menu"))
+                            .order(egui::Order::Foreground)
+                            .fixed_pos(pos + egui::vec2(0.0, 4.0))
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                    ui.set_min_width(180.0);
+                                    if ui.add(egui::Button::new("Preferences").fill(egui::Color32::TRANSPARENT)).clicked() {
+                                        self.show_settings_window = true;
+                                        self.show_settings_menu = false;
+                                    }
+                                    ui.separator();
+                                    if ui.add(egui::Button::new("Check for Updates").fill(egui::Color32::TRANSPARENT)).clicked() {
+                                        self.check_for_updates(true);
+                                        self.show_settings_menu = false;
+                                    }
+                                    if ui.add(egui::Button::new("About").fill(egui::Color32::TRANSPARENT)).clicked() {
+                                        self.show_about_dialog = true;
+                                        self.show_settings_menu = false;
+                                    }
+                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { self.show_settings_menu = false; }
+                                    menu_rect = Some(ui.min_rect());
+                                });
+                            });
+                        // Close when clicking outside (after drawing)
+                        if self.show_settings_menu {
+                            let clicked_outside = ui.ctx().input(|i| i.pointer.any_click()) && menu_rect.map(|r| !r.contains(ui.ctx().pointer_latest_pos().unwrap_or(r.center()))).unwrap_or(false) && !gear_response.clicked();
+                            if clicked_outside { self.show_settings_menu = false; }
                         }
-                        // Editor Theme now merged into Preferences window
-                        ui.separator();
-                        if ui.add(egui::Button::new("Check for Updates").fill(egui::Color32::TRANSPARENT)).clicked() {
-                            self.check_for_updates(true); // Manual check
-                            ui.close_menu();
-                        }
-                        if ui.add(egui::Button::new("About").fill(egui::Color32::TRANSPARENT)).clicked() {
-                            self.show_about_dialog = true;
-                            ui.close_menu();
-                        }
-                    });
+                    }
                     
                     // Small gap between gear and selectors
                     ui.add_space(4.0);
@@ -7549,11 +7564,11 @@ impl App for Tabular {
                         // Data/Structure toggle at the top
                         ui.horizontal(|ui| {
                             let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
-                            if ui.add(egui::SelectableLabel::new(is_data, "📊 Data")).clicked() {
+                            if ui.selectable_label(is_data, "📊 Data").clicked() {
                                 self.table_bottom_view = models::structs::TableBottomView::Data;
                             }
                             let is_struct = self.table_bottom_view == models::structs::TableBottomView::Structure;
-                            if ui.add(egui::SelectableLabel::new(is_struct, "🏗 Structure")).clicked() {
+                            if ui.selectable_label(is_struct, "🏗 Structure").clicked() {
                                 self.table_bottom_view = models::structs::TableBottomView::Structure;
                                 // Selalu reload supaya tidak terjebak struktur kosong atau struktur tabel sebelumnya
                                 self.load_structure_info_for_current_table();

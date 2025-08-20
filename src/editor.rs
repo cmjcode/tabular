@@ -395,11 +395,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Try to capture selected text from the response
         // Note: This is a simplified approach. The actual implementation may vary depending on the CodeEditor version
         if let Some(text_cursor_range) = response.cursor_range {
-            let start = text_cursor_range.primary.ccursor.index.min(text_cursor_range.secondary.ccursor.index);
-            let end = text_cursor_range.primary.ccursor.index.max(text_cursor_range.secondary.ccursor.index);
+            // egui 0.32: CCursorRange exposes primary/secondary which implement Deref to CCursor; remove .ccursor
+            let start = text_cursor_range.primary.index.min(text_cursor_range.secondary.index);
+            let end = text_cursor_range.primary.index.max(text_cursor_range.secondary.index);
             
             // Store cursor position (use primary cursor position)
-            tabular.cursor_position = text_cursor_range.primary.ccursor.index;
+            tabular.cursor_position = text_cursor_range.primary.index;
             
             if start != end {
                 // There is a selection

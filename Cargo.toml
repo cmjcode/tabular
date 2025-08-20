@@ -13,7 +13,7 @@ copyright = "Copyright © 2025 Y.N Pamungkas Jayuda"
 info = "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient."
 
 [dependencies]
-eframe = "0.31"
+eframe = "0.32"
 image = "0.24"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sqlx = { version = "0.8.6", features = [
@@ -29,7 +29,7 @@ bson = { version = "2.11", features = ["uuid-1"] }
 mongodb = { version = "3.2.4", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-egui_extras = "0.31"
+egui_extras = "0.32"
 egui_code_editor = "0.2.13"
 colorful = "0.3.2"
 serde = { version = "1.0", features = ["derive"] }

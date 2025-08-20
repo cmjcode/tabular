@@ -255,7 +255,7 @@ async fn run_query(mut client: tiberius::Client<tokio_util::compat::Compat<tokio
     let mut headers: Vec<String> = Vec::new();
     let mut data: Vec<Vec<String>> = Vec::new();
 
-    let mut stream = client.simple_query(query).await.map_err(|e| e.to_string())?;
+    let mut stream = client.query(query, &[]).await.map_err(|e| e.to_string())?;
 
     while let Some(item_res) = stream.next().await {
         let item = item_res.map_err(|e| e.to_string())?;

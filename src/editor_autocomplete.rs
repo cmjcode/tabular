@@ -243,6 +243,7 @@ impl ShallowForCache for Tabular {
             update_installed: false,
             update_install_receiver: None,
             settings_active_pref_tab: PrefTab::ApplicationTheme,
+            show_settings_menu: false,
         })
     }
 }
