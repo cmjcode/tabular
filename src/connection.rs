@@ -39,7 +39,7 @@ fn infer_select_headers(statement: &str) -> Vec<String> {
        for ch in select_list.chars() {
               match ch {
                      '(' => { depth += 1; current.push(ch); },
-                     ')' => { if depth>0 { depth -= 1; } current.push(ch); },
+                     ')' => { depth = depth.saturating_sub(1); current.push(ch); },
                      ',' if depth == 0 => {
                             let h = extract_alias_or_name(&current);
                             if !h.is_empty() { headers.push(h); }
