@@ -132,39 +132,7 @@ impl AutoUpdater {
         
         info!("💾 Saving Linux binary to: {}", file_path.display());
         std::fs::write(&file_path, content)?;
-        
-        // Make executable if it's a binary
-        if !filename.ends_with(".tar.gz") {
-            Command::new("chmod")
-                .args(["+x"])
-                .arg(&file_path)
-                .output()?;
-        }
-        
-        // Open file manager to show the downloaded file
-        info!("📂 Opening file manager...");
-        let _result = Command::new("xdg-open")
-            .arg(&downloads_dir)
-            .spawn()
-            .or_else(|_| {
-                // Fallback for GNOME
-                Command::new("nautilus")
-                    .arg(&downloads_dir)
-                    .spawn()
-            })
-            .or_else(|_| {
-                // Fallback for KDE
-                Command::new("dolphin")
-                    .arg(&downloads_dir)
-                    .spawn()
-            })
-            .or_else(|_| {
-                // Fallback for generic file manager
-                Command::new("thunar")
-                    .arg(&downloads_dir)
-                    .spawn()
-            });
-        
+                
         info!("✅ Linux update downloaded! Check Downloads folder.");
         Ok(())
     }
