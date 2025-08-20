@@ -118,14 +118,14 @@ impl AutoUpdater {
         // Determine filename based on asset name
         let filename = if let Some(asset_name) = &update_info.asset_name {
             if asset_name.contains("appimage") || asset_name.contains("AppImage") {
-                format!("Tabular-{}.AppImage", update_info.version)
+                format!("Tabular-{}.AppImage", update_info.latest_version)
             } else if asset_name.ends_with(".tar.gz") {
-                format!("tabular-{}.tar.gz", update_info.version)
+                format!("tabular-{}.tar.gz", update_info.latest_version)
             } else {
-                format!("tabular-{}", update_info.version)
+                format!("tabular-{}", update_info.latest_version)
             }
         } else {
-            format!("tabular-{}", update_info.version)
+            format!("tabular-{}", update_info.latest_version)
         };
         
         let file_path = downloads_dir.join(&filename);
@@ -181,14 +181,14 @@ impl AutoUpdater {
         // Determine filename based on asset name
         let filename = if let Some(asset_name) = &update_info.asset_name {
             if asset_name.ends_with(".msi") {
-                format!("Tabular-{}.msi", update_info.version)
+                format!("Tabular-{}.msi", update_info.latest_version)
             } else if asset_name.ends_with(".exe") {
-                format!("Tabular-{}.exe", update_info.version)
+                format!("Tabular-{}.exe", update_info.latest_version)
             } else {
-                format!("Tabular-{}.exe", update_info.version)
+                format!("Tabular-{}.exe", update_info.latest_version)
             }
         } else {
-            format!("Tabular-{}.exe", update_info.version)
+            format!("Tabular-{}.exe", update_info.latest_version)
         };
         
         let file_path = downloads_dir.join(&filename);
@@ -196,11 +196,11 @@ impl AutoUpdater {
         info!("💾 Saving Windows installer to: {}", file_path.display());
         std::fs::write(&file_path, content)?;
         
-        // Open the installer automatically
-        info!("🚀 Opening installer...");
-        Command::new("cmd")
-            .args(["/C", "start", "", &file_path.to_string_lossy()])
-            .spawn()?;
+        // // Open the installer automatically
+        // info!("🚀 Opening installer...");
+        // Command::new("cmd")
+        //     .args(["/C", "start", "", &file_path.to_string_lossy()])
+        //     .spawn()?;
         
         info!("✅ Windows installer opened!");
         Ok(())

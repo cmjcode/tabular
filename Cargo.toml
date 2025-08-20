@@ -45,6 +45,7 @@ log = "0.4"
 env_logger = "0.11"
 dotenv = "0.15.0"
 tiberius = { version = "0.12", default-features = false, features = [
+       "winauth",
        "chrono",
        "time",
        "tds73",
