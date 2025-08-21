@@ -1423,11 +1423,12 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     models::enums::NodeType::UserFunctionsFolder => "🔧",
                     models::enums::NodeType::TriggersFolder => "⚡",
                     models::enums::NodeType::EventsFolder => "📅",
-                    models::enums::NodeType::DBAViewsFolder => "👨‍💼",
+                    models::enums::NodeType::DBAViewsFolder => "⚙️",
                     models::enums::NodeType::UsersFolder => "👥",
                     models::enums::NodeType::PrivilegesFolder => "🔒",
                     models::enums::NodeType::ProcessesFolder => "⚡",
                     models::enums::NodeType::StatusFolder => "📊",
+                    models::enums::NodeType::MetricsUserActiveFolder => "👨‍💼",
                     models::enums::NodeType::View => "👁",
                     models::enums::NodeType::StoredProcedure => "⚙️",
                     models::enums::NodeType::UserFunction => "🔧",
@@ -1488,6 +1489,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             | models::enums::NodeType::PrivilegesFolder
                             | models::enums::NodeType::ProcessesFolder
                             | models::enums::NodeType::StatusFolder
+                            | models::enums::NodeType::MetricsUserActiveFolder
                             | models::enums::NodeType::ColumnsFolder
                             | models::enums::NodeType::IndexesFolder
                             | models::enums::NodeType::PrimaryKeysFolder)
@@ -1853,7 +1855,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         models::enums::NodeType::UserFunctionsFolder => "🔧",
                         models::enums::NodeType::TriggersFolder => "⚡",
                         models::enums::NodeType::EventsFolder => "📅",
-                        models::enums::NodeType::DBAViewsFolder => "👨‍💼",
+                        models::enums::NodeType::DBAViewsFolder => "⚙️",
                         models::enums::NodeType::UsersFolder => "👥",
                         models::enums::NodeType::PrivilegesFolder => "🔒",
                         models::enums::NodeType::ProcessesFolder => "⚡",
@@ -1889,7 +1891,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             }
                         },
                         // DBA quick views: emit a click request to be handled by parent (needs self)
-                        models::enums::NodeType::UsersFolder | models::enums::NodeType::PrivilegesFolder | models::enums::NodeType::ProcessesFolder | models::enums::NodeType::StatusFolder => {
+                        models::enums::NodeType::UsersFolder | models::enums::NodeType::PrivilegesFolder | models::enums::NodeType::ProcessesFolder | models::enums::NodeType::StatusFolder | models::enums::NodeType::MetricsUserActiveFolder => {
                             if let Some(conn_id) = node.connection_id {
                                 dba_click_request = Some((conn_id, node.node_type.clone()));
                             }
@@ -2016,6 +2018,10 @@ ORDER BY GRANTEE, PRIVILEGE_TYPE;".to_string()
                         format!("DBA: MySQL Global Status - {}", connection.name),
                         "SHOW GLOBAL STATUS;".to_string()
                     )),
+                    NodeType::MetricsUserActiveFolder => Some((
+                        format!("DBA: MySQL Metrics User Active - {}", connection.name),
+                        "SELECT USER, COUNT(*) AS session_count FROM information_schema.PROCESSLIST GROUP BY USER ORDER BY session_count DESC;".to_string()
+                    )),
                     _ => None,
                 }
             }
@@ -2037,6 +2043,10 @@ FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_n
                     NodeType::StatusFolder => Some((
                         format!("DBA: PostgreSQL Settings - {}", connection.name),
                         "SELECT name, setting FROM pg_settings ORDER BY name;".to_string()
+                    )),
+                    NodeType::MetricsUserActiveFolder => Some((
+                        format!("DBA: PostgreSQL Metrics User Active - {}", connection.name),
+                        "SELECT usename AS user, COUNT(*) AS session_count FROM pg_stat_activity GROUP BY usename ORDER BY session_count DESC;".to_string()
                     )),
                     _ => None,
                 }
@@ -2063,6 +2073,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     NodeType::StatusFolder => Some((
                         format!("DBA: MsSQL Performance Counters - {}", connection.name),
                         "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;".to_string()
+                    )),
+                    NodeType::MetricsUserActiveFolder => Some((
+                        format!("DBA: MsSQL Metrics User Active - {}", connection.name),
+                        "SELECT login_name AS [user], COUNT(*) AS session_count FROM sys.dm_exec_sessions GROUP BY login_name ORDER BY session_count DESC;".to_string()
                     )),
                     _ => None,
                 }
@@ -2524,6 +2538,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     status_folder.connection_id = Some(connection_id);
                     status_folder.is_loaded = false;
                     dba_children.push(status_folder);
+
+                    // Metrics User Active
+                    let mut metrics_user_active_folder = models::structs::TreeNode::new("Metrics User Active".to_string(), models::enums::NodeType::MetricsUserActiveFolder);
+                    metrics_user_active_folder.connection_id = Some(connection_id);
+                    metrics_user_active_folder.is_loaded = false;
+                    dba_children.push(metrics_user_active_folder);
                     
                     dba_folder.children = dba_children;
                     
@@ -2661,6 +2681,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     status_folder.connection_id = Some(connection_id);
                     status_folder.is_loaded = false;
                     dba_children.push(status_folder);
+
+                    // Metrics User Active
+                    let mut metrics_user_active_folder = models::structs::TreeNode::new("Metrics User Active".to_string(), models::enums::NodeType::MetricsUserActiveFolder);
+                    metrics_user_active_folder.connection_id = Some(connection_id);
+                    metrics_user_active_folder.is_loaded = false;
+                    dba_children.push(metrics_user_active_folder);
 
                     dba_folder.children = dba_children;
 

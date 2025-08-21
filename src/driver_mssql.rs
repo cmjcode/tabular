@@ -68,6 +68,12 @@ pub(crate) fn load_mssql_structure(connection_id: i64, _connection: &models::str
     status_folder.is_loaded = false;
     dba_children.push(status_folder);
 
+    // Metrics User Active
+    let mut metrics_user_active_folder = models::structs::TreeNode::new("Metrics User Active".to_string(), models::enums::NodeType::MetricsUserActiveFolder);
+    metrics_user_active_folder.connection_id = Some(connection_id);
+    metrics_user_active_folder.is_loaded = false;
+    dba_children.push(metrics_user_active_folder);
+
     dba_folder.children = dba_children;
     main_children.push(dba_folder);
 

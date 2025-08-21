@@ -28,6 +28,7 @@ pub enum NodeType {
     PrivilegesFolder,
     ProcessesFolder,
     StatusFolder,
+    MetricsUserActiveFolder,
     View,
     StoredProcedure,
     UserFunction,
