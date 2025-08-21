@@ -275,6 +275,57 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // (Removed pre_text clone; not needed now)
     // Detect Tab & Enter via key_pressed AND raw events (key_pressed may miss if focus moving)
     let mut tab_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Tab));
+    let shift_pressed_pre = ui.input(|i| i.modifiers.shift);
+    // Snapshot current selection BEFORE rendering (so we still have original range if CodeEditor would replace it)
+    let pre_selection_start = tabular.selection_start;
+    let pre_selection_end = tabular.selection_end;
+    let pre_selected_text = if pre_selection_start < pre_selection_end && pre_selection_end <= tabular.editor_text.len() { Some(tabular.editor_text[pre_selection_start..pre_selection_end].to_string()) } else { None };
+    // (flag removed) multiline indent handled pre-render
+    if tab_pressed_pre {
+        if let Some(sel_text) = &pre_selected_text {
+            if sel_text.contains('\n') { // multi-line selection
+                // Compute line_start (start of first line)
+                let mut line_start = pre_selection_start;
+                while line_start > 0 && tabular.editor_text.as_bytes()[line_start-1] != b'\n' { line_start -= 1; }
+                let sel_end_clamped = pre_selection_end.min(tabular.editor_text.len());
+                let block = tabular.editor_text[line_start..sel_end_clamped].to_string();
+                if !shift_pressed_pre { // Indent
+                    let mut indented = String::with_capacity(block.len()+8);
+                    for line in block.split_inclusive('\n') {
+                        if line == "\n" { indented.push_str("\n"); continue; }
+                        let (content, nl) = if let Some(p) = line.rfind('\n') { (&line[..p], &line[p..]) } else { (line, "") };
+                        indented.push('\t');
+                        indented.push_str(content);
+                        indented.push_str(nl);
+                    }
+                    tabular.editor_text.replace_range(line_start..sel_end_clamped, &indented);
+                    tabular.selection_start = line_start;
+                    tabular.selection_end = line_start + indented.len();
+                    tabular.cursor_position = tabular.selection_end;
+                } else { // Outdent
+                    let mut outdented = String::with_capacity(block.len());
+                    let mut changed = false;
+                    for line in block.split_inclusive('\n') {
+                        if line == "\n" { outdented.push_str("\n"); continue; }
+                        let (content, nl) = if let Some(p) = line.rfind('\n') { (&line[..p], &line[p..]) } else { (line, "") };
+                        let trimmed = if content.starts_with('\t') { changed = true; &content[1..] } else if content.starts_with("    ") { changed = true; &content[4..] } else { content };
+                        outdented.push_str(trimmed); outdented.push_str(nl);
+                    }
+                    if changed {
+                        tabular.editor_text.replace_range(line_start..sel_end_clamped, &outdented);
+                        tabular.selection_start = line_start;
+                        tabular.selection_end = line_start + outdented.len();
+                        tabular.cursor_position = tabular.selection_end;
+                    }
+                }
+                // Prevent CodeEditor from seeing Tab key (so it doesn't insert a tab or replace selection)
+                ui.ctx().input_mut(|ri| { ri.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Tab, .. })); });
+                // indentation applied
+                // Mark changed for autocomplete logic later
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) { tab.content = tabular.editor_text.clone(); tab.is_modified = true; }
+            }
+        }
+    }
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let mut raw_tab = false;
         // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
@@ -395,28 +446,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Try to capture selected text from the response
         // Note: This is a simplified approach. The actual implementation may vary depending on the CodeEditor version
         if let Some(text_cursor_range) = response.cursor_range {
-            // egui 0.32: CCursorRange exposes primary/secondary which implement Deref to CCursor; remove .ccursor
             let start = text_cursor_range.primary.index.min(text_cursor_range.secondary.index);
             let end = text_cursor_range.primary.index.max(text_cursor_range.secondary.index);
-            
-            // Store cursor position (use primary cursor position)
             tabular.cursor_position = text_cursor_range.primary.index;
-            
+            tabular.selection_start = start;
+            tabular.selection_end = end;
             if start != end {
-                // There is a selection
-                if let Some(selected) = tabular.editor_text.get(start..end) {
-                    tabular.selected_text = selected.to_string();
-                } else {
-                    tabular.selected_text.clear();
-                }
-            } else {
-                // No selection
-                tabular.selected_text.clear();
-            }
-        } else {
-            // No cursor range available, clear selection
-            tabular.selected_text.clear();
-        }
+                if let Some(selected) = tabular.editor_text.get(start..end) { tabular.selected_text = selected.to_string(); } else { tabular.selected_text.clear(); }
+            } else { tabular.selected_text.clear(); }
+        } else { tabular.selected_text.clear(); }
+
+    // (Multi-line indent already handled pre-render if applied)
         
         // If you get a type error here, try:
         // let mut buffer = egui_code_editor::SimpleTextBuffer::from(&tabular.editor_text);

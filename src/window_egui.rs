@@ -84,6 +84,9 @@ pub struct Tabular {
     pub selected_text: String,
     // Cursor position for query extraction
     pub cursor_position: usize,
+    // Selection range indices (start inclusive, end exclusive) for advanced editing (indent/outdent)
+    pub selection_start: usize,
+    pub selection_end: usize,
     // Command Palette
     pub show_command_palette: bool,
     pub command_palette_input: String,
@@ -393,6 +396,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             advanced_editor: models::structs::AdvancedEditor::default(),
             selected_text: String::new(),
             cursor_position: 0,
+            selection_start: 0,
+            selection_end: 0,
             show_command_palette: false,
             command_palette_input: String::new(),
             show_theme_selector: false,

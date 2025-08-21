@@ -191,7 +191,7 @@ impl ShallowForCache for Tabular {
             query_tabs: self.query_tabs.clone(),
             active_tab_index: self.active_tab_index,
             // The rest are default/empty; not used by cache getters
-            editor_text: String::new(), selected_menu: String::new(), items_tree: Vec::new(), queries_tree: Vec::new(), history_tree: Vec::new(), history_items: Vec::new(), show_add_connection: false, new_connection: models::structs::ConnectionConfig::default(), runtime: self.runtime.clone(), connection_pools: self.connection_pools.clone(), show_edit_connection: false, edit_connection: models::structs::ConnectionConfig::default(), needs_refresh: false, current_table_data: Vec::new(), current_table_headers: Vec::new(), current_table_name: String::new(), current_connection_id: None,             current_page: 0, page_size: 0, total_rows: 0, all_table_data: Vec::new(),
+            editor_text: String::new(), selected_menu: String::new(), items_tree: Vec::new(), queries_tree: Vec::new(), history_tree: Vec::new(), history_items: Vec::new(), show_add_connection: false, new_connection: models::structs::ConnectionConfig::default(), runtime: self.runtime.clone(), connection_pools: self.connection_pools.clone(), show_edit_connection: false, edit_connection: models::structs::ConnectionConfig::default(), needs_refresh: false, current_table_data: Vec::new(), current_table_headers: Vec::new(), current_table_name: String::new(), current_connection_id: None,             current_page: 0, page_size: 0, total_rows: 0, all_table_data: Vec::new(), selection_start: 0, selection_end: 0,
             auto_updater: None, // Not needed for cache operations
             // Server-side pagination fields
             use_server_pagination: self.use_server_pagination, 
