@@ -3,6 +3,10 @@ name = "tabular"
 version = "0.3.7"
 edition = "2024"
 
+[lib]
+name = "tabular"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
 # Cargo.toml
 [package.metadata.bundle]
 name = "Tabular"

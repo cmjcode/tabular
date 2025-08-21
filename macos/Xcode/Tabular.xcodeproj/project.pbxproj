@@ -1,0 +1,262 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		TABULAR_SWIFT_MAIN /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = TABULAR_FILE_MAIN /* main.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		TABULAR_ENTITLEMENTS /* Tabular.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = Tabular.entitlements; path = ../Tabular.entitlements; sourceTree = "<group>"; };
+		TABULAR_FILE_MAIN /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		TABULAR_INFO_PLIST /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		TABULAR_PRODUCT /* Tabular.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tabular.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		TABULAR_GROUP_APP /* TabularApp */ = {
+			isa = PBXGroup;
+			children = (
+				TABULAR_FILE_MAIN /* main.swift */,
+				TABULAR_INFO_PLIST /* Info.plist */,
+				TABULAR_ENTITLEMENTS /* Tabular.entitlements */,
+			);
+			path = TabularApp;
+			sourceTree = "<group>";
+		};
+		TABULAR_GROUP_PRODUCTS /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				TABULAR_PRODUCT /* Tabular.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		TABULAR_GROUP_ROOT = {
+			isa = PBXGroup;
+			children = (
+				TABULAR_GROUP_APP /* TabularApp */,
+				TABULAR_GROUP_PRODUCTS /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		TABULAR_TARGET /* Tabular */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = TABULAR_CONFIG_LIST /* Build configuration list for PBXNativeTarget "Tabular" */;
+			buildPhases = (
+				TABULAR_PHASE_RUST_BUILD /* Build Rust (universal) */,
+				TABULAR_PHASE_COPY_RES /* Copy Assets */,
+				TABULAR_PHASE_SOURCES /* Sources */,
+				TABULAR_PHASE_REPLACE_BIN /* Replace Binary with Rust */,
+				TABULAR_PHASE_CODESIGN_PRINT /* Print Codesign */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Tabular;
+			productName = Tabular;
+			productReference = TABULAR_PRODUCT /* Tabular.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		TABULAR_PROJECT /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				ORGANIZATIONNAME = Tabular;
+				TargetAttributes = {
+					TABULAR_TARGET = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = TABULAR_PROJECT_CONFIG_LIST /* Build configuration list for PBXProject "Tabular" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+			);
+			mainGroup = TABULAR_GROUP_ROOT;
+			productRefGroup = TABULAR_GROUP_PRODUCTS /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				TABULAR_TARGET /* Tabular */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		TABULAR_PHASE_CODESIGN_PRINT /* Print Codesign */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Print Codesign";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "echo 'Binary codesign info:'; codesign -dv --verbose=4 \"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/Tabular\" || true";
+		};
+		TABULAR_PHASE_COPY_RES /* Copy Assets */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Assets";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -e\nASSETS_DIR=\"${PROJECT_DIR}/../../assets\"\nAPP_RES_DIR=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nmkdir -p \"$APP_RES_DIR\"\nif [ -f $ASSETS_DIR/AppIcon.icns ]; then cp $ASSETS_DIR/AppIcon.icns \"$APP_RES_DIR/AppIcon.icns\"; fi\n";
+		};
+		TABULAR_PHASE_REPLACE_BIN /* Replace Binary with Rust */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Replace Binary with Rust";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -e\nUNIVERSAL=target/universal-apple-darwin/release/tabular\nAPP_BIN=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/Tabular\"\nif [ ! -f $UNIVERSAL ]; then echo '[ERR] Missing universal Rust binary' >&2; exit 1; fi\ncp $UNIVERSAL $APP_BIN\nchmod +x $APP_BIN\n# Update plist version from Cargo\nVER=$(grep '^version' Cargo.toml | head -n1 | cut -d'\"' -f2)\n/usr/libexec/PlistBuddy -c \"Set :CFBundleShortVersionString $VER\" \"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\" || true\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $VER\" \"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\" || true\n";
+		};
+		TABULAR_PHASE_RUST_BUILD /* Build Rust (universal) */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust (universal)";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "${PROJECT_DIR}/scripts/build-rust-universal.sh";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		TABULAR_PHASE_SOURCES /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				TABULAR_SWIFT_MAIN /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		TABULAR_CONFIG_DEBUG /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TabularApp/Tabular.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				DEVELOPMENT_TEAM = YD4J5Z6A4G;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TabularApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Tabular;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.3.7;
+				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		TABULAR_CONFIG_RELEASE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TabularApp/Tabular.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 37;
+				DEVELOPMENT_TEAM = YD4J5Z6A4G;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TabularApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Tabular;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.3.7;
+				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+		TABULAR_PROJECT_CONFIG_DEBUG /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		TABULAR_PROJECT_CONFIG_RELEASE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		TABULAR_CONFIG_LIST /* Build configuration list for PBXNativeTarget "Tabular" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				TABULAR_CONFIG_DEBUG /* Debug */,
+				TABULAR_CONFIG_RELEASE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		TABULAR_PROJECT_CONFIG_LIST /* Build configuration list for PBXProject "Tabular" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				TABULAR_PROJECT_CONFIG_DEBUG /* Debug */,
+				TABULAR_PROJECT_CONFIG_RELEASE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = TABULAR_PROJECT /* Project object */;
+}

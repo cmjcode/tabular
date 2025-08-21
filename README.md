@@ -2,9 +2,13 @@
 
 # Tabular
 
-Your fast, cross‑platform, multi‑database SQL & NoSQL desktop client – built in Rust.
+Your fast, cross‑platform, multi‑database SQL & NoSQL client – built in Rust. (Desktop + early iPadOS groundwork)
 
 ![Main Window](screenshots/halaman-utama.jpg)
+
+## macOS Xcode Project (App Store)
+
+Now includes an Xcode project under `macos/Xcode/` so you can open, archive, and submit to the Mac App Store using native Xcode workflows (automatic signing, Organizer distribution). See `macos/Xcode/README.md` for detailed steps.
 
 </div>
 
@@ -97,11 +101,15 @@ cd tabular
 cargo build --release
 ```
 
-#### Multi‑Architecture / Cross Compilation
+#### Multi‑Architecture / Cross Compilation (Desktop + Experimental iOS)
 Install cross:
 ```bash
 cargo install cross
 cross build --target aarch64-apple-darwin --release
+
+# Experimental iPadOS (build Rust lib + binary – Xcode/iOS wrapper required)
+rustup target add aarch64-apple-ios
+cargo build --target aarch64-apple-ios --release
 ```
 
 ### Run
@@ -240,6 +248,7 @@ Contributions are welcome: bug fixes, new drivers, UI refinements, performance t
 
 ## 11. Roadmap (High‑Level)
 * Windows build & signing
+* iPadOS adaptive layout (touch hit areas, keyboard inset, gestures)
 * Query formatting & beautifier
 * Result pagination for large sets
 * Connection grouping & tags
