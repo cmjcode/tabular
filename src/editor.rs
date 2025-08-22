@@ -292,7 +292,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 if !shift_pressed_pre { // Indent
                     let mut indented = String::with_capacity(block.len()+8);
                     for line in block.split_inclusive('\n') {
-                        if line == "\n" { indented.push_str("\n"); continue; }
+                        if line == "\n" { indented.push('\n'); continue; }
                         let (content, nl) = if let Some(p) = line.rfind('\n') { (&line[..p], &line[p..]) } else { (line, "") };
                         indented.push('\t');
                         indented.push_str(content);
@@ -306,7 +306,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     let mut outdented = String::with_capacity(block.len());
                     let mut changed = false;
                     for line in block.split_inclusive('\n') {
-                        if line == "\n" { outdented.push_str("\n"); continue; }
+                        if line == "\n" { outdented.push('\n'); continue; }
                         let (content, nl) = if let Some(p) = line.rfind('\n') { (&line[..p], &line[p..]) } else { (line, "") };
                         let trimmed = if content.starts_with('\t') { changed = true; &content[1..] } else if content.starts_with("    ") { changed = true; &content[4..] } else { content };
                         outdented.push_str(trimmed); outdented.push_str(nl);
