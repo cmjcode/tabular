@@ -6297,32 +6297,78 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         if !self.adding_column { return; }
         let Some(conn_id) = self.current_connection_id else { self.adding_column=false; return; };
         let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() else { self.adding_column=false; return; };
-        let ttitle = self.query_tabs.get(self.active_tab_index).map(|t| t.title.clone()).unwrap_or_default();
-        let mut table_guess = ttitle.split(':').nth(1).unwrap_or(&ttitle).trim().to_string();
-        if let Some(p) = table_guess.find('(') { table_guess = table_guess[..p].trim().to_string(); }
-    let name_owned = self.new_column_name.trim().to_string();
-    if name_owned.is_empty() { return; }
+        let table_name = self.infer_current_table_name();
+        if table_name.is_empty() {
+            // Inform user explicitly
+            self.error_message = "Gagal menambah kolom: nama tabel tidak ditemukan (buka data table atau klik tabel dulu).".to_string();
+            self.show_error_message = true;
+            return;
+        }
+        let col_name = self.new_column_name.trim();
+        if col_name.is_empty() { return; }
+
+        // Build DEFAULT clause; allow numeric and common time keywords without quotes
         let mut default_clause = String::new();
         if !self.new_column_default.trim().is_empty() {
             let d = self.new_column_default.trim();
-            let needs_quote = !(d.chars().all(|c| c.is_ascii_digit()) || matches!(d.to_uppercase().as_str(), "CURRENT_TIMESTAMP"|"NOW()"));
-            if needs_quote { default_clause = format!(" DEFAULT '{}'", d.replace("'", "''")); } else { default_clause = format!(" DEFAULT {}", d); }
+            let upper = d.to_uppercase();
+            let is_numeric = d.chars().all(|c| c.is_ascii_digit());
+            let is_func = matches!(upper.as_str(), "CURRENT_TIMESTAMP"|"NOW()"|"GETDATE()"|"CURRENT_DATE");
+            if is_numeric || is_func {
+                default_clause = format!(" DEFAULT {}", d);
+            } else {
+                default_clause = format!(" DEFAULT '{}'", d.replace("'", "''"));
+            }
         }
         let null_clause = if self.new_column_nullable { "" } else { " NOT NULL" };
+
+        // DB-specific quoting for identifiers
         let stmt = match conn.connection_type {
-            models::enums::DatabaseType::MySQL | models::enums::DatabaseType::MsSQL => format!("ALTER TABLE `{}` ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
-            models::enums::DatabaseType::PostgreSQL => format!("ALTER TABLE \"{}\" ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
-            models::enums::DatabaseType::SQLite => format!("ALTER TABLE `{}` ADD COLUMN {} {}{}{};", table_guess, name_owned, self.new_column_type, null_clause, default_clause),
-            _ => "-- Add column not supported for this database type".to_string()
+            models::enums::DatabaseType::MySQL => format!(
+                "ALTER TABLE `{}` ADD COLUMN `{}` {}{}{};",
+                table_name, col_name, self.new_column_type, null_clause, default_clause
+            ),
+            models::enums::DatabaseType::PostgreSQL => format!(
+                "ALTER TABLE \"{}\" ADD COLUMN \"{}\" {}{}{};",
+                table_name, col_name, self.new_column_type, null_clause, default_clause
+            ),
+            models::enums::DatabaseType::MsSQL => format!(
+                "ALTER TABLE [{}] ADD [{}] {}{}{};",
+                table_name, col_name, self.new_column_type, null_clause, default_clause
+            ),
+            models::enums::DatabaseType::SQLite => format!(
+                "ALTER TABLE `{}` ADD COLUMN `{}` {}{}{};",
+                table_name, col_name, self.new_column_type, null_clause, default_clause
+            ),
+            _ => "-- Add column not supported for this database type".to_string(),
         };
+
+        // Append to editor for visibility
         if !stmt.starts_with("--") { self.editor_text.push('\n'); }
         self.editor_text.push_str(&stmt);
-        // Reset state
+
+        // Reset UI state
         self.adding_column = false;
-    self.new_column_name.clear();
         self.new_column_default.clear();
-        // Optionally update local view (append optimistic row)
-    self.structure_columns.push(models::structs::ColumnStructInfo { name: name_owned, data_type: self.new_column_type.clone(), nullable: Some(self.new_column_nullable), default_value: if self.new_column_default.trim().is_empty() { None } else { Some(self.new_column_default.trim().to_string()) }, extra: None });
+        self.new_column_name.clear();
+
+        // Execute and refresh structure on success
+        if !stmt.starts_with("--") {
+            if let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()) {
+                let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
+                if is_error {
+                    if let Some(first_row) = data.first() {
+                        if let Some(err) = first_row.first() {
+                            self.error_message = format!("Gagal menambah kolom: {}", err);
+                            self.show_error_message = true;
+                        }
+                    }
+                } else {
+                    // Reload from source to ensure correct view
+                    self.load_structure_info_for_current_table();
+                }
+            }
+        }
     }
 
     fn start_inline_add_index(&mut self) {
