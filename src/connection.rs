@@ -386,6 +386,9 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                    .filter(|s| !s.is_empty())
                                                    .collect();
                                             debug!("Found {} SQL statements to execute", statements.len());
+                                            for (idx, stmt) in statements.iter().enumerate() {
+                                                debug!("Statement {}: '{}'", idx + 1, stmt);
+                                            }
 
                                             let mut final_headers = Vec::new();
                                             let mut final_data = Vec::new();
@@ -415,7 +418,12 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
 
                                                    for (i, statement) in statements.iter().enumerate() {
                                                           let trimmed = statement.trim();
-                                                          if trimmed.is_empty() { continue; }
+                                                          // Skip empty or comment-only statements (MySQL supports '--', '#', and '/* ... */' comments)
+                                                          if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with('#') || trimmed.starts_with("/*") { 
+                                                                 debug!("Skipping statement {}: '{}'", i + 1, trimmed);
+                                                                 continue; 
+                                                          }
+                                                          debug!("Executing statement {}: '{}'", i + 1, trimmed);
                                                           let upper = trimmed.to_uppercase();
 
                                                           if upper.starts_with("USE ") {
@@ -567,7 +575,10 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                             let mut final_data = Vec::new();
 
                                             for (i, statement) in statements.iter().enumerate() {
-                                                   match sqlx::query(statement).fetch_all(pg_pool.as_ref()).await {
+                                                   let trimmed = statement.trim();
+                                                   // Skip empty or comment-only statements
+                                                   if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") { continue; }
+                                                   match sqlx::query(trimmed).fetch_all(pg_pool.as_ref()).await {
                                                           Ok(rows) => {
                                                                  if i == statements.len() - 1 {
                                                                         // For the last statement, try to get headers even if no rows
@@ -653,7 +664,10 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                             let mut final_data = Vec::new();
 
                                             for (i, statement) in statements.iter().enumerate() {
-                                                   match sqlx::query(statement).fetch_all(sqlite_pool.as_ref()).await {
+                                                   let trimmed = statement.trim();
+                                                   // Skip empty or comment-only statements
+                                                   if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") { continue; }
+                                                   match sqlx::query(trimmed).fetch_all(sqlite_pool.as_ref()).await {
                                                           Ok(rows) => {
                                                                  if i == statements.len() - 1 {
                                                                         // For the last statement, try to get headers even if no rows
@@ -1551,8 +1565,8 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                      .await
               {
                                           Ok(pool) => {
-                                                 // Query information_schema first
-                                                 let query = "SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+                                                 // Query information_schema for complete column type (COLUMN_TYPE includes length/precision)
+                                                 let query = "SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
                                                  let result = sqlx::query(query)
                                                         .bind(&database_name)
                                                         .bind(&table_name)
@@ -1568,9 +1582,9 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
                                                                              Ok(v) => Some(v),
                                                                              Err(_) => row.try_get::<Vec<u8>,_>("COLUMN_NAME").ok().map(|b| String::from_utf8_lossy(&b).to_string())
                                                                       };
-                                                                      let data_type: Option<String> = match row.try_get::<String,_>("DATA_TYPE") {
+                                                                      let data_type: Option<String> = match row.try_get::<String,_>("COLUMN_TYPE") {
                                                                              Ok(v) => Some(v),
-                                                                             Err(_) => row.try_get::<Vec<u8>,_>("DATA_TYPE").ok().map(|b| String::from_utf8_lossy(&b).to_string())
+                                                                             Err(_) => row.try_get::<Vec<u8>,_>("COLUMN_TYPE").ok().map(|b| String::from_utf8_lossy(&b).to_string())
                                                                       };
                                                                       if let (Some(n), Some(t)) = (col_name, data_type) { columns.push((n,t)); }
                                                                }

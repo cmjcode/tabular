@@ -163,16 +163,25 @@ pub struct Tabular {
     // Pending drop index confirmation
     pub pending_drop_index_name: Option<String>,
     pub pending_drop_index_stmt: Option<String>,
+    // Pending drop column confirmation
+    pub pending_drop_column_name: Option<String>,
+    pub pending_drop_column_stmt: Option<String>,
     // Structure view column widths (separate from data grid)
     pub structure_col_widths: Vec<f32>, // for columns table
     pub structure_idx_col_widths: Vec<f32>, // for indexes table
     pub structure_sub_view: models::structs::StructureSubView,
-    // Inline add-column state for Structure -> Columns
+    // Inline add/edit column state for Structure -> Columns
     pub adding_column: bool,
     pub new_column_name: String,
     pub new_column_type: String,
     pub new_column_nullable: bool,
     pub new_column_default: String,
+    pub editing_column: bool,
+    pub edit_column_original_name: String,
+    pub edit_column_name: String,
+    pub edit_column_type: String,
+    pub edit_column_nullable: bool,
+    pub edit_column_default: String,
     // Inline add-index state for Structure -> Indexes
     pub adding_index: bool,
     pub new_index_name: String,
@@ -454,6 +463,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             structure_indexes: Vec::new(),
             pending_drop_index_name: None,
             pending_drop_index_stmt: None,
+            pending_drop_column_name: None,
+            pending_drop_column_stmt: None,
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,
@@ -462,6 +473,12 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             new_column_type: String::new(),
             new_column_nullable: true,
             new_column_default: String::new(),
+            editing_column: false,
+            edit_column_original_name: String::new(),
+            edit_column_name: String::new(),
+            edit_column_type: String::new(),
+            edit_column_nullable: true,
+            edit_column_default: String::new(),
             adding_index: false,
             new_index_name: String::new(),
             new_index_method: String::new(),
@@ -6235,6 +6252,31 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                 }
                                 ui.close();
                             }
+                            if ui.button("✏️ Edit Column").clicked() {
+                                self.editing_column = true;
+                                self.edit_column_original_name = col.name.clone();
+                                self.edit_column_name = col.name.clone();
+                                self.edit_column_type = col.data_type.clone();
+                                self.edit_column_nullable = col.nullable.unwrap_or(true);
+                                self.edit_column_default = col.default_value.clone().unwrap_or_default();
+                                ui.close();
+                            }
+                            if ui.button("🗑 Drop Column").clicked() {
+                                let table_name = self.infer_current_table_name();
+                                if let Some(conn_id) = self.current_connection_id { if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
+                                    let stmt = match conn.connection_type {
+                                        models::enums::DatabaseType::MySQL => format!("ALTER TABLE `{}` DROP COLUMN `{}`;", table_name, col.name),
+                                        models::enums::DatabaseType::PostgreSQL => format!("ALTER TABLE \"{}\" DROP COLUMN \"{}\";", table_name, col.name),
+                                        models::enums::DatabaseType::MsSQL => format!("ALTER TABLE [{}] DROP COLUMN [{}];", table_name, col.name),
+                                        models::enums::DatabaseType::SQLite => format!("-- SQLite drop column requires table rebuild; not supported automatically. Consider manual migration for '{}'.", col.name),
+                                        _ => "-- Drop column not supported for this database type".to_string(),
+                                    };
+                                    self.pending_drop_column_name = Some(col.name.clone());
+                                    self.pending_drop_column_stmt = Some(stmt.clone());
+                                    self.editor_text.push('\n'); self.editor_text.push_str(&stmt);
+                                }}
+                                ui.close();
+                            }
                         });
                     }
                 });
@@ -6289,10 +6331,154 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     });
                 });
             }
+
+            // EDIT COLUMN ROW (editable)
+            if self.editing_column {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    // # (blank)
+                    let (rect_no,_) = ui.allocate_exact_size(egui::vec2(widths[0], row_h), egui::Sense::hover());
+                    ui.painter().rect_stroke(rect_no,0.0,stroke, egui::StrokeKind::Outside);
+                    // Name
+                    let w_name = widths[1];
+                    ui.allocate_ui_with_layout(egui::vec2(w_name,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(w_name-8.0);
+                        ui.add_space(4.0);
+                        ui.text_edit_singleline(&mut self.edit_column_name);
+                    });
+                    // Type
+                    let w_type = widths[2];
+                    ui.allocate_ui_with_layout(egui::vec2(w_type,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(w_type-8.0);
+                        ui.text_edit_singleline(&mut self.edit_column_type);
+                    });
+                    // Nullable
+                    let w_null = widths[3];
+                    ui.allocate_ui_with_layout(egui::vec2(w_null,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        egui::ComboBox::from_id_salt("edit_col_nullable").selected_text(if self.edit_column_nullable {"YES"} else {"NO"}).show_ui(ui, |ui| {
+                            if ui.selectable_label(self.edit_column_nullable, "YES").clicked() { self.edit_column_nullable = true; }
+                            if ui.selectable_label(!self.edit_column_nullable, "NO").clicked() { self.edit_column_nullable = false; }
+                        });
+                    });
+                    // Default
+                    let w_def = widths[4];
+                    ui.allocate_ui_with_layout(egui::vec2(w_def,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(w_def-8.0);
+                        ui.add_space(4.0);
+                        ui.text_edit_singleline(&mut self.edit_column_default);
+                    });
+                    // Actions
+                    let w_extra = widths[5];
+                    ui.allocate_ui_with_layout(egui::vec2(w_extra,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let save_enabled = !self.edit_column_name.trim().is_empty() && !self.edit_column_type.trim().is_empty();
+                        if ui.add_enabled(save_enabled, egui::Button::new("Save")).clicked() { self.commit_edit_column(); }
+                        if ui.button("Cancel").clicked() { self.editing_column = false; }
+                    });
+                });
+            }
         });
         self.structure_col_widths = widths;
     }
 
+    fn commit_edit_column(&mut self) {
+        if !self.editing_column { return; }
+        let Some(conn_id) = self.current_connection_id else { self.editing_column=false; return; };
+        let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() else { self.editing_column=false; return; };
+        let table_name = self.infer_current_table_name();
+        if table_name.is_empty() { self.editing_column=false; return; }
+
+        let old = self.edit_column_original_name.trim();
+        let new_name = self.edit_column_name.trim();
+        let new_type = self.edit_column_type.trim();
+        let nullable = self.edit_column_nullable;
+        let def = self.edit_column_default.trim();
+
+        let mut stmts: Vec<String> = Vec::new();
+        match conn.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                // Build complete column definition with type, nullable, and default
+                let mut column_def = new_type.to_string();
+                if !nullable { 
+                    column_def.push_str(" NOT NULL"); 
+                }
+                if !def.is_empty() {
+                    let upper = def.to_uppercase();
+                    let is_numeric = def.chars().all(|c| c.is_ascii_digit());
+                    let is_func = matches!(upper.as_str(), "CURRENT_TIMESTAMP"|"NOW()"|"CURRENT_DATE");
+                    if is_numeric || is_func { 
+                        column_def.push_str(&format!(" DEFAULT {}", def)); 
+                    } else { 
+                        column_def.push_str(&format!(" DEFAULT '{}'", def.replace("'", "''"))); 
+                    }
+                }
+                
+                // MySQL supports CHANGE to rename+modify; use MODIFY if name unchanged
+                let stmt = if old != new_name {
+                    format!("ALTER TABLE `{}` CHANGE `{}` `{}` {};", table_name, old, new_name, column_def)
+                } else {
+                    format!("ALTER TABLE `{}` MODIFY `{}` {};", table_name, new_name, column_def)
+                };
+                stmts.push(stmt);
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                if old != new_name { stmts.push(format!("ALTER TABLE \"{}\" RENAME COLUMN \"{}\" TO \"{}\";", table_name, old, new_name)); }
+                if !new_type.is_empty() { stmts.push(format!("ALTER TABLE \"{}\" ALTER COLUMN \"{}\" TYPE {};", table_name, new_name, new_type)); }
+                stmts.push(format!("ALTER TABLE \"{}\" ALTER COLUMN \"{}\" {} NOT NULL;", table_name, new_name, if nullable { "DROP" } else { "SET" }));
+                if def.is_empty() { stmts.push(format!("ALTER TABLE \"{}\" ALTER COLUMN \"{}\" DROP DEFAULT;", table_name, new_name)); }
+                else { stmts.push(format!("ALTER TABLE \"{}\" ALTER COLUMN \"{}\" SET DEFAULT {};", table_name, new_name, def)); }
+            }
+            models::enums::DatabaseType::MsSQL => {
+                if old != new_name { stmts.push(format!("EXEC sp_rename '{}.{}', '{}', 'COLUMN';", table_name, old, new_name)); }
+                if !new_type.is_empty() { stmts.push(format!("ALTER TABLE [{}] ALTER COLUMN [{}] {}{};", table_name, new_name, new_type, if nullable { "" } else { " NOT NULL" })); }
+                if !def.is_empty() {
+                    // Note: Default constraints require named constraints; here we set default at column level (may require manual constraint handling)
+                    stmts.push("-- You may need to drop existing DEFAULT constraint before setting a new one".to_string());
+                }
+            }
+            models::enums::DatabaseType::SQLite => {
+                stmts.push(format!("-- SQLite column edit requires table rebuild; consider manual migration for column '{}'.", old));
+            }
+            _ => { stmts.push("-- Edit column not supported".to_string()); }
+        }
+
+        let full = stmts.join("\n");
+        if !full.is_empty() { self.editor_text.push('\n'); self.editor_text.push_str(&full); }
+        self.editing_column = false;
+        // Execute sequentially
+        if let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, full.clone()) {
+            let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
+            if is_error {
+                if let Some(row) = data.first() { if let Some(err) = row.first() { self.error_message = format!("Gagal edit kolom: {}", err); self.show_error_message = true; } }
+            } else { self.load_structure_info_for_current_table(); }
+        }
+    }
+
+    fn render_drop_column_confirmation(&mut self, ctx: &egui::Context) {
+        if self.pending_drop_column_name.is_none() || self.pending_drop_column_stmt.is_none() { return; }
+        let col_name = self.pending_drop_column_name.clone().unwrap();
+        let stmt = self.pending_drop_column_stmt.clone().unwrap();
+        egui::Window::new("Konfirmasi Drop Column")
+            .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_size(egui::vec2(440.0, 170.0))
+            .show(ctx, |ui| {
+                ui.label(format!("Column: {}", col_name));
+                ui.add_space(4.0);
+                ui.code(&stmt);
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() { self.pending_drop_column_name=None; self.pending_drop_column_stmt=None; }
+                    if ui.button(egui::RichText::new("Confirm").color(egui::Color32::RED)).clicked() {
+                        if let Some(conn_id) = self.current_connection_id { if !stmt.starts_with("--") { let _ = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()); } }
+                        let victim = col_name.clone();
+                        self.structure_columns.retain(|it| it.name != victim);
+                        self.load_structure_info_for_current_table();
+                        self.pending_drop_column_name=None; self.pending_drop_column_stmt=None;
+                    }
+                });
+            });
+    }
     fn commit_new_column(&mut self) {
         if !self.adding_column { return; }
         let Some(conn_id) = self.current_connection_id else { self.adding_column=false; return; };
@@ -7757,6 +7943,7 @@ impl App for Tabular {
                 }
 
                 self.render_drop_index_confirmation(ui.ctx());
+                self.render_drop_column_confirmation(ui.ctx());
             });
 
     } // end update
