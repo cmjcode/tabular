@@ -7083,6 +7083,48 @@ impl App for Tabular {
                 editor::open_command_palette(self);
             }
             
+            // Handle table cell navigation with arrow keys
+            if !self.show_command_palette && !self.show_theme_selector && self.selected_cell.is_some() {
+                let mut cell_changed = false;
+                if let Some((row, col)) = self.selected_cell {
+                    let max_rows = self.current_table_data.len();
+                    
+                    if i.key_pressed(egui::Key::ArrowRight) {
+                        // Check the current row's column count for bounds
+                        if let Some(current_row) = self.current_table_data.get(row) {
+                            if col + 1 < current_row.len() {
+                                self.selected_cell = Some((row, col + 1));
+                                cell_changed = true;
+                            }
+                        }
+                    } else if i.key_pressed(egui::Key::ArrowLeft) && col > 0 {
+                        self.selected_cell = Some((row, col - 1));
+                        cell_changed = true;
+                    } else if i.key_pressed(egui::Key::ArrowDown) && row + 1 < max_rows {
+                        // Check if the target row has enough columns
+                        if let Some(target_row) = self.current_table_data.get(row + 1) {
+                            let target_col = col.min(target_row.len().saturating_sub(1));
+                            self.selected_cell = Some((row + 1, target_col));
+                            cell_changed = true;
+                        }
+                    } else if i.key_pressed(egui::Key::ArrowUp) && row > 0 {
+                        // Check if the target row has enough columns
+                        if let Some(target_row) = self.current_table_data.get(row - 1) {
+                            let target_col = col.min(target_row.len().saturating_sub(1));
+                            self.selected_cell = Some((row - 1, target_col));
+                            cell_changed = true;
+                        }
+                    }
+                    
+                    // Update selected_row when cell changes
+                    if cell_changed {
+                        if let Some((new_row, _)) = self.selected_cell {
+                            self.selected_row = Some(new_row);
+                        }
+                    }
+                }
+            }
+            
             // Handle command palette navigation
             if self.show_command_palette {
                 // Arrow key navigation
