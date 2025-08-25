@@ -456,6 +456,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             } else { tabular.selected_text.clear(); }
         } else { tabular.selected_text.clear(); }
 
+        // Reset table focus flag when editor is interacted with
+        if response.response.clicked() || response.response.has_focus() {
+            tabular.table_recently_clicked = false;
+        }
+
     // (Multi-line indent already handled pre-render if applied)
         
         // If you get a type error here, try:

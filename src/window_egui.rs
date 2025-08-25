@@ -123,6 +123,8 @@ pub struct Tabular {
     pub selected_columns: BTreeSet<usize>,
     pub last_clicked_row: Option<usize>,
     pub last_clicked_column: Option<usize>,
+    // Track if table was recently clicked for focus management
+    pub table_recently_clicked: bool,
     // Column width management for resizable columns
     pub column_widths: Vec<f32>, // Store individual column widths
     pub min_column_width: f32,
@@ -438,6 +440,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
             selected_columns: BTreeSet::new(),
             last_clicked_row: None,
             last_clicked_column: None,
+            table_recently_clicked: false,
             // Column width management
             column_widths: Vec::new(),
             min_column_width: 50.0,
@@ -5628,6 +5631,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 if let Some((r, c)) = cell_sel_requests.last().copied() {
                     self.selected_row = Some(r);
                     self.selected_cell = Some((r, c));
+                    self.table_recently_clicked = true; // Mark that table was clicked
                 }
                 for (column_index, ascending) in sort_requests { self.sort_table_data(column_index, ascending); }
                 // If there are no rows, display an explicit message under the header grid
@@ -7043,6 +7047,9 @@ impl App for Tabular {
         let mut snapshot_rows_csv: Option<String> = None;
         let mut snapshot_cols_csv: Option<String> = None;
 
+        // Check if editor has focus before entering input closure
+        let editor_has_focus = ctx.memory(|m| m.has_focus(egui::Id::new("sql_editor")));
+
         ctx.input(|i| {
             // Detect Copy event (Cmd/Ctrl+C) which on some platforms (macOS) may emit Event::Copy instead of Key::C with modifiers
             let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
@@ -7084,7 +7091,8 @@ impl App for Tabular {
             }
             
             // Handle table cell navigation with arrow keys
-            if !self.show_command_palette && !self.show_theme_selector && self.selected_cell.is_some() {
+            // Only allow table navigation when table was recently clicked and editor is not currently focused
+            if !self.show_command_palette && !self.show_theme_selector && self.selected_cell.is_some() && self.table_recently_clicked && !editor_has_focus {
                 let mut cell_changed = false;
                 if let Some((row, col)) = self.selected_cell {
                     let max_rows = self.current_table_data.len();
