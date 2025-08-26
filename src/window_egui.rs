@@ -1704,7 +1704,7 @@ impl Tabular {
         let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
 
-        if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table || 
+        if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
         // Show expand toggles for container folders and schema folders only
        node.node_type == models::enums::NodeType::DatabasesFolder || node.node_type == models::enums::NodeType::TablesFolder ||
@@ -5518,6 +5518,15 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         );
 
         if let Some(connection_id) = connection_id {
+            // Check if connection pool is being created to avoid infinite retry loops
+            if self.pending_connection_pools.contains(&connection_id) {
+                debug!(
+                    "⏳ Connection pool creation in progress for connection {}, skipping pagination for now",
+                    connection_id
+                );
+                return;
+            }
+            
             let offset = self.current_page * self.page_size;
             debug!(
                 "🔥 About to build paginated query with offset={}, page_size={}, connection_id={}",
@@ -6101,12 +6110,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         "SELECT table_name, database_name, table_type FROM table_cache WHERE connection_id = ? AND table_name LIKE ? COLLATE BINARY ORDER BY database_name, table_name"
                     }
                 };
-                
+
                 let search_param = match db_type {
                     models::enums::DatabaseType::SQLite => &search_pattern,
                     _ => &format!("%{}%", search_text), // For non-SQLite, use LIKE with COLLATE BINARY for case sensitivity
                 };
-                
+
                 sqlx::query_as::<_, (String, String, String)>(query)
                     .bind(connection_id)
                     .bind(search_param)
@@ -6125,12 +6134,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         "SELECT DISTINCT table_name, database_name, column_name, data_type FROM column_cache WHERE connection_id = ? AND column_name LIKE ? COLLATE BINARY ORDER BY database_name, table_name"
                     }
                 };
-                
+
                 let search_param = match db_type {
                     models::enums::DatabaseType::SQLite => &search_pattern,
                     _ => &format!("%{}%", search_text), // For non-SQLite, use LIKE with COLLATE BINARY for case sensitivity
                 };
-                
+
                 sqlx::query_as::<_, (String, String, String, String)>(query)
                     .bind(connection_id)
                     .bind(search_param)
@@ -6727,11 +6736,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             egui::TextEdit::singleline(&mut self.sql_filter_text)
                                 .hint_text("Enter SQL WHERE condition (e.g., column1 = 'value' AND column2 > 100)")
                         );
-                        
+
                         if filter_response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             self.apply_sql_filter();
                         }
-                        
+
                         if ui.button("❌").on_hover_text("Clear filter").clicked() {
                             self.sql_filter_text.clear();
                             self.apply_sql_filter();
@@ -6918,7 +6927,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     col_sel_requests.push((col_index, modifiers));
                                                 }
                                             });
-                                            // Add resize handle for all columns except the last one, 
+                                            // Add resize handle for all columns except the last one,
                                             // BUT always add for error columns (even if they are the last/only column)
                                             if col_index < headers.len() - 1 || Some(col_index) == error_column_index {
                                                 let handle_x = ui.max_rect().max.x;
@@ -6929,7 +6938,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     egui::vec2(6.0, handle_height)
                                                 );
                                                 let resize_response = ui.allocate_rect(resize_handle_rect, egui::Sense::drag());
-                                                
+
                                                 // Always show a subtle resize indicator
                                                 let indicator_color = if resize_response.hovered() || resize_response.dragged() {
                                                     egui::Color32::from_rgba_unmultiplied(100, 150, 255, 200)
@@ -6938,14 +6947,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                 } else {
                                                     egui::Color32::from_rgba_unmultiplied(150, 150, 150, 60)
                                                 };
-                                                
+
                                                 // Draw the resize handle with dotted pattern
                                                 let center_x = handle_x - 1.5;
                                                 let dot_size = 1.0;
                                                 let dot_spacing = 4.0;
                                                 let start_y = handle_y + 8.0;
                                                 let end_y = handle_y + handle_height - 8.0;
-                                                
+
                                                 for y in (start_y as i32..end_y as i32).step_by(dot_spacing as usize) {
                                                     ui.painter().circle_filled(
                                                         egui::pos2(center_x, y as f32),
@@ -6953,7 +6962,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                         indicator_color
                                                     );
                                                 }
-                                                
+
                                                 if resize_response.hovered() {
                                                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                                                 }
@@ -7769,7 +7778,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 },
                 models::structs::StructureSubView::Indexes => {
                 // Headers: No | index_name | algorithm | unique | columns | actions
-                let headers = ["#", "index_name", "algorithm", "unique", "columns", "actions"]; 
+                let headers = ["#", "index_name", "algorithm", "unique", "columns", "actions"];
                 if self.structure_idx_col_widths.len() != headers.len() { self.structure_idx_col_widths = vec![40.0, 200.0, 120.0, 70.0, 260.0, 120.0]; }
                 let mut widths = self.structure_idx_col_widths.clone();
                 for w in widths.iter_mut() { *w = w.clamp(40.0, 800.0); }
@@ -7819,9 +7828,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             for (i,val) in values.iter().enumerate() {
                                 let w = widths[i];
                                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
-                                if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);} 
+                                if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}
                                 ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
-                                let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; 
+                                let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                                 ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                                 resp.context_menu(|ui| {
                                     if ui.button("➕ Add Index").clicked() { if !self.adding_index { self.start_inline_add_index(); } ui.close(); }
@@ -8003,9 +8012,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         let w = widths[i];
                         // All cells clickable for context menu
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
-                        if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);} 
-                        ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside); 
-                        let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; 
+                        if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}
+                        ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
+                        let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                         ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                         // Context menu on every cell
                         resp.context_menu(|ui| {
@@ -8931,6 +8940,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
 impl App for Tabular {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // Periodic cleanup of stuck connection pools to prevent infinite loops
+        if self.pending_connection_pools.len() > 10 {
+            // If we have too many pending connections, force cleanup
+            log::debug!("🧹 Force cleaning up {} pending connections", self.pending_connection_pools.len());
+            self.pending_connection_pools.clear();
+        }
+        
         // helper closure to save immediately when prefs_dirty flagged
         let try_save_prefs = |app: &mut Tabular| {
             if app.prefs_dirty {

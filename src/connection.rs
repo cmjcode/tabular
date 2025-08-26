@@ -218,7 +218,7 @@ let mut sfolder = connection.folder.as_deref().unwrap_or("");
 if sfolder.is_empty() {
        sfolder = "Default";
 }
-let connection_text = format!("{} / {} / {}", 
+let connection_text = format!("{} / {} / {}",
        sfolder,
        match connection.connection_type {
        models::enums::DatabaseType::MySQL => "MySQL",
@@ -230,7 +230,7 @@ let connection_text = format!("{} / {} / {}",
        },
        connection.name
 );
-                     
+
        // Custom button with red fill on hover
        let button = egui::Button::new(&connection_text);
        let response = ui.add_sized([ui.available_width(), 32.0], button);
@@ -271,11 +271,11 @@ let default_database = if let Some(connection) = tabular.connections.iter().find
        } else {
               None
        };
-       
-       debug!("Connection selector: Set connection '{}' and database '{}' for active tab", 
-              connection_name, 
+
+       debug!("Connection selector: Set connection '{}' and database '{}' for active tab",
+              connection_name,
               database.as_deref().unwrap_or("None"));
-       
+
        database
 } else {
        None
@@ -289,14 +289,14 @@ if tabular.auto_execute_after_connection {
        let query = tabular.pending_query.clone();
        if let Some((headers, data)) = execute_query_with_connection(tabular, connection_id, query) {
        tabular.current_table_headers = headers;
-       
+
        // Use pagination for query results
        tabular.update_pagination_data(data);
-       
+
        if tabular.total_rows == 0 {
               tabular.current_table_name = "Query executed successfully (no results)".to_string();
        } else {
-              tabular.current_table_name = format!("Query Results ({} total rows, showing page {} of {})", 
+              tabular.current_table_name = format!("Query Results ({} total rows, showing page {} of {})",
                      tabular.total_rows, tabular.current_page + 1, tabular.get_total_pages());
        }
        } else {
@@ -466,9 +466,9 @@ models::enums::DatabasePool::MySQL(_mysql_pool) => {
               for (i, statement) in statements.iter().enumerate() {
                      let trimmed = statement.trim();
                      // Skip empty or comment-only statements (MySQL supports '--', '#', and '/* ... */' comments)
-                     if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with('#') || trimmed.starts_with("/*") { 
+                     if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with('#') || trimmed.starts_with("/*") {
                             debug!("Skipping statement {}: '{}'", i + 1, trimmed);
-                            continue; 
+                            continue;
                      }
                      debug!("Executing statement {}: '{}'", i + 1, trimmed);
                      let upper = trimmed.to_uppercase();
@@ -482,7 +482,7 @@ models::enums::DatabasePool::MySQL(_mysql_pool) => {
                                    .trim_matches('[')
                                    .trim_matches(']')
                                    .trim();
-                            
+
                             // Try to execute USE statement directly first (faster)
                             match sqlx::query(&format!("USE `{}`", db_name)).execute(&mut conn).await {
                                    Ok(_) => {
@@ -514,7 +514,7 @@ models::enums::DatabasePool::MySQL(_mysql_pool) => {
                             Ok(rows) => {
                                    // Log query execution time and row count for performance monitoring
                                    debug!("✅ Query executed successfully: {} rows returned", rows.len());
-                                   
+
                                    if i == statements.len() - 1 {
                                           // Get headers from metadata, even if no rows
                                           if !rows.is_empty() {
@@ -906,6 +906,43 @@ models::enums::DatabasePool::MySQL(_mysql_pool) => {
 })
 }
 
+// Helper function to clean up completed background pools
+fn cleanup_completed_background_pools(tabular: &mut Tabular) {
+    if let Ok(shared_pools) = tabular.shared_connection_pools.lock() {
+        for connection_id in shared_pools.keys() {
+            if tabular.pending_connection_pools.contains(connection_id) {
+                debug!(
+                    "🧹 Cleaning up completed background pool for connection {}",
+                    connection_id
+                );
+                tabular.pending_connection_pools.remove(connection_id);
+            }
+        }
+    }
+}
+
+// Force cleanup of stuck pending connections (safety net)
+fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
+    // Remove any connection that's been pending too long to prevent permanent locks
+    // This is a safety net in case background tasks fail to complete
+    if !tabular.pending_connection_pools.is_empty() {
+        let stuck_connections: Vec<i64> = tabular.pending_connection_pools.iter().copied().collect();
+        for connection_id in stuck_connections {
+            // Check if we have the pool in shared pools or local cache
+            let has_pool = tabular.connection_pools.contains_key(&connection_id) ||
+                tabular.shared_connection_pools.lock().is_ok_and(|pools| pools.contains_key(&connection_id));
+            
+            if has_pool {
+                debug!(
+                    "🧹 Removing stuck pending status for connection {} (pool exists)",
+                    connection_id
+                );
+                tabular.pending_connection_pools.remove(&connection_id);
+            }
+        }
+    }
+}
+
 // Helper function untuk mendapatkan atau membuat connection pool dengan concurrency
 //
 // CONCURRENCY IMPROVEMENTS:
@@ -924,6 +961,12 @@ pub(crate) async fn get_or_create_connection_pool(
     tabular: &mut Tabular,
     connection_id: i64,
 ) -> Option<models::enums::DatabasePool> {
+    // Clean up any completed background pools first
+    cleanup_completed_background_pools(tabular);
+    
+    // Clean up any stuck pending connections (safety net)
+    cleanup_stuck_pending_connections(tabular);
+    
     // First check if we already have a cached connection pool for this connection
     if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
         debug!(
@@ -944,6 +987,8 @@ pub(crate) async fn get_or_create_connection_pool(
         let pool = shared_pool.clone();
         // Cache it locally for faster access next time
         tabular.connection_pools.insert(connection_id, pool.clone());
+        // Remove from pending since we now have the pool
+        tabular.pending_connection_pools.remove(&connection_id);
         return Some(pool);
     }
 
@@ -1315,6 +1360,12 @@ pub(crate) async fn try_get_connection_pool(
     tabular: &mut Tabular,
     connection_id: i64,
 ) -> Option<models::enums::DatabasePool> {
+    // Clean up any completed background pools first
+    cleanup_completed_background_pools(tabular);
+    
+    // Clean up any stuck pending connections (safety net)
+    cleanup_stuck_pending_connections(tabular);
+    
     // Check cache first
     if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
         debug!(
@@ -1836,7 +1887,7 @@ use tiberius::{AuthMethod, Config};
                             Some(vec![mssql_cfg.database.clone()])
                      } else {
                             // Move system DBs (master, model, msdb, tempdb) to end for nicer UX
-                            let system = ["master", "model", "msdb", "tempdb"]; 
+                            let system = ["master", "model", "msdb", "tempdb"];
                             list.sort();
                             let mut user_dbs: Vec<String> = list.iter().filter(|d| !system.contains(&d.as_str())).cloned().collect();
                             let mut sys_dbs: Vec<String> = list.into_iter().filter(|d| system.contains(&d.as_str())).collect();
@@ -2073,7 +2124,7 @@ match MySqlPoolOptions::new()
                                           let mut columns: Vec<(String,String)> = Vec::with_capacity(rows.len());
                                           for row in rows {
                                                  // Robust extraction: try String, then bytes -> utf8_lossy
-                                                 let col_name: Option<String> = match row.try_get::<String,_>("COLUMN_NAME") { 
+                                                 let col_name: Option<String> = match row.try_get::<String,_>("COLUMN_NAME") {
                                                         Ok(v) => Some(v),
                                                         Err(_) => row.try_get::<Vec<u8>,_>("COLUMN_NAME").ok().map(|b| String::from_utf8_lossy(&b).to_string())
                                                  };
@@ -2088,7 +2139,7 @@ match MySqlPoolOptions::new()
                                                  let show_q = format!("SHOW COLUMNS FROM `{}`.`{}`", database_name.replace('`', ""), table_name.replace('`', ""));
                                                  match sqlx::query(&show_q).fetch_all(&pool).await {
                                                         Ok(srows) => {
-                                                               for r in srows { 
+                                                               for r in srows {
                                                                       let name: Option<String> = r.try_get("Field").ok();
                                                                       let dtype: Option<String> = r.try_get("Type").ok();
                                                                       if let (Some(n), Some(t)) = (name, dtype) { columns.push((n,t)); }
@@ -2104,9 +2155,9 @@ match MySqlPoolOptions::new()
                                           // Fallback directly to SHOW COLUMNS
                                           let mut columns: Vec<(String,String)> = Vec::new();
                                           let show_q = format!("SHOW COLUMNS FROM `{}`.`{}`", database_name.replace('`', ""), table_name.replace('`', ""));
-                                          if let Ok(srows) = sqlx::query(&show_q).fetch_all(&pool).await { 
-                                                 use sqlx::Row; 
-                                                 for r in srows { 
+                                          if let Ok(srows) = sqlx::query(&show_q).fetch_all(&pool).await {
+                                                 use sqlx::Row;
+                                                 for r in srows {
                                                         let name: Option<String> = r.try_get("Field").ok();
                                                         let dtype: Option<String> = r.try_get("Type").ok();
                                                         if let (Some(n), Some(t)) = (name, dtype) { columns.push((n,t)); }

@@ -68,12 +68,12 @@ impl ConfigStore {
         match SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
-            .await 
+            .await
         {
             Ok(pool) => {
                 match sqlx::query("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
                     .execute(&pool)
-                    .await 
+                    .await
                 {
                     Ok(_) => {
                         log::info!("Config store initialized successfully with SQLite");

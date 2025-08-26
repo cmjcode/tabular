@@ -263,7 +263,7 @@ pub(crate) fn fetch_tables_from_sqlite_connection(
     rt.block_on(async {
        // Get or create connection pool
        let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
-       
+
        match pool {
               models::enums::DatabasePool::SQLite(sqlite_pool) => {
               let query = match table_type {
@@ -274,11 +274,11 @@ pub(crate) fn fetch_tables_from_sqlite_connection(
                      return None;
                      }
               };
-              
+
               let result = sqlx::query_as::<_, (String,)>(query)
                      .fetch_all(sqlite_pool.as_ref())
                      .await;
-                     
+
               match result {
                      Ok(rows) => {
                      let items: Vec<String> = rows.into_iter().map(|(name,)| name).collect();

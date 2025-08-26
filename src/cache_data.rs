@@ -130,7 +130,7 @@ pub(crate) fn save_databases_to_cache(
               .bind(connection_id)
               .execute(pool_clone.as_ref())
               .await;
-              
+
               // Insert new database names
               for db_name in databases_clone {
               let _ = sqlx::query("INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)")
@@ -318,7 +318,7 @@ pub(crate) fn save_tables_to_cache(
               .bind(&database_name)
               .execute(pool_clone.as_ref())
               .await;
-              
+
               // Insert new table names with types
               for (table_name, table_type) in tables_clone {
               let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
@@ -355,7 +355,7 @@ pub(crate) fn save_columns_to_cache(
               .bind(&table_name)
               .execute(pool_clone.as_ref())
               .await;
-              
+
               // Insert new column names with types
               for (i, (column_name, data_type)) in columns_clone.iter().enumerate() {
               let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")

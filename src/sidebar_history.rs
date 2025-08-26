@@ -61,7 +61,7 @@ pub(crate) fn save_query_to_history(
                     .bind(&connection_name)
                     .execute(pool.as_ref())
                     .await;
-                    
+
                     // Clean up old history entries if we have more than 150 entries
                     let _ = sqlx::query(
                         "DELETE FROM query_history WHERE id NOT IN (

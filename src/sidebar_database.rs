@@ -640,16 +640,16 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
             // Get the data directory path
             let data_dir = directory::get_data_dir();
             let db_path = data_dir.join("connections.db");
-                        
+
             // Convert path to string and use file:// prefix for SQLite
             let db_path_str = db_path.to_string_lossy();
             let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
             let pool = SqlitePool::connect(&connection_string).await;
-            
+
             match pool {
                 Ok(pool) => {
                     info!("Database connection successful");
-                    
+
                     // Create connections table
                     let create_connections_result = sqlx::query(
                         r#"
@@ -668,15 +668,15 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     )
                     .execute(&pool)
                     .await;
-                    
+
                     // Add folder column if it doesn't exist (for existing databases)
                     let _ = sqlx::query(
                         "ALTER TABLE connections ADD COLUMN folder TEXT DEFAULT NULL"
                     )
                     .execute(&pool)
                     .await;
-                    
-                    
+
+
                     // Create database cache table
                     let create_db_cache_result = sqlx::query(
                         r#"
@@ -692,7 +692,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     )
                     .execute(&pool)
                     .await;
-                    
+
                     // Create table cache table
                     let create_table_cache_result = sqlx::query(
                         r#"
@@ -710,7 +710,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     )
                     .execute(&pool)
                     .await;
-                    
+
                     // Create column cache table
                     let create_column_cache_result = sqlx::query(
                         r#"
@@ -733,7 +733,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     )
                     .execute(&pool)
                     .await;
-                    
+
                     // Create query history table
                     let create_history_result = sqlx::query(
                         r#"
@@ -749,7 +749,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     )
                     .execute(&pool)
                     .await;
-                    
+
                     match (create_connections_result, create_db_cache_result, create_table_cache_result, create_column_cache_result, create_history_result) {
                         (Ok(_), Ok(_), Ok(_), Ok(_), Ok(_)) => {
                             Some(pool)
