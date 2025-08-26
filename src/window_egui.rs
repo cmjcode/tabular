@@ -1441,8 +1441,53 @@ impl Tabular {
                             self.is_table_browse_mode = true; // Enable filter for table browse
                             self.sql_filter_text.clear(); // Clear any previous filter
 
-                            // Initialize server-side pagination
-                            self.initialize_server_pagination(base_query);
+                            // If the pool is not ready, queue the first-page query and show loading instead of executing immediately
+                            let mut pool_ready = true;
+                            if self.pending_connection_pools.contains(&connection_id) {
+                                pool_ready = false;
+                            } else if !self.connection_pools.contains_key(&connection_id) {
+                                // Attempt a quick readiness check using the runtime (non-blocking)
+                                let created_now = if let Some(rt) = self.runtime.clone() {
+                                    rt.block_on(async {
+                                        crate::connection::try_get_connection_pool(self, connection_id)
+                                            .await
+                                            .is_some()
+                                    })
+                                } else {
+                                    let rt = self.get_runtime();
+                                    rt.block_on(async {
+                                        crate::connection::try_get_connection_pool(self, connection_id)
+                                            .await
+                                            .is_some()
+                                    })
+                                };
+                                if !created_now {
+                                    pool_ready = false;
+                                }
+                            }
+
+                            if !pool_ready {
+                                // Prepare server pagination state but defer execution
+                                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                    active_tab.base_query = base_query.clone();
+                                }
+                                self.current_base_query = base_query.clone();
+                                self.current_page = 0;
+                                // Assume a large default total so paging UI is enabled
+                                if let Some(total) = self.execute_count_query() { self.actual_total_rows = Some(total); }
+
+                                // Build the first page query to run as soon as pool is ready
+                                let first_query = self.build_paginated_query(0, self.page_size);
+                                self.pool_wait_in_progress = true;
+                                self.pool_wait_connection_id = Some(connection_id);
+                                self.pool_wait_query = first_query;
+                                self.pool_wait_started_at = Some(std::time::Instant::now());
+                                // Friendly status; keep current data intact
+                                self.current_table_name = "Connecting… waiting for pool".to_string();
+                            } else {
+                                // Initialize server-side pagination now
+                                self.initialize_server_pagination(base_query);
+                            }
                         } else {
                             println!("================== 1 ============================ ");
                             debug!("🔄 Taking client-side pagination fallback path");
@@ -1456,7 +1501,35 @@ impl Tabular {
                                 };
                             debug!("🔄 Client-side query after sanitization: {}", safe_query);
 
-                            if let Some((headers, data)) = connection::execute_query_with_connection(
+                            // If pool not ready, queue and show loading; otherwise execute now
+                            let mut pool_ready = true;
+                            if self.pending_connection_pools.contains(&connection_id) {
+                                pool_ready = false;
+                            } else if !self.connection_pools.contains_key(&connection_id) {
+                                let created_now = if let Some(rt) = self.runtime.clone() {
+                                    rt.block_on(async {
+                                        crate::connection::try_get_connection_pool(self, connection_id)
+                                            .await
+                                            .is_some()
+                                    })
+                                } else {
+                                    let rt = self.get_runtime();
+                                    rt.block_on(async {
+                                        crate::connection::try_get_connection_pool(self, connection_id)
+                                            .await
+                                            .is_some()
+                                    })
+                                };
+                                if !created_now { pool_ready = false; }
+                            }
+
+                            if !pool_ready {
+                                self.pool_wait_in_progress = true;
+                                self.pool_wait_connection_id = Some(connection_id);
+                                self.pool_wait_query = safe_query;
+                                self.pool_wait_started_at = Some(std::time::Instant::now());
+                                self.current_table_name = "Connecting… waiting for pool".to_string();
+                            } else if let Some((headers, data)) = connection::execute_query_with_connection(
                                 self,
                                 connection_id,
                                 safe_query,
@@ -10562,7 +10635,10 @@ impl Tabular {
             } else {
                 String::new()
             };
-            self.current_base_query = base_query_for_pagination.clone();
+            // Preserve pre-set base query for server-side pagination; otherwise use computed base
+            if !(self.use_server_pagination && !self.current_base_query.is_empty()) {
+                self.current_base_query = base_query_for_pagination.clone();
+            }
 
             // Save to history unless error
             if !is_error_result {
@@ -10578,7 +10654,10 @@ impl Tabular {
                 tab.current_page = self.current_page;
                 tab.page_size = self.page_size;
                 tab.total_rows = self.total_rows;
-                tab.base_query = self.current_base_query.clone();
+                // Preserve pre-set base query for server-side pagination; otherwise store computed base
+                if !(self.use_server_pagination && !self.current_base_query.is_empty()) {
+                    tab.base_query = self.current_base_query.clone();
+                }
             }
         } else {
             self.current_table_name = "Query execution failed".to_string();
