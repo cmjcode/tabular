@@ -100,6 +100,8 @@ pub struct AdvancedEditor {
     #[allow(dead_code)]
     pub show_whitespace: bool,
     pub word_wrap: bool,
+    // Number of visible rows the editor should aim to display; set dynamically to fill height
+    pub desired_rows: usize,
     pub find_text: String,
     pub replace_text: String,
     pub show_find_replace: bool,
@@ -117,6 +119,7 @@ impl Default for AdvancedEditor {
             auto_indent: true,
             show_whitespace: false,
             word_wrap: false,
+            desired_rows: 25,
             find_text: String::new(),
             replace_text: String::new(),
             show_find_replace: false,

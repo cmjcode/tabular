@@ -7926,7 +7926,7 @@ impl App for Tabular {
                 } else {
                     // Regular query tabs: editor on top, results below
                     // Query tab logic: show bottom panel if we have any headers/data, a status name/message, or tab executed at least once
-                    let avail = ui.available_height();
+                    let avail = ui.available_height()+53.0;
                     let executed = self.query_tabs.get(self.active_tab_index).map(|t| t.has_executed_query).unwrap_or(false);
                     let has_headers = !self.current_table_headers.is_empty();
                     let has_message = !self.current_table_name.is_empty();
@@ -7949,9 +7949,13 @@ impl App for Tabular {
                     egui::Frame::NONE.fill(if ui.visuals().dark_mode { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::WHITE }).show(ui, |ui| {
                         // Fixed-height container with internal scroll so long queries don't push result panel
                         let run_bar_height = 30.0;
-                        let editor_area_height = (editor_h - run_bar_height).max(80.0);
+                        let editor_area_height = (editor_h - run_bar_height).max(200.0);
+                        // Calculate how many rows fit and pass it to the editor to fill the space
+                        let mono_h = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
+                        let rows = ((editor_area_height / mono_h).floor() as i32) as usize;
+                        self.advanced_editor.desired_rows = rows;
                         // Scrollable editor area
-                        let avail_w = ui.available_width();
+                        let avail_w = ui.available_width()-4.0;
                         // Allocate a fixed rectangle then paint a vertical ScrollArea inside it so content doesn't expand layout
                         let desired = egui::vec2(avail_w, editor_area_height);
                         let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());

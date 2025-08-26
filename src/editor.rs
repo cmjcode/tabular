@@ -265,9 +265,16 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
 
         // Main code editor using egui_code_editor
+    // Compute desired rows to fill height: estimate based on font size and available region
+    // Fallback to configured desired_rows when estimate not available.
+    let line_height = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
+    // Approximate available height in this scroll area; add a small buffer
+    let avail_h = ui.available_height();
+    let estimated_rows = ((avail_h / line_height).floor() as i32 - 2).max(8) as usize;
+    tabular.advanced_editor.desired_rows = estimated_rows;
     let mut editor = CodeEditor::default()
             .id_source("sql_editor")
-            .with_rows(25)
+            .with_rows(tabular.advanced_editor.desired_rows)
             .with_fontsize(tabular.advanced_editor.font_size)
             .with_theme(tabular.advanced_editor.theme)
             .with_syntax(egui_code_editor::Syntax::sql())
@@ -392,12 +399,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
     // Add small horizontal padding so the editor doesn't get clipped on the right edge
-    let response = egui::Frame::default()
-        .inner_margin(egui::Margin::rightf(2.0.into()))
-        .show(ui, |ui| {
-            editor.show(ui, &mut tabular.editor_text)
-        })
-        .inner;
+    // let response = egui::Frame::default()
+    //     // .inner_margin(egui::Margin::rightf(2.0.into()))
+    //     .show(ui, |ui| {
+    //         editor.show(ui, &mut tabular.editor_text)
+    //     })
+    //     .inner;
+        let response = editor.show(ui, &mut tabular.editor_text);
+
         // After show(), TextEditState should exist; apply pending cursor now
         if let Some(pos) = tabular.pending_cursor_set {
             let id = egui::Id::new("sql_editor");
