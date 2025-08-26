@@ -3870,7 +3870,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     // Select the specific database
                     if let Err(e) = redis::cmd("SELECT")
                         .arg(db_number)
-                        .query_async::<_, ()>(&mut conn)
+                        .query_async::<()>(&mut conn)
                         .await
                     {
                         debug!("❌ Failed to select database {}: {}", db_number, e);
@@ -3887,7 +3887,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             .arg(cursor)
                             .arg("COUNT")
                             .arg(10)
-                            .query_async::<_, (u64, Vec<String>)>(&mut conn)
+                            .query_async::<(u64, Vec<String>)>(&mut conn)
                             .await
                         {
                             Ok((next_cursor, keys)) => {
@@ -3899,7 +3899,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                     // Get the type of each key
                                     if let Ok(key_type) = redis::cmd("TYPE")
                                         .arg(&key)
-                                        .query_async::<_, String>(&mut conn)
+                                        .query_async::<String>(&mut conn)
                                         .await
                                     {
                                         all_keys.push((key, key_type));

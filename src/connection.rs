@@ -783,14 +783,14 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                           if match_pattern != "*" { cmd.arg("MATCH").arg(match_pattern); }
                                                           cmd.arg("COUNT").arg(count);
 
-                                                          match cmd.query_async::<_, (String, Vec<String>)>(&mut connection).await {
+                                                          match cmd.query_async::<(String, Vec<String>)>(&mut connection).await {
                                                                  Ok((next_cursor, keys)) => {
                                                                         let mut table_data = Vec::new();
                                                                         if keys.is_empty() {
                                                                                table_data.push(vec!["Info".to_string(), format!("No keys found matching pattern: {}", match_pattern)]);
                                                                                table_data.push(vec!["Cursor".to_string(), next_cursor.clone()]);
                                                                                table_data.push(vec!["Suggestion".to_string(), "Try different pattern or use 'SCAN 0 COUNT 100' to see all keys".to_string()]);
-                                                                               if match_pattern != "*" && let Ok((_, sample_keys)) = redis::cmd("SCAN").arg("0").arg("COUNT").arg("10").query_async::<_, (String, Vec<String>)>(&mut connection).await
+                                                                               if match_pattern != "*" && let Ok((_, sample_keys)) = redis::cmd("SCAN").arg("0").arg("COUNT").arg("10").query_async::<(String, Vec<String>)>(&mut connection).await
                                                                                              && !sample_keys.is_empty() {
                                                                                                     table_data.push(vec!["Sample Keys Found".to_string(), "".to_string()]);
                                                                                                     for (i, key) in sample_keys.iter().take(5).enumerate() { table_data.push(vec![format!("Sample {}", i + 1), key.clone()]); }
@@ -806,7 +806,7 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                    }
                                                    "INFO" => {
                                                           let section = if parts.len() > 1 { parts[1] } else { "default" };
-                                                          match redis::cmd("INFO").arg(section).query_async::<_, String>(&mut connection).await {
+                                                          match redis::cmd("INFO").arg(section).query_async::<String>(&mut connection).await {
                                                                  Ok(info_result) => {
                                                                         let mut table_data = Vec::new();
                                                                         for line in info_result.lines() {
@@ -820,7 +820,7 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                    }
                                                    "HGETALL" => {
                                                           if parts.len() != 2 { return Some((vec!["Error".to_string()], vec![vec!["HGETALL requires exactly one key".to_string()]])); }
-                                                          match redis::cmd("HGETALL").arg(parts[1]).query_async::<_, Vec<String>>(&mut connection).await {
+                                                          match redis::cmd("HGETALL").arg(parts[1]).query_async::<Vec<String>>(&mut connection).await {
                                                                  Ok(hash_data) => {
                                                                         let mut table_data = Vec::new();
                                                                         for chunk in hash_data.chunks(2) { if chunk.len() == 2 { table_data.push(vec![chunk[0].clone(), chunk[1].clone()]); } }
@@ -1377,7 +1377,7 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
               let mut conn = redis_manager.as_ref().clone();
               
               // Get CONFIG GET databases to determine max database count
-              let max_databases = match redis::cmd("CONFIG").arg("GET").arg("databases").query_async::<_, Vec<String>>(&mut conn).await {
+              let max_databases = match redis::cmd("CONFIG").arg("GET").arg("databases").query_async::<Vec<String>>(&mut conn).await {
                      Ok(config_result) if config_result.len() >= 2 => {
                      config_result[1].parse::<i32>().unwrap_or(16)
                      }
@@ -1500,7 +1500,7 @@ pub(crate) async fn fetch_databases_from_connection_async(tabular: &mut window_e
               }
               models::enums::DatabasePool::Redis(redis_manager) => {
                      let mut conn = redis_manager.as_ref().clone();
-                     let max_databases = match redis::cmd("CONFIG").arg("GET").arg("databases").query_async::<_, Vec<String>>(&mut conn).await {
+                     let max_databases = match redis::cmd("CONFIG").arg("GET").arg("databases").query_async::<Vec<String>>(&mut conn).await {
                             Ok(config_result) if config_result.len() >= 2 => config_result[1].parse::<i32>().unwrap_or(16),
                             _ => 16
                      };

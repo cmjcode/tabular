@@ -11,13 +11,13 @@ pub(crate) async fn fetch_redis_data(
 ) -> bool {
     // Try to get a Redis connection
     let mut conn = redis_manager.clone();
-    match redis::cmd("PING").query_async::<_, String>(&mut conn).await {
+    match redis::cmd("PING").query_async::<String>(&mut conn).await {
         Ok(_) => {
             // Get CONFIG GET databases to determine max database count
             let max_databases = if let Ok(config_result) = redis::cmd("CONFIG")
                 .arg("GET")
                 .arg("databases")
-                .query_async::<_, Vec<String>>(&mut conn)
+                .query_async::<Vec<String>>(&mut conn)
                 .await
             {
                 if config_result.len() >= 2 {
@@ -42,7 +42,7 @@ pub(crate) async fn fetch_redis_data(
             // Get keyspace info to identify which databases actually have keys
             if let Ok(keyspace_result) = redis::cmd("INFO")
                 .arg("keyspace")
-                .query_async::<_, String>(&mut conn)
+                .query_async::<String>(&mut conn)
                 .await
             {
                 for line in keyspace_result.lines() {
@@ -145,7 +145,7 @@ pub(crate) fn fetch_tables_from_redis_connection(
                         // Return the info sections we cached
                         if database_name == "info" {
                             // Get Redis INFO sections
-                            match redis::cmd("INFO").query_async::<_, String>(&mut conn).await {
+                            match redis::cmd("INFO").query_async::<String>(&mut conn).await {
                                 Ok(info_result) => {
                                     let sections: Vec<String> = info_result
                                         .lines()
@@ -173,7 +173,7 @@ pub(crate) fn fetch_tables_from_redis_connection(
                             {
                                 if (redis::cmd("SELECT")
                                     .arg(db_num)
-                                    .query_async::<_, String>(&mut conn)
+                                    .query_async::<String>(&mut conn)
                                     .await)
                                     .is_ok()
                                 {
@@ -182,7 +182,7 @@ pub(crate) fn fetch_tables_from_redis_connection(
                                         .arg(0)
                                         .arg("COUNT")
                                         .arg(100)
-                                        .query_async::<_, Vec<String>>(&mut conn)
+                                        .query_async::<Vec<String>>(&mut conn)
                                         .await
                                     {
                                         Ok(keys) => Some(keys),
