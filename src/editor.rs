@@ -389,7 +389,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 log::debug!("Autocomplete accepted via {} by injecting remainder (suggestion '{}')", if accept_via_tab_pre {"Tab"} else {"Enter"}, sugg);
             }
         }
-    let response = editor.show(ui, &mut tabular.editor_text);
+    // Add small horizontal padding so the editor doesn't get clipped on the right edge
+    let response = egui::Frame::default()
+        .inner_margin(egui::Margin::rightf(2.0.into()))
+        .show(ui, |ui| {
+            editor.show(ui, &mut tabular.editor_text)
+        })
+        .inner;
         // After show(), TextEditState should exist; apply pending cursor now
         if let Some(pos) = tabular.pending_cursor_set {
             let id = egui::Id::new("sql_editor");
