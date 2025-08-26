@@ -1,141 +1,175 @@
 use crate::{
-       connection, driver_mysql, driver_postgres, driver_redis, driver_sqlite, driver_mssql, models, modules, window_egui::{self, Tabular}
+    connection, driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models,
+    modules,
+    window_egui::{self, Tabular},
 };
-use futures_util::TryStreamExt; // for MsSQL try_next
 use eframe::egui;
-use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions, Column, Row, SqlitePool};
-use sqlx::mysql::MySqlConnection;
-use sqlx::Connection; // for MySqlConnection::connect
-use std::sync::Arc;
-use redis::{Client, aio::ConnectionManager};
+use futures_util::TryStreamExt; // for MsSQL try_next
+use log::debug;
 use mongodb::{Client as MongoClient, bson::doc};
-use log::{debug};
+use redis::{Client, aio::ConnectionManager};
+use sqlx::Connection; // for MySqlConnection::connect
+use sqlx::mysql::MySqlConnection;
+use sqlx::{
+    Column, Row, SqlitePool, mysql::MySqlPoolOptions, postgres::PgPoolOptions,
+    sqlite::SqlitePoolOptions,
+};
+use std::sync::Arc;
 
 // Infer column headers from a SELECT statement when no rows are returned.
 // This is a best-effort parser handling simple SELECT lists (supports aliases, functions, qualified names).
 fn infer_select_headers(statement: &str) -> Vec<String> {
-       let lower = statement.to_lowercase();
-       let select_pos = match lower.find("select") { Some(p) => p, None => return Vec::new() };
-       // Find the matching FROM outside parentheses
-       let mut depth = 0usize;
-       let mut from_pos: Option<usize> = None;
-       for (i, ch) in statement.chars().enumerate().skip(select_pos + 6) { // after 'select'
-              match ch {
-                     '(' => depth += 1,
-                     ')' => depth = depth.saturating_sub(1),
-                     _ => {}
-              }
-              if depth == 0 && i + 4 <= statement.len() && lower[i..].starts_with("from") {
-                     from_pos = Some(i);
-                     break;
-              }
-       }
-       let from_pos = match from_pos { Some(p) => p, None => return Vec::new() };
-       let select_list = &statement[select_pos + 6..from_pos];
-       // Split by commas at top level (ignore commas inside parentheses)
-       let mut headers = Vec::new();
-       let mut current = String::new();
-       depth = 0;
-       for ch in select_list.chars() {
-              match ch {
-                     '(' => { depth += 1; current.push(ch); },
-                     ')' => { depth = depth.saturating_sub(1); current.push(ch); },
-                     ',' if depth == 0 => {
-                            let h = extract_alias_or_name(&current);
-                            if !h.is_empty() { headers.push(h); }
-                            current.clear();
-                     },
-                     _ => current.push(ch)
-              }
-       }
-       if !current.trim().is_empty() {
-              let h = extract_alias_or_name(&current);
-              if !h.is_empty() { headers.push(h); }
-       }
-       headers
+    let lower = statement.to_lowercase();
+    let select_pos = match lower.find("select") {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    // Find the matching FROM outside parentheses
+    let mut depth = 0usize;
+    let mut from_pos: Option<usize> = None;
+    for (i, ch) in statement.chars().enumerate().skip(select_pos + 6) {
+        // after 'select'
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0 && i + 4 <= statement.len() && lower[i..].starts_with("from") {
+            from_pos = Some(i);
+            break;
+        }
+    }
+    let from_pos = match from_pos {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let select_list = &statement[select_pos + 6..from_pos];
+    // Split by commas at top level (ignore commas inside parentheses)
+    let mut headers = Vec::new();
+    let mut current = String::new();
+    depth = 0;
+    for ch in select_list.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                let h = extract_alias_or_name(&current);
+                if !h.is_empty() {
+                    headers.push(h);
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        let h = extract_alias_or_name(&current);
+        if !h.is_empty() {
+            headers.push(h);
+        }
+    }
+    headers
 }
 
 fn extract_alias_or_name(fragment: &str) -> String {
-       let frag = fragment.trim();
-       if frag.is_empty() { return String::new(); }
-       let lower = frag.to_lowercase();
-       if let Some(as_pos) = lower.rfind(" as ") { // alias with AS
-              let alias = frag[as_pos + 4..].trim();
-              return clean_identifier(alias);
-       }
-       // Alias without AS: take last token after space if it is not a function call
-       let tokens: Vec<&str> = frag.split_whitespace().collect();
-       if tokens.len() > 1 {
-              let last = tokens.last().unwrap();
-              // Avoid returning keywords or expressions
-              if !last.contains('(') && !["distinct"].contains(&last.to_lowercase().as_str()) {
-                     return clean_identifier(last);
-              }
-       }
-       // Otherwise, strip qualification
-       if let Some(idx) = frag.rfind('.') { return clean_identifier(&frag[idx+1..]); }
-       clean_identifier(frag)
+    let frag = fragment.trim();
+    if frag.is_empty() {
+        return String::new();
+    }
+    let lower = frag.to_lowercase();
+    if let Some(as_pos) = lower.rfind(" as ") {
+        // alias with AS
+        let alias = frag[as_pos + 4..].trim();
+        return clean_identifier(alias);
+    }
+    // Alias without AS: take last token after space if it is not a function call
+    let tokens: Vec<&str> = frag.split_whitespace().collect();
+    if tokens.len() > 1 {
+        let last = tokens.last().unwrap();
+        // Avoid returning keywords or expressions
+        if !last.contains('(') && !["distinct"].contains(&last.to_lowercase().as_str()) {
+            return clean_identifier(last);
+        }
+    }
+    // Otherwise, strip qualification
+    if let Some(idx) = frag.rfind('.') {
+        return clean_identifier(&frag[idx + 1..]);
+    }
+    clean_identifier(frag)
 }
 
 fn clean_identifier(id: &str) -> String {
-       id.trim().trim_matches('`').trim_matches('"').trim_matches('[').trim_matches(']').to_string()
+    id.trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('[')
+        .trim_matches(']')
+        .to_string()
 }
 
 // Helper function to add auto LIMIT if not present
 pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseType) -> String {
     let trimmed_query = query.trim();
-    
+
     // Don't add LIMIT if the entire query already has LIMIT/TOP
     let upper_query = trimmed_query.to_uppercase();
     if upper_query.contains("LIMIT") || upper_query.contains(" TOP ") {
         return query.to_string();
     }
-    
+
     // Skip if it's a single utility query (but allow multi-statement with USE + SELECT)
     if !upper_query.contains("SELECT") {
         return query.to_string();
     }
-    
+
     // Split by semicolon to handle multiple statements
     let statements: Vec<&str> = trimmed_query.split(';').collect();
     let mut result_statements = Vec::new();
-    
+
     for statement in statements {
         let trimmed_stmt = statement.trim();
         if trimmed_stmt.is_empty() {
             continue;
         }
-        
+
         let upper_stmt = trimmed_stmt.to_uppercase();
-        
+
         // Skip utility statements (SHOW, DESCRIBE, PRAGMA, USE, etc.)
-        if upper_stmt.starts_with("SHOW ") ||
-           upper_stmt.starts_with("DESCRIBE ") ||
-           upper_stmt.starts_with("EXPLAIN ") ||
-           upper_stmt.starts_with("PRAGMA ") ||
-           upper_stmt.starts_with("USE ") ||
-           upper_stmt.starts_with("SET ") ||
-           upper_stmt.starts_with("CREATE ") ||
-           upper_stmt.starts_with("DROP ") ||
-           upper_stmt.starts_with("ALTER ") ||
-           upper_stmt.starts_with("INSERT ") ||
-           upper_stmt.starts_with("UPDATE ") ||
-           upper_stmt.starts_with("DELETE ") {
+        if upper_stmt.starts_with("SHOW ")
+            || upper_stmt.starts_with("DESCRIBE ")
+            || upper_stmt.starts_with("EXPLAIN ")
+            || upper_stmt.starts_with("PRAGMA ")
+            || upper_stmt.starts_with("USE ")
+            || upper_stmt.starts_with("SET ")
+            || upper_stmt.starts_with("CREATE ")
+            || upper_stmt.starts_with("DROP ")
+            || upper_stmt.starts_with("ALTER ")
+            || upper_stmt.starts_with("INSERT ")
+            || upper_stmt.starts_with("UPDATE ")
+            || upper_stmt.starts_with("DELETE ")
+        {
             result_statements.push(trimmed_stmt.to_string());
             continue;
         }
-        
+
         // Only add LIMIT to SELECT statements that don't already have LIMIT/TOP
-        if upper_stmt.starts_with("SELECT") && 
-           !upper_stmt.contains("LIMIT") && 
-           !upper_stmt.contains(" TOP ") {
-            
+        if upper_stmt.starts_with("SELECT")
+            && !upper_stmt.contains("LIMIT")
+            && !upper_stmt.contains(" TOP ")
+        {
             match db_type {
                 models::enums::DatabaseType::MsSQL => {
                     // For MsSQL, we need to add TOP after SELECT
                     // Handle both "SELECT" and "SELECT DISTINCT" cases
                     if upper_stmt.starts_with("SELECT DISTINCT") {
-                        let modified = trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 10000");
+                        let modified =
+                            trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 10000");
                         result_statements.push(modified);
                     } else {
                         let modified = trimmed_stmt.replace("SELECT", "SELECT TOP 10000");
@@ -152,18 +186,15 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
             result_statements.push(trimmed_stmt.to_string());
         }
     }
-    
+
     result_statements.join(";\n")
 }
 
-
-
 pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Context) {
-       if tabular.show_connection_selector {
+    if tabular.show_connection_selector {
+        let mut open = true;
 
-       let mut open = true;
-              
-       egui::Window::new("Select Connection to Execute Query")
+        egui::Window::new("Select Connection to Execute Query")
               .collapsible(false)
               .resizable(true)
               .default_width(400.0)
@@ -297,82 +328,99 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
 
               });
 
-              // Handle close button click
-              if !open {
-                     tabular.show_connection_selector = false;
-                     tabular.pending_query.clear();
-                     tabular.auto_execute_after_connection = false;
-              }
-              
-       }
+        // Handle close button click
+        if !open {
+            tabular.show_connection_selector = false;
+            tabular.pending_query.clear();
+            tabular.auto_execute_after_connection = false;
+        }
+    }
 }
 
+pub(crate) fn execute_query_with_connection(
+    tabular: &mut Tabular,
+    connection_id: i64,
+    query: String,
+) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    debug!(
+        "Query execution requested for connection {} with query: {}",
+        connection_id, query
+    );
 
-pub(crate) fn execute_query_with_connection(tabular: &mut Tabular, connection_id: i64, query: String) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-       debug!("Query execution requested for connection {} with query: {}", connection_id, query);
-       
-          if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(connection_id)).cloned() {
-          // Determine selected database from active tab (if any)
-          let selected_db = tabular.query_tabs.get(tabular.active_tab_index)
-                 .and_then(|t| t.database_name.clone())
-                 .filter(|s| !s.is_empty());
+    if let Some(connection) = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))
+        .cloned()
+    {
+        // Determine selected database from active tab (if any)
+        let selected_db = tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .and_then(|t| t.database_name.clone())
+            .filter(|s| !s.is_empty());
 
-          // Auto-prepend USE for MsSQL/MySQL if not already present
-          let mut final_query = query.clone();
-          if let Some(db_name) = selected_db {
-                 match connection.connection_type {
-                        models::enums::DatabaseType::MsSQL => {
-                               let upper = final_query.to_uppercase();
-                               if !upper.starts_with("USE ") {
-                                      final_query = format!("USE [{}];\n{}", db_name, final_query);
-                               }
-                        }
-                        models::enums::DatabaseType::MySQL => {
-                               let upper = final_query.to_uppercase();
-                               if !upper.starts_with("USE ") {
-                                      final_query = format!("USE `{}`;\n{}", db_name, final_query);
-                               }
-                        }
-                        _ => {}
-                 }
-          }
-
-          // Add auto LIMIT 1000 if no LIMIT is present in SELECT queries
-          let original_query = final_query.clone();
-          final_query = add_auto_limit_if_needed(&final_query, &connection.connection_type);
-          
-          if original_query != final_query {
-              debug!("Auto LIMIT applied. Original: {}", original_query);
-              debug!("Modified: {}", final_query);
-          }
-
-          execute_table_query_sync(tabular, connection_id, &connection, &final_query)
-       } else {
-       debug!("Connection not found for ID: {}", connection_id);
-       None
-       }
-}
-
-pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64, connection: &models::structs::ConnectionConfig, query: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-         debug!("Executing query synchronously: {}", query);
-
-         // Use the shared runtime from tabular instead of creating a new one
-         let runtime = match &tabular.runtime {
-                Some(rt) => rt.clone(),
-                None => {
-                       debug!("No runtime available, creating temporary one");
-                       match tokio::runtime::Runtime::new() {
-                              Ok(rt) => Arc::new(rt),
-                              Err(e) => {
-                                     debug!("Failed to create runtime: {}", e);
-                                     return None;
-                              }
-                       }
+        // Auto-prepend USE for MsSQL/MySQL if not already present
+        let mut final_query = query.clone();
+        if let Some(db_name) = selected_db {
+            match connection.connection_type {
+                models::enums::DatabaseType::MsSQL => {
+                    let upper = final_query.to_uppercase();
+                    if !upper.starts_with("USE ") {
+                        final_query = format!("USE [{}];\n{}", db_name, final_query);
+                    }
                 }
-         };
+                models::enums::DatabaseType::MySQL => {
+                    let upper = final_query.to_uppercase();
+                    if !upper.starts_with("USE ") {
+                        final_query = format!("USE `{}`;\n{}", db_name, final_query);
+                    }
+                }
+                _ => {}
+            }
+        }
 
-         runtime.block_on(async {
-                match get_or_create_connection_pool(tabular, connection_id).await {
+        // Add auto LIMIT 1000 if no LIMIT is present in SELECT queries
+        let original_query = final_query.clone();
+        final_query = add_auto_limit_if_needed(&final_query, &connection.connection_type);
+
+        if original_query != final_query {
+            debug!("Auto LIMIT applied. Original: {}", original_query);
+            debug!("Modified: {}", final_query);
+        }
+
+        execute_table_query_sync(tabular, connection_id, &connection, &final_query)
+    } else {
+        debug!("Connection not found for ID: {}", connection_id);
+        None
+    }
+}
+
+pub(crate) fn execute_table_query_sync(
+    tabular: &mut Tabular,
+    connection_id: i64,
+    connection: &models::structs::ConnectionConfig,
+    query: &str,
+) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    debug!("Executing query synchronously: {}", query);
+
+    // Use the shared runtime from tabular instead of creating a new one
+    let runtime = match &tabular.runtime {
+        Some(rt) => rt.clone(),
+        None => {
+            debug!("No runtime available, creating temporary one");
+            match tokio::runtime::Runtime::new() {
+                Ok(rt) => Arc::new(rt),
+                Err(e) => {
+                    debug!("Failed to create runtime: {}", e);
+                    return None;
+                }
+            }
+        }
+    };
+
+    runtime.block_on(async {
+                match try_get_connection_pool(tabular, connection_id).await {
                        Some(pool) => {
                               match pool {
                                      models::enums::DatabasePool::MySQL(_mysql_pool) => {
@@ -858,452 +906,801 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
          })
 }
 
+// Helper function untuk mendapatkan atau membuat connection pool dengan concurrency
+//
+// CONCURRENCY IMPROVEMENTS:
+// 1. Tracks pending pool creation to avoid duplicate work (pending_connection_pools HashSet)
+// 2. Uses background task spawning to prevent UI blocking
+// 3. Provides immediate return for cached pools
+// 4. Shared state mechanism for background-created pools
+//
+// BENEFITS:
+// - User doesn't need to wait for slow connections when others are available
+// - Prevents duplicate connection attempts for the same database
+// - UI remains responsive during connection establishment
+// - Background-created pools are shared and accessible
+//
+pub(crate) async fn get_or_create_connection_pool(
+    tabular: &mut Tabular,
+    connection_id: i64,
+) -> Option<models::enums::DatabasePool> {
+    // First check if we already have a cached connection pool for this connection
+    if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
+        debug!(
+            "✅ Using cached connection pool for connection {}",
+            connection_id
+        );
+        return Some(cached_pool.clone());
+    }
 
-// Helper function untuk mendapatkan atau membuat connection pool
-pub(crate) async fn get_or_create_connection_pool(tabular: &mut Tabular, connection_id: i64) -> Option<models::enums::DatabasePool> {
-       // First check if we already have a cached connection pool for this connection
-       if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
-       debug!("✅ Using cached connection pool for connection {}", connection_id);
-       return Some(cached_pool.clone());
-       }
+    // Check shared pools from background tasks
+    if let Ok(shared_pools) = tabular.shared_connection_pools.lock()
+        && let Some(shared_pool) = shared_pools.get(&connection_id)
+    {
+        debug!(
+            "✅ Using background-created connection pool for connection {}",
+            connection_id
+        );
+        let pool = shared_pool.clone();
+        // Cache it locally for faster access next time
+        tabular.connection_pools.insert(connection_id, pool.clone());
+        return Some(pool);
+    }
 
-       debug!("🔄 Creating new connection pool for connection {}", connection_id);
-       
-       // If not cached, create a new connection pool
-       if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(connection_id)) {
-       match connection.connection_type {
-              models::enums::DatabaseType::MySQL => {
-              let encoded_username = modules::url_encode(&connection.username);
-              let encoded_password = modules::url_encode(&connection.password);
-              let connection_string = format!(
-                     "mysql://{}:{}@{}:{}/{}",
-                     encoded_username, encoded_password, connection.host, connection.port, connection.database
-              );
+    // Check if we're already creating a pool for this connection to avoid duplicate work
+    if tabular.pending_connection_pools.contains(&connection_id) {
+        debug!(
+            "⏳ Connection pool creation already in progress for connection {}",
+            connection_id
+        );
+        return None; // Return None to indicate pool is being created
+    }
 
-              // Don't block on ICMP ping (often disabled on Windows firewalls). Attempt direct connect.
-              // If you still want diagnostics, you can log ping result without failing the flow:
-              // let _ = helpers::ping_host(&connection.host);
-              
-              // Configure MySQL pool with improved settings for stability
-              let pool_result = MySqlPoolOptions::new()
-                     .max_connections(10)  // Reduced from 20 for better resource management
-                     .min_connections(2)   // Maintain some ready connections
-                     .acquire_timeout(std::time::Duration::from_secs(30))  // Reduced timeout to fail faster
-                     .idle_timeout(std::time::Duration::from_secs(600))    // 10 minute idle timeout (longer)
-                     .max_lifetime(std::time::Duration::from_secs(3600))   // 60 minute max lifetime (longer)
-                     .test_before_acquire(true)  // Enable connection testing for reliability
-                     .after_connect(|conn, _| Box::pin(async move {
-                         // Set connection-specific settings for better stability and performance
-                         let _ = sqlx::query("SET SESSION wait_timeout = 600").execute(&mut *conn).await;
-                         let _ = sqlx::query("SET SESSION interactive_timeout = 600").execute(&mut *conn).await;
-                         let _ = sqlx::query("SET SESSION net_read_timeout = 60").execute(&mut *conn).await;
-                         let _ = sqlx::query("SET SESSION net_write_timeout = 60").execute(&mut *conn).await;
-                         // Optimize for performance
-                         let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'").execute(&mut *conn).await;
-                         Ok(())
-                     }))
-                     .connect(&connection_string)
-                     .await;
-              
-              match pool_result {
-                     Ok(pool) => {
-                     let database_pool = models::enums::DatabasePool::MySQL(Arc::new(pool));
-                     tabular.connection_pools.insert(connection_id, database_pool.clone());
-                     debug!("✅ Created MySQL connection pool for connection {}", connection_id);
-                     Some(database_pool)
-                     },
-                     Err(e) => {
-                     debug!("❌ Failed to create MySQL pool for connection {}: {}", connection_id, e);
-                     None
-                     }
-              }
-              },
-              models::enums::DatabaseType::PostgreSQL => {
-              let connection_string = format!(
-                     "postgresql://{}:{}@{}:{}/{}",
-                     connection.username, connection.password, connection.host, connection.port, connection.database
-              );
-                                   
-              // Configure PostgreSQL pool with improved settings
-              let pool_result = PgPoolOptions::new()
-                     .max_connections(15)  // Increase max connections
-                     .min_connections(1)   // Start with fewer minimum connections  
-                     .acquire_timeout(std::time::Duration::from_secs(60))  // Longer timeout
-                     .idle_timeout(std::time::Duration::from_secs(300))    // 5 minute idle timeout
-                     .max_lifetime(std::time::Duration::from_secs(1800))   // 30 minute max lifetime
-                     .test_before_acquire(false)  // Disable pre-test for better performance
-                     .connect(&connection_string)
-                     .await;
-              
-              match pool_result {
-                     Ok(pool) => {
-                     let database_pool = models::enums::DatabasePool::PostgreSQL(Arc::new(pool));
-                     tabular.connection_pools.insert(connection_id, database_pool.clone());
-                     Some(database_pool)
-                     },
-                     Err(e) => {
-                     debug!("Failed to create PostgreSQL pool: {}", e);
-                     None
-                     }
-              }
-              },
-              models::enums::DatabaseType::SQLite => {
-              let connection_string = format!("sqlite:{}", connection.host);
-              
-              // Configure SQLite pool with improved settings
-              let pool_result = SqlitePoolOptions::new()
-                     .max_connections(5)   // SQLite doesn't need many connections
-                     .min_connections(1)   // Start with one connection
-                     .acquire_timeout(std::time::Duration::from_secs(60))  // Longer timeout
-                     .idle_timeout(std::time::Duration::from_secs(300))    // 5 minute idle timeout
-                     .max_lifetime(std::time::Duration::from_secs(1800))   // 30 minute max lifetime
-                     .test_before_acquire(false)  // Disable pre-test for better performance
-                     .connect(&connection_string)
-                     .await;
-              
-              match pool_result {
-                     Ok(pool) => {
-                     let database_pool = models::enums::DatabasePool::SQLite(Arc::new(pool));
-                     tabular.connection_pools.insert(connection_id, database_pool.clone());
-                     Some(database_pool)
-                     },
-                     Err(e) => {
-                     debug!("Failed to create SQLite pool: {}", e);
-                     None
-                     }
-              }
-              },
-              models::enums::DatabaseType::Redis => {
-              let connection_string = if connection.password.is_empty() {
-                     format!("redis://{}:{}", connection.host, connection.port)
-              } else {
-                     format!("redis://{}:{}@{}:{}", connection.username, connection.password, connection.host, connection.port)
-              };
-              
-              debug!("Creating new Redis connection manager for: {}", connection.name);
-              match Client::open(connection_string) {
-                     Ok(client) => {
-                     match ConnectionManager::new(client).await {
-                            Ok(manager) => {
-                                   let database_pool = models::enums::DatabasePool::Redis(Arc::new(manager));
-                                   tabular.connection_pools.insert(connection_id, database_pool.clone());
-                                   Some(database_pool)
-                            },
-                            Err(e) => {
-                                   debug!("Failed to create Redis connection manager: {}", e);
-                                   None
-                            }
-                     }
-                     }
-                     Err(e) => {
-                     debug!("Failed to create Redis client: {}", e);
-                     None
-                     }
-              }
-              }
-              models::enums::DatabaseType::MongoDB => {
-              // Build MongoDB connection string
-              let uri = if connection.username.is_empty() {
-                     format!("mongodb://{}:{}", connection.host, connection.port)
-              } else if connection.password.is_empty() {
-                     format!("mongodb://{}@{}:{}", connection.username, connection.host, connection.port)
-              } else {
-                     let enc_user = modules::url_encode(&connection.username);
-                     let enc_pass = modules::url_encode(&connection.password);
-                     format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection.host, connection.port)
-              };
-              debug!("Creating MongoDB client for URI: {}", uri);
-              match MongoClient::with_uri_str(uri).await {
-                     Ok(client) => {
-                            let pool = models::enums::DatabasePool::MongoDB(Arc::new(client));
-                            tabular.connection_pools.insert(connection_id, pool.clone());
-                            Some(pool)
-                     }
-                     Err(e) => { debug!("Failed to create MongoDB client: {}", e); None }
-              }
-              }
-              models::enums::DatabaseType::MsSQL => {
-                     let cfg = driver_mssql::MssqlConfigWrapper::new(
-                            connection.host.clone(),
-                            connection.port.clone(),
-                            connection.database.clone(),
-                            connection.username.clone(),
-                            connection.password.clone()
-                     );
-                     let database_pool = models::enums::DatabasePool::MsSQL(Arc::new(cfg));
-                     tabular.connection_pools.insert(connection_id, database_pool.clone());
-                     Some(database_pool)
-              }
-       }
-       } else {
-       None
-       }
+    debug!(
+        "🔄 Creating new connection pool for connection {}",
+        connection_id
+    );
+
+    // Mark this connection as being processed
+    tabular.pending_connection_pools.insert(connection_id);
+
+    // Try quick creation first, fallback to background task if slow
+    match try_quick_pool_creation(tabular, connection_id).await {
+        Some(pool) => {
+            // Quick success
+            tabular.connection_pools.insert(connection_id, pool.clone());
+            tabular.pending_connection_pools.remove(&connection_id);
+            debug!(
+                "✅ Quickly created connection pool for connection {}",
+                connection_id
+            );
+            Some(pool)
+        }
+        None => {
+            // Start background creation and return None (non-blocking)
+            start_background_pool_creation(tabular, connection_id);
+            None
+        }
+    }
+}
+
+// Try to create pool quickly (with short timeout)
+async fn try_quick_pool_creation(
+    tabular: &mut Tabular,
+    connection_id: i64,
+) -> Option<models::enums::DatabasePool> {
+    let connection = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))?
+        .clone();
+
+    // Quick attempt with very short timeout
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        create_connection_pool_for_config(&connection),
+    )
+    .await;
+
+    match result {
+        Ok(pool) => pool,
+        Err(_) => {
+            debug!(
+                "⚡ Quick creation timed out for connection {}, will try in background",
+                connection_id
+            );
+            None
+        }
+    }
+}
+
+// Start background pool creation without blocking
+fn start_background_pool_creation(tabular: &mut Tabular, connection_id: i64) {
+    let connection = match tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))
+    {
+        Some(conn) => conn.clone(),
+        None => {
+            debug!(
+                "❌ Connection {} not found for background creation",
+                connection_id
+            );
+            tabular.pending_connection_pools.remove(&connection_id);
+            return;
+        }
+    };
+
+    if let Some(runtime) = &tabular.runtime {
+        let rt = runtime.clone();
+        let shared_pools = tabular.shared_connection_pools.clone();
+
+        rt.spawn(async move {
+            debug!(
+                "🔄 Background: Creating pool for connection {}",
+                connection_id
+            );
+
+            match create_connection_pool_for_config(&connection).await {
+                Some(pool) => {
+                    debug!(
+                        "✅ Background: Successfully created pool for connection {}",
+                        connection_id
+                    );
+
+                    // Store in shared pools for main thread access
+                    if let Ok(mut shared_pools) = shared_pools.lock() {
+                        shared_pools.insert(connection_id, pool);
+                    }
+                }
+                None => {
+                    debug!(
+                        "❌ Background: Failed to create pool for connection {}",
+                        connection_id
+                    );
+                }
+            }
+        });
+    }
+}
+
+// Create connection pool for a specific connection config
+async fn create_connection_pool_for_config(
+    connection: &models::structs::ConnectionConfig,
+) -> Option<models::enums::DatabasePool> {
+    match connection.connection_type {
+        models::enums::DatabaseType::MySQL => {
+            let encoded_username = modules::url_encode(&connection.username);
+            let encoded_password = modules::url_encode(&connection.password);
+            let connection_string = format!(
+                "mysql://{}:{}@{}:{}/{}",
+                encoded_username,
+                encoded_password,
+                connection.host,
+                connection.port,
+                connection.database
+            );
+
+            // Don't block on ICMP ping (often disabled on Windows firewalls). Attempt direct connect.
+            // If you still want diagnostics, you can log ping result without failing the flow:
+            // let _ = helpers::ping_host(&connection.host);
+
+            // Configure MySQL pool with improved settings for stability
+            let pool_result = MySqlPoolOptions::new()
+                .max_connections(10) // Reduced from 20 for better resource management
+                .min_connections(2) // Maintain some ready connections
+                .acquire_timeout(std::time::Duration::from_secs(30)) // Reduced timeout to fail faster
+                .idle_timeout(std::time::Duration::from_secs(600)) // 10 minute idle timeout (longer)
+                .max_lifetime(std::time::Duration::from_secs(3600)) // 60 minute max lifetime (longer)
+                .test_before_acquire(true) // Enable connection testing for reliability
+                .after_connect(|conn, _| {
+                    Box::pin(async move {
+                        // Set connection-specific settings for better stability and performance
+                        let _ = sqlx::query("SET SESSION wait_timeout = 600")
+                            .execute(&mut *conn)
+                            .await;
+                        let _ = sqlx::query("SET SESSION interactive_timeout = 600")
+                            .execute(&mut *conn)
+                            .await;
+                        let _ = sqlx::query("SET SESSION net_read_timeout = 60")
+                            .execute(&mut *conn)
+                            .await;
+                        let _ = sqlx::query("SET SESSION net_write_timeout = 60")
+                            .execute(&mut *conn)
+                            .await;
+                        // Optimize for performance
+                        let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
+                            .execute(&mut *conn)
+                            .await;
+                        Ok(())
+                    })
+                })
+                .connect(&connection_string)
+                .await;
+
+            match pool_result {
+                Ok(pool) => {
+                    let database_pool = models::enums::DatabasePool::MySQL(Arc::new(pool));
+                    debug!(
+                        "✅ Created MySQL connection pool for connection {:?}",
+                        connection.id
+                    );
+                    Some(database_pool)
+                }
+                Err(e) => {
+                    debug!(
+                        "❌ Failed to create MySQL pool for connection {:?}: {}",
+                        connection.id, e
+                    );
+                    None
+                }
+            }
+        }
+        models::enums::DatabaseType::PostgreSQL => {
+            let connection_string = format!(
+                "postgresql://{}:{}@{}:{}/{}",
+                connection.username,
+                connection.password,
+                connection.host,
+                connection.port,
+                connection.database
+            );
+
+            // Configure PostgreSQL pool with improved settings
+            let pool_result = PgPoolOptions::new()
+                .max_connections(15) // Increase max connections
+                .min_connections(1) // Start with fewer minimum connections
+                .acquire_timeout(std::time::Duration::from_secs(60)) // Longer timeout
+                .idle_timeout(std::time::Duration::from_secs(300)) // 5 minute idle timeout
+                .max_lifetime(std::time::Duration::from_secs(1800)) // 30 minute max lifetime
+                .test_before_acquire(false) // Disable pre-test for better performance
+                .connect(&connection_string)
+                .await;
+
+            match pool_result {
+                Ok(pool) => {
+                    let database_pool = models::enums::DatabasePool::PostgreSQL(Arc::new(pool));
+                    Some(database_pool)
+                }
+                Err(e) => {
+                    debug!("Failed to create PostgreSQL pool: {}", e);
+                    None
+                }
+            }
+        }
+        models::enums::DatabaseType::SQLite => {
+            let connection_string = format!("sqlite:{}", connection.host);
+
+            // Configure SQLite pool with improved settings
+            let pool_result = SqlitePoolOptions::new()
+                .max_connections(5) // SQLite doesn't need many connections
+                .min_connections(1) // Start with one connection
+                .acquire_timeout(std::time::Duration::from_secs(60)) // Longer timeout
+                .idle_timeout(std::time::Duration::from_secs(300)) // 5 minute idle timeout
+                .max_lifetime(std::time::Duration::from_secs(1800)) // 30 minute max lifetime
+                .test_before_acquire(false) // Disable pre-test for better performance
+                .connect(&connection_string)
+                .await;
+
+            match pool_result {
+                Ok(pool) => {
+                    let database_pool = models::enums::DatabasePool::SQLite(Arc::new(pool));
+                    Some(database_pool)
+                }
+                Err(e) => {
+                    debug!("Failed to create SQLite pool: {}", e);
+                    None
+                }
+            }
+        }
+        models::enums::DatabaseType::Redis => {
+            let connection_string = if connection.password.is_empty() {
+                format!("redis://{}:{}", connection.host, connection.port)
+            } else {
+                format!(
+                    "redis://{}:{}@{}:{}",
+                    connection.username, connection.password, connection.host, connection.port
+                )
+            };
+
+            debug!(
+                "Creating new Redis connection manager for: {}",
+                connection.name
+            );
+            match Client::open(connection_string) {
+                Ok(client) => match ConnectionManager::new(client).await {
+                    Ok(manager) => {
+                        let database_pool = models::enums::DatabasePool::Redis(Arc::new(manager));
+                        Some(database_pool)
+                    }
+                    Err(e) => {
+                        debug!("Failed to create Redis connection manager: {}", e);
+                        None
+                    }
+                },
+                Err(e) => {
+                    debug!("Failed to create Redis client: {}", e);
+                    None
+                }
+            }
+        }
+        models::enums::DatabaseType::MongoDB => {
+            // Build MongoDB connection string
+            let uri = if connection.username.is_empty() {
+                format!("mongodb://{}:{}", connection.host, connection.port)
+            } else if connection.password.is_empty() {
+                format!(
+                    "mongodb://{}@{}:{}",
+                    connection.username, connection.host, connection.port
+                )
+            } else {
+                let enc_user = modules::url_encode(&connection.username);
+                let enc_pass = modules::url_encode(&connection.password);
+                format!(
+                    "mongodb://{}:{}@{}:{}",
+                    enc_user, enc_pass, connection.host, connection.port
+                )
+            };
+            debug!("Creating MongoDB client for URI: {}", uri);
+            match MongoClient::with_uri_str(uri).await {
+                Ok(client) => {
+                    let pool = models::enums::DatabasePool::MongoDB(Arc::new(client));
+                    Some(pool)
+                }
+                Err(e) => {
+                    debug!("Failed to create MongoDB client: {}", e);
+                    None
+                }
+            }
+        }
+        models::enums::DatabaseType::MsSQL => {
+            let cfg = driver_mssql::MssqlConfigWrapper::new(
+                connection.host.clone(),
+                connection.port.clone(),
+                connection.database.clone(),
+                connection.username.clone(),
+                connection.password.clone(),
+            );
+            let database_pool = models::enums::DatabasePool::MsSQL(Arc::new(cfg));
+            Some(database_pool)
+        }
+    }
+}
+
+// Non-blocking version that tries to get connection pool with retry capability
+#[allow(dead_code)]
+pub(crate) async fn get_or_create_connection_pool_with_retry(
+    tabular: &mut Tabular,
+    connection_id: i64,
+    max_retries: u32,
+) -> Option<models::enums::DatabasePool> {
+    for attempt in 0..=max_retries {
+        // First check cache
+        if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
+            debug!(
+                "✅ Using cached connection pool for connection {}",
+                connection_id
+            );
+            return Some(cached_pool.clone());
+        }
+
+        // Try to create if not being created
+        if !tabular.pending_connection_pools.contains(&connection_id) {
+            return get_or_create_connection_pool(tabular, connection_id).await;
+        }
+
+        // If pool is being created, wait a bit and retry
+        if attempt < max_retries {
+            debug!(
+                "⏳ Waiting for connection pool creation (attempt {}/{})",
+                attempt + 1,
+                max_retries + 1
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(500 + attempt as u64 * 200)).await;
+        } else {
+            debug!(
+                "⏰ Max retries reached for connection pool {}",
+                connection_id
+            );
+            break;
+        }
+    }
+
+    None
+}
+
+// Fast non-blocking version that immediately returns None if pool is being created
+pub(crate) async fn try_get_connection_pool(
+    tabular: &mut Tabular,
+    connection_id: i64,
+) -> Option<models::enums::DatabasePool> {
+    // Check cache first
+    if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
+        debug!(
+            "✅ Using cached connection pool for connection {}",
+            connection_id
+        );
+        return Some(cached_pool.clone());
+    }
+
+    // If currently being created, return None immediately (non-blocking)
+    if tabular.pending_connection_pools.contains(&connection_id) {
+        debug!(
+            "⏳ Connection pool creation in progress for connection {}, skipping for now",
+            connection_id
+        );
+        return None;
+    }
+
+    // Try to create new pool
+    get_or_create_connection_pool(tabular, connection_id).await
+}
+
+// Example usage function demonstrating the concurrency improvements
+// This function shows how to handle multiple connection requests efficiently
+#[allow(dead_code)]
+pub(crate) async fn execute_multiple_queries_concurrently(
+    tabular: &mut Tabular,
+    query_requests: Vec<(i64, String)>, // (connection_id, query) pairs
+) -> Vec<Option<(Vec<String>, Vec<Vec<String>>)>> {
+    let mut results = Vec::new();
+
+    // Process all requests concurrently without blocking on slow connections
+    for (connection_id, query) in query_requests {
+        // Use the non-blocking version to avoid waiting for slow connections
+        match try_get_connection_pool(tabular, connection_id).await {
+            Some(_pool) => {
+                // Connection pool is ready, execute query
+                if let Some(connection) = tabular
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(connection_id))
+                    .cloned()
+                {
+                    // Execute query using the existing sync function
+                    let result =
+                        execute_table_query_sync(tabular, connection_id, &connection, &query);
+                    results.push(result);
+                } else {
+                    results.push(None);
+                }
+            }
+            None => {
+                // Connection pool not ready or being created, skip for now
+                debug!(
+                    "⏳ Skipping query for connection {} as pool is not ready",
+                    connection_id
+                );
+                results.push(None);
+            }
+        }
+    }
+
+    results
 }
 
 // Function to cleanup and recreate connection pools
 pub(crate) fn cleanup_connection_pool(tabular: &mut Tabular, connection_id: i64) {
-       debug!("🧹 Cleaning up connection pool for connection {}", connection_id);
-       tabular.connection_pools.remove(&connection_id);
+    debug!(
+        "🧹 Cleaning up connection pool for connection {}",
+        connection_id
+    );
+    tabular.connection_pools.remove(&connection_id);
+    tabular.pending_connection_pools.remove(&connection_id); // Also remove from pending
+
+    // Also clean from shared pools
+    if let Ok(mut shared_pools) = tabular.shared_connection_pools.lock() {
+        shared_pools.remove(&connection_id);
+    }
 }
 
-
-
 pub(crate) async fn refresh_connection_background_async(
-       connection_id: i64,
-       db_pool: &Option<Arc<SqlitePool>>,
+    connection_id: i64,
+    db_pool: &Option<Arc<SqlitePool>>,
 ) -> bool {
+    debug!("Refreshing connection with ID: {}", connection_id);
 
-       debug!("Refreshing connection with ID: {}", connection_id);
-
-       // Get connection from database
-       if let Some(cache_pool_arc) = db_pool {
-       let connection_result = sqlx::query_as::<_, (i64, String, String, String, String, String, String, String)>(
+    // Get connection from database
+    if let Some(cache_pool_arc) = db_pool {
+        let connection_result = sqlx::query_as::<_, (i64, String, String, String, String, String, String, String)>(
               "SELECT id, name, host, port, username, password, database_name, connection_type FROM connections WHERE id = ?"
        )
        .bind(connection_id)
        .fetch_optional(cache_pool_arc.as_ref())
        .await;
-       
-       if let Ok(Some((id, name, host, port, username, password, database_name, connection_type))) = connection_result {
-                             let connection = models::structs::ConnectionConfig {
-                                    id: Some(id),
-                                    name,
-                                    host,
-                                    port,
-                                    username,
-                                    password,
-                                    database: database_name,
-                                    connection_type: match connection_type.as_str() {
-                                           "MySQL" => models::enums::DatabaseType::MySQL,
-                                           "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                                           "Redis" => models::enums::DatabaseType::Redis,
-                                           "MsSQL" => models::enums::DatabaseType::MsSQL,
-                                           _ => models::enums::DatabaseType::SQLite,
-                                    },
-                                    folder: None, // Will be loaded from database later
-                             };
-              
-              // Clear cache
-              let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
-              .bind(connection_id)
-              .execute(cache_pool_arc.as_ref())
-              .await;
-              
-              let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
-              .bind(connection_id)
-              .execute(cache_pool_arc.as_ref())
-              .await;
-              
-                       let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
-                              .bind(connection_id)
-                              .execute(cache_pool_arc.as_ref())
-                              .await;
 
-              // Create new connection pool
-              match tokio::time::timeout(
-              std::time::Duration::from_secs(30), // 30 second timeout
-              create_database_pool(&connection)
-              ).await {
-              Ok(Some(new_pool)) => {
-                     fetch_and_cache_all_data(connection_id, &connection, &new_pool, cache_pool_arc.as_ref()).await
-              }
-              Ok(None) => {
-                     false
-              }
-              Err(_) => {
-                     false
-              }
-              }
-       } else {
-              false
-       }
-       } else {
-       false
-       }
+        if let Ok(Some((
+            id,
+            name,
+            host,
+            port,
+            username,
+            password,
+            database_name,
+            connection_type,
+        ))) = connection_result
+        {
+            let connection = models::structs::ConnectionConfig {
+                id: Some(id),
+                name,
+                host,
+                port,
+                username,
+                password,
+                database: database_name,
+                connection_type: match connection_type.as_str() {
+                    "MySQL" => models::enums::DatabaseType::MySQL,
+                    "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
+                    "Redis" => models::enums::DatabaseType::Redis,
+                    "MsSQL" => models::enums::DatabaseType::MsSQL,
+                    _ => models::enums::DatabaseType::SQLite,
+                },
+                folder: None, // Will be loaded from database later
+            };
+
+            // Clear cache
+            let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(cache_pool_arc.as_ref())
+                .await;
+
+            let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(cache_pool_arc.as_ref())
+                .await;
+
+            let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(cache_pool_arc.as_ref())
+                .await;
+
+            // Create new connection pool
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30), // 30 second timeout
+                create_database_pool(&connection),
+            )
+            .await
+            {
+                Ok(Some(new_pool)) => {
+                    fetch_and_cache_all_data(
+                        connection_id,
+                        &connection,
+                        &new_pool,
+                        cache_pool_arc.as_ref(),
+                    )
+                    .await
+                }
+                Ok(None) => false,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
 }
 
-pub(crate) async fn create_database_pool(connection: &models::structs::ConnectionConfig) -> Option<models::enums::DatabasePool> {
-       match connection.connection_type {
-       models::enums::DatabaseType::MySQL => {
-              let encoded_username = modules::url_encode(&connection.username);
-              let encoded_password = modules::url_encode(&connection.password);
-              let connection_string = format!(
-              "mysql://{}:{}@{}:{}/{}",
-              encoded_username, encoded_password, connection.host, connection.port, connection.database
-              );
-              
-              // Configure MySQL pool with optimized settings for large queries
-              let pool_result = MySqlPoolOptions::new()
-                     .max_connections(3) // Reduced from 5 to 3 - fewer but more stable connections
-                     .min_connections(1)
-                     .acquire_timeout(std::time::Duration::from_secs(30)) // Faster timeout to fail fast
-                     .idle_timeout(std::time::Duration::from_secs(600))   // 10 minutes idle timeout
-                     .max_lifetime(std::time::Duration::from_secs(3600))  // 1 hour max lifetime
-                     .test_before_acquire(true) // Test connections before use
-                     .after_connect(|conn, _| Box::pin(async move {
-                         // Optimize MySQL settings for performance with large datasets
-                         let _ = sqlx::query("SET SESSION wait_timeout = 600").execute(&mut *conn).await;
-                         let _ = sqlx::query("SET SESSION interactive_timeout = 600").execute(&mut *conn).await;
-                         let _ = sqlx::query("SET SESSION net_read_timeout = 120").execute(&mut *conn).await;
-                         let _ = sqlx::query("SET SESSION net_write_timeout = 120").execute(&mut *conn).await;
-                         // Increase max packet size for large result sets
-                         let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824").execute(&mut *conn).await; // 1GB
-                         // Optimize query cache and buffer settings
-                         let _ = sqlx::query("SET SESSION query_cache_type = ON").execute(&mut *conn).await;
-                         let _ = sqlx::query("SET SESSION read_buffer_size = 2097152").execute(&mut *conn).await; // 2MB
-                         Ok(())
-                     }))
-                     .connect(&connection_string)
-                     .await;
-              
-              match pool_result {
-                     Ok(pool) => {
-                            Some(models::enums::DatabasePool::MySQL(Arc::new(pool)))
-                     }
-                     Err(_e) => {
-                            None
-                     }
-              }
-       }
-       models::enums::DatabaseType::PostgreSQL => {
-              let connection_string = format!(
-              "postgresql://{}:{}@{}:{}/{}",
-              connection.username, connection.password, connection.host, connection.port, connection.database
-              );
-              
-              match PgPoolOptions::new()
-              .max_connections(3)
-              .min_connections(1)
-              .acquire_timeout(std::time::Duration::from_secs(10))
-              .idle_timeout(std::time::Duration::from_secs(300))
-              .connect(&connection_string)
-              .await
-              {
-              Ok(pool) => {
-                     Some(models::enums::DatabasePool::PostgreSQL(Arc::new(pool)))
-              }
-              Err(_e) => {
-                     None
-              }
-              }
-       }
-       models::enums::DatabaseType::SQLite => {
-              let connection_string = format!("sqlite:{}", connection.host);
-              
-              
-              match SqlitePoolOptions::new()
-              .max_connections(3)
-              .min_connections(1)
-              .acquire_timeout(std::time::Duration::from_secs(10))
-              .idle_timeout(std::time::Duration::from_secs(300))
-              .connect(&connection_string)
-              .await
-              {
-              Ok(pool) => {
-                     Some(models::enums::DatabasePool::SQLite(Arc::new(pool)))
-              }
-              Err(_e) => {
-                     None
-              }
-              }
-       }
-       models::enums::DatabaseType::Redis => {
-              let connection_string = if connection.password.is_empty() {
-              format!("redis://{}:{}", connection.host, connection.port)
-              } else {
-              format!("redis://{}:{}@{}:{}", connection.username, connection.password, connection.host, connection.port)
-              };
-              
-              match Client::open(connection_string) {
-              Ok(client) => {
-                     match ConnectionManager::new(client).await {
-                     Ok(manager) => Some(models::enums::DatabasePool::Redis(Arc::new(manager))),
-                     Err(_e) => None,
-                     }
-              }
-              Err(_e) => None,
-              }
-       }
-       models::enums::DatabaseType::MsSQL => {
-              let cfg = driver_mssql::MssqlConfigWrapper::new(
-                     connection.host.clone(),
-                     connection.port.clone(),
-                     connection.database.clone(),
-                     connection.username.clone(),
-                     connection.password.clone(),
-              );
-              Some(models::enums::DatabasePool::MsSQL(Arc::new(cfg)))
-       }
-          models::enums::DatabaseType::MongoDB => {
-                 let uri = if connection.username.is_empty() {
-                        format!("mongodb://{}:{}", connection.host, connection.port)
-                 } else if connection.password.is_empty() {
-                        format!("mongodb://{}@{}:{}", connection.username, connection.host, connection.port)
-                 } else {
-                        let enc_user = modules::url_encode(&connection.username);
-                        let enc_pass = modules::url_encode(&connection.password);
-                        format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection.host, connection.port)
-                 };
-                 match MongoClient::with_uri_str(uri).await {
-                        Ok(client) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
-                        Err(_e) => None,
-                 }
-          }
-          }
+pub(crate) async fn create_database_pool(
+    connection: &models::structs::ConnectionConfig,
+) -> Option<models::enums::DatabasePool> {
+    match connection.connection_type {
+        models::enums::DatabaseType::MySQL => {
+            let encoded_username = modules::url_encode(&connection.username);
+            let encoded_password = modules::url_encode(&connection.password);
+            let connection_string = format!(
+                "mysql://{}:{}@{}:{}/{}",
+                encoded_username,
+                encoded_password,
+                connection.host,
+                connection.port,
+                connection.database
+            );
+
+            // Configure MySQL pool with optimized settings for large queries
+            let pool_result = MySqlPoolOptions::new()
+                .max_connections(3) // Reduced from 5 to 3 - fewer but more stable connections
+                .min_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(30)) // Faster timeout to fail fast
+                .idle_timeout(std::time::Duration::from_secs(600)) // 10 minutes idle timeout
+                .max_lifetime(std::time::Duration::from_secs(3600)) // 1 hour max lifetime
+                .test_before_acquire(true) // Test connections before use
+                .after_connect(|conn, _| {
+                    Box::pin(async move {
+                        // Optimize MySQL settings for performance with large datasets
+                        let _ = sqlx::query("SET SESSION wait_timeout = 600")
+                            .execute(&mut *conn)
+                            .await;
+                        let _ = sqlx::query("SET SESSION interactive_timeout = 600")
+                            .execute(&mut *conn)
+                            .await;
+                        let _ = sqlx::query("SET SESSION net_read_timeout = 120")
+                            .execute(&mut *conn)
+                            .await;
+                        let _ = sqlx::query("SET SESSION net_write_timeout = 120")
+                            .execute(&mut *conn)
+                            .await;
+                        // Increase max packet size for large result sets
+                        let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824")
+                            .execute(&mut *conn)
+                            .await; // 1GB
+                        // Optimize query cache and buffer settings
+                        let _ = sqlx::query("SET SESSION query_cache_type = ON")
+                            .execute(&mut *conn)
+                            .await;
+                        let _ = sqlx::query("SET SESSION read_buffer_size = 2097152")
+                            .execute(&mut *conn)
+                            .await; // 2MB
+                        Ok(())
+                    })
+                })
+                .connect(&connection_string)
+                .await;
+
+            match pool_result {
+                Ok(pool) => Some(models::enums::DatabasePool::MySQL(Arc::new(pool))),
+                Err(_e) => None,
+            }
+        }
+        models::enums::DatabaseType::PostgreSQL => {
+            let connection_string = format!(
+                "postgresql://{}:{}@{}:{}/{}",
+                connection.username,
+                connection.password,
+                connection.host,
+                connection.port,
+                connection.database
+            );
+
+            match PgPoolOptions::new()
+                .max_connections(3)
+                .min_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(10))
+                .idle_timeout(std::time::Duration::from_secs(300))
+                .connect(&connection_string)
+                .await
+            {
+                Ok(pool) => Some(models::enums::DatabasePool::PostgreSQL(Arc::new(pool))),
+                Err(_e) => None,
+            }
+        }
+        models::enums::DatabaseType::SQLite => {
+            let connection_string = format!("sqlite:{}", connection.host);
+
+            match SqlitePoolOptions::new()
+                .max_connections(3)
+                .min_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(10))
+                .idle_timeout(std::time::Duration::from_secs(300))
+                .connect(&connection_string)
+                .await
+            {
+                Ok(pool) => Some(models::enums::DatabasePool::SQLite(Arc::new(pool))),
+                Err(_e) => None,
+            }
+        }
+        models::enums::DatabaseType::Redis => {
+            let connection_string = if connection.password.is_empty() {
+                format!("redis://{}:{}", connection.host, connection.port)
+            } else {
+                format!(
+                    "redis://{}:{}@{}:{}",
+                    connection.username, connection.password, connection.host, connection.port
+                )
+            };
+
+            match Client::open(connection_string) {
+                Ok(client) => match ConnectionManager::new(client).await {
+                    Ok(manager) => Some(models::enums::DatabasePool::Redis(Arc::new(manager))),
+                    Err(_e) => None,
+                },
+                Err(_e) => None,
+            }
+        }
+        models::enums::DatabaseType::MsSQL => {
+            let cfg = driver_mssql::MssqlConfigWrapper::new(
+                connection.host.clone(),
+                connection.port.clone(),
+                connection.database.clone(),
+                connection.username.clone(),
+                connection.password.clone(),
+            );
+            Some(models::enums::DatabasePool::MsSQL(Arc::new(cfg)))
+        }
+        models::enums::DatabaseType::MongoDB => {
+            let uri = if connection.username.is_empty() {
+                format!("mongodb://{}:{}", connection.host, connection.port)
+            } else if connection.password.is_empty() {
+                format!(
+                    "mongodb://{}@{}:{}",
+                    connection.username, connection.host, connection.port
+                )
+            } else {
+                let enc_user = modules::url_encode(&connection.username);
+                let enc_pass = modules::url_encode(&connection.password);
+                format!(
+                    "mongodb://{}:{}@{}:{}",
+                    enc_user, enc_pass, connection.host, connection.port
+                )
+            };
+            match MongoClient::with_uri_str(uri).await {
+                Ok(client) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
+                Err(_e) => None,
+            }
+        }
+    }
 }
 
 // Fetch and cache metadata for all databases/tables/columns per connection
 async fn fetch_and_cache_all_data(
-       connection_id: i64,
-       connection: &models::structs::ConnectionConfig,
-       pool: &models::enums::DatabasePool,
-       cache_pool: &SqlitePool,
+    connection_id: i64,
+    connection: &models::structs::ConnectionConfig,
+    pool: &models::enums::DatabasePool,
+    cache_pool: &SqlitePool,
 ) -> bool {
-       match &connection.connection_type {
-              models::enums::DatabaseType::MySQL => {
-                     if let models::enums::DatabasePool::MySQL(mysql_pool) = pool {
-                            driver_mysql::fetch_mysql_data(connection_id, mysql_pool, cache_pool).await
-                     } else { false }
-              }
-              models::enums::DatabaseType::SQLite => {
-                     if let models::enums::DatabasePool::SQLite(sqlite_pool) = pool {
-                            driver_sqlite::fetch_data(connection_id, sqlite_pool, cache_pool).await
-                     } else { false }
-              }
-              models::enums::DatabaseType::PostgreSQL => {
-                     if let models::enums::DatabasePool::PostgreSQL(postgres_pool) = pool {
-                            driver_postgres::fetch_postgres_data(connection_id, postgres_pool, cache_pool).await
-                     } else { false }
-              }
-              models::enums::DatabaseType::Redis => {
-                     if let models::enums::DatabasePool::Redis(redis_manager) = pool {
-                            driver_redis::fetch_redis_data(connection_id, redis_manager, cache_pool).await
-                     } else { false }
-              }
-              models::enums::DatabaseType::MsSQL => {
-                     if let models::enums::DatabasePool::MsSQL(mssql_cfg) = pool {
-                            driver_mssql::fetch_mssql_data(connection_id, mssql_cfg.clone(), cache_pool).await
-                     } else { false }
-              }
-              models::enums::DatabaseType::MongoDB => {
-                     if let models::enums::DatabasePool::MongoDB(client) = pool {
-                            crate::driver_mongodb::fetch_mongodb_data(connection_id, client.clone(), cache_pool).await
-                     } else { false }
-              }
-       }
+    match &connection.connection_type {
+        models::enums::DatabaseType::MySQL => {
+            if let models::enums::DatabasePool::MySQL(mysql_pool) = pool {
+                driver_mysql::fetch_mysql_data(connection_id, mysql_pool, cache_pool).await
+            } else {
+                false
+            }
+        }
+        models::enums::DatabaseType::SQLite => {
+            if let models::enums::DatabasePool::SQLite(sqlite_pool) = pool {
+                driver_sqlite::fetch_data(connection_id, sqlite_pool, cache_pool).await
+            } else {
+                false
+            }
+        }
+        models::enums::DatabaseType::PostgreSQL => {
+            if let models::enums::DatabasePool::PostgreSQL(postgres_pool) = pool {
+                driver_postgres::fetch_postgres_data(connection_id, postgres_pool, cache_pool).await
+            } else {
+                false
+            }
+        }
+        models::enums::DatabaseType::Redis => {
+            if let models::enums::DatabasePool::Redis(redis_manager) = pool {
+                driver_redis::fetch_redis_data(connection_id, redis_manager, cache_pool).await
+            } else {
+                false
+            }
+        }
+        models::enums::DatabaseType::MsSQL => {
+            if let models::enums::DatabasePool::MsSQL(mssql_cfg) = pool {
+                driver_mssql::fetch_mssql_data(connection_id, mssql_cfg.clone(), cache_pool).await
+            } else {
+                false
+            }
+        }
+        models::enums::DatabaseType::MongoDB => {
+            if let models::enums::DatabasePool::MongoDB(client) = pool {
+                crate::driver_mongodb::fetch_mongodb_data(connection_id, client.clone(), cache_pool)
+                    .await
+            } else {
+                false
+            }
+        }
+    }
 }
 
+pub(crate) fn fetch_databases_from_connection(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+) -> Option<Vec<String>> {
+    // Find the connection configuration
+    let _connection = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))?
+        .clone();
 
+    // Create a new runtime for the database query
+    let rt = tokio::runtime::Runtime::new().ok()?;
 
-pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular, connection_id: i64) -> Option<Vec<String>> {
-       
-       // Find the connection configuration
-       let _connection = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
-       
-       // Create a new runtime for the database query
-       let rt = tokio::runtime::Runtime::new().ok()?;
-       
-       rt.block_on(async {
+    rt.block_on(async {
        // Get or create connection pool
        let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
        
@@ -1466,81 +1863,186 @@ pub(crate) fn fetch_databases_from_connection(tabular: &mut window_egui::Tabular
 }
 
 // Async version to avoid creating a new runtime each call; preferred for internal use
-pub(crate) async fn fetch_databases_from_connection_async(tabular: &mut window_egui::Tabular, connection_id: i64) -> Option<Vec<String>> {
-       // Find the connection configuration
-       let _connection = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
+pub(crate) async fn fetch_databases_from_connection_async(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+) -> Option<Vec<String>> {
+    // Find the connection configuration
+    let _connection = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))?
+        .clone();
 
-       // Get or create connection pool
-       let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
-       match pool {
-              models::enums::DatabasePool::MySQL(mysql_pool) => {
-                     let result = sqlx::query_as::<_, (String,)>(
+    // Get or create connection pool
+    let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
+    match pool {
+        models::enums::DatabasePool::MySQL(mysql_pool) => {
+            let result = sqlx::query_as::<_, (String,)>(
                             "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS schema_name FROM INFORMATION_SCHEMA.SCHEMATA"
                      )
                      .fetch_all(mysql_pool.as_ref())
                      .await;
-                     match result {
-                            Ok(rows) => Some(rows.into_iter().map(|(db_name,)| db_name)
-                                   .filter(|db| !["information_schema", "performance_schema", "mysql", "sys"].contains(&db.as_str()))
-                                   .collect()),
-                            Err(e) => { debug!("Error querying MySQL databases via INFORMATION_SCHEMA: {}", e); None }
-                     }
-              }
-              models::enums::DatabasePool::PostgreSQL(pg_pool) => {
-                     let result = sqlx::query_as::<_, (String,)>(
+            match result {
+                Ok(rows) => Some(
+                    rows.into_iter()
+                        .map(|(db_name,)| db_name)
+                        .filter(|db| {
+                            !["information_schema", "performance_schema", "mysql", "sys"]
+                                .contains(&db.as_str())
+                        })
+                        .collect(),
+                ),
+                Err(e) => {
+                    debug!(
+                        "Error querying MySQL databases via INFORMATION_SCHEMA: {}",
+                        e
+                    );
+                    None
+                }
+            }
+        }
+        models::enums::DatabasePool::PostgreSQL(pg_pool) => {
+            let result = sqlx::query_as::<_, (String,)>(
                             "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1')"
                      )
-                     .fetch_all(pg_pool.as_ref()).await;            
-                     match result { Ok(rows) => Some(rows.into_iter().map(|(db_name,)| db_name).collect()), Err(e) => { debug!("Error querying PostgreSQL databases: {}", e); None } }
-              }
-              models::enums::DatabasePool::SQLite(sqlite_pool) => {
-                     let result = sqlx::query_as::<_, (String,)>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-                            .fetch_all(sqlite_pool.as_ref()).await;            
-                     match result { Ok(_rows) => Some(vec!["main".to_string()]), Err(e) => { debug!("Error querying SQLite tables: {}", e); Some(vec!["main".to_string()]) } }
-              }
-              models::enums::DatabasePool::Redis(redis_manager) => {
-                     let mut conn = redis_manager.as_ref().clone();
-                     let max_databases = match redis::cmd("CONFIG").arg("GET").arg("databases").query_async::<Vec<String>>(&mut conn).await {
-                            Ok(config_result) if config_result.len() >= 2 => config_result[1].parse::<i32>().unwrap_or(16),
-                            _ => 16
-                     };
-                     let mut databases = Vec::with_capacity(max_databases as usize);
-                     for db_num in 0..max_databases { databases.push(format!("db{}", db_num)); }
-                     Some(databases)
-              }
-              models::enums::DatabasePool::MsSQL(ref mssql_cfg) => {
-                     use tokio_util::compat::TokioAsyncWriteCompatExt; use tiberius::{AuthMethod, Config};
-                     let mssql_cfg = mssql_cfg.clone();
-                     let host = mssql_cfg.host.clone(); let port = mssql_cfg.port; let user = mssql_cfg.username.clone(); let pass = mssql_cfg.password.clone();
-                     let rt_res = async move {
-                            let mut config = Config::new(); config.host(host.clone()); config.port(port); config.authentication(AuthMethod::sql_server(user.clone(), pass.clone())); config.trust_cert(); config.database("master");
-                            let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?; tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-                            let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?; let mut dbs = Vec::new();
-                            let mut stream = client.simple_query("SELECT name FROM sys.databases ORDER BY name").await.map_err(|e| e.to_string())?; use futures_util::TryStreamExt; while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); if let Some(n) = name { dbs.push(n.to_string()); } } }
-                            Ok::<_, String>(dbs)
-                     }.await;
-                     match rt_res { Ok(mut list) => { if list.is_empty() { Some(vec![mssql_cfg.database.clone()]) } else { let system = ["master", "model", "msdb", "tempdb"]; list.sort(); let mut user_dbs: Vec<String> = list.iter().filter(|d| !system.contains(&d.as_str())).cloned().collect(); let mut sys_dbs: Vec<String> = list.into_iter().filter(|d| system.contains(&d.as_str())).collect(); user_dbs.append(&mut sys_dbs); Some(user_dbs) } }, Err(e) => { debug!("Failed to fetch MsSQL databases: {}", e); Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()]) } }
-              }
-              models::enums::DatabasePool::MongoDB(client) => {
-                     match client.list_database_names().await { Ok(dbs) => Some(dbs), Err(e) => { debug!("MongoDB list databases error: {}", e); None } }
-              }
-       }
+                     .fetch_all(pg_pool.as_ref()).await;
+            match result {
+                Ok(rows) => Some(rows.into_iter().map(|(db_name,)| db_name).collect()),
+                Err(e) => {
+                    debug!("Error querying PostgreSQL databases: {}", e);
+                    None
+                }
+            }
+        }
+        models::enums::DatabasePool::SQLite(sqlite_pool) => {
+            let result = sqlx::query_as::<_, (String,)>(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .fetch_all(sqlite_pool.as_ref())
+            .await;
+            match result {
+                Ok(_rows) => Some(vec!["main".to_string()]),
+                Err(e) => {
+                    debug!("Error querying SQLite tables: {}", e);
+                    Some(vec!["main".to_string()])
+                }
+            }
+        }
+        models::enums::DatabasePool::Redis(redis_manager) => {
+            let mut conn = redis_manager.as_ref().clone();
+            let max_databases = match redis::cmd("CONFIG")
+                .arg("GET")
+                .arg("databases")
+                .query_async::<Vec<String>>(&mut conn)
+                .await
+            {
+                Ok(config_result) if config_result.len() >= 2 => {
+                    config_result[1].parse::<i32>().unwrap_or(16)
+                }
+                _ => 16,
+            };
+            let mut databases = Vec::with_capacity(max_databases as usize);
+            for db_num in 0..max_databases {
+                databases.push(format!("db{}", db_num));
+            }
+            Some(databases)
+        }
+        models::enums::DatabasePool::MsSQL(ref mssql_cfg) => {
+            use tiberius::{AuthMethod, Config};
+            use tokio_util::compat::TokioAsyncWriteCompatExt;
+            let mssql_cfg = mssql_cfg.clone();
+            let host = mssql_cfg.host.clone();
+            let port = mssql_cfg.port;
+            let user = mssql_cfg.username.clone();
+            let pass = mssql_cfg.password.clone();
+            let rt_res = async move {
+                let mut config = Config::new();
+                config.host(host.clone());
+                config.port(port);
+                config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+                config.trust_cert();
+                config.database("master");
+                let tcp = tokio::net::TcpStream::connect((host.as_str(), port))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                let mut client = tiberius::Client::connect(config, tcp.compat_write())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut dbs = Vec::new();
+                let mut stream = client
+                    .simple_query("SELECT name FROM sys.databases ORDER BY name")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                use futures_util::TryStreamExt;
+                while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    if let tiberius::QueryItem::Row(r) = item {
+                        let name: Option<&str> = r.get(0);
+                        if let Some(n) = name {
+                            dbs.push(n.to_string());
+                        }
+                    }
+                }
+                Ok::<_, String>(dbs)
+            }
+            .await;
+            match rt_res {
+                Ok(mut list) => {
+                    if list.is_empty() {
+                        Some(vec![mssql_cfg.database.clone()])
+                    } else {
+                        let system = ["master", "model", "msdb", "tempdb"];
+                        list.sort();
+                        let mut user_dbs: Vec<String> = list
+                            .iter()
+                            .filter(|d| !system.contains(&d.as_str()))
+                            .cloned()
+                            .collect();
+                        let mut sys_dbs: Vec<String> = list
+                            .into_iter()
+                            .filter(|d| system.contains(&d.as_str()))
+                            .collect();
+                        user_dbs.append(&mut sys_dbs);
+                        Some(user_dbs)
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to fetch MsSQL databases: {}", e);
+                    Some(vec![
+                        "master".to_string(),
+                        "tempdb".to_string(),
+                        "model".to_string(),
+                        "msdb".to_string(),
+                    ])
+                }
+            }
+        }
+        models::enums::DatabasePool::MongoDB(client) => match client.list_database_names().await {
+            Ok(dbs) => Some(dbs),
+            Err(e) => {
+                debug!("MongoDB list databases error: {}", e);
+                None
+            }
+        },
+    }
 }
 
+pub(crate) fn fetch_columns_from_database(
+    _connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+    connection: &models::structs::ConnectionConfig,
+) -> Option<Vec<(String, String)>> {
+    // Create a new runtime for the database query
+    let rt = tokio::runtime::Runtime::new().ok()?;
 
+    // Clone data to move into async block
+    let connection_clone = connection.clone();
+    let database_name = database_name.to_string();
+    let table_name = table_name.to_string();
 
-
-pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &str, table_name: &str, connection: &models::structs::ConnectionConfig) -> Option<Vec<(String, String)>> {
-       
-       // Create a new runtime for the database query
-       let rt = tokio::runtime::Runtime::new().ok()?;
-       
-       // Clone data to move into async block
-       let connection_clone = connection.clone();
-       let database_name = database_name.to_string();
-       let table_name = table_name.to_string();
-       
-       rt.block_on(async {
+    rt.block_on(async {
        match connection_clone.connection_type {
               models::enums::DatabaseType::MySQL => {
               // Create MySQL connection
@@ -1819,19 +2321,17 @@ pub(crate) fn fetch_columns_from_database(_connection_id: i64, database_name: &s
        })
 }
 
+pub(crate) fn update_connection_in_database(
+    tabular: &mut window_egui::Tabular,
+    connection: &models::structs::ConnectionConfig,
+) -> bool {
+    if let Some(ref pool) = tabular.db_pool {
+        if let Some(id) = connection.id {
+            let pool_clone = pool.clone();
+            let connection = connection.clone();
+            let rt = tokio::runtime::Runtime::new().unwrap();
 
-
-
-
-pub(crate) fn update_connection_in_database(tabular: &mut window_egui::Tabular, connection: &models::structs::ConnectionConfig) -> bool {
-        if let Some(ref pool) = tabular.db_pool {
-            if let Some(id) = connection.id {
-                let pool_clone = pool.clone();
-                let connection = connection.clone();
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                
-                
-                let result = rt.block_on(async {
+            let result = rt.block_on(async {
                     sqlx::query(
                         "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ? WHERE id = ?"
                     )
@@ -1847,241 +2347,278 @@ pub(crate) fn update_connection_in_database(tabular: &mut window_egui::Tabular, 
                     .execute(pool_clone.as_ref())
                     .await
                 });
-                
-                match &result {
-                    Ok(query_result) => {
-                        debug!("Update successful: {} rows affected", query_result.rows_affected());
-                    }
-                    Err(e) => {
-                        debug!("Update failed: {}", e);
-                    }
+
+            match &result {
+                Ok(query_result) => {
+                    debug!(
+                        "Update successful: {} rows affected",
+                        query_result.rows_affected()
+                    );
                 }
-                
-                result.is_ok()
-            } else {
-                debug!("Cannot update connection: no ID found");
-                false
+                Err(e) => {
+                    debug!("Update failed: {}", e);
+                }
             }
+
+            result.is_ok()
         } else {
-            debug!("Cannot update connection: no database pool available");
+            debug!("Cannot update connection: no ID found");
             false
         }
+    } else {
+        debug!("Cannot update connection: no database pool available");
+        false
     }
-
-
+}
 
 pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_id: i64) {
-        
-        // Remove from database first with explicit transaction
-        if let Some(ref pool) = tabular.db_pool {
-            let pool_clone = pool.clone();
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            
-            let result: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> = rt.block_on(async {
-                // Begin transaction
-                let mut tx = pool_clone.begin().await?;
-                
-                // Delete cache data first (foreign key constraints will handle this automatically due to CASCADE)
-                let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
-                    .bind(connection_id)
-                    .execute(&mut *tx)
-                    .await;
-                
-                let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
-                    .bind(connection_id)
-                    .execute(&mut *tx)
-                    .await;
-                
-                let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
-                    .bind(connection_id)
-                    .execute(&mut *tx)
-                    .await;
-                
-                // Delete the connection
-                let delete_result = sqlx::query("DELETE FROM connections WHERE id = ?")
-                    .bind(connection_id)
-                    .execute(&mut *tx)
-                    .await?;
-                
-                // Commit transaction
-                tx.commit().await?;
-                
-                Ok(delete_result)
-            });
-            
-            match result {
-                Ok(delete_result) => {
-                    
-                    // Only proceed if we actually deleted something
-                    if delete_result.rows_affected() == 0 {
-                        debug!("Warning: No rows were deleted from database!");
-                        return;
+    // Remove from database first with explicit transaction
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let result: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> = rt.block_on(async {
+            // Begin transaction
+            let mut tx = pool_clone.begin().await?;
+
+            // Delete cache data first (foreign key constraints will handle this automatically due to CASCADE)
+            let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(&mut *tx)
+                .await;
+
+            let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(&mut *tx)
+                .await;
+
+            let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(&mut *tx)
+                .await;
+
+            // Delete the connection
+            let delete_result = sqlx::query("DELETE FROM connections WHERE id = ?")
+                .bind(connection_id)
+                .execute(&mut *tx)
+                .await?;
+
+            // Commit transaction
+            tx.commit().await?;
+
+            Ok(delete_result)
+        });
+
+        match result {
+            Ok(delete_result) => {
+                // Only proceed if we actually deleted something
+                if delete_result.rows_affected() == 0 {
+                    debug!("Warning: No rows were deleted from database!");
+                    return;
+                }
+            }
+            Err(e) => {
+                debug!("Failed to delete from database: {}", e);
+                return; // Don't proceed if database deletion failed
+            }
+        }
+    }
+
+    tabular.connections.retain(|c| c.id != Some(connection_id));
+    // Remove from connection pool cache
+    tabular.connection_pools.remove(&connection_id);
+
+    // Set flag to force refresh on next update
+    tabular.needs_refresh = true;
+}
+
+pub(crate) fn test_database_connection(
+    connection: &models::structs::ConnectionConfig,
+) -> (bool, String) {
+    // Do not require ICMP ping; many environments (esp. Windows) block it. Try actual DB connect.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    rt.block_on(async {
+        match connection.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                let encoded_username = modules::url_encode(&connection.username);
+                let encoded_password = modules::url_encode(&connection.password);
+                let connection_string = format!(
+                    "mysql://{}:{}@{}:{}/{}",
+                    encoded_username,
+                    encoded_password,
+                    connection.host,
+                    connection.port,
+                    connection.database
+                );
+
+                match MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .connect(&connection_string)
+                    .await
+                {
+                    Ok(pool) => {
+                        // Test with a simple query
+                        match sqlx::query("SELECT 1").execute(&pool).await {
+                            Ok(_) => (true, "MySQL connection successful!".to_string()),
+                            Err(e) => (false, format!("MySQL query failed: {}", e)),
+                        }
                     }
-                },
-                Err(e) => {
-                    debug!("Failed to delete from database: {}", e);
-                    return; // Don't proceed if database deletion failed
+                    Err(e) => (false, format!("MySQL connection failed: {}", e)),
+                }
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                let connection_string = format!(
+                    "postgresql://{}:{}@{}:{}/{}",
+                    connection.username,
+                    connection.password,
+                    connection.host,
+                    connection.port,
+                    connection.database
+                );
+
+                match PgPoolOptions::new()
+                    .max_connections(1)
+                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .connect(&connection_string)
+                    .await
+                {
+                    Ok(pool) => {
+                        // Test with a simple query
+                        match sqlx::query("SELECT 1").execute(&pool).await {
+                            Ok(_) => (true, "PostgreSQL connection successful!".to_string()),
+                            Err(e) => (false, format!("PostgreSQL query failed: {}", e)),
+                        }
+                    }
+                    Err(e) => (false, format!("PostgreSQL connection failed: {}", e)),
+                }
+            }
+            models::enums::DatabaseType::SQLite => {
+                let connection_string = format!("sqlite:{}", connection.host);
+
+                match SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .connect(&connection_string)
+                    .await
+                {
+                    Ok(pool) => {
+                        // Test with a simple query
+                        match sqlx::query("SELECT 1").execute(&pool).await {
+                            Ok(_) => (true, "SQLite connection successful!".to_string()),
+                            Err(e) => (false, format!("SQLite query failed: {}", e)),
+                        }
+                    }
+                    Err(e) => (false, format!("SQLite connection failed: {}", e)),
+                }
+            }
+            models::enums::DatabaseType::MongoDB => {
+                // Build URI and ping
+                let uri = if connection.username.is_empty() {
+                    format!("mongodb://{}:{}", connection.host, connection.port)
+                } else if connection.password.is_empty() {
+                    format!(
+                        "mongodb://{}@{}:{}",
+                        connection.username, connection.host, connection.port
+                    )
+                } else {
+                    let enc_user = modules::url_encode(&connection.username);
+                    let enc_pass = modules::url_encode(&connection.password);
+                    format!(
+                        "mongodb://{}:{}@{}:{}",
+                        enc_user, enc_pass, connection.host, connection.port
+                    )
+                };
+                match MongoClient::with_uri_str(uri).await {
+                    Ok(client) => {
+                        let admin = client.database("admin");
+                        match admin.run_command(doc!("ping": 1)).await {
+                            Ok(_) => (true, "MongoDB connection successful!".to_string()),
+                            Err(e) => (false, format!("MongoDB ping failed: {}", e)),
+                        }
+                    }
+                    Err(e) => (false, format!("MongoDB client error: {}", e)),
+                }
+            }
+            models::enums::DatabaseType::Redis => {
+                let connection_string = if connection.password.is_empty() {
+                    format!("redis://{}:{}", connection.host, connection.port)
+                } else {
+                    format!(
+                        "redis://{}:{}@{}:{}",
+                        connection.username, connection.password, connection.host, connection.port
+                    )
+                };
+
+                match Client::open(connection_string) {
+                    Ok(client) => {
+                        match client.get_connection() {
+                            Ok(mut conn) => {
+                                // Test with a simple PING command
+                                match redis::cmd("PING").query::<String>(&mut conn) {
+                                    Ok(response) => {
+                                        if response == "PONG" {
+                                            (true, "Redis connection successful!".to_string())
+                                        } else {
+                                            (
+                                                false,
+                                                "Redis PING returned unexpected response"
+                                                    .to_string(),
+                                            )
+                                        }
+                                    }
+                                    Err(e) => (false, format!("Redis PING failed: {}", e)),
+                                }
+                            }
+                            Err(e) => (false, format!("Redis connection failed: {}", e)),
+                        }
+                    }
+                    Err(e) => (false, format!("Redis client creation failed: {}", e)),
+                }
+            }
+            models::enums::DatabaseType::MsSQL => {
+                // Simple test using tiberius
+                let host = connection.host.clone();
+                let port: u16 = connection.port.parse().unwrap_or(1433);
+                let db = connection.database.clone();
+                let user = connection.username.clone();
+                let pass = connection.password.clone();
+                let res = async {
+                    use tiberius::{AuthMethod, Config};
+                    use tokio_util::compat::TokioAsyncWriteCompatExt;
+                    let mut config = Config::new();
+                    config.host(host.clone());
+                    config.port(port);
+                    config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+                    config.trust_cert();
+                    if !db.is_empty() {
+                        config.database(db.clone());
+                    }
+                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                    let mut client = tiberius::Client::connect(config, tcp.compat_write())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let mut s = client
+                        .simple_query("SELECT 1")
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    while let Some(item) = s.try_next().await.map_err(|e| e.to_string())? {
+                        if let tiberius::QueryItem::Row(_r) = item {
+                            break;
+                        }
+                    }
+                    Ok::<_, String>(())
+                }
+                .await;
+                match res {
+                    Ok(_) => (true, "MsSQL connection successful!".to_string()),
+                    Err(e) => (false, format!("MsSQL connection failed: {}", e)),
                 }
             }
         }
-        
-        tabular.connections.retain(|c| c.id != Some(connection_id));
-        // Remove from connection pool cache
-        tabular.connection_pools.remove(&connection_id);
-                
-        // Set flag to force refresh on next update
-        tabular.needs_refresh = true;
-        
-    }
-
-
-pub(crate) fn test_database_connection(connection: &models::structs::ConnectionConfig) -> (bool, String) {
-       // Do not require ICMP ping; many environments (esp. Windows) block it. Try actual DB connect.
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        
-        rt.block_on(async {
-            match connection.connection_type {
-                models::enums::DatabaseType::MySQL => {
-                    let encoded_username = modules::url_encode(&connection.username);
-                    let encoded_password = modules::url_encode(&connection.password);
-                    let connection_string = format!(
-                        "mysql://{}:{}@{}:{}/{}",
-                        encoded_username, encoded_password, connection.host, connection.port, connection.database
-                    );
-                    
-                    match MySqlPoolOptions::new()
-                        .max_connections(1)
-                        .acquire_timeout(std::time::Duration::from_secs(10))
-                        .connect(&connection_string)
-                        .await
-                    {
-                        Ok(pool) => {
-                            // Test with a simple query
-                            match sqlx::query("SELECT 1").execute(&pool).await {
-                                Ok(_) => (true, "MySQL connection successful!".to_string()),
-                                Err(e) => (false, format!("MySQL query failed: {}", e)),
-                            }
-                        },
-                        Err(e) => (false, format!("MySQL connection failed: {}", e)),
-                    }
-                },
-                models::enums::DatabaseType::PostgreSQL => {
-                    let connection_string = format!(
-                        "postgresql://{}:{}@{}:{}/{}",
-                        connection.username, connection.password, connection.host, connection.port, connection.database
-                    );
-                    
-                    match PgPoolOptions::new()
-                        .max_connections(1)
-                        .acquire_timeout(std::time::Duration::from_secs(10))
-                        .connect(&connection_string)
-                        .await
-                    {
-                        Ok(pool) => {
-                            // Test with a simple query
-                            match sqlx::query("SELECT 1").execute(&pool).await {
-                                Ok(_) => (true, "PostgreSQL connection successful!".to_string()),
-                                Err(e) => (false, format!("PostgreSQL query failed: {}", e)),
-                            }
-                        },
-                        Err(e) => (false, format!("PostgreSQL connection failed: {}", e)),
-                    }
-                },
-                models::enums::DatabaseType::SQLite => {
-                    let connection_string = format!("sqlite:{}", connection.host);
-                    
-                    match SqlitePoolOptions::new()
-                        .max_connections(1)
-                        .acquire_timeout(std::time::Duration::from_secs(10))
-                        .connect(&connection_string)
-                        .await
-                    {
-                        Ok(pool) => {
-                            // Test with a simple query
-                            match sqlx::query("SELECT 1").execute(&pool).await {
-                                Ok(_) => (true, "SQLite connection successful!".to_string()),
-                                Err(e) => (false, format!("SQLite query failed: {}", e)),
-                            }
-                        },
-                        Err(e) => (false, format!("SQLite connection failed: {}", e)),
-                    }
-                },
-                            models::enums::DatabaseType::MongoDB => {
-                                   // Build URI and ping
-                                   let uri = if connection.username.is_empty() {
-                                          format!("mongodb://{}:{}", connection.host, connection.port)
-                                   } else if connection.password.is_empty() {
-                                          format!("mongodb://{}@{}:{}", connection.username, connection.host, connection.port)
-                                   } else {
-                                          let enc_user = modules::url_encode(&connection.username);
-                                          let enc_pass = modules::url_encode(&connection.password);
-                                          format!("mongodb://{}:{}@{}:{}", enc_user, enc_pass, connection.host, connection.port)
-                                   };
-                                   match MongoClient::with_uri_str(uri).await {
-                                          Ok(client) => {
-                                                 let admin = client.database("admin");
-                                                 match admin.run_command(doc!("ping": 1)).await {
-                                                        Ok(_) => (true, "MongoDB connection successful!".to_string()),
-                                                        Err(e) => (false, format!("MongoDB ping failed: {}", e)),
-                                                 }
-                                          }
-                                          Err(e) => (false, format!("MongoDB client error: {}", e)),
-                                   }
-                            },
-                            models::enums::DatabaseType::Redis => {
-                    let connection_string = if connection.password.is_empty() {
-                        format!("redis://{}:{}", connection.host, connection.port)
-                    } else {
-                        format!("redis://{}:{}@{}:{}", connection.username, connection.password, connection.host, connection.port)
-                    };
-                    
-                    match Client::open(connection_string) {
-                        Ok(client) => {
-                            match client.get_connection() {
-                                Ok(mut conn) => {
-                                    // Test with a simple PING command
-                                    match redis::cmd("PING").query::<String>(&mut conn) {
-                                        Ok(response) => {
-                                            if response == "PONG" {
-                                                (true, "Redis connection successful!".to_string())
-                                            } else {
-                                                (false, "Redis PING returned unexpected response".to_string())
-                                            }
-                                        },
-                                        Err(e) => (false, format!("Redis PING failed: {}", e)),
-                                    }
-                                },
-                                Err(e) => (false, format!("Redis connection failed: {}", e)),
-                            }
-                        },
-                        Err(e) => (false, format!("Redis client creation failed: {}", e)),
-                    }
-                            },
-                            models::enums::DatabaseType::MsSQL => {
-                                   // Simple test using tiberius
-                                   let host = connection.host.clone();
-                                   let port: u16 = connection.port.parse().unwrap_or(1433);
-                                   let db = connection.database.clone();
-                                   let user = connection.username.clone();
-                                   let pass = connection.password.clone();
-                                   let res = async {
-                                          use tiberius::{AuthMethod, Config};
-                                          use tokio_util::compat::TokioAsyncWriteCompatExt;
-                                          let mut config = Config::new();
-                                          config.host(host.clone());
-                                          config.port(port);
-                                          config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-                                          config.trust_cert();
-                                          if !db.is_empty() { config.database(db.clone()); }
-                                          let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
-                                          tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-                                          let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
-                                          let mut s = client.simple_query("SELECT 1").await.map_err(|e| e.to_string())?;
-                                          while let Some(item) = s.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(_r) = item { break; } }
-                                          Ok::<_, String>(())
-                                   }.await;
-                                   match res { Ok(_) => (true, "MsSQL connection successful!".to_string()), Err(e) => (false, format!("MsSQL connection failed: {}", e)) }
-                            },
-            }
-        })
-    }
+    })
+}

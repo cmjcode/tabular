@@ -26,6 +26,10 @@ pub struct Tabular {
     pub runtime: Option<Arc<tokio::runtime::Runtime>>,
     // Connection cache untuk menghindari membuat koneksi berulang
     pub connection_pools: HashMap<i64, models::enums::DatabasePool>,
+    // Track connection pools currently being created to avoid duplicate work
+    pub pending_connection_pools: std::collections::HashSet<i64>,
+    // Shared connection pools for background tasks
+    pub shared_connection_pools: Arc<std::sync::Mutex<HashMap<i64, models::enums::DatabasePool>>>,
     // Context menu and edit connection fields
     pub show_edit_connection: bool,
     pub edit_connection: models::structs::ConnectionConfig,
@@ -385,6 +389,8 @@ impl Tabular {
             db_pool: None,
             runtime,
             connection_pools: HashMap::new(), // Start with empty cache
+            pending_connection_pools: std::collections::HashSet::new(), // Track pools being created
+            shared_connection_pools: Arc::new(std::sync::Mutex::new(HashMap::new())), // Shared pools for background tasks
             show_edit_connection: false,
             edit_connection: models::structs::ConnectionConfig::default(),
             needs_refresh: false,
