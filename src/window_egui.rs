@@ -217,6 +217,11 @@ pub struct Tabular {
     pub settings_active_pref_tab: PrefTab,
     // Lightweight settings context menu (gear popup)
     pub show_settings_menu: bool,
+    // Query execution wait when pool is being created
+    pub pool_wait_in_progress: bool,
+    pub pool_wait_connection_id: Option<i64>,
+    pub pool_wait_query: String,
+    pub pool_wait_started_at: Option<std::time::Instant>,
 }
 
 // Preference tabs enumeration
@@ -541,6 +546,11 @@ impl Tabular {
             auto_updater: crate::auto_updater::AutoUpdater::new().ok(),
             settings_active_pref_tab: PrefTab::ApplicationTheme,
             show_settings_menu: false,
+            // Pool-wait defaults
+            pool_wait_in_progress: false,
+            pool_wait_connection_id: None,
+            pool_wait_query: String::new(),
+            pool_wait_started_at: None,
         };
 
         // Clear any old cached pools
@@ -9087,6 +9097,45 @@ impl App for Tabular {
         } else {
             ctx.set_visuals(egui::Visuals::light());
         }
+
+        // If waiting for pool, check readiness and auto-run queued query
+        if self.pool_wait_in_progress {
+            let mut ready = false;
+            if let Some(conn_id) = self.pool_wait_connection_id {
+                if self.connection_pools.contains_key(&conn_id) {
+                    ready = true;
+                } else if let Ok(shared) = self.shared_connection_pools.lock() {
+                    if shared.contains_key(&conn_id) {
+                        // Move to local cache for speed
+                        if let Some(pool) = shared.get(&conn_id).cloned() {
+                            self.connection_pools.insert(conn_id, pool);
+                        }
+                        ready = true;
+                    }
+                }
+            }
+
+            if ready {
+                if let Some(conn_id) = self.pool_wait_connection_id {
+                    let queued = self.pool_wait_query.clone();
+                    // Execute now
+                    let result = crate::connection::execute_query_with_connection(
+                        self,
+                        conn_id,
+                        queued.clone(),
+                    );
+                    self.apply_query_result(conn_id, queued, result);
+                }
+                // Clear wait state
+                self.pool_wait_in_progress = false;
+                self.pool_wait_connection_id = None;
+                self.pool_wait_query.clear();
+                self.pool_wait_started_at = None;
+            } else {
+                // Keep UI updated while waiting
+                ctx.request_repaint();
+            }
+        }
         // Sync editor theme only if linking enabled
         if self.link_editor_theme {
             let desired_editor_theme = if self.is_dark_mode {
@@ -9508,6 +9557,59 @@ impl App for Tabular {
                 });
             if !open_flag {
                 self.show_settings_window = false;
+            }
+        }
+
+        // Centered loading overlay when waiting for connection pool
+        if self.pool_wait_in_progress {
+            let elapsed = self
+                .pool_wait_started_at
+                .map(|t| t.elapsed())
+                .unwrap_or_default();
+            let mut keep_open = true; // local to control overlay
+            egui::Window::new("Connecting…")
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .collapsible(false)
+                .resizable(false)
+                .title_bar(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        let conn_name = self
+                            .pool_wait_connection_id
+                            .and_then(|id| self.get_connection_name(id))
+                            .unwrap_or_else(|| "(connection)".to_string());
+                        ui.label(format!(
+                            "Establishing connection pool for '{}'…",
+                            conn_name
+                        ));
+                    });
+                    if elapsed.as_secs() >= 10 {
+                        ui.label(egui::RichText::new(
+                            "This can take a while for slow networks."
+                        ).size(11.0).weak());
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            keep_open = false;
+                        }
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Waiting {}s",
+                                elapsed.as_secs()
+                            ))
+                            .size(11.0)
+                            .weak(),
+                        );
+                    });
+                });
+            if !keep_open {
+                // Cancel waiting but keep background creation going
+                self.pool_wait_in_progress = false;
+                self.pool_wait_connection_id = None;
+                self.pool_wait_query.clear();
+                self.pool_wait_started_at = None;
             }
         }
 
@@ -10418,3 +10520,81 @@ impl App for Tabular {
             });
     } // end update
 } // end impl App for Tabular
+
+// Helper to finalize query result display from a raw execution result
+impl Tabular {
+    fn apply_query_result(&mut self, connection_id: i64, query: String, result: Option<(Vec<String>, Vec<Vec<String>>)>) {
+        // Mark active tab as executed
+        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            tab.has_executed_query = true;
+        }
+
+        if let Some((headers, data)) = result {
+            let is_error_result = headers.first().map(|h| h == "Error").unwrap_or(false);
+            self.current_table_headers = headers;
+            self.update_pagination_data(data);
+            if self.total_rows == 0 {
+                self.current_table_name = "Query executed successfully (no results)".to_string();
+            } else {
+                self.current_table_name = format!(
+                    "Query Results ({} total rows, showing page {} of {})",
+                    self.total_rows,
+                    self.current_page + 1,
+                    self.get_total_pages()
+                );
+            }
+
+            // Set base query for pagination (simple LIMIT removal like in editor::execute_query)
+            let base_query_for_pagination = if !is_error_result && self.total_rows > 0 {
+                let mut clean_query = query.clone();
+                if let Some(limit_pos) = clean_query.to_uppercase().rfind("LIMIT") {
+                    if let Some(semicolon_pos) = clean_query[limit_pos..].find(';') {
+                        clean_query = format!(
+                            "{}{}",
+                            &clean_query[..limit_pos].trim(),
+                            &clean_query[limit_pos + semicolon_pos..]
+                        );
+                    } else {
+                        clean_query = clean_query[..limit_pos].trim().to_string();
+                    }
+                }
+                clean_query
+            } else {
+                String::new()
+            };
+            self.current_base_query = base_query_for_pagination.clone();
+
+            // Save to history unless error
+            if !is_error_result {
+                crate::sidebar_history::save_query_to_history(self, &query, connection_id);
+            }
+            // Persist to active tab
+            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                tab.result_headers = self.current_table_headers.clone();
+                tab.result_rows = self.current_table_data.clone();
+                tab.result_all_rows = self.all_table_data.clone();
+                tab.result_table_name = self.current_table_name.clone();
+                tab.is_table_browse_mode = self.is_table_browse_mode;
+                tab.current_page = self.current_page;
+                tab.page_size = self.page_size;
+                tab.total_rows = self.total_rows;
+                tab.base_query = self.current_base_query.clone();
+            }
+        } else {
+            self.current_table_name = "Query execution failed".to_string();
+            self.current_table_headers.clear();
+            self.current_table_data.clear();
+            self.all_table_data.clear();
+            self.total_rows = 0;
+            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                tab.result_headers.clear();
+                tab.result_rows.clear();
+                tab.result_all_rows.clear();
+                tab.result_table_name = self.current_table_name.clone();
+                tab.total_rows = 0;
+                tab.current_page = 0;
+                tab.base_query.clear();
+            }
+        }
+    }
+}

@@ -1239,6 +1239,59 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
 
     // Check if we have an active connection
     if let Some(connection_id) = connection_id {
+        // If a pool creation is already in progress for this connection, show loading and queue the query
+        if tabular.pending_connection_pools.contains(&connection_id) {
+            log::debug!(
+                "⏳ Pool creation in progress for {}, queueing query and showing loading",
+                connection_id
+            );
+            tabular.pool_wait_in_progress = true;
+            tabular.pool_wait_connection_id = Some(connection_id);
+            tabular.pool_wait_query = query.clone();
+            tabular.pool_wait_started_at = Some(std::time::Instant::now());
+            // Friendly status message; keep current data intact
+            tabular.current_table_name = "Connecting… waiting for pool".to_string();
+            // Do not execute now
+            return;
+        }
+
+        // If no pool exists yet, try quick creation; if not immediately available, show loading
+        if !tabular.connection_pools.contains_key(&connection_id) {
+            // Attempt a quick creation via the runtime without capturing &mut tabular inside the future
+            if let Some(rt) = tabular.runtime.clone() {
+                // Use the non-blocking helper that handles pending state and background spawn
+                let created = rt.block_on(async {
+                    // SAFETY: try_get_connection_pool only briefly borrows tabular inside the await; we avoid
+                    // capturing &mut tabular by doing only a readiness check here and letting the update loop handle execution.
+                    // We return true only if a pool is immediately available; otherwise background creation will be started elsewhere.
+                    crate::connection::try_get_connection_pool(tabular, connection_id)
+                        .await
+                        .is_some()
+                });
+                if !created {
+                    // Not ready now; show loading and queue the query. Background creation will happen via get_or_create on demand.
+                    log::debug!(
+                        "🔧 Pool not ready for {}, queueing and showing loading",
+                        connection_id
+                    );
+                    tabular.pool_wait_in_progress = true;
+                    tabular.pool_wait_connection_id = Some(connection_id);
+                    tabular.pool_wait_query = query.clone();
+                    tabular.pool_wait_started_at = Some(std::time::Instant::now());
+                    tabular.current_table_name = "Connecting… waiting for pool".to_string();
+                    return;
+                }
+            } else {
+                // No runtime configured yet; just set wait state
+                tabular.pool_wait_in_progress = true;
+                tabular.pool_wait_connection_id = Some(connection_id);
+                tabular.pool_wait_query = query.clone();
+                tabular.pool_wait_started_at = Some(std::time::Instant::now());
+                tabular.current_table_name = "Connecting… waiting for pool".to_string();
+                return;
+            }
+        }
+
         debug!("=== EXECUTING QUERY ===");
         debug!("Connection ID: {}", connection_id);
         debug!("Query: {}", query);
@@ -1329,7 +1382,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                 tab.total_rows = tabular.total_rows;
                 tab.base_query = tabular.current_base_query.clone(); // Save the base query to the tab
             }
-        } else {
+    } else {
             tabular.current_table_name = "Query execution failed".to_string();
             tabular.current_table_headers.clear();
             tabular.current_table_data.clear();

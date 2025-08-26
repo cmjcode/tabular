@@ -284,41 +284,78 @@ let default_database = if let Some(connection) = tabular.connections.iter().find
 // Set connection and default database in bottom combobox for active tab
 tabular.set_active_tab_connection_with_database(Some(connection_id), default_database);
 
-if tabular.auto_execute_after_connection {
-       // Execute the query immediately
-       let query = tabular.pending_query.clone();
-       if let Some((headers, data)) = execute_query_with_connection(tabular, connection_id, query) {
-       tabular.current_table_headers = headers;
+        if tabular.auto_execute_after_connection {
+            // Capture the intended query to run
+            let query = tabular.pending_query.clone();
 
-       // Use pagination for query results
-       tabular.update_pagination_data(data);
+            // Attempt to create/get the pool quickly; if not ready, show loading and queue the query
+            let mut ready = tabular.connection_pools.contains_key(&connection_id);
+            if !ready {
+                if let Ok(shared) = tabular.shared_connection_pools.lock() {
+                    ready = shared.contains_key(&connection_id);
+                }
+            }
+            if !ready {
+                // Trigger quick creation/background spawn via runtime, but don't block UI long
+                if let Some(rt) = tabular.runtime.clone() {
+                    let _ = rt.block_on(async {
+                        // This will either quickly return a pool or start background creation
+                        let _ = crate::connection::get_or_create_connection_pool(tabular, connection_id).await;
+                    });
+                }
+                // Re-check quick readiness
+                ready = tabular.connection_pools.contains_key(&connection_id)
+                    || tabular
+                        .shared_connection_pools
+                        .lock()
+                        .map(|m| m.contains_key(&connection_id))
+                        .unwrap_or(false);
+            }
 
-       if tabular.total_rows == 0 {
-              tabular.current_table_name = "Query executed successfully (no results)".to_string();
-       } else {
-              tabular.current_table_name = format!("Query Results ({} total rows, showing page {} of {})",
-                     tabular.total_rows, tabular.current_page + 1, tabular.get_total_pages());
-       }
-       } else {
-       tabular.current_table_name = "Query execution failed".to_string();
-       tabular.current_table_headers.clear();
-       tabular.current_table_data.clear();
-       tabular.all_table_data.clear();
-       tabular.total_rows = 0;
-       }
-       // Mark active tab as having executed a query
-       if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-              tab.has_executed_query = true;
-              tab.result_headers = tabular.current_table_headers.clone();
-              tab.result_all_rows = tabular.all_table_data.clone();
-              tab.result_rows = tabular.current_table_data.clone();
-              tab.result_table_name = tabular.current_table_name.clone();
-              tab.is_table_browse_mode = tabular.is_table_browse_mode;
-              tab.current_page = tabular.current_page;
-              tab.page_size = tabular.page_size;
-              tab.total_rows = tabular.total_rows;
-       }
-}
+            if ready {
+                // Execute immediately as pool is available now
+                let result = execute_query_with_connection(tabular, connection_id, query.clone());
+                // Apply result to current UI/tab
+                if let Some((headers, data)) = result {
+                    tabular.current_table_headers = headers;
+                    tabular.update_pagination_data(data);
+                    if tabular.total_rows == 0 {
+                        tabular.current_table_name = "Query executed successfully (no results)".to_string();
+                    } else {
+                        tabular.current_table_name = format!(
+                            "Query Results ({} total rows, showing page {} of {})",
+                            tabular.total_rows,
+                            tabular.current_page + 1,
+                            tabular.get_total_pages()
+                        );
+                    }
+                } else {
+                    tabular.current_table_name = "Query execution failed".to_string();
+                    tabular.current_table_headers.clear();
+                    tabular.current_table_data.clear();
+                    tabular.all_table_data.clear();
+                    tabular.total_rows = 0;
+                }
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.has_executed_query = true;
+                    tab.result_headers = tabular.current_table_headers.clone();
+                    tab.result_all_rows = tabular.all_table_data.clone();
+                    tab.result_rows = tabular.current_table_data.clone();
+                    tab.result_table_name = tabular.current_table_name.clone();
+                    tab.is_table_browse_mode = tabular.is_table_browse_mode;
+                    tab.current_page = tabular.current_page;
+                    tab.page_size = tabular.page_size;
+                    tab.total_rows = tabular.total_rows;
+                }
+            } else {
+                // Not ready yet: queue the query and show loading overlay
+                tabular.pool_wait_in_progress = true;
+                tabular.pool_wait_connection_id = Some(connection_id);
+                tabular.pool_wait_query = query.clone();
+                tabular.pool_wait_started_at = Some(std::time::Instant::now());
+                tabular.current_table_name = "Connecting… waiting for pool".to_string();
+            }
+        }
 
 tabular.show_connection_selector = false;
 tabular.pending_query.clear();

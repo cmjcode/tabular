@@ -434,6 +434,11 @@ impl ShallowForCache for Tabular {
             update_install_receiver: None,
             settings_active_pref_tab: PrefTab::ApplicationTheme,
             show_settings_menu: false,
+            // Pool wait state (not used in cache clone)
+            pool_wait_in_progress: false,
+            pool_wait_connection_id: None,
+            pool_wait_query: String::new(),
+            pool_wait_started_at: None,
         })
     }
 }
