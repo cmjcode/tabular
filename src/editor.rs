@@ -308,7 +308,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     for line in block.split_inclusive('\n') {
                         if line == "\n" { outdented.push('\n'); continue; }
                         let (content, nl) = if let Some(p) = line.rfind('\n') { (&line[..p], &line[p..]) } else { (line, "") };
-                        let trimmed = if content.starts_with('\t') { changed = true; &content[1..] } else if content.starts_with("    ") { changed = true; &content[4..] } else { content };
+                        let trimmed = if let Some(rest) = content.strip_prefix('\t') { changed = true; rest }
+                        else if let Some(rest) = content.strip_prefix("    ") { changed = true; rest }
+                        else { content };
                         outdented.push_str(trimmed); outdented.push_str(nl);
                     }
                     if changed {
