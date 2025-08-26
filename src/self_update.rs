@@ -1,8 +1,8 @@
+use log::{debug, error, info, warn};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
-use log::{debug, error, info, warn};
 
 const GITHUB_REPO: &str = "tabular-id/tabular";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -53,9 +53,12 @@ impl Error for UpdateError {}
 
 pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
     info!("Checking for updates from GitHub releases...");
-    
-    let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
-    
+
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
+
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
@@ -81,9 +84,12 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
     // Parse versions
     let current_version = Version::parse(CURRENT_VERSION)
         .map_err(|e| UpdateError::ParseError(format!("Invalid current version: {}", e)))?;
-    
+
     // Remove 'v' prefix if present
-    let latest_version_str = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name);
+    let latest_version_str = release
+        .tag_name
+        .strip_prefix('v')
+        .unwrap_or(&release.tag_name);
     let latest_version = Version::parse(latest_version_str)
         .map_err(|e| UpdateError::ParseError(format!("Invalid latest version: {}", e)))?;
 
@@ -110,32 +116,38 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
 
 fn find_asset_for_platform(assets: &[GitHubAsset]) -> (Option<String>, Option<String>) {
     let platform = get_platform_info();
-    
+
     debug!("🔍 Searching for asset matching platform: {}", platform);
     debug!("📦 Available assets:");
     for asset in assets {
         debug!("  - {}", asset.name);
     }
-    
+
     for asset in assets {
         let asset_name_lower = asset.name.to_lowercase();
-        
+
         if platform.matches(&asset_name_lower) {
             debug!("✅ Found matching asset: {}", asset.name);
-            return (Some(asset.browser_download_url.clone()), Some(asset.name.clone()));
+            return (
+                Some(asset.browser_download_url.clone()),
+                Some(asset.name.clone()),
+            );
         }
     }
-    
+
     // Fallback: for macOS, try to find any .dmg file
     if platform.os == "macos" {
         for asset in assets {
             if asset.name.to_lowercase().ends_with(".dmg") {
                 warn!("🔄 Using fallback .dmg asset: {}", asset.name);
-                return (Some(asset.browser_download_url.clone()), Some(asset.name.clone()));
+                return (
+                    Some(asset.browser_download_url.clone()),
+                    Some(asset.name.clone()),
+                );
             }
         }
     }
-    
+
     warn!("❌ No matching asset found for platform: {}", platform);
     (None, None)
 }
@@ -151,27 +163,31 @@ impl PlatformInfo {
         let os_matches = match self.os {
             "macos" => {
                 // More flexible matching for macOS
-                asset_name.contains("macos") 
-                || asset_name.contains("darwin") 
-                || asset_name.ends_with(".dmg")
-                || (asset_name.starts_with("tabular") && asset_name.ends_with(".dmg"))
-            },
+                asset_name.contains("macos")
+                    || asset_name.contains("darwin")
+                    || asset_name.ends_with(".dmg")
+                    || (asset_name.starts_with("tabular") && asset_name.ends_with(".dmg"))
+            }
             "linux" => asset_name.contains("linux"),
-            "windows" => asset_name.contains("windows") || asset_name.contains(".exe") || asset_name.contains(".msi"),
+            "windows" => {
+                asset_name.contains("windows")
+                    || asset_name.contains(".exe")
+                    || asset_name.contains(".msi")
+            }
             _ => false,
         };
-        
+
         // For macOS .dmg files, we don't require architecture-specific naming
         if self.os == "macos" && asset_name.ends_with(".dmg") {
             return true;
         }
-        
+
         let arch_matches = match self.arch {
             "x86_64" => asset_name.contains("x86_64") || asset_name.contains("amd64"),
             "aarch64" => asset_name.contains("aarch64") || asset_name.contains("arm64"),
             _ => true, // Fallback to any architecture if not specified
         };
-        
+
         os_matches && (arch_matches || asset_name.ends_with(".dmg"))
     }
 }
@@ -192,7 +208,7 @@ fn get_platform_info() -> PlatformInfo {
     } else {
         "unknown"
     };
-    
+
     let arch = if cfg!(target_arch = "x86_64") {
         "x86_64"
     } else if cfg!(target_arch = "aarch64") {
@@ -200,14 +216,14 @@ fn get_platform_info() -> PlatformInfo {
     } else {
         "unknown"
     };
-    
+
     PlatformInfo { os, arch }
 }
 
 pub fn open_release_page(update_info: &UpdateInfo) {
     let url = &update_info.release_url;
     info!("Opening release page: {}", url);
-    
+
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open")
@@ -216,9 +232,10 @@ pub fn open_release_page(update_info: &UpdateInfo) {
             .unwrap_or_else(|e| {
                 error!("Failed to open URL on macOS: {}", e);
                 std::process::exit(1);
-            }).wait();
+            })
+            .wait();
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
@@ -229,7 +246,7 @@ pub fn open_release_page(update_info: &UpdateInfo) {
                 std::process::exit(1);
             });
     }
-    
+
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
@@ -248,12 +265,18 @@ mod tests {
 
     #[test]
     fn test_platform_matching() {
-        let macos_arm = PlatformInfo { os: "macos", arch: "aarch64" };
+        let macos_arm = PlatformInfo {
+            os: "macos",
+            arch: "aarch64",
+        };
         assert!(macos_arm.matches("tabular-0.3.0-macos-aarch64.dmg"));
         assert!(macos_arm.matches("tabular-darwin-arm64.tar.gz"));
         assert!(!macos_arm.matches("tabular-linux-x86_64.tar.gz"));
-        
-        let linux_x64 = PlatformInfo { os: "linux", arch: "x86_64" };
+
+        let linux_x64 = PlatformInfo {
+            os: "linux",
+            arch: "x86_64",
+        };
         assert!(linux_x64.matches("tabular-0.3.0-linux-x86_64.tar.gz"));
         assert!(!linux_x64.matches("tabular-0.3.0-windows-x86_64.zip"));
     }

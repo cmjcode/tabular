@@ -3,7 +3,6 @@ use log::error;
 
 use crate::{editor, window_egui};
 
-
 fn load_logo_texture(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if tabular.logo_texture.is_some() {
         return;
@@ -27,157 +26,181 @@ fn load_logo_texture(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     }
 }
 pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-        if tabular.show_about_dialog {
-            // Load logo texture if not already loaded
-            load_logo_texture(tabular, ctx);
-            
-            let mut should_check_updates = false;
-            
-            egui::Window::new("About Tabular")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .default_width(400.0)
-                .open(&mut tabular.show_about_dialog)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(10.0);
-                        
-                        // App icon/logo - use actual logo if loaded, fallback to emoji
-                        if let Some(logo_texture) = &tabular.logo_texture {
-                            ui.add(egui::Image::from_texture(logo_texture).max_size(egui::vec2(180.0, 180.0)));
-                        } else {
-                            ui.label(egui::RichText::new("📊").size(48.0));
-                        }
-                        ui.add_space(10.0);
-                        
-                        // App name and version
-                        ui.label(egui::RichText::new("Tabular").size(26.0).strong());
-                        ui.label(egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).size(18.0).color(egui::Color32::GRAY));
-                        ui.label(egui::RichText::new("Built with ❤️ using Rust").size(14.0).color(egui::Color32::GRAY));
-                        ui.add_space(15.0);
-                        
-                        // Description
-                        ui.label(egui::RichText::new("Your SQL Editor, Forged with Rust: Fast, Safe, Efficient.").size(14.0));
-                        ui.label("Credit : Jayuda");
-                        ui.add_space(10.0);
-                        
-                        // Update check button
-                        if ui.button("🔄 Check for Updates").clicked() {
-                            should_check_updates = true;
-                        }
-                        ui.add_space(10.0);
-                       
-                        ui.hyperlink_to("https://github.com/tabular-id/tabular", "https://github.com/tabular-id/tabular");
-                        ui.add_space(10.0);
-                        ui.label(egui::RichText::new("© 2025 PT. Vneu Teknologi Indonesia ").size(10.0).color(egui::Color32::GRAY));
-                        ui.add_space(15.0);
-                    });
+    if tabular.show_about_dialog {
+        // Load logo texture if not already loaded
+        load_logo_texture(tabular, ctx);
+
+        let mut should_check_updates = false;
+
+        egui::Window::new("About Tabular")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(400.0)
+            .open(&mut tabular.show_about_dialog)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(10.0);
+
+                    // App icon/logo - use actual logo if loaded, fallback to emoji
+                    if let Some(logo_texture) = &tabular.logo_texture {
+                        ui.add(
+                            egui::Image::from_texture(logo_texture)
+                                .max_size(egui::vec2(180.0, 180.0)),
+                        );
+                    } else {
+                        ui.label(egui::RichText::new("📊").size(48.0));
+                    }
+                    ui.add_space(10.0);
+
+                    // App name and version
+                    ui.label(egui::RichText::new("Tabular").size(26.0).strong());
+                    ui.label(
+                        egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                            .size(18.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                    ui.label(
+                        egui::RichText::new("Built with ❤️ using Rust")
+                            .size(14.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                    ui.add_space(15.0);
+
+                    // Description
+                    ui.label(
+                        egui::RichText::new(
+                            "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient.",
+                        )
+                        .size(14.0),
+                    );
+                    ui.label("Credit : Jayuda");
+                    ui.add_space(10.0);
+
+                    // Update check button
+                    if ui.button("🔄 Check for Updates").clicked() {
+                        should_check_updates = true;
+                    }
+                    ui.add_space(10.0);
+
+                    ui.hyperlink_to(
+                        "https://github.com/tabular-id/tabular",
+                        "https://github.com/tabular-id/tabular",
+                    );
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("© 2025 PT. Vneu Teknologi Indonesia ")
+                            .size(10.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                    ui.add_space(15.0);
                 });
-            
-            if should_check_updates {
-                tabular.check_for_updates(true); // Manual check from About dialog
-            }
+            });
+
+        if should_check_updates {
+            tabular.check_for_updates(true); // Manual check from About dialog
         }
     }
-
+}
 
 pub(crate) fn render_error_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-        if tabular.show_error_message {
-            egui::Window::new("Error")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label(&tabular.error_message);
-                    ui.separator();
-                    
+    if tabular.show_error_message {
+        egui::Window::new("Error")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(&tabular.error_message);
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        tabular.show_error_message = false;
+                        tabular.error_message.clear();
+                    }
+                });
+            });
+    }
+}
+
+pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    if tabular.show_save_dialog {
+        egui::Window::new("Save Query")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(500.0)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(5.0);
+
+                    // Current save directory display
+                    ui.label("Save location:");
                     ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() {
-                            tabular.show_error_message = false;
-                            tabular.error_message.clear();
+                        let display_path = if !tabular.save_directory.is_empty() {
+                            &tabular.save_directory
+                        } else {
+                            "Using default query directory"
+                        };
+                        ui.label(egui::RichText::new(display_path).weak().monospace());
+
+                        if ui.button("📁 Browse").clicked() {
+                            tabular.handle_save_directory_picker();
+                        }
+                    });
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+
+                    // Filename input
+                    ui.label("Enter filename:");
+                    ui.text_edit_singleline(&mut tabular.save_filename);
+
+                    ui.add_space(10.0);
+
+                    // Action buttons
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() && !tabular.save_filename.is_empty() {
+                            if let Err(err) = editor::save_current_tab_with_name(
+                                tabular,
+                                tabular.save_filename.clone(),
+                            ) {
+                                error!("Failed to save: {}", err);
+                            }
+                            tabular.show_save_dialog = false;
+                            tabular.save_filename.clear();
+                            // Reset save directory for next save
+                            tabular.save_directory.clear();
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            tabular.show_save_dialog = false;
+                            tabular.save_filename.clear();
+                            // Reset save directory for next save
+                            tabular.save_directory.clear();
                         }
                     });
                 });
-        }
-    }    
-
-
-
-pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-        if tabular.show_save_dialog {
-            egui::Window::new("Save Query")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .default_width(500.0)
-                .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(5.0);
-                        
-                        // Current save directory display
-                        ui.label("Save location:");
-                        ui.horizontal(|ui| {
-                            let display_path = if !tabular.save_directory.is_empty() {
-                                &tabular.save_directory
-                            } else {
-                                "Using default query directory"
-                            };
-                            ui.label(egui::RichText::new(display_path).weak().monospace());
-                            
-                            if ui.button("📁 Browse").clicked() {
-                                tabular.handle_save_directory_picker();
-                            }
-                        });
-                        
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(5.0);
-                        
-                        // Filename input
-                        ui.label("Enter filename:");
-                        ui.text_edit_singleline(&mut tabular.save_filename);
-                        
-                        ui.add_space(10.0);
-                        
-                        // Action buttons
-                        ui.horizontal(|ui| {
-                            if ui.button("Save").clicked() && !tabular.save_filename.is_empty() {
-                                if let Err(err) = editor::save_current_tab_with_name(tabular, tabular.save_filename.clone()) {
-                                    error!("Failed to save: {}", err);
-                                }
-                                tabular.show_save_dialog = false;
-                                tabular.save_filename.clear();
-                                // Reset save directory for next save
-                                tabular.save_directory.clear();
-                            }
-                            
-                            if ui.button("Cancel").clicked() {
-                                tabular.show_save_dialog = false;
-                                tabular.save_filename.clear();
-                                // Reset save directory for next save
-                                tabular.save_directory.clear();
-                            }
-                        });
-                    });
-                });
-        }
+            });
     }
-
+}
 
 pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-        if !tabular.show_index_dialog {
-            return;
-        }
+    if !tabular.show_index_dialog {
+        return;
+    }
     let mut open_flag = tabular.show_index_dialog;
     // Work on a local copy and write back after UI, so typing/checkbox persist across frames
-    let Some(initial_state) = tabular.index_dialog.clone() else { return; };
+    let Some(initial_state) = tabular.index_dialog.clone() else {
+        return;
+    };
     let mut working = initial_state;
     // Defer opening tab until after closure to avoid borrow conflicts
     let mut open_tab_request: Option<(String /*title*/, String /*sql*/)> = None;
 
     let mut should_close = false;
-        egui::Window::new("Generate Query Index")
+    egui::Window::new("Generate Query Index")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -377,22 +400,23 @@ crate::models::enums::DatabaseType::MongoDB => todo!(),
                     });
                 });
             });
-        // Persist user edits back into app state
-        tabular.index_dialog = Some(working);
-        // Update dialog visibility from open_flag set in UI
-        if should_close { open_flag = false; }
-        tabular.show_index_dialog = open_flag;
-        // If user requested opening a tab, do it now (outside of UI borrow)
-        if let Some((title, sql)) = open_tab_request
-            && let Some(state) = &tabular.index_dialog {
-                editor::create_new_tab_with_connection_and_database(
-                    tabular,
-                    title,
-                    sql,
-                    Some(state.connection_id),
-                    state.database_name.clone(),
-                );
-            }
+    // Persist user edits back into app state
+    tabular.index_dialog = Some(working);
+    // Update dialog visibility from open_flag set in UI
+    if should_close {
+        open_flag = false;
+    }
+    tabular.show_index_dialog = open_flag;
+    // If user requested opening a tab, do it now (outside of UI borrow)
+    if let Some((title, sql)) = open_tab_request
+        && let Some(state) = &tabular.index_dialog
+    {
+        editor::create_new_tab_with_connection_and_database(
+            tabular,
+            title,
+            sql,
+            Some(state.connection_id),
+            state.database_name.clone(),
+        );
+    }
 }
-
-

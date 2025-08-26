@@ -1,22 +1,23 @@
+use log::debug;
 use std::path::Path;
-use log::{debug};
-
 
 pub fn export_to_csv(
     all_table_data: &[Vec<String>],
     current_table_headers: &[String],
     current_table_name: &str,
 ) {
-
     // Use rfd to open save dialog
     let file_dialog = rfd::FileDialog::new()
         .add_filter("CSV files", &["csv"])
         .set_file_name(format!("{}.csv", current_table_name.replace(' ', "_")));
 
-    
     if let Some(path) = file_dialog.save_file() {
         match write_csv_file(&path, all_table_data, current_table_headers) {
-            Ok(_) => debug!("✓ Successfully exported {} rows to CSV: {:?}", all_table_data.len(), path),
+            Ok(_) => debug!(
+                "✓ Successfully exported {} rows to CSV: {:?}",
+                all_table_data.len(),
+                path
+            ),
             Err(e) => debug!("❌ Failed to export CSV: {}", e),
         }
     } else {
@@ -29,19 +30,18 @@ fn write_csv_file(
     all_table_data: &[Vec<String>],
     current_table_headers: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    
     let mut writer = csv::Writer::from_path(path)?;
-    
+
     // Write headers
     writer.write_record(current_table_headers)?;
-    
+
     // Write data rows
     for row in all_table_data.iter() {
         writer.write_record(row)?;
     }
-    
+
     writer.flush()?;
-    
+
     Ok(())
 }
 
@@ -57,7 +57,11 @@ pub fn export_to_xlsx(
 
     if let Some(path) = file_dialog.save_file() {
         match write_xlsx_file(&path, all_table_data, current_table_headers) {
-            Ok(_) => debug!("✓ Successfully exported {} rows to XLSX: {:?}", all_table_data.len(), path),
+            Ok(_) => debug!(
+                "✓ Successfully exported {} rows to XLSX: {:?}",
+                all_table_data.len(),
+                path
+            ),
             Err(e) => debug!("❌ Failed to export XLSX: {}", e),
         }
     }

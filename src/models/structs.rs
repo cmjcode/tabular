@@ -1,8 +1,6 @@
-
 use serde::{Deserialize, Serialize};
 
 use crate::models::{self, enums::NodeType};
-
 
 #[derive(Clone)]
 pub struct TreeNode {
@@ -10,11 +8,11 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
     pub is_expanded: bool,
     pub(crate) node_type: NodeType,
-    pub connection_id: Option<i64>, // For connection nodes
-    pub is_loaded: bool, // For tracking if tables/columns are loaded
+    pub connection_id: Option<i64>,    // For connection nodes
+    pub is_loaded: bool,               // For tracking if tables/columns are loaded
     pub database_name: Option<String>, // For storing database context
-    pub file_path: Option<String>, // For query files
-    pub table_name: Option<String>, // For storing table context for subfolders/items
+    pub file_path: Option<String>,     // For query files
+    pub table_name: Option<String>,    // For storing table context for subfolders/items
 }
 
 impl TreeNode {
@@ -62,8 +60,6 @@ impl TreeNode {
     }
 }
 
-
-
 #[derive(Clone, Debug)]
 pub struct QueryTab {
     pub title: String,
@@ -73,20 +69,18 @@ pub struct QueryTab {
     pub is_modified: bool,
     pub connection_id: Option<i64>, // Each tab can have its own database connection
     pub database_name: Option<String>, // Each tab can have its own database selection
-    pub has_executed_query: bool, // Track if this tab has ever executed a query
+    pub has_executed_query: bool,   // Track if this tab has ever executed a query
     // NEW: per-tab result state so switching tabs restores its own data
     pub result_headers: Vec<String>,
     pub result_rows: Vec<Vec<String>>, // current page (or all rows if client side)
     pub result_all_rows: Vec<Vec<String>>, // full dataset for client pagination
-    pub result_table_name: String, // caption/status e.g. Table: ... or Query Results
-    pub is_table_browse_mode: bool, // was this produced by table browse
+    pub result_table_name: String,     // caption/status e.g. Table: ... or Query Results
+    pub is_table_browse_mode: bool,    // was this produced by table browse
     pub current_page: usize,
     pub page_size: usize,
     pub total_rows: usize,
     pub base_query: String, // Store the base query (without LIMIT/OFFSET) for pagination
 }
-
-
 
 #[derive(Clone)]
 pub struct AdvancedEditor {
@@ -129,7 +123,6 @@ impl Default for AdvancedEditor {
     }
 }
 
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryItem {
     pub id: Option<i64>,
@@ -152,9 +145,6 @@ pub struct ConnectionConfig {
     pub folder: Option<String>, // Custom folder name
 }
 
-
-
-
 impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
@@ -171,15 +161,12 @@ impl Default for ConnectionConfig {
     }
 }
 
-
-
 #[derive(Debug, Clone)]
 pub struct ExpansionRequest {
     pub node_type: models::enums::NodeType,
     pub connection_id: i64,
     pub database_name: Option<String>,
 }
-
 
 // UI state for Create/Edit Index modal
 #[derive(Clone, Debug, PartialEq)]
@@ -196,21 +183,19 @@ pub struct IndexDialogState {
     pub table_name: String,
     pub existing_index_name: Option<String>,
     pub index_name: String,
-    pub columns: String,              // comma-separated list the user can edit
+    pub columns: String, // comma-separated list the user can edit
     pub unique: bool,
-    pub method: Option<String>,       // e.g., btree/hash for PG, BTREE/HASH for MySQL
+    pub method: Option<String>, // e.g., btree/hash for PG, BTREE/HASH for MySQL
     pub db_type: crate::models::enums::DatabaseType,
 }
 
 // Bottom panel view mode for a selected table
-#[derive(Clone, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum TableBottomView {
     #[default]
     Data,
     Structure,
 }
-
 
 // Simplified column info for Structure tab (can be extended later per RDBMS)
 #[derive(Clone, Debug, Default)]
@@ -226,20 +211,18 @@ pub struct ColumnStructInfo {
 #[derive(Clone, Debug, Default)]
 pub struct IndexStructInfo {
     pub name: String,
-    pub method: Option<String>,   // algorithm / type (btree, hash, etc.)
+    pub method: Option<String>, // algorithm / type (btree, hash, etc.)
     pub unique: bool,
     pub columns: Vec<String>,
 }
 
 // Sub view inside Structure (so kita tidak render dua tabel sekaligus)
-#[derive(Clone, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum StructureSubView {
     #[default]
     Columns,
     Indexes,
 }
-
 
 /// Type alias for the complex tuple returned by render_tree_node_with_table_expansion
 pub type RenderTreeNodeResult = (

@@ -1,8 +1,8 @@
 // MsSQL driver module now built unconditionally (feature flag removed)
-use std::sync::Arc;
 use crate::models;
 use crate::window_egui; // for Tabular type
-use futures_util::StreamExt; // for next on tiberius QueryStream
+use futures_util::StreamExt;
+use std::sync::Arc; // for next on tiberius QueryStream
 
 // We'll use tiberius for MsSQL. Tiberius uses async-std or tokio with the "rustls" feature.
 // For simplicity here we wrap the basic connection configuration and open connections per query.
@@ -16,60 +16,100 @@ pub struct MssqlConfigWrapper {
 }
 
 impl MssqlConfigWrapper {
-    pub fn new(host: String, port: String, database: String, username: String, password: String) -> Self {
+    pub fn new(
+        host: String,
+        port: String,
+        database: String,
+        username: String,
+        password: String,
+    ) -> Self {
         let port_num: u16 = port.parse().unwrap_or(1433);
-        Self { host, port: port_num, database, username, password}
+        Self {
+            host,
+            port: port_num,
+            database,
+            username,
+            password,
+        }
     }
 }
 
-pub(crate) async fn fetch_mssql_data(_connection_id: i64, _cfg: Arc<MssqlConfigWrapper>, _cache_pool: &sqlx::SqlitePool) -> bool {
+pub(crate) async fn fetch_mssql_data(
+    _connection_id: i64,
+    _cfg: Arc<MssqlConfigWrapper>,
+    _cache_pool: &sqlx::SqlitePool,
+) -> bool {
     // TODO: implement metadata caching (databases, tables, columns) using INFORMATION_SCHEMA
     // Placeholder returning true so UI can proceed.
     true
 }
 
-pub(crate) fn load_mssql_structure(connection_id: i64, _connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode) {
+pub(crate) fn load_mssql_structure(
+    connection_id: i64,
+    _connection: &models::structs::ConnectionConfig,
+    node: &mut models::structs::TreeNode,
+) {
     // Similar to other drivers: show Databases + DBA Views folders
     let mut main_children = Vec::new();
 
     // Databases folder with loading marker
-    let mut databases_folder = models::structs::TreeNode::new("Databases".to_string(), models::enums::NodeType::DatabasesFolder);
+    let mut databases_folder = models::structs::TreeNode::new(
+        "Databases".to_string(),
+        models::enums::NodeType::DatabasesFolder,
+    );
     databases_folder.connection_id = Some(connection_id);
-    let loading_node = models::structs::TreeNode::new("Loading databases...".to_string(), models::enums::NodeType::Database);
+    let loading_node = models::structs::TreeNode::new(
+        "Loading databases...".to_string(),
+        models::enums::NodeType::Database,
+    );
     databases_folder.children.push(loading_node);
     main_children.push(databases_folder);
 
     // DBA Views folder with standard children
-    let mut dba_folder = models::structs::TreeNode::new("DBA Views".to_string(), models::enums::NodeType::DBAViewsFolder);
+    let mut dba_folder = models::structs::TreeNode::new(
+        "DBA Views".to_string(),
+        models::enums::NodeType::DBAViewsFolder,
+    );
     dba_folder.connection_id = Some(connection_id);
 
     let mut dba_children = Vec::new();
     // Users
-    let mut users_folder = models::structs::TreeNode::new("Users".to_string(), models::enums::NodeType::UsersFolder);
+    let mut users_folder =
+        models::structs::TreeNode::new("Users".to_string(), models::enums::NodeType::UsersFolder);
     users_folder.connection_id = Some(connection_id);
     users_folder.is_loaded = false;
     dba_children.push(users_folder);
 
     // Privileges
-    let mut priv_folder = models::structs::TreeNode::new("Privileges".to_string(), models::enums::NodeType::PrivilegesFolder);
+    let mut priv_folder = models::structs::TreeNode::new(
+        "Privileges".to_string(),
+        models::enums::NodeType::PrivilegesFolder,
+    );
     priv_folder.connection_id = Some(connection_id);
     priv_folder.is_loaded = false;
     dba_children.push(priv_folder);
 
     // Processes
-    let mut proc_folder = models::structs::TreeNode::new("Processes".to_string(), models::enums::NodeType::ProcessesFolder);
+    let mut proc_folder = models::structs::TreeNode::new(
+        "Processes".to_string(),
+        models::enums::NodeType::ProcessesFolder,
+    );
     proc_folder.connection_id = Some(connection_id);
     proc_folder.is_loaded = false;
     dba_children.push(proc_folder);
 
     // Status
-    let mut status_folder = models::structs::TreeNode::new("Status".to_string(), models::enums::NodeType::StatusFolder);
+    let mut status_folder =
+        models::structs::TreeNode::new("Status".to_string(), models::enums::NodeType::StatusFolder);
     status_folder.connection_id = Some(connection_id);
     status_folder.is_loaded = false;
     dba_children.push(status_folder);
 
     // User Active
-    let mut metrics_user_active_folder = models::structs::TreeNode::new("User Active".to_string(), models::enums::NodeType::MetricsUserActiveFolder);
+    let mut metrics_user_active_folder = models::structs::TreeNode::new(
+        "User Active".to_string(),
+        models::enums::NodeType::MetricsUserActiveFolder,
+    );
     metrics_user_active_folder.connection_id = Some(connection_id);
     metrics_user_active_folder.is_loaded = false;
     dba_children.push(metrics_user_active_folder);
@@ -81,7 +121,12 @@ pub(crate) fn load_mssql_structure(connection_id: i64, _connection: &models::str
 }
 
 /// Fetch MsSQL tables or views for a specific database (synchronous wrapper like other drivers)
-pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, table_type: &str) -> Option<Vec<String>> {
+pub(crate) fn fetch_tables_from_mssql_connection(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<String>> {
     // Create a new runtime (pattern consistent with other drivers)
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
@@ -154,30 +199,57 @@ pub(crate) fn fetch_tables_from_mssql_connection(tabular: &mut window_egui::Tabu
 }
 
 /// Fetch MsSQL objects for a specific database by type: procedure | function | trigger
-pub(crate) fn fetch_objects_from_mssql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, object_type: &str) -> Option<Vec<String>> {
+pub(crate) fn fetch_objects_from_mssql_connection(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    object_type: &str,
+) -> Option<Vec<String>> {
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
-        let connection = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
+        let connection = tabular
+            .connections
+            .iter()
+            .find(|c| c.id == Some(connection_id))?
+            .clone();
 
-        use tokio_util::compat::TokioAsyncWriteCompatExt;
         use tiberius::{AuthMethod, Config};
+        use tokio_util::compat::TokioAsyncWriteCompatExt;
 
         let host = connection.host.clone();
         let port: u16 = connection.port.parse().unwrap_or(1433);
         let user = connection.username.clone();
         let pass = connection.password.clone();
-        let db_name = if database_name.is_empty() { connection.database.clone() } else { database_name.to_string() };
+        let db_name = if database_name.is_empty() {
+            connection.database.clone()
+        } else {
+            database_name.to_string()
+        };
 
         let mut config = Config::new();
         config.host(host.clone());
         config.port(port);
         config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
         config.trust_cert();
-        if !db_name.is_empty() { config.database(db_name.clone()); }
+        if !db_name.is_empty() {
+            config.database(db_name.clone());
+        }
 
-        let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await { Ok(t) => t, Err(e) => { log::debug!("MsSQL connect error for object fetch: {}", e); return None; } };
+        let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await {
+            Ok(t) => t,
+            Err(e) => {
+                log::debug!("MsSQL connect error for object fetch: {}", e);
+                return None;
+            }
+        };
         let _ = tcp.set_nodelay(true);
-        let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await { Ok(c) => c, Err(e) => { log::debug!("MsSQL client connect error: {}", e); return None; } };
+        let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("MsSQL client connect error: {}", e);
+                return None;
+            }
+        };
 
         let query = match object_type {
             // Stored procedures
@@ -187,16 +259,16 @@ pub(crate) fn fetch_objects_from_mssql_connection(tabular: &mut window_egui::Tab
                  FROM sys.procedures p \
                  JOIN sys.schemas s ON p.schema_id = s.schema_id \
                  WHERE ISNULL(p.is_ms_shipped,0) = 0 \
-                 ORDER BY p.name".to_string()
+                 ORDER BY p.name"
+                    .to_string()
             }
             // Functions: scalar, inline table-valued, multi-statement table-valued, and CLR variants
-            "function" => {
-                "SELECT s.name AS schema_name, o.name AS object_name \
+            "function" => "SELECT s.name AS schema_name, o.name AS object_name \
                  FROM sys.objects o \
                  JOIN sys.schemas s ON o.schema_id = s.schema_id \
                  WHERE o.type IN ('FN','IF','TF','AF','FS','FT') \
-                 ORDER BY o.name".to_string()
-            }
+                 ORDER BY o.name"
+                .to_string(),
             // Triggers: list DML triggers attached to user tables
             "trigger" => {
                 "SELECT ss.name AS schema_name, t.name AS table_name, tr.name AS trigger_name \
@@ -204,12 +276,22 @@ pub(crate) fn fetch_objects_from_mssql_connection(tabular: &mut window_egui::Tab
                  JOIN sys.tables t ON tr.parent_id = t.object_id \
                  JOIN sys.schemas ss ON t.schema_id = ss.schema_id \
                  WHERE t.type = 'U' \
-                 ORDER BY tr.name".to_string()
+                 ORDER BY tr.name"
+                    .to_string()
             }
-            _ => { log::debug!("Unsupported MsSQL object_type: {}", object_type); return None; }
+            _ => {
+                log::debug!("Unsupported MsSQL object_type: {}", object_type);
+                return None;
+            }
         };
 
-        let mut stream = match client.simple_query(query).await { Ok(s) => s, Err(e) => { log::debug!("MsSQL object list query error: {}", e); return None; } };
+        let mut stream = match client.simple_query(query).await {
+            Ok(s) => s,
+            Err(e) => {
+                log::debug!("MsSQL object list query error: {}", e);
+                return None;
+            }
+        };
 
         let mut items = Vec::new();
         use futures_util::TryStreamExt;
@@ -240,24 +322,39 @@ pub(crate) fn fetch_objects_from_mssql_connection(tabular: &mut window_egui::Tab
 }
 
 /// Execute a query and return (headers, rows)
-pub(crate) async fn execute_query(cfg: Arc<MssqlConfigWrapper>, query: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
-    use tokio_util::compat::TokioAsyncWriteCompatExt;
+pub(crate) async fn execute_query(
+    cfg: Arc<MssqlConfigWrapper>,
+    query: &str,
+) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     use tiberius::{AuthMethod, Config};
+    use tokio_util::compat::TokioAsyncWriteCompatExt;
 
     let mut config = Config::new();
     config.host(cfg.host.clone());
     config.port(cfg.port);
-    config.authentication(AuthMethod::sql_server(cfg.username.clone(), cfg.password.clone()));
+    config.authentication(AuthMethod::sql_server(
+        cfg.username.clone(),
+        cfg.password.clone(),
+    ));
     config.trust_cert(); // for self-signed; in prod expose an option
-    if !cfg.database.is_empty() { config.database(cfg.database.clone()); }
+    if !cfg.database.is_empty() {
+        config.database(cfg.database.clone());
+    }
 
-    let tcp = tokio::net::TcpStream::connect((cfg.host.as_str(), cfg.port)).await.map_err(|e| e.to_string())?;
+    let tcp = tokio::net::TcpStream::connect((cfg.host.as_str(), cfg.port))
+        .await
+        .map_err(|e| e.to_string())?;
     tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-    let tls = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+    let tls = tiberius::Client::connect(config, tcp.compat_write())
+        .await
+        .map_err(|e| e.to_string())?;
     run_query(tls, query).await
 }
 
-async fn run_query(mut client: tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>, query: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+async fn run_query(
+    mut client: tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
+    query: &str,
+) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     let mut headers: Vec<String> = Vec::new();
     let mut data: Vec<Vec<String>> = Vec::new();
 
@@ -267,7 +364,11 @@ async fn run_query(mut client: tiberius::Client<tokio_util::compat::Compat<tokio
         let item = item_res.map_err(|e| e.to_string())?;
         match item {
             tiberius::QueryItem::Metadata(meta) => {
-                headers = meta.columns().iter().map(|c| c.name().to_string()).collect();
+                headers = meta
+                    .columns()
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect();
             }
             tiberius::QueryItem::Row(row) => {
                 use tiberius::ColumnData;

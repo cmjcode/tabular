@@ -1,43 +1,52 @@
-use sqlx::{MySqlPool};
-use sqlx::{SqlitePool, Row, Column};
 use log::{debug, error};
-
+use sqlx::MySqlPool;
+use sqlx::{Column, Row, SqlitePool};
 
 use crate::{connection, models, window_egui};
 
-
-
 // Helper function for final fallback when all type-specific conversions fail
-fn get_value_as_string_fallback(row: &sqlx::mysql::MySqlRow, column_name: &str, type_name: &str) -> String {
-              
-       // Simple fallback: try string conversion with both column name and index
-       // Try column index instead of name (more reliable)
-       let column_index = match row.columns().iter().position(|col| col.name() == column_name) {
-       Some(idx) => idx,
-       None => {
-              debug!("Column '{}' not found in row", column_name);
-              return format!("[COLUMN_NOT_FOUND:{}]", column_name);
-       }
-       };
-       
-       // Try with column index first
-       if let Ok(Some(val)) = row.try_get::<Option<String>, _>(column_index) {
-       return val;
-       }
-       if let Ok(val) = row.try_get::<String, _>(column_index) {
-       return val;
-       }
-       
-       // Try with column name as fallback
-       match row.try_get::<Option<String>, _>(column_name) {
-       Ok(Some(val)) => val,
-       Ok(None) => "NULL".to_string(),
-       Err(_) => format!("[CONVERSION_ERROR:{}]", type_name)
-       }
+fn get_value_as_string_fallback(
+    row: &sqlx::mysql::MySqlRow,
+    column_name: &str,
+    type_name: &str,
+) -> String {
+    // Simple fallback: try string conversion with both column name and index
+    // Try column index instead of name (more reliable)
+    let column_index = match row
+        .columns()
+        .iter()
+        .position(|col| col.name() == column_name)
+    {
+        Some(idx) => idx,
+        None => {
+            debug!("Column '{}' not found in row", column_name);
+            return format!("[COLUMN_NOT_FOUND:{}]", column_name);
+        }
+    };
+
+    // Try with column index first
+    if let Ok(Some(val)) = row.try_get::<Option<String>, _>(column_index) {
+        return val;
+    }
+    if let Ok(val) = row.try_get::<String, _>(column_index) {
+        return val;
+    }
+
+    // Try with column name as fallback
+    match row.try_get::<Option<String>, _>(column_name) {
+        Ok(Some(val)) => val,
+        Ok(None) => "NULL".to_string(),
+        Err(_) => format!("[CONVERSION_ERROR:{}]", type_name),
+    }
 }
 
 // New: index-first fallback to avoid ColumnNotFound issues
-fn get_value_as_string_fallback_idx(row: &sqlx::mysql::MySqlRow, idx: usize, column_name: &str, type_name: &str) -> String {
+fn get_value_as_string_fallback_idx(
+    row: &sqlx::mysql::MySqlRow,
+    idx: usize,
+    column_name: &str,
+    type_name: &str,
+) -> String {
     // Try String by index
     if let Ok(Some(val)) = row.try_get::<Option<String>, _>(idx) {
         return val;
@@ -53,24 +62,48 @@ fn get_value_as_string_fallback_idx(row: &sqlx::mysql::MySqlRow, idx: usize, col
         return bytes_to_string_or_marker(val);
     }
     // Try some generic numeric types before giving up
-    if let Ok(Some(val)) = row.try_get::<Option<i64>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<u64>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<i32>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<u32>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<f64>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(idx) { return val.to_rfc3339(); }
-    if let Ok(Some(val)) = row.try_get::<Option<rust_decimal::Decimal>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDate>, _>(idx) { return val.to_string(); }
-    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveTime>, _>(idx) { return val.to_string(); }
+    if let Ok(Some(val)) = row.try_get::<Option<i64>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<u64>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<i32>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<u32>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<f64>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(idx) {
+        return val.to_rfc3339();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<rust_decimal::Decimal>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDate>, _>(idx) {
+        return val.to_string();
+    }
+    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveTime>, _>(idx) {
+        return val.to_string();
+    }
     // Fall back to name-based fallback (may still fail, but gives a consistent marker)
     get_value_as_string_fallback(row, column_name, type_name)
 }
 
 // Heuristic: treat bytes as text if they are mostly printable
 fn looks_textual(bytes: &[u8]) -> bool {
-    if bytes.is_empty() { return true; }
+    if bytes.is_empty() {
+        return true;
+    }
     let mut printable = 0usize;
     for &b in bytes {
         if (0x20..=0x7E).contains(&b) || b == b'\n' || b == b'\r' || b == b'\t' {
@@ -83,8 +116,12 @@ fn looks_textual(bytes: &[u8]) -> bool {
 fn bytes_to_string_or_marker(bytes: Vec<u8>) -> String {
     // Trim trailing NULs often present in MySQL BINARY/VARBINARY padding
     let mut b = bytes;
-    while matches!(b.last(), Some(0)) { b.pop(); }
-    if b.is_empty() { return String::new(); }
+    while matches!(b.last(), Some(0)) {
+        b.pop();
+    }
+    if b.is_empty() {
+        return String::new();
+    }
 
     if looks_textual(&b) {
         String::from_utf8_lossy(&b).into_owned()
@@ -101,8 +138,10 @@ fn bytes_to_string_or_marker(bytes: Vec<u8>) -> String {
 }
 
 // Helper function to convert MySQL rows to Vec<Vec<String>> with proper type checking
-pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>) -> Vec<Vec<String>> {
-    use sqlx::{Row, Column, TypeInfo};
+pub(crate) fn convert_mysql_rows_to_table_data(
+    rows: Vec<sqlx::mysql::MySqlRow>,
+) -> Vec<Vec<String>> {
+    use sqlx::{Column, Row, TypeInfo};
 
     let mut table_data = Vec::new();
 
@@ -150,31 +189,39 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
                     Ok(None) => "NULL".to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
-                "MEDIUMINT UNSIGNED" | "INT UNSIGNED" | "INTEGER UNSIGNED" => match row.try_get::<Option<u32>, _>(idx) {
-                    Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
-                    Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
-                },
+                "MEDIUMINT UNSIGNED" | "INT UNSIGNED" | "INTEGER UNSIGNED" => {
+                    match row.try_get::<Option<u32>, _>(idx) {
+                        Ok(Some(val)) => val.to_string(),
+                        Ok(None) => "NULL".to_string(),
+                        Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
+                    }
+                }
                 "BIGINT UNSIGNED" => {
                     // Prefer u64 for BIGINT UNSIGNED
                     match row.try_get::<Option<u64>, _>(idx) {
                         Ok(Some(val)) => val.to_string(),
                         Ok(None) => "NULL".to_string(),
                         Err(er) => {
-                            debug!("BIGINT UNSIGNED conversion error for column '{}'", column_name);
+                            debug!(
+                                "BIGINT UNSIGNED conversion error for column '{}'",
+                                column_name
+                            );
                             error!("Error: {:?}", er);
                             // Try signed as a fallback (if fits) before string fallback
                             match row.try_get::<Option<i64>, _>(idx) {
                                 Ok(Some(val)) => val.to_string(),
                                 Ok(None) => "NULL".to_string(),
-                                Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
+                                Err(_) => {
+                                    get_value_as_string_fallback_idx(row, idx, column_name, &t)
+                                }
                             }
                         }
                     }
                 }
 
                 // Floating point types
-                ,"FLOAT" => match row.try_get::<Option<f32>, _>(idx) {
+                ,
+                "FLOAT" => match row.try_get::<Option<f32>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
                     Ok(None) => "NULL".to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
@@ -205,7 +252,9 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
                 }
 
                 // String types
-                ,"VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" | "VAR_STRING" | "STRING" => match row.try_get::<Option<String>, _>(idx) {
+                ,
+                "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM"
+                | "SET" | "VAR_STRING" | "STRING" => match row.try_get::<Option<String>, _>(idx) {
                     Ok(Some(val)) => val,
                     Ok(None) => "NULL".to_string(),
                     Err(_) => {
@@ -217,15 +266,17 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
                         } else {
                             get_value_as_string_fallback_idx(row, idx, column_name, &t)
                         }
-                    },
+                    }
                 },
 
                 // Binary types
-                "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => match row.try_get::<Option<Vec<u8>>, _>(idx) {
-                    Ok(Some(val)) => bytes_to_string_or_marker(val),
-                    Ok(None) => "NULL".to_string(),
-                    Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
-                },
+                "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
+                    match row.try_get::<Option<Vec<u8>>, _>(idx) {
+                        Ok(Some(val)) => bytes_to_string_or_marker(val),
+                        Ok(None) => "NULL".to_string(),
+                        Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
+                    }
+                }
 
                 // Bit type (format as integer or bit-string)
                 "BIT" => {
@@ -233,13 +284,17 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
                         use std::fmt::Write as _;
                         let mut s = String::with_capacity(bytes.len() * 8 + 2);
                         s.push_str("0b");
-                        for b in bytes { let _ = write!(&mut s, "{:08b}", b); }
+                        for b in bytes {
+                            let _ = write!(&mut s, "{:08b}", b);
+                        }
                         s
                     } else if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) {
                         use std::fmt::Write as _;
                         let mut s = String::with_capacity(bytes.len() * 8 + 2);
                         s.push_str("0b");
-                        for b in bytes { let _ = write!(&mut s, "{:08b}", b); }
+                        for b in bytes {
+                            let _ = write!(&mut s, "{:08b}", b);
+                        }
                         s
                     } else if let Ok(Some(val)) = row.try_get::<Option<u64>, _>(idx) {
                         format!("0b{:b}", val)
@@ -271,7 +326,9 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
                     // Try chrono::NaiveDateTime first
                     if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) {
                         val.to_string()
-                    } else if let Ok(Some(val)) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(idx) {
+                    } else if let Ok(Some(val)) =
+                        row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(idx)
+                    {
                         val.to_rfc3339()
                     } else if let Ok(Some(val)) = row.try_get::<Option<String>, _>(idx) {
                         val
@@ -284,7 +341,7 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
                     } else {
                         get_value_as_string_fallback_idx(row, idx, column_name, &t)
                     }
-                },
+                }
                 "YEAR" => match row.try_get::<Option<i16>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
                     Ok(None) => "NULL".to_string(),
@@ -342,31 +399,54 @@ pub(crate) fn convert_mysql_rows_to_table_data(rows: Vec<sqlx::mysql::MySqlRow>)
     table_data
 }
 
-
-
-pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache_pool: &SqlitePool) -> bool {
-
+pub(crate) async fn fetch_mysql_data(
+    connection_id: i64,
+    pool: &MySqlPool,
+    cache_pool: &SqlitePool,
+) -> bool {
     // Helper to decode a value in a row as String or bytes -> UTF8
     fn decode_cell(row: &sqlx::mysql::MySqlRow, idx: usize) -> Option<String> {
-        if let Ok(s) = row.try_get::<String, _>(idx) { return Some(s); }
-        if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) { return Some(s); }
-        if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) { return Some(String::from_utf8_lossy(&bytes).to_string()); }
-        if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) { return Some(String::from_utf8_lossy(&bytes).to_string()); }
+        if let Ok(s) = row.try_get::<String, _>(idx) {
+            return Some(s);
+        }
+        if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) {
+            return Some(s);
+        }
+        if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) {
+            return Some(String::from_utf8_lossy(&bytes).to_string());
+        }
+        if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) {
+            return Some(String::from_utf8_lossy(&bytes).to_string());
+        }
         None
     }
 
     // Fetch databases via INFORMATION_SCHEMA and skip system schemas (robust to VARBINARY)
     let db_rows_res = sqlx::query("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA")
-        .fetch_all(pool).await;
+        .fetch_all(pool)
+        .await;
 
-    let db_rows = match db_rows_res { Ok(r) => r, Err(e) => { debug!("MySQL fetch_mysql_data: failed to list schemata: {}", e); return false; } };
+    let db_rows = match db_rows_res {
+        Ok(r) => r,
+        Err(e) => {
+            debug!("MySQL fetch_mysql_data: failed to list schemata: {}", e);
+            return false;
+        }
+    };
 
     for row in db_rows.into_iter() {
-        let db_name = match decode_cell(&row, 0) { Some(v) => v, None => continue };
-        if ["information_schema", "performance_schema", "mysql", "sys"].contains(&db_name.as_str()) { continue; }
+        let db_name = match decode_cell(&row, 0) {
+            Some(v) => v,
+            None => continue,
+        };
+        if ["information_schema", "performance_schema", "mysql", "sys"].contains(&db_name.as_str())
+        {
+            continue;
+        }
 
         // Cache database
-        let _ = sqlx::query("INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)"
+        let _ = sqlx::query(
+            "INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)",
         )
         .bind(connection_id)
         .bind(&db_name)
@@ -381,10 +461,22 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
         .fetch_all(pool)
         .await;
 
-        let table_rows = match tables_res { Ok(r) => r, Err(e) => { debug!("MySQL fetch_mysql_data: failed to list tables in {}: {}", db_name, e); continue; } };
+        let table_rows = match tables_res {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(
+                    "MySQL fetch_mysql_data: failed to list tables in {}: {}",
+                    db_name, e
+                );
+                continue;
+            }
+        };
 
         for row in table_rows.into_iter() {
-            let table_name = match decode_cell(&row, 0) { Some(v) => v, None => continue };
+            let table_name = match decode_cell(&row, 0) {
+                Some(v) => v,
+                None => continue,
+            };
             // Cache table (include table_type column we previously omitted) => table_type = 'table'
             if let Err(e) = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)" )
                 .bind(connection_id)
@@ -423,9 +515,15 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
                         debug!("MySQL fetch_mysql_data: failed to cache column {}.{}.{}: {}", db_name, table_name, col_name, e);
                     } else { count += 1; }
                 }
-                debug!("MySQL fetch_mysql_data: cached {} columns for {}.{}", count, db_name, table_name);
+                debug!(
+                    "MySQL fetch_mysql_data: cached {} columns for {}.{}",
+                    count, db_name, table_name
+                );
             } else if let Err(e) = cols_res {
-                debug!("MySQL fetch_mysql_data: failed to list columns in {}.{}: {}", db_name, table_name, e);
+                debug!(
+                    "MySQL fetch_mysql_data: failed to list columns in {}.{}: {}",
+                    db_name, table_name, e
+                );
             }
         }
     }
@@ -433,7 +531,12 @@ pub(crate) async fn fetch_mysql_data(connection_id: i64, pool: &MySqlPool, cache
     true
 }
 
-pub(crate) fn fetch_tables_from_mysql_connection(tabular: &mut window_egui::Tabular, connection_id: i64, database_name: &str, table_type: &str) -> Option<Vec<String>> {
+pub(crate) fn fetch_tables_from_mysql_connection(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<String>> {
     // Build a temporary runtime (function is sync due to UI constraints)
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
@@ -481,65 +584,87 @@ pub(crate) fn fetch_tables_from_mysql_connection(tabular: &mut window_egui::Tabu
     })
 }
 
+pub(crate) fn load_mysql_structure(
+    connection_id: i64,
+    _connection: &models::structs::ConnectionConfig,
+    node: &mut models::structs::TreeNode,
+) {
+    debug!(
+        "Loading MySQL structure for connection ID: {}",
+        connection_id
+    );
 
-pub(crate) fn load_mysql_structure(connection_id: i64, _connection: &models::structs::ConnectionConfig, node: &mut models::structs::TreeNode) {
+    // Since we can't use block_on in an async context, we'll create a simple structure
+    // and populate it with cached data or show a loading message
 
-       debug!("Loading MySQL structure for connection ID: {}", connection_id);
-       
-       // Since we can't use block_on in an async context, we'll create a simple structure
-       // and populate it with cached data or show a loading message
-       
-       // Create basic structure immediately
-       let mut main_children = Vec::new();
-       
-       // 1. Databases folder
-       let mut databases_folder = models::structs::TreeNode::new("Databases".to_string(), models::enums::NodeType::DatabasesFolder);
-       databases_folder.connection_id = Some(connection_id);
-       databases_folder.is_loaded = false; // Will be loaded when expanded
-       
-       // 2. DBA Views folder
-       let mut dba_folder = models::structs::TreeNode::new("DBA Views".to_string(), models::enums::NodeType::DBAViewsFolder);
-       dba_folder.connection_id = Some(connection_id);
-       
-       let mut dba_children = Vec::new();
-       
-       // Users
-       let mut users_folder = models::structs::TreeNode::new("Users".to_string(), models::enums::NodeType::UsersFolder);
-       users_folder.connection_id = Some(connection_id);
-       users_folder.is_loaded = false;
-       dba_children.push(users_folder);
-       
-       // Privileges
-       let mut priv_folder = models::structs::TreeNode::new("Privileges".to_string(), models::enums::NodeType::PrivilegesFolder);
-       priv_folder.connection_id = Some(connection_id);
-       priv_folder.is_loaded = false;
-       dba_children.push(priv_folder);
-       
-       // Processes
-       let mut proc_folder = models::structs::TreeNode::new("Processes".to_string(), models::enums::NodeType::ProcessesFolder);
-       proc_folder.connection_id = Some(connection_id);
-       proc_folder.is_loaded = false;
-       dba_children.push(proc_folder);
-       
-       // Status
-       let mut status_folder = models::structs::TreeNode::new("Status".to_string(), models::enums::NodeType::StatusFolder);
-       status_folder.connection_id = Some(connection_id);
-       status_folder.is_loaded = false;
-       dba_children.push(status_folder);
+    // Create basic structure immediately
+    let mut main_children = Vec::new();
+
+    // 1. Databases folder
+    let mut databases_folder = models::structs::TreeNode::new(
+        "Databases".to_string(),
+        models::enums::NodeType::DatabasesFolder,
+    );
+    databases_folder.connection_id = Some(connection_id);
+    databases_folder.is_loaded = false; // Will be loaded when expanded
+
+    // 2. DBA Views folder
+    let mut dba_folder = models::structs::TreeNode::new(
+        "DBA Views".to_string(),
+        models::enums::NodeType::DBAViewsFolder,
+    );
+    dba_folder.connection_id = Some(connection_id);
+
+    let mut dba_children = Vec::new();
+
+    // Users
+    let mut users_folder =
+        models::structs::TreeNode::new("Users".to_string(), models::enums::NodeType::UsersFolder);
+    users_folder.connection_id = Some(connection_id);
+    users_folder.is_loaded = false;
+    dba_children.push(users_folder);
+
+    // Privileges
+    let mut priv_folder = models::structs::TreeNode::new(
+        "Privileges".to_string(),
+        models::enums::NodeType::PrivilegesFolder,
+    );
+    priv_folder.connection_id = Some(connection_id);
+    priv_folder.is_loaded = false;
+    dba_children.push(priv_folder);
+
+    // Processes
+    let mut proc_folder = models::structs::TreeNode::new(
+        "Processes".to_string(),
+        models::enums::NodeType::ProcessesFolder,
+    );
+    proc_folder.connection_id = Some(connection_id);
+    proc_folder.is_loaded = false;
+    dba_children.push(proc_folder);
+
+    // Status
+    let mut status_folder =
+        models::structs::TreeNode::new("Status".to_string(), models::enums::NodeType::StatusFolder);
+    status_folder.connection_id = Some(connection_id);
+    status_folder.is_loaded = false;
+    dba_children.push(status_folder);
 
     // User Active
-    let mut metrics_user_active_folder = models::structs::TreeNode::new("User Active".to_string(), models::enums::NodeType::MetricsUserActiveFolder);
+    let mut metrics_user_active_folder = models::structs::TreeNode::new(
+        "User Active".to_string(),
+        models::enums::NodeType::MetricsUserActiveFolder,
+    );
     metrics_user_active_folder.connection_id = Some(connection_id);
     metrics_user_active_folder.is_loaded = false;
     dba_children.push(metrics_user_active_folder);
-       
-       dba_folder.children = dba_children;
-       
-       main_children.push(databases_folder);
-       main_children.push(dba_folder);
-       
-       node.children = main_children;
-       
-       // Trigger async loading in background (we'll need to implement this differently)
-       // For now, we'll rely on the expansion mechanism to load databases when needed
+
+    dba_folder.children = dba_children;
+
+    main_children.push(databases_folder);
+    main_children.push(dba_folder);
+
+    node.children = main_children;
+
+    // Trigger async loading in background (we'll need to implement this differently)
+    // For now, we'll rely on the expansion mechanism to load databases when needed
 }

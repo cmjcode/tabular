@@ -1,6 +1,3 @@
-fn main() -> Result<(), eframe::Error> { tabular::run() }
-
-
-
-
-
+fn main() -> Result<(), eframe::Error> {
+    tabular::run()
+}

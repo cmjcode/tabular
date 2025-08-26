@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use redis::aio::ConnectionManager;
 use mongodb::Client as MongoClient;
+use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use sqlx::{MySqlPool, PgPool, SqlitePool};
 
@@ -34,14 +34,14 @@ pub enum NodeType {
     UserFunction,
     Trigger,
     Event,
-    MySQLFolder,       // Folder untuk koneksi MySQL
+    MySQLFolder,      // Folder untuk koneksi MySQL
     MsSQLFolder,      // Folder untuk koneksi MsSQL
     MongoDBFolder,    // Folder untuk koneksi MongoDB
-    PostgreSQLFolder,  // Folder untuk koneksi PostgreSQL
-    SQLiteFolder,      // Folder untuk koneksi SQLite
-    RedisFolder,       // Folder untuk koneksi Redis
-    CustomFolder,      // Folder custom yang bisa dinamai user
-    QueryFolder,       // Folder untuk mengelompokkan query files
+    PostgreSQLFolder, // Folder untuk koneksi PostgreSQL
+    SQLiteFolder,     // Folder untuk koneksi SQLite
+    RedisFolder,      // Folder untuk koneksi Redis
+    CustomFolder,     // Folder custom yang bisa dinamai user
+    QueryFolder,      // Folder untuk mengelompokkan query files
     // New table subfolders and items
     ColumnsFolder,
     IndexesFolder,
@@ -57,12 +57,14 @@ pub enum BackgroundTask {
 
 #[derive(Debug, Clone)]
 pub enum BackgroundResult {
-    RefreshComplete { connection_id: i64, success: bool },
-    UpdateCheckComplete { 
-        result: Result<crate::self_update::UpdateInfo, String> 
+    RefreshComplete {
+        connection_id: i64,
+        success: bool,
+    },
+    UpdateCheckComplete {
+        result: Result<crate::self_update::UpdateInfo, String>,
     },
 }
-
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
 pub enum DatabaseType {
@@ -73,7 +75,6 @@ pub enum DatabaseType {
     MsSQL,
     MongoDB,
 }
-
 
 // Enum untuk berbagai jenis database pool - sqlx pools are already thread-safe
 #[derive(Clone)]
