@@ -125,6 +125,8 @@ pub struct Tabular {
     pub last_clicked_column: Option<usize>,
     // Track if table was recently clicked for focus management
     pub table_recently_clicked: bool,
+    // Scroll to selected cell flag
+    pub scroll_to_selected_cell: bool,
     // Column width management for resizable columns
     pub column_widths: Vec<f32>, // Store individual column widths
     pub min_column_width: f32,
@@ -463,6 +465,7 @@ impl Tabular {
             last_clicked_row: None,
             last_clicked_column: None,
             table_recently_clicked: false,
+            scroll_to_selected_cell: false,
             // Column width management
             column_widths: Vec::new(),
             min_column_width: 50.0,
@@ -6792,10 +6795,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         .max_rect(scroll_rect)
                         .layout(egui::Layout::top_down(egui::Align::LEFT)),
                 );
-                egui::ScrollArea::both()
+        let _scroll_area_response = egui::ScrollArea::both()
                     .id_salt("table_data_scroll")
                     .auto_shrink([false, false])
                     .show(&mut scroll_child, |ui| {
+            // Capture target rect of the selected cell during layout
+            let mut target_cell_rect: Option<egui::Rect> = None;
+                        
                         let grid_response = egui::Grid::new("table_data_grid")
                             .striped(true)
                             .spacing([0.0, 0.0])
@@ -7067,6 +7073,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], stroke);
                                                     ui.painter().line_segment([rect.left_bottom(), rect.left_top()], stroke);
                                                 }
+                                                // If this is the selected cell and a scroll has been requested,
+                                                // remember the exact rect so we can scroll to it after the grid is laid out.
+                                                if is_selected_cell && self.scroll_to_selected_cell {
+                                                    target_cell_rect = Some(rect);
+                                                }
                                                 let max_chars = ((column_width / 8.0).floor() as usize).max(10);
                                                 let display_text = if cell.chars().count() > max_chars {
                                                     format!("{}...", cell.chars().take(max_chars.saturating_sub(3)).collect::<String>())
@@ -7169,6 +7180,20 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                 }
                             });
                         });
+
+                        // After laying out the grid, perform the scroll to the selected cell (if requested)
+                        if self.scroll_to_selected_cell {
+                            if let Some(rect) = target_cell_rect {
+                                log::debug!(
+                                    "🔎 scroll_to_rect -> min=({:.1},{:.1}) max=({:.1},{:.1})",
+                                    rect.min.x, rect.min.y, rect.max.x, rect.max.y
+                                );
+                                // Center the cell in view for both axes
+                                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                            } else {
+                                log::debug!("⚠️ scroll_to_selected_cell set but no target rect found this frame");
+                            }
+                        }
                     });
                 // Apply deferred selection changes after UI borrow ends
                 if select_all_rows_request {
@@ -7192,9 +7217,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     self.selected_cell = Some((r, c));
                     self.table_recently_clicked = true; // Mark that table was clicked
                 }
+                
                 for (column_index, ascending) in sort_requests {
                     self.sort_table_data(column_index, ascending);
                 }
+                
+                // Reset scroll request flag after attempting scroll inside the ScrollArea
+                if self.scroll_to_selected_cell { self.scroll_to_selected_cell = false; }
                 // If there are no rows, display an explicit message under the header grid
                 // if self.current_table_data.is_empty() {
                 //     ui.add_space(4.0);
@@ -9188,16 +9217,22 @@ impl App for Tabular {
                         {
                             self.selected_cell = Some((row, col + 1));
                             cell_changed = true;
+                            self.scroll_to_selected_cell = true;
+                            log::debug!("➡️ Arrow Right: Moving to ({}, {})", row, col + 1);
                         }
                     } else if i.key_pressed(egui::Key::ArrowLeft) && col > 0 {
                         self.selected_cell = Some((row, col - 1));
                         cell_changed = true;
+                        self.scroll_to_selected_cell = true;
+                        log::debug!("⬅️ Arrow Left: Moving to ({}, {})", row, col - 1);
                     } else if i.key_pressed(egui::Key::ArrowDown) && row + 1 < max_rows {
                         // Check if the target row has enough columns
                         if let Some(target_row) = self.current_table_data.get(row + 1) {
                             let target_col = col.min(target_row.len().saturating_sub(1));
                             self.selected_cell = Some((row + 1, target_col));
                             cell_changed = true;
+                            self.scroll_to_selected_cell = true;
+                            log::debug!("⬇️ Arrow Down: Moving to ({}, {})", row + 1, target_col);
                         }
                     } else if i.key_pressed(egui::Key::ArrowUp) && row > 0 {
                         // Check if the target row has enough columns
@@ -9205,6 +9240,8 @@ impl App for Tabular {
                             let target_col = col.min(target_row.len().saturating_sub(1));
                             self.selected_cell = Some((row - 1, target_col));
                             cell_changed = true;
+                            self.scroll_to_selected_cell = true;
+                            log::debug!("⬆️ Arrow Up: Moving to ({}, {})", row - 1, target_col);
                         }
                     }
 

@@ -364,6 +364,7 @@ impl ShallowForCache for Tabular {
             last_clicked_row: None,
             last_clicked_column: None,
             table_recently_clicked: false,
+            scroll_to_selected_cell: false,
             column_widths: Vec::new(),
             min_column_width: 0.0,
             show_about_dialog: false,
