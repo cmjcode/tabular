@@ -33,14 +33,13 @@ fn tokenize(s: &str) -> Vec<String> {
 
 /// Return active (connection_id, database_name) if available.
 fn active_connection_and_db(app: &Tabular) -> Option<(i64, String)> {
-    if let Some(tab) = app.query_tabs.get(app.active_tab_index) {
-        if let Some(cid) = tab.connection_id {
+    if let Some(tab) = app.query_tabs.get(app.active_tab_index)
+        && let Some(cid) = tab.connection_id {
             if let Some(db) = &tab.database_name { return Some((cid, db.clone())); }
             // fallback to connection default database
             if let Some(conn) = app.connections.iter().find(|c| c.id == Some(cid)) { return Some((cid, conn.database.clone())); }
             return Some((cid, String::new()));
         }
-    }
     None
 }
 
@@ -84,7 +83,7 @@ fn extract_tables(full_text: &str) -> Vec<String> {
                     let cleaned = first.trim_matches('`').trim_matches('"');
                     if !cleaned.is_empty() {
                         // Ambil nama terakhir jika schema.table
-                        let final_name = cleaned.split('.').last().unwrap_or(cleaned).to_string();
+                        let final_name = cleaned.split('.').next_back().unwrap_or(cleaned).to_string();
                         tables.push(final_name);
                     }
                 }

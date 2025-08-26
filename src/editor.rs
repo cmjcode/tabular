@@ -36,8 +36,15 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
         let new_index = tabular.query_tabs.len() - 1;
         tabular.active_tab_index = new_index;
         
-        // Update editor with new tab content
-        tabular.editor_text = content;
+    // Update editor with new tab content
+    tabular.editor_text = content;
+    // Clear global result state so a fresh tab starts clean (no lingering table below)
+    tabular.current_table_headers.clear();
+    tabular.current_table_data.clear();
+    tabular.all_table_data.clear();
+    tabular.current_table_name.clear();
+    tabular.total_rows = 0;
+    tabular.is_table_browse_mode = false;
         
         tab_id
     }
@@ -74,8 +81,15 @@ use crate::{connection, directory, editor, models, sidebar_history, sidebar_quer
         let new_index = tabular.query_tabs.len() - 1;
         tabular.active_tab_index = new_index;
         
-        // Update editor with new tab content
-        tabular.editor_text = content;
+    // Update editor with new tab content
+    tabular.editor_text = content;
+    // Clear global result state for a clean start on this new tab
+    tabular.current_table_headers.clear();
+    tabular.current_table_data.clear();
+    tabular.all_table_data.clear();
+    tabular.current_table_name.clear();
+    tabular.total_rows = 0;
+    tabular.is_table_browse_mode = false;
         
         tab_id
     }
@@ -265,16 +279,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
 
         // Main code editor using egui_code_editor
-    // Compute desired rows to fill height: estimate based on font size and available region
-    // Fallback to configured desired_rows when estimate not available.
-    let line_height = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
-    // Approximate available height in this scroll area; add a small buffer
-    let avail_h = ui.available_height();
-    let estimated_rows = ((avail_h / line_height).floor() as i32 - 2).max(8) as usize;
-    tabular.advanced_editor.desired_rows = estimated_rows;
-    let mut editor = CodeEditor::default()
+        // Respect precomputed desired_rows from the parent layout. Inside a ScrollArea,
+        // ui.available_height can be effectively unbounded; recomputing here would cause the editor
+        // to over-expand and create visual gaps. Fallback to a sane default if unset.
+        let rows = if tabular.advanced_editor.desired_rows > 0 {
+            tabular.advanced_editor.desired_rows
+        } else {
+            25 // default rows when parent hasn't specified
+        };
+        let mut editor = CodeEditor::default()
             .id_source("sql_editor")
-            .with_rows(tabular.advanced_editor.desired_rows)
+            .with_rows(rows)
             .with_fontsize(tabular.advanced_editor.font_size)
             .with_theme(tabular.advanced_editor.theme)
             .with_syntax(egui_code_editor::Syntax::sql())
@@ -288,9 +303,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let pre_selection_end = tabular.selection_end;
     let pre_selected_text = if pre_selection_start < pre_selection_end && pre_selection_end <= tabular.editor_text.len() { Some(tabular.editor_text[pre_selection_start..pre_selection_end].to_string()) } else { None };
     // (flag removed) multiline indent handled pre-render
-    if tab_pressed_pre {
-        if let Some(sel_text) = &pre_selected_text {
-            if sel_text.contains('\n') { // multi-line selection
+    if tab_pressed_pre
+        && let Some(sel_text) = &pre_selected_text
+            && sel_text.contains('\n') { // multi-line selection
                 // Compute line_start (start of first line)
                 let mut line_start = pre_selection_start;
                 while line_start > 0 && tabular.editor_text.as_bytes()[line_start-1] != b'\n' { line_start -= 1; }
@@ -333,8 +348,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 // Mark changed for autocomplete logic later
                 if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) { tab.content = tabular.editor_text.clone(); tab.is_modified = true; }
             }
-        }
-    }
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let mut raw_tab = false;
         // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
@@ -368,8 +381,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
         let accept_via_enter_pre = enter_pressed_pre && tabular.show_autocomplete;
         // If accepting, prepare to inject remaining characters as text events so caret advances naturally
-        if accept_via_tab_pre || accept_via_enter_pre {
-            if let Some(sugg) = tabular.autocomplete_suggestions.get(tabular.selected_autocomplete_index).cloned() {
+        if (accept_via_tab_pre || accept_via_enter_pre)
+            && let Some(sugg) = tabular.autocomplete_suggestions.get(tabular.selected_autocomplete_index).cloned() {
                 // Remove the Tab key event itself so CodeEditor won't insert a tab char
                 ui.ctx().input_mut(|ri| {
                     let before = ri.events.len();
@@ -397,7 +410,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 tabular.autocomplete_suggestions.clear();
                 log::debug!("Autocomplete accepted via {} by injecting remainder (suggestion '{}')", if accept_via_tab_pre {"Tab"} else {"Enter"}, sugg);
             }
-        }
     // Add small horizontal padding so the editor doesn't get clipped on the right edge
     // let response = egui::Frame::default()
     //     // .inner_margin(egui::Margin::rightf(2.0.into()))
@@ -635,12 +647,11 @@ pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
 pub(crate) fn find_next(tabular: &mut window_egui::Tabular) {
         // This is a simplified find implementation
         // In a real implementation, you'd want to track cursor position and highlight matches
-        if !tabular.advanced_editor.find_text.is_empty() {
-            if let Some(_pos) = tabular.editor_text.find(&tabular.advanced_editor.find_text) {
+        if !tabular.advanced_editor.find_text.is_empty()
+            && let Some(_pos) = tabular.editor_text.find(&tabular.advanced_editor.find_text) {
                 // In a full implementation, you would scroll to and highlight the match
                 debug!("Found match for: {}", tabular.advanced_editor.find_text);
             }
-        }
     }
 
 pub(crate) fn open_command_palette(tabular: &mut window_egui::Tabular) {

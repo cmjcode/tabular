@@ -234,8 +234,8 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                      ui.label("Connection URL:");
                      let mut url_text = full_url.clone();
                      let resp = ui.text_edit_singleline(&mut url_text);
-                     if resp.changed() {
-                         if let Some(parsed) = parse_connection_url(&url_text) {
+                     if resp.changed()
+                         && let Some(parsed) = parse_connection_url(&url_text) {
                              connection_data.connection_type = parsed.db_type;
                              connection_data.host = parsed.host;
                              connection_data.port = parsed.port;
@@ -243,7 +243,6 @@ pub(crate) fn render_connection_dialog(tabular: &mut window_egui::Tabular, ctx: 
                              connection_data.password = parsed.password;
                              connection_data.database = parsed.database;
                          }
-                     }
                      ui.end_row();
                      });
 

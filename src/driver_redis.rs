@@ -33,8 +33,8 @@ pub(crate) async fn fetch_redis_data(connection_id: i64, redis_manager: &Connect
               // Get keyspace info to identify which databases actually have keys
               if let Ok(keyspace_result) = redis::cmd("INFO").arg("keyspace").query_async::<_, String>(&mut conn).await {
               for line in keyspace_result.lines() {
-                     if line.starts_with("db") {
-                     if let Some(db_part) = line.split(':').next() {
+                     if line.starts_with("db")
+                     && let Some(db_part) = line.split(':').next() {
                             // Mark this database as having keys by adding a special marker
                             let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
                                    .bind(connection_id)
@@ -43,7 +43,6 @@ pub(crate) async fn fetch_redis_data(connection_id: i64, redis_manager: &Connect
                                    .bind("redis_marker")
                                    .execute(cache_pool)
                                    .await;
-                     }
                      }
               }
               }

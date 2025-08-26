@@ -219,11 +219,10 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                                    );
                             }
 
-                            if response.clicked() {
-                                   if let Some(connection_id) = connection.id {
+                            if response.clicked()
+                                   && let Some(connection_id) = connection.id {
                                    selected_connection = Some(connection_id);
                                    }
-                            }
                          ui.add_space(7.0);
 
               }
@@ -487,8 +486,8 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                       if trimmed.to_uppercase().contains("FROM") {
                                                                                              // Extract table name for DESCRIBE
                                                                                              let words: Vec<&str> = trimmed.split_whitespace().collect();
-                                                                                             if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM") {
-                                                                                                    if let Some(table_name) = words.get(from_idx + 1) {
+                                                                                             if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
+                                                                                                    && let Some(table_name) = words.get(from_idx + 1) {
                                                                                                            let describe_query = format!("DESCRIBE {}", table_name);
                                                                                                            match sqlx::query(&describe_query).fetch_all(&mut conn).await {
                                                                                                                   Ok(desc_rows) => {
@@ -523,7 +522,6 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                                                   }
                                                                                                            }
                                                                                                     }
-                                                                                             }
                                                                                       } else {
                                                                                              // Non-table query, just return empty result
                                                                                              final_headers = Vec::new();
@@ -601,8 +599,8 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                if statement.to_uppercase().contains("FROM") {
                                                                                       // Extract table name for information_schema query
                                                                                       let words: Vec<&str> = statement.split_whitespace().collect();
-                                                                                      if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM") {
-                                                                                             if let Some(table_name) = words.get(from_idx + 1) {
+                                                                                      if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
+                                                                                             && let Some(table_name) = words.get(from_idx + 1) {
                                                                                                     let clean_table = table_name.trim_matches('"').trim_matches('`');
                                                                                                     let info_query = format!(
                                                                                                            "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position",
@@ -634,7 +632,6 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                                            }
                                                                                                     }
                                                                                              }
-                                                                                      }
                                                                                } else {
                                                                                       // Non-table query, just return empty result
                                                                                       final_headers = Vec::new();
@@ -684,8 +681,8 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                if statement.to_uppercase().contains("FROM") {
                                                                                       // Extract table name for PRAGMA table_info
                                                                                       let words: Vec<&str> = statement.split_whitespace().collect();
-                                                                                      if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM") {
-                                                                                             if let Some(table_name) = words.get(from_idx + 1) {
+                                                                                      if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
+                                                                                             && let Some(table_name) = words.get(from_idx + 1) {
                                                                                                     let clean_table = table_name.trim_matches('"').trim_matches('`').trim_matches('[').trim_matches(']');
                                                                                                     let pragma_query = format!("PRAGMA table_info({})", clean_table);
                                                                                                     match sqlx::query(&pragma_query).fetch_all(sqlite_pool.as_ref()).await {
@@ -716,7 +713,6 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                                            }
                                                                                                     }
                                                                                              }
-                                                                                      }
                                                                                } else {
                                                                                       // Non-table query, just return empty result
                                                                                       final_headers = Vec::new();
@@ -794,14 +790,11 @@ pub(crate) fn execute_table_query_sync(tabular: &mut Tabular, connection_id: i64
                                                                                table_data.push(vec!["Info".to_string(), format!("No keys found matching pattern: {}", match_pattern)]);
                                                                                table_data.push(vec!["Cursor".to_string(), next_cursor.clone()]);
                                                                                table_data.push(vec!["Suggestion".to_string(), "Try different pattern or use 'SCAN 0 COUNT 100' to see all keys".to_string()]);
-                                                                               if match_pattern != "*" {
-                                                                                      if let Ok((_, sample_keys)) = redis::cmd("SCAN").arg("0").arg("COUNT").arg("10").query_async::<_, (String, Vec<String>)>(&mut connection).await {
-                                                                                             if !sample_keys.is_empty() {
+                                                                               if match_pattern != "*" && let Ok((_, sample_keys)) = redis::cmd("SCAN").arg("0").arg("COUNT").arg("10").query_async::<_, (String, Vec<String>)>(&mut connection).await
+                                                                                             && !sample_keys.is_empty() {
                                                                                                     table_data.push(vec!["Sample Keys Found".to_string(), "".to_string()]);
                                                                                                     for (i, key) in sample_keys.iter().take(5).enumerate() { table_data.push(vec![format!("Sample {}", i + 1), key.clone()]); }
                                                                                              }
-                                                                                      }
-                                                                               }
                                                                         } else {
                                                                                table_data.push(vec!["CURSOR".to_string(), next_cursor]);
                                                                                for key in keys { table_data.push(vec!["KEY".to_string(), key]); }

@@ -39,8 +39,8 @@ use crate::{models, window_egui};
     }
 
  pub(crate) fn save_query_to_history(tabular: &mut window_egui::Tabular, query: &str, connection_id: i64) {
-        if let Some(pool) = &tabular.db_pool {
-            if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(connection_id)) {
+        if let Some(pool) = &tabular.db_pool
+            && let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(connection_id)) {
                 let connection_name = connection.name.clone();
 
                 
@@ -68,7 +68,6 @@ use crate::{models, window_egui};
                 // Reload history to update UI
                 load_query_history(tabular);
             }
-        }
     }
 
  pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {

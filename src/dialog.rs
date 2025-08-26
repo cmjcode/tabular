@@ -383,8 +383,8 @@ crate::models::enums::DatabaseType::MongoDB => todo!(),
         if should_close { open_flag = false; }
         tabular.show_index_dialog = open_flag;
         // If user requested opening a tab, do it now (outside of UI borrow)
-        if let Some((title, sql)) = open_tab_request {
-            if let Some(state) = &tabular.index_dialog {
+        if let Some((title, sql)) = open_tab_request
+            && let Some(state) = &tabular.index_dialog {
                 editor::create_new_tab_with_connection_and_database(
                     tabular,
                     title,
@@ -393,7 +393,6 @@ crate::models::enums::DatabaseType::MongoDB => todo!(),
                     state.database_name.clone(),
                 );
             }
-        }
 }
 
 

@@ -290,10 +290,7 @@ pub(crate) fn get_columns_from_cache(tabular: &mut window_egui::Tabular, connect
               .await
        });
        
-       match result {
-              Ok(rows) => Some(rows),
-              Err(_) => None,
-       }
+       result.ok()
        } else {
        None
        }

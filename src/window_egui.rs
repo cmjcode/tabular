@@ -1040,11 +1040,10 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         // Set database context for current tab and auto-execute the query and display results in bottom
                         self.current_connection_id = Some(connection_id);
                         // Ensure the newly created tab stores selected database (important for MsSQL)
-                        if let Some(dbn) = &database_name { 
-                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) { 
+                        if let Some(dbn) = &database_name 
+                            && let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) { 
                                 active_tab.database_name = Some(dbn.clone()); 
-                            } 
-                        }
+                            }
                         
                         // Set early so infer_current_table_name() bekerja saat Structure view aktif
                         self.current_table_name = format!("Table: {} (Database: {})", table_name, database_name.as_deref().unwrap_or("Unknown"));
@@ -1166,8 +1165,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
 
         // Handle create index requests - open Create Index dialog
         for (connection_id, database_name, table_name) in create_index_requests {
-            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)).cloned() {
-                if let Some(tn) = table_name.clone() {
+            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)).cloned()
+                && let Some(tn) = table_name.clone() {
                     self.index_dialog = Some(models::structs::IndexDialogState {
                         mode: models::structs::IndexDialogMode::Create,
                         connection_id,
@@ -1182,7 +1181,6 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     });
                     self.show_index_dialog = true;
                 }
-            }
         }
         
         // Handle query file open requests
@@ -1367,8 +1365,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     node.is_expanded = !node.is_expanded;
                     
                     // If this is a connection node and not loaded, request expansion
-                    if node.node_type == models::enums::NodeType::Connection && !node.is_loaded && node.is_expanded {
-                        if let Some(conn_id) = node.connection_id {
+                    if node.node_type == models::enums::NodeType::Connection && !node.is_loaded && node.is_expanded
+                        && let Some(conn_id) = node.connection_id {
                             expansion_request = Some(models::structs::ExpansionRequest {
                                 node_type: models::enums::NodeType::Connection,
                                 connection_id: conn_id,
@@ -1377,19 +1375,17 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             // Also set as active connection when expanding
                             connection_click_request = Some(conn_id);
                         }
-                    }
                     
                     // If this is a table or view node and not loaded, request column expansion
                     // In search mode, always allow expansion even if already loaded
                     if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && 
                        node.is_expanded && 
-                       ((!node.is_loaded) || is_search_mode) {
-                        if let Some(conn_id) = node.connection_id {
+                       ((!node.is_loaded) || is_search_mode)
+                        && let Some(conn_id) = node.connection_id {
                             // Use stored raw table_name if present; otherwise sanitize display name (strip emojis / annotations)
                             let raw_name = node.table_name.clone().unwrap_or_else(|| Self::sanitize_display_table_name(&node.name));
                             table_expansion = Some((node_index, conn_id, raw_name));
                         }
-                    }
                     
                     // If this is a folder node and not loaded, request folder content expansion
                     if (node.node_type == models::enums::NodeType::DatabasesFolder ||
@@ -1402,26 +1398,24 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         node.node_type == models::enums::NodeType::ColumnsFolder ||
                         node.node_type == models::enums::NodeType::IndexesFolder ||
                         node.node_type == models::enums::NodeType::PrimaryKeysFolder) && 
-                       !node.is_loaded && node.is_expanded {
-                        if let Some(conn_id) = node.connection_id {
+                       !node.is_loaded && node.is_expanded
+                        && let Some(conn_id) = node.connection_id {
                             expansion_request = Some(models::structs::ExpansionRequest {
                                 node_type: node.node_type.clone(),
                                 connection_id: conn_id,
                                 database_name: node.database_name.clone(),
                             });
                         }
-                    }
                     
                     // If this is a Database node and not loaded, request database expansion (for Redis keys)
-                    if node.node_type == models::enums::NodeType::Database && !node.is_loaded && node.is_expanded {
-                        if let Some(conn_id) = node.connection_id {
+                    if node.node_type == models::enums::NodeType::Database && !node.is_loaded && node.is_expanded
+                        && let Some(conn_id) = node.connection_id {
                             expansion_request = Some(models::structs::ExpansionRequest {
                                 node_type: models::enums::NodeType::Database,
                                 connection_id: conn_id,
                                 database_name: node.database_name.clone(),
                             });
                         }
-                    }
                 }
                 
                 let icon = match node.node_type {
@@ -1520,8 +1514,8 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         node.is_expanded = !node.is_expanded;
 
                         // Mirror triangle click behaviors for lazy-loading
-                        if node.node_type == models::enums::NodeType::Connection && !node.is_loaded && node.is_expanded {
-                            if let Some(conn_id) = node.connection_id {
+                        if node.node_type == models::enums::NodeType::Connection && !node.is_loaded && node.is_expanded
+                            && let Some(conn_id) = node.connection_id {
                                 expansion_request = Some(models::structs::ExpansionRequest {
                                     node_type: models::enums::NodeType::Connection,
                                     connection_id: conn_id,
@@ -1530,7 +1524,6 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                                 // Also set as active connection when expanding
                                 connection_click_request = Some(conn_id);
                             }
-                        }
 
                         if (node.node_type == models::enums::NodeType::DatabasesFolder
                             || node.node_type == models::enums::NodeType::TablesFolder
@@ -1543,44 +1536,39 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                             || node.node_type == models::enums::NodeType::IndexesFolder
                             || node.node_type == models::enums::NodeType::PrimaryKeysFolder)
                             && !node.is_loaded && node.is_expanded
-                        {
-                            if let Some(conn_id) = node.connection_id {
+                            && let Some(conn_id) = node.connection_id {
                                 expansion_request = Some(models::structs::ExpansionRequest {
                                     node_type: node.node_type.clone(),
                                     connection_id: conn_id,
                                     database_name: node.database_name.clone(),
                                 });
                             }
-                        }
 
                         // Database node expansion (e.g., Redis keys)
-                        if node.node_type == models::enums::NodeType::Database && !node.is_loaded && node.is_expanded {
-                            if let Some(conn_id) = node.connection_id {
+                        if node.node_type == models::enums::NodeType::Database && !node.is_loaded && node.is_expanded
+                            && let Some(conn_id) = node.connection_id {
                                 expansion_request = Some(models::structs::ExpansionRequest {
                                     node_type: models::enums::NodeType::Database,
                                     connection_id: conn_id,
                                     database_name: node.database_name.clone(),
                                 });
                             }
-                        }
                     }
                 }
 
                 // Handle clicks on connection labels to set active connection
-                if node.node_type == models::enums::NodeType::Connection && response.clicked() {
-                    if let Some(conn_id) = node.connection_id {
+                if node.node_type == models::enums::NodeType::Connection && response.clicked()
+                    && let Some(conn_id) = node.connection_id {
                         connection_click_request = Some(conn_id);
                     }
-                }
                 
                 // Handle clicks on table/view labels to load data - open in new tab
-                if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && response.clicked() {
-                    if let Some(conn_id) = node.connection_id {
+                if (node.node_type == models::enums::NodeType::Table || node.node_type == models::enums::NodeType::View) && response.clicked()
+                    && let Some(conn_id) = node.connection_id {
                         // Use table_name field if available (for search results), otherwise use node.name
                         let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
                         table_click_request = Some((conn_id, actual_table_name));
                     }
-                }
 
                 // Index items: no left-click action; use context menu for Alter Index
                 
@@ -1783,7 +1771,7 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                     for (child_index, child) in node.children.iter_mut().enumerate() {
                         let (child_expansion_request, child_table_expansion, child_context, child_table_click, _child_connection_click, _child_query_file, _child_folder_removal, _child_parent_creation, _child_folder_removal_mapping, child_dba_click, child_index_click, child_create_index_request) = Self::render_tree_node_with_table_expansion(ui, child, editor_text, child_index, refreshing_connections, is_search_mode);
                         if let Some(child_expansion) = child_expansion_request { expansion_request = Some(child_expansion); }
-                        if table_expansion.is_none() { if let Some((child_index, child_conn_id, table_name)) = child_table_expansion { if let Some(conn_id) = node.connection_id { table_expansion = Some((child_index, conn_id, table_name)); } else { table_expansion = Some((child_index, child_conn_id, table_name)); } } }
+                        if table_expansion.is_none() && let Some((child_index, child_conn_id, table_name)) = child_table_expansion { if let Some(conn_id) = node.connection_id { table_expansion = Some((child_index, conn_id, table_name)); } else { table_expansion = Some((child_index, child_conn_id, table_name)); } }
                         if let Some((conn_id, table_name)) = child_table_click { table_click_request = Some((conn_id, table_name)); }
                         if let Some(v) = child_dba_click { dba_click_request = Some(v); }
                         if let Some(v) = child_index_click { index_click_request = Some(v); }
@@ -1802,15 +1790,14 @@ fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
                         
                         // Handle child table expansions with the parent connection ID
                         // Only set if we don't already have a table expansion from this node
-                        if table_expansion.is_none() {
-                            if let Some((child_index, child_conn_id, table_name)) = child_table_expansion {
+                        if table_expansion.is_none()
+                            && let Some((child_index, child_conn_id, table_name)) = child_table_expansion {
                                 if let Some(conn_id) = node.connection_id {
                                     table_expansion = Some((child_index, conn_id, table_name));
                                 } else {
                                     table_expansion = Some((child_index, child_conn_id, table_name));
                                 }
                             }
-                        }
                         
                         // Handle child table clicks - propagate to parent
                         if let Some((conn_id, table_name)) = child_table_click {
@@ -2288,11 +2275,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
             
             // Recursively search in children
-            if !node.children.is_empty() {
-                if let Some(found) = Self::find_connection_node_recursive(&mut node.children, connection_id) {
+            if !node.children.is_empty()
+                && let Some(found) = Self::find_connection_node_recursive(&mut node.children, connection_id) {
                     return Some(found);
                 }
-            }
         }
         None
     }
@@ -2744,19 +2730,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
     fn load_databases_for_folder(&mut self, connection_id: i64, databases_folder: &mut models::structs::TreeNode) {
         // Check connection type to handle Redis differently
-        if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
-            if connection.connection_type == models::enums::DatabaseType::Redis {
+        if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id))
+            && connection.connection_type == models::enums::DatabaseType::Redis {
                 self.load_redis_databases_for_folder(connection_id, databases_folder);
                 return;
             }
-        }
         
         // Clear any loading placeholders
         databases_folder.children.clear();
         
         // First check cache
-        if let Some(cached_databases) = cache_data::get_databases_from_cache(self, connection_id) {
-            if !cached_databases.is_empty() {
+        if let Some(cached_databases) = cache_data::get_databases_from_cache(self, connection_id)
+            && !cached_databases.is_empty() {
                 
                 for db_name in cached_databases {
                     let mut db_node = models::structs::TreeNode::new(db_name.clone(), models::enums::NodeType::Database);
@@ -2795,7 +2780,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 databases_folder.is_loaded = true;
                 return;
             }
-        }
                 
         // Try to fetch real databases from the connection
         if let Some(real_databases) = connection::fetch_databases_from_connection(self, connection_id) {
@@ -3129,13 +3113,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         const CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(300); // 5 minutes cache
         
         // Check if we have cached data and it's still valid
-        if let Some(cache_time) = self.database_cache_time.get(&connection_id) {
-            if cache_time.elapsed() < CACHE_DURATION {
-                if let Some(cached_databases) = self.database_cache.get(&connection_id) {
+        if let Some(cache_time) = self.database_cache_time.get(&connection_id)
+            && cache_time.elapsed() < CACHE_DURATION
+                && let Some(cached_databases) = self.database_cache.get(&connection_id) {
                     return cached_databases.clone();
                 }
-            }
-        }
         
         // Cache is invalid or doesn't exist, fetch fresh data
         // But do this in background to avoid blocking UI
@@ -3179,8 +3161,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     let table_type = "collection";
 
                     // Try cache first
-                    if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, &database_name, table_type) {
-                        if !cached.is_empty() {
+                    if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, &database_name, table_type)
+                        && !cached.is_empty() {
                             node.children = cached.into_iter().map(|name| {
                                 let mut child = models::structs::TreeNode::new(name, models::enums::NodeType::Table);
                                 child.connection_id = Some(connection_id);
@@ -3190,7 +3172,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             }).collect();
                             return;
                         }
-                    }
 
                     // Fallback to live fetch
                     if let Some(cols) = crate::driver_mongodb::fetch_collections_from_mongodb_connection(self, connection_id, &database_name) {
@@ -3234,8 +3215,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         };
         
         // First try to get from cache
-        if let Some(cached_items) = cache_data::get_tables_from_cache(self, connection_id, database_name, table_type) {
-            if !cached_items.is_empty() {                
+        if let Some(cached_items) = cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
+            && !cached_items.is_empty() {                
                 // Create tree nodes from cached data
                 let child_nodes: Vec<models::structs::TreeNode> = cached_items.into_iter().map(|item_name| {
                     let mut child_node = models::structs::TreeNode::new(item_name.clone(), match folder_type {
@@ -3256,7 +3237,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 node.children = child_nodes;
                 return;
             }
-        }
         
         // If cache is empty, fetch from actual database        
         if let Some(real_items) = driver_mysql::fetch_tables_from_mysql_connection(self, connection_id, database_name, table_type) {
@@ -3315,8 +3295,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         };
 
         // Try cache first
-        if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, database_name, table_type) {
-            if !cached.is_empty() {
+        if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
+            && !cached.is_empty() {
                 node.children = cached.into_iter().map(|name| {
                     let mut child = models::structs::TreeNode::new(
                         name,
@@ -3329,7 +3309,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 }).collect();
                 return;
             }
-        }
 
         // Fallback to live fetch
         if let Some(real_items) = crate::driver_postgres::fetch_tables_from_postgres_connection(self, connection_id, database_name, table_type) {
@@ -3364,8 +3343,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
         };
         
-        if let Some(cached_items) = cache_data::get_tables_from_cache(self, connection_id, "main", table_type) {
-            if !cached_items.is_empty() {
+        if let Some(cached_items) = cache_data::get_tables_from_cache(self, connection_id, "main", table_type)
+            && !cached_items.is_empty() {
                 debug!("Loading {} {} from cache for SQLite", cached_items.len(), table_type);
                 
                 node.children = cached_items.into_iter().map(|item_name| {
@@ -3384,7 +3363,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 
                 return;
             }
-        }
         
         // If cache is empty, fetch from actual SQLite database
         debug!("Cache miss, fetching {} from actual SQLite database", table_type);
@@ -3477,8 +3455,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         };
 
         // Try cache first
-        if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, database_name, kind) {
-            if !cached.is_empty() {
+        if let Some(cached) = cache_data::get_tables_from_cache(self, connection_id, database_name, kind)
+            && !cached.is_empty() {
                 node.children = cached.into_iter().map(|name| {
                     let mut child = node_mapper(name);
                     child.connection_id = Some(connection_id);
@@ -3487,7 +3465,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 }).collect();
                 return;
             }
-        }
 
         let fetched = match kind {
             "table" | "view" => crate::driver_mssql::fetch_tables_from_mssql_connection(self, connection_id, database_name, kind),
@@ -3580,13 +3557,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
     fn load_table_columns_sync(&mut self, connection_id: i64, table_name: &str, connection: &models::structs::ConnectionConfig, database_name: &str) -> Vec<models::structs::TreeNode> {
         // First try to get from cache
-        if let Some(cached_columns) = cache_data::get_columns_from_cache(self, connection_id, database_name, table_name) {
-            if !cached_columns.is_empty() {
+        if let Some(cached_columns) = cache_data::get_columns_from_cache(self, connection_id, database_name, table_name)
+            && !cached_columns.is_empty() {
                 return cached_columns.into_iter().map(|(column_name, data_type)| {
                     models::structs::TreeNode::new(format!("{} ({})", column_name, data_type), models::enums::NodeType::Column)
                 }).collect();
             }
-        }
         
         // If cache is empty, fetch from actual database
         if let Some(real_columns) = connection::fetch_columns_from_database(connection_id, database_name, table_name, connection) {
@@ -3727,8 +3703,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         // First try to get columns from cache
         let columns_from_cache = crate::cache_data::get_columns_from_cache(self, connection_id, database_name, table_name);
         
-        if let Some(columns_data) = columns_from_cache {
-            if !columns_data.is_empty() {
+        if let Some(columns_data) = columns_from_cache
+            && !columns_data.is_empty() {
                 // If cache has data, use it
                 return columns_data.into_iter().map(|(column_name, data_type)| {
                     let mut column_node = models::structs::TreeNode::new(
@@ -3741,7 +3717,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     column_node
                 }).collect();
             }
-        }
         
         // If cache doesn't have data or is empty, fallback to server query
         if let Some(connection) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
@@ -3957,7 +3932,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                 let mut names = Vec::new();
                                 for r in rows {
                                     let pk: i64 = r.try_get::<i64, _>("pk").unwrap_or(0);
-                                    if pk > 0 { if let Ok(Some(n)) = r.try_get::<Option<String>, _>("name") { names.push(n); } }
+                                    if pk > 0 && let Ok(Some(n)) = r.try_get::<Option<String>, _>("name") { names.push(n); }
                                 }
                                 names
                             }
@@ -4970,11 +4945,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             // Search for the key in this folder's children
             for child in &node.children {
                 debug!("🔍 Checking child: '{}' (type: {:?})", child.name, child.node_type);
-                if child.node_type == models::enums::NodeType::Table && child.name == key_name {
-                    if let Some(db_name) = &child.database_name {
+                if child.node_type == models::enums::NodeType::Table && child.name == key_name
+                    && let Some(db_name) = &child.database_name {
                         return Some((db_name.clone(), folder_type.to_string()));
                     }
-                }
             }
         }
         
@@ -5559,8 +5533,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                             if let Some(csv) = self.copy_selected_columns_as_csv() { ui.ctx().copy_text(csv); }
                                                             ui.close();
                                                         }
-                                                        if let Some(selected_row_idx) = self.selected_row {
-                                                            if ui.button("📄 Copy Row as CSV").clicked() {
+                                                        if let Some(selected_row_idx) = self.selected_row
+                                                            && ui.button("📄 Copy Row as CSV").clicked() {
                                                                 if let Some(row_data) = self.current_table_data.get(selected_row_idx) {
                                                                     let csv_row = row_data.iter()
                                                                         .map(|cell| {
@@ -5576,7 +5550,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                                 }
                                                                 ui.close();
                                                             }
-                                                        }
                                                         ui.separator();
                                                         if ui.button("📄 Export to CSV").clicked() {
                                                             export::export_to_csv(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
@@ -5646,13 +5619,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             } else {
                 // Tampilkan header & pagination walaupun tidak ada data
                 // Ambil header dari tab aktif bila current_table_headers kosong
-                if self.current_table_headers.is_empty() {
-                    if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-                        if !tab.result_headers.is_empty() {
+                if self.current_table_headers.is_empty()
+                    && let Some(tab) = self.query_tabs.get(self.active_tab_index)
+                        && !tab.result_headers.is_empty() {
                             self.current_table_headers = tab.result_headers.clone();
                         }
-                    }
-                }
 
                 if !self.current_table_headers.is_empty() {
                     // Render grid header tanpa rows
@@ -5712,11 +5683,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             ui.label("Rows per page:");
             let mut page_size_str = self.page_size.to_string();
             // Batasi lebar input supaya tidak mengembang mengisi bar dan membuat gap
-            if ui.add(egui::TextEdit::singleline(&mut page_size_str).desired_width(60.0)).changed() {
-                if let Ok(new_size) = page_size_str.parse::<usize>() {
-                    if new_size > 0 && new_size <= 10000 { self.set_page_size(new_size); }
-                }
-            }
+            if ui.add(egui::TextEdit::singleline(&mut page_size_str).desired_width(60.0)).changed()
+                && let Ok(new_size) = page_size_str.parse::<usize>()
+                    && new_size > 0 && new_size <= 10000 { self.set_page_size(new_size); }
 
             ui.separator();
 
@@ -5750,9 +5719,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
             ui.label("Go to page:");
             let mut page_input = (self.current_page + 1).to_string();
-            if ui.add_enabled(has_data, egui::TextEdit::singleline(&mut page_input)).changed() {
-                if let Ok(page_num) = page_input.parse::<usize>() { if page_num > 0 { self.go_to_page(page_num - 1); } }
-            }
+            if ui.add_enabled(has_data, egui::TextEdit::singleline(&mut page_input)).changed()
+                && let Ok(page_num) = page_input.parse::<usize>() && page_num > 0 { self.go_to_page(page_num - 1); }
         });
     }
     
@@ -6090,7 +6058,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                     if ui.button("➕ Add Index").clicked() { if !self.adding_index { self.start_inline_add_index(); } ui.close(); }
                                     if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
                                     if ui.button("❌ Drop Index").clicked() {
-                                        if let Some(conn_id) = self.current_connection_id { if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
+                                        if let Some(conn_id) = self.current_connection_id && let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
                                             let table_name = self.infer_current_table_name();
                                             let drop_stmt = match conn.connection_type {
                                                 models::enums::DatabaseType::MySQL => format!("ALTER TABLE `{}` DROP INDEX `{}`;", table_name, ix.name),
@@ -6103,7 +6071,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                             self.pending_drop_index_name = Some(ix.name.clone());
                                             self.pending_drop_index_stmt = Some(drop_stmt.clone());
                                             self.editor_text.push('\n'); self.editor_text.push_str(&drop_stmt);
-                                        }}
+                                        }
                                         ui.close();
                                     }
                                 });
@@ -6267,7 +6235,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             }
                             if ui.button("🗑 Drop Column").clicked() {
                                 let table_name = self.infer_current_table_name();
-                                if let Some(conn_id) = self.current_connection_id { if let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
+                                if let Some(conn_id) = self.current_connection_id && let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
                                     let stmt = match conn.connection_type {
                                         models::enums::DatabaseType::MySQL => format!("ALTER TABLE `{}` DROP COLUMN `{}`;", table_name, col.name),
                                         models::enums::DatabaseType::PostgreSQL => format!("ALTER TABLE \"{}\" DROP COLUMN \"{}\";", table_name, col.name),
@@ -6278,7 +6246,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                     self.pending_drop_column_name = Some(col.name.clone());
                                     self.pending_drop_column_stmt = Some(stmt.clone());
                                     self.editor_text.push('\n'); self.editor_text.push_str(&stmt);
-                                }}
+                                }
                                 ui.close();
                             }
                         });
@@ -6452,7 +6420,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         if let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, full.clone()) {
             let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
             if is_error {
-                if let Some(row) = data.first() { if let Some(err) = row.first() { self.error_message = format!("Gagal edit kolom: {}", err); self.show_error_message = true; } }
+                if let Some(row) = data.first() && let Some(err) = row.first() { self.error_message = format!("Gagal edit kolom: {}", err); self.show_error_message = true; }
             } else { self.load_structure_info_for_current_table(); }
         }
     }
@@ -6474,7 +6442,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { self.pending_drop_column_name=None; self.pending_drop_column_stmt=None; }
                     if ui.button(egui::RichText::new("Confirm").color(egui::Color32::RED)).clicked() {
-                        if let Some(conn_id) = self.current_connection_id { if !stmt.starts_with("--") { let _ = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()); } }
+                        if let Some(conn_id) = self.current_connection_id && !stmt.starts_with("--") { let _ = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()); }
                         let victim = col_name.clone();
                         self.structure_columns.retain(|it| it.name != victim);
                         self.load_structure_info_for_current_table();
@@ -6543,22 +6511,20 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         self.new_column_name.clear();
 
         // Execute and refresh structure on success
-        if !stmt.starts_with("--") {
-            if let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()) {
+        if !stmt.starts_with("--")
+            && let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()) {
                 let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
                 if is_error {
-                    if let Some(first_row) = data.first() {
-                        if let Some(err) = first_row.first() {
+                    if let Some(first_row) = data.first()
+                        && let Some(err) = first_row.first() {
                             self.error_message = format!("Gagal menambah kolom: {}", err);
                             self.show_error_message = true;
                         }
-                    }
                 } else {
                     // Reload from source to ensure correct view
                     self.load_structure_info_for_current_table();
                 }
             }
-        }
     }
 
     fn start_inline_add_index(&mut self) {
@@ -6643,16 +6609,15 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         self.new_index_method.clear();
         self.new_index_name.clear();
         // Auto execute and refresh
-        if !stmt.starts_with("--") {
-            if let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()) {
+        if !stmt.starts_with("--")
+            && let Some((headers, data)) = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()) {
                 let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
                 if is_error {
-                    if let Some(first_row) = data.first() { if let Some(err) = first_row.first() { self.error_message = format!("Gagal CREATE INDEX: {}", err); self.show_error_message = true; } }
+                    if let Some(first_row) = data.first() && let Some(err) = first_row.first() { self.error_message = format!("Gagal CREATE INDEX: {}", err); self.show_error_message = true; }
                 } else {
                     self.load_structure_info_for_current_table();
                 }
             }
-        }
     }
 
     fn render_drop_index_confirmation(&mut self, ctx: &egui::Context) {
@@ -6672,7 +6637,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { self.pending_drop_index_name=None; self.pending_drop_index_stmt=None; }
                     if ui.button(egui::RichText::new("Confirm").color(egui::Color32::RED)).clicked() {
-                        if let Some(conn_id) = self.current_connection_id { if !stmt.starts_with("--") { let _ = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()); } }
+                        if let Some(conn_id) = self.current_connection_id && !stmt.starts_with("--") { let _ = crate::connection::execute_query_with_connection(self, conn_id, stmt.clone()); }
                         let victim = idx_name.clone();
                         self.structure_indexes.retain(|it| it.name != victim);
                         self.load_structure_info_for_current_table();
@@ -6953,8 +6918,8 @@ impl App for Tabular {
         }
 
         // Lazy load preferences once (before applying visuals)
-        if self.config_store.is_none() && !self.prefs_loaded {
-            if let Some(rt) = &self.runtime {
+        if self.config_store.is_none() && !self.prefs_loaded
+            && let Some(rt) = &self.runtime {
                 match rt.block_on(crate::config::ConfigStore::new()) {
                     Ok(store) => {
                         let prefs = rt.block_on(store.load());
@@ -6990,11 +6955,10 @@ impl App for Tabular {
                         log::info!("Preferences loaded successfully on startup");
                         
                         // Check for updates on startup if enabled
-                        if prefs.auto_check_updates {
-                            if let Some(sender) = &self.background_sender {
+                        if prefs.auto_check_updates
+                            && let Some(sender) = &self.background_sender {
                                 let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
                             }
-                        }
                     }
                     Err(e) => {
                         log::error!("Failed to initialize config store: {}", e);
@@ -7002,7 +6966,6 @@ impl App for Tabular {
                     }
                 }
             }
-        }
 
         // Apply global UI visuals based on (possibly loaded) theme
         if self.is_dark_mode { ctx.set_visuals(egui::Visuals::dark()); } else { ctx.set_visuals(egui::Visuals::light()); }
@@ -7056,7 +7019,7 @@ impl App for Tabular {
             let key_combo = (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
             if copy_event || key_combo {
                 if let Some((r,c)) = self.selected_cell {
-                    if let Some(row_vec) = self.current_table_data.get(r) { if c < row_vec.len() { snapshot_cell = Some((r,c)); snapshot_value = Some(row_vec[c].clone()); copy_mode = 1; do_copy = true; } }
+                    if let Some(row_vec) = self.current_table_data.get(r) && c < row_vec.len() { snapshot_cell = Some((r,c)); snapshot_value = Some(row_vec[c].clone()); copy_mode = 1; do_copy = true; }
                 } else if !self.selected_rows.is_empty() {
                     if let Some(csv) = self.copy_selected_rows_as_csv() { snapshot_rows_csv = Some(csv); copy_mode = 2; do_copy = true; }
                 } else if !self.selected_columns.is_empty() {
@@ -7066,12 +7029,11 @@ impl App for Tabular {
                 }
             }
             // CMD+S or CTRL+S to save current tab
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::S) && !self.query_tabs.is_empty() {
-                if let Err(error) = editor::save_current_tab(self) {
+            if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::S) && !self.query_tabs.is_empty()
+                && let Err(error) = editor::save_current_tab(self) {
                     self.error_message = format!("Save failed: {}", error);
                     self.show_error_message = true;
                 }
-            }
             
             // CMD+W or CTRL+W to close current tab
             if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::W) && !self.query_tabs.is_empty() {
@@ -7099,12 +7061,11 @@ impl App for Tabular {
                     
                     if i.key_pressed(egui::Key::ArrowRight) {
                         // Check the current row's column count for bounds
-                        if let Some(current_row) = self.current_table_data.get(row) {
-                            if col + 1 < current_row.len() {
+                        if let Some(current_row) = self.current_table_data.get(row)
+                            && col + 1 < current_row.len() {
                                 self.selected_cell = Some((row, col + 1));
                                 cell_changed = true;
                             }
-                        }
                     } else if i.key_pressed(egui::Key::ArrowLeft) && col > 0 {
                         self.selected_cell = Some((row, col - 1));
                         cell_changed = true;
@@ -7125,11 +7086,10 @@ impl App for Tabular {
                     }
                     
                     // Update selected_row when cell changes
-                    if cell_changed {
-                        if let Some((new_row, _)) = self.selected_cell {
+                    if cell_changed
+                        && let Some((new_row, _)) = self.selected_cell {
                             self.selected_row = Some(new_row);
                         }
-                    }
                 }
             }
             
@@ -7340,7 +7300,7 @@ impl App for Tabular {
                                         Ok(()) => {
                                             self.refresh_data_directory();
                                             self.prefs_dirty = true; try_save_prefs(self);
-                                            if let Some(rt) = &self.runtime { if let Ok(new_store) = rt.block_on(crate::config::ConfigStore::new()) { self.config_store = Some(new_store); log::info!("Config store reinitialized for new data directory"); } }
+                                            if let Some(rt) = &self.runtime && let Ok(new_store) = rt.block_on(crate::config::ConfigStore::new()) { self.config_store = Some(new_store); log::info!("Config store reinitialized for new data directory"); }
                                             self.prefs_save_feedback = Some("Data directory updated successfully!".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
                                             log::info!("Data directory changed to: {}", self.data_directory);
                                         }
@@ -7371,20 +7331,18 @@ impl App for Tabular {
         }
 
         // Check for directory picker results
-        if let Some(receiver) = &self.directory_picker_result {
-            if let Ok(selected_path) = receiver.try_recv() {
+        if let Some(receiver) = &self.directory_picker_result
+            && let Ok(selected_path) = receiver.try_recv() {
                 self.temp_data_directory = selected_path;
                 self.directory_picker_result = None; // Clean up the receiver
             }
-        }
 
         // Check for save directory picker results
-        if let Some(receiver) = &self.save_directory_picker_result {
-            if let Ok(selected_path) = receiver.try_recv() {
+        if let Some(receiver) = &self.save_directory_picker_result
+            && let Ok(selected_path) = receiver.try_recv() {
                 self.save_directory = selected_path;
                 self.save_directory_picker_result = None; // Clean up the receiver
             }
-        }
 
         // Check for background task results
         if let Some(receiver) = &self.background_receiver {
@@ -7449,8 +7407,8 @@ impl App for Tabular {
         }
 
         // Poll for update install completion (async thread sends on channel)
-        if let Some(rx) = &self.update_install_receiver {
-            if let Ok(success) = rx.try_recv() {
+        if let Some(rx) = &self.update_install_receiver
+            && let Ok(success) = rx.try_recv() {
                 self.update_download_in_progress = false;
                 self.update_download_started = false; // Reset this flag to prevent loop
                 self.update_installed = success;
@@ -7458,7 +7416,6 @@ impl App for Tabular {
                 self.update_install_receiver = None; // cleanup
                 ctx.request_repaint();
             }
-        }
 
         // Render mini notification (toast) for update events
         if self.show_update_notification {
@@ -7757,7 +7714,7 @@ impl App for Tabular {
                         let color = if active { egui::Color32::from_rgb(255,60,0) } else { ui.visuals().text_color() };
                         let bg = if ui.visuals().dark_mode { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(240,240,240) };
                         let mut title = tab.title.clone();
-                        if let Some(cid) = tab.connection_id { if let Some(n) = self.get_connection_name(cid) { title = format!("{} [{}]", title, n); } }
+                        if let Some(cid) = tab.connection_id && let Some(n) = self.get_connection_name(cid) { title = format!("{} [{}]", title, n); }
                         let resp = ui.add_sized([120.0,20.0], egui::Button::new(egui::RichText::new(title).color(color).size(12.0)).fill(bg).stroke(egui::Stroke::NONE));
                         if resp.clicked() && !active { to_switch = Some(i); }
                         if (self.query_tabs.len() > 1 || !active) && ui.add_sized([16.0,16.0], egui::Button::new("×").fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::NONE)).clicked() { to_close = Some(i); }
@@ -7862,9 +7819,8 @@ impl App for Tabular {
                         });
                 });
 
-                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    if tab.content != self.editor_text { tab.content = self.editor_text.clone(); tab.is_modified = true; }
-                }
+                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                    && tab.content != self.editor_text { tab.content = self.editor_text.clone(); tab.is_modified = true; }
 
                 // Check if this is a table/collection tab for different layout
                 let is_table_tab = self.query_tabs.get(self.active_tab_index)
@@ -7889,25 +7845,7 @@ impl App for Tabular {
                         });
                         
                         ui.separator();
-                        
-                        // // Show SQL filter for data view
-                        // if self.table_bottom_view == models::structs::TableBottomView::Data {
-                        //     ui.horizontal(|ui| {
-                        //         ui.label("🔍 WHERE clause:");
-                        //         if ui.text_edit_singleline(&mut self.sql_filter_text).changed() {
-                        //             // Auto-apply filter as user types (with small delay to avoid too many requests)
-                        //         }
-                        //         if ui.button("Apply Filter").clicked() {
-                        //             self.apply_sql_filter();
-                        //         }
-                        //         if ui.button("Clear").clicked() {
-                        //             self.sql_filter_text.clear();
-                        //             self.apply_sql_filter(); // Re-load all data
-                        //         }
-                        //     });
-                        //     ui.separator();
-                        // }
-                        
+                                                
                         // Main content area takes remaining space
                         let remaining_height = ui.available_height();
                         ui.allocate_ui_with_layout(
@@ -7926,7 +7864,8 @@ impl App for Tabular {
                 } else {
                     // Regular query tabs: editor on top, results below
                     // Query tab logic: show bottom panel if we have any headers/data, a status name/message, or tab executed at least once
-                    let avail = ui.available_height()+53.0;
+                    // Use the exact remaining height; avoid artificial padding that caused visual gaps
+                    let avail = ui.available_height();
                     let executed = self.query_tabs.get(self.active_tab_index).map(|t| t.has_executed_query).unwrap_or(false);
                     let has_headers = !self.current_table_headers.is_empty();
                     let has_message = !self.current_table_name.is_empty();
@@ -7948,8 +7887,8 @@ impl App for Tabular {
                     } else { avail };
                     egui::Frame::NONE.fill(if ui.visuals().dark_mode { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::WHITE }).show(ui, |ui| {
                         // Fixed-height container with internal scroll so long queries don't push result panel
-                        let run_bar_height = 30.0;
-                        let editor_area_height = (editor_h - run_bar_height).max(200.0);
+                        // No run bar currently; let the editor fully occupy the reserved height to avoid a black gap
+                        let editor_area_height = editor_h.max(200.0);
                         // Calculate how many rows fit and pass it to the editor to fill the space
                         let mono_h = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
                         let rows = ((editor_area_height / mono_h).floor() as i32) as usize;

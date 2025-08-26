@@ -51,12 +51,11 @@ pub(crate) fn load_directory_recursive(dir_path: &std::path::Path) -> Vec<models
                      }
               } else if metadata.is_file() {
                      // This is a file
-                     if let Some(file_name) = entry.file_name().to_str() {
-                     if file_name.ends_with(".sql") {
+                     if let Some(file_name) = entry.file_name().to_str()
+                     && file_name.ends_with(".sql") {
                             let mut node = models::structs::TreeNode::new(file_name.to_string(), models::enums::NodeType::Query);
                             node.file_path = Some(entry.path().to_string_lossy().to_string());
                             items.push(node);
-                     }
                      }
               }
               }

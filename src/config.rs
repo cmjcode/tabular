@@ -40,12 +40,11 @@ impl ConfigStore {
         path.push("preferences.db");
         
         // Try to create the file first if it doesn't exist
-        if !path.exists() {
-            if let Err(e) = std::fs::File::create(&path) {
+        if !path.exists()
+            && let Err(e) = std::fs::File::create(&path) {
                 log::error!("Failed to create database file {}: {}, using JSON fallback", path.display(), e);
                 return Ok(Self { pool: None, use_json_fallback: true });
             }
-        }
         
         // Use file:// protocol with absolute path
         let url = format!("sqlite://{}?mode=rwc", path.to_string_lossy());

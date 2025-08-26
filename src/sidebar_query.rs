@@ -338,8 +338,8 @@ pub(crate) fn find_query_file_by_hash(hash: i64) -> Option<String> {
                 for entry in entries.flatten() {
                     if let Ok(metadata) = entry.metadata() {
                         if metadata.is_file() {
-                            if let Some(filename) = entry.file_name().to_str() {
-                                if filename.ends_with(".sql") {
+                            if let Some(filename) = entry.file_name().to_str()
+                                && filename.ends_with(".sql") {
                                     let file_path = entry.path().to_string_lossy().to_string();
                                     
                                     // Use same hash calculation as in context menu: file_path.len() % 1000
@@ -349,7 +349,6 @@ pub(crate) fn find_query_file_by_hash(hash: i64) -> Option<String> {
                                         return Some(file_path);
                                     }
                                 }
-                            }
                         } else if metadata.is_dir() {
                             // Recursively search in subdirectories
                             if let Some(found) = search_in_dir(&entry.path(), target_hash) {
