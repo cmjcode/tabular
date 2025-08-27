@@ -11,7 +11,7 @@ fn format_query_for_sidebar(query: &str, _connection_name: &str) -> String {
         .filter(|line| !line.is_empty() && !line.starts_with("--"))
         .collect::<Vec<_>>()
         .join(" ");
-    
+
     // Truncate if too long, with ellipsis
     let max_length = 80;
     if cleaned_query.len() > max_length {
@@ -25,8 +25,10 @@ fn format_query_for_sidebar(query: &str, _connection_name: &str) -> String {
 fn format_date_for_display(date_str: &str) -> String {
     // Check if it's today's date
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let yesterday = (chrono::Local::now() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
-    
+    let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
     match date_str {
         d if d == today => "📅 Today".to_string(),
         d if d == yesterday => "📅 Yesterday".to_string(),

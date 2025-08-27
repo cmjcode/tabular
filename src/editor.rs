@@ -237,8 +237,8 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
                 filtered_existing.trim_start_matches('\n')
             );
         }
-    // Keep a clone for potential content-based file path resolution below
-    tab.content = final_content.clone();
+        // Keep a clone for potential content-based file path resolution below
+        tab.content = final_content.clone();
 
         // Best-effort: if file_path is missing but this tab likely comes from a query file,
         // try to resolve the path from the queries tree by matching the tab title (filename).
@@ -246,12 +246,17 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
             let title_name = tab.title.clone();
             if title_name.ends_with(".sql") {
                 // Flatten queries_tree and find unique match by name
-                fn collect_matches(nodes: &Vec<crate::models::structs::TreeNode>, name: &str, out: &mut Vec<String>) {
+                fn collect_matches(
+                    nodes: &Vec<crate::models::structs::TreeNode>,
+                    name: &str,
+                    out: &mut Vec<String>,
+                ) {
                     for n in nodes {
-                        if let Some(path) = &n.file_path {
-                            if n.node_type == crate::models::enums::NodeType::Query && n.name == name {
-                                out.push(path.clone());
-                            }
+                        if let Some(path) = &n.file_path
+                            && n.node_type == crate::models::enums::NodeType::Query
+                            && n.name == name
+                        {
+                            out.push(path.clone());
                         }
                         if !n.children.is_empty() {
                             collect_matches(&n.children, name, out);
@@ -275,11 +280,11 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
                     let current_body = strip_headers(&final_content);
                     let mut match_path: Option<String> = None;
                     for p in candidates.iter() {
-                        if let Ok(c) = std::fs::read_to_string(p) {
-                            if strip_headers(&c) == current_body {
-                                match_path = Some(p.clone());
-                                break;
-                            }
+                        if let Ok(c) = std::fs::read_to_string(p)
+                            && strip_headers(&c) == current_body
+                        {
+                            match_path = Some(p.clone());
+                            break;
                         }
                     }
                     if let Some(p) = match_path {

@@ -649,7 +649,10 @@ impl Tabular {
         let mut query_files_to_open = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
-            debug!("🔄 Processing node {}: {} (type: {:?})", index, node.name, node.node_type);
+            debug!(
+                "🔄 Processing node {}: {} (type: {:?})",
+                index, node.name, node.node_type
+            );
             let (
                 expansion_request,
                 table_expansion,
@@ -708,8 +711,14 @@ impl Tabular {
                     filename, file_path
                 );
                 query_files_to_open.push((filename, content, file_path));
-                debug!("📋 Added to query_files_to_open. Total count: {}", query_files_to_open.len());
-                debug!("💾 PUSH SUCCESS: query_files_to_open now has {} items", query_files_to_open.len());
+                debug!(
+                    "📋 Added to query_files_to_open. Total count: {}",
+                    query_files_to_open.len()
+                );
+                debug!(
+                    "💾 PUSH SUCCESS: query_files_to_open now has {} items",
+                    query_files_to_open.len()
+                );
             } else {
                 debug!("📋 No query_file_to_open for node: {}", node.name);
             }
@@ -1651,9 +1660,12 @@ impl Tabular {
             }
         }
 
-    // Handle query file open requests in caller to avoid double-processing. Just return them here.
-    debug!("🔍 Processing query_files_to_open. Count: {}", query_files_to_open.len());
-    let results = query_files_to_open.clone();
+        // Handle query file open requests in caller to avoid double-processing. Just return them here.
+        debug!(
+            "🔍 Processing query_files_to_open. Count: {}",
+            query_files_to_open.len()
+        );
+        let results = query_files_to_open.clone();
 
         // Handle context menu requests (deduplicate to avoid multiple calls)
         let mut processed_removals = std::collections::HashSet::new();
@@ -2420,16 +2432,22 @@ impl Tabular {
                 // Special handling for history items - make the entire area clickable
                 let available_width = ui.available_width();
                 let button_response = ui.add_sized(
-                    [available_width, ui.text_style_height(&egui::TextStyle::Body)],
+                    [
+                        available_width,
+                        ui.text_style_height(&egui::TextStyle::Body),
+                    ],
                     egui::Button::new(format!("📜  {}", node.name))
                         .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::NONE)
+                        .stroke(egui::Stroke::NONE),
                 );
-                
+
                 // Add tooltip with the full query if available
                 if let Some(data) = &node.file_path {
                     if let Some((connection_name, original_query)) = data.split_once("||") {
-                        button_response.on_hover_text_at_pointer(format!("Connection: {}\nFull query:\n{}", connection_name, original_query))
+                        button_response.on_hover_text_at_pointer(format!(
+                            "Connection: {}\nFull query:\n{}",
+                            connection_name, original_query
+                        ))
                     } else {
                         button_response.on_hover_text_at_pointer(format!("Full query:\n{}", data))
                     }
@@ -2479,7 +2497,10 @@ impl Tabular {
             };
 
             if response.clicked() {
-                debug!("🎯 CLICK DETECTED! Node type: {:?}, Name: {}", node.node_type, node.name);
+                debug!(
+                    "🎯 CLICK DETECTED! Node type: {:?}, Name: {}",
+                    node.node_type, node.name
+                );
                 // Handle node selection
                 match node.node_type {
                     models::enums::NodeType::Table | models::enums::NodeType::View => {
@@ -2538,17 +2559,26 @@ impl Tabular {
                         // For history items, create a new tab with the original query
                         if let Some(data) = &node.file_path {
                             // Parse connection name and query from the stored data
-                            if let Some((_connection_name, original_query)) = data.split_once("||") {
+                            if let Some((_connection_name, original_query)) = data.split_once("||")
+                            {
                                 // Create a descriptive tab title based on the query type
                                 let tab_title = if original_query.len() > 50 {
-                                    format!("History: {}...", &original_query[0..50].replace("\n", " ").trim())
+                                    format!(
+                                        "History: {}...",
+                                        &original_query[0..50].replace("\n", " ").trim()
+                                    )
                                 } else {
                                     format!("History: {}", original_query.replace("\n", " ").trim())
                                 };
                                 // Collect to be handled by parent (render_tree) -> will create a NEW TAB
-                                debug!("📝 Setting query_file_to_open (history): title='{}', query_len={}", tab_title, original_query.len());
+                                debug!(
+                                    "📝 Setting query_file_to_open (history): title='{}', query_len={}",
+                                    tab_title,
+                                    original_query.len()
+                                );
                                 // Pass the original data (connection_name||query) in the 3rd field so caller can bind connection
-                                query_file_to_open = Some((tab_title, original_query.to_string(), data.clone()));
+                                query_file_to_open =
+                                    Some((tab_title, original_query.to_string(), data.clone()));
                             } else {
                                 debug!("📝 Using fallback format for old history item");
                                 // Fallback for old format without connection name
@@ -2606,7 +2636,8 @@ impl Tabular {
                 response.context_menu(|ui| {
                     if ui.button("📋 Copy Query").clicked() {
                         if let Some(data) = &node.file_path {
-                            if let Some((_connection_name, original_query)) = data.split_once("||") {
+                            if let Some((_connection_name, original_query)) = data.split_once("||")
+                            {
                                 ui.ctx().copy_text(original_query.to_string());
                             } else {
                                 ui.ctx().copy_text(data.clone());
@@ -2617,7 +2648,8 @@ impl Tabular {
 
                     if ui.button("▶️ Execute Query").clicked() {
                         if let Some(data) = &node.file_path {
-                            if let Some((_connection_name, original_query)) = data.split_once("||") {
+                            if let Some((_connection_name, original_query)) = data.split_once("||")
+                            {
                                 *editor_text = original_query.to_string();
                             } else {
                                 *editor_text = data.clone();
