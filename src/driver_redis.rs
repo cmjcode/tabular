@@ -182,10 +182,10 @@ pub(crate) fn fetch_tables_from_redis_connection(
                                         .arg(0)
                                         .arg("COUNT")
                                         .arg(100)
-                                        .query_async::<Vec<String>>(&mut conn)
+                                        .query_async::<(String, Vec<String>)>(&mut conn)
                                         .await
                                     {
-                                        Ok(keys) => Some(keys),
+                                        Ok((_cursor, keys)) => Some(keys),
                                         Err(e) => {
                                             debug!("Error scanning Redis keys: {}", e);
                                             Some(vec!["keys".to_string()]) // Return generic "keys" entry
