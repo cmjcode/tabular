@@ -1,6 +1,7 @@
 use eframe::{App, Frame, egui};
 use egui_code_editor::ColorTheme; // for integrated editor theme selection
 use log::{debug, error};
+use chrono::{DateTime, Duration, Utc};
 use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -649,10 +650,6 @@ impl Tabular {
         let mut query_files_to_open = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
-            debug!(
-                "🔄 Processing node {}: {} (type: {:?})",
-                index, node.name, node.node_type
-            );
             let (
                 expansion_request,
                 table_expansion,
@@ -685,13 +682,6 @@ impl Tabular {
             }
             if let Some((hash, folder_path)) = folder_removal_mapping {
                 self.folder_removal_map.insert(hash, folder_path);
-                debug!(
-                    "📁 Stored folder removal mapping: hash={} -> path={}",
-                    hash,
-                    self.folder_removal_map
-                        .get(&hash)
-                        .unwrap_or(&"NONE".to_string())
-                );
             }
             if let Some(parent_folder) = parent_for_creation {
                 self.parent_folder_for_creation = Some(parent_folder);
@@ -706,21 +696,7 @@ impl Tabular {
                 connection_click_requests.push(connection_id);
             }
             if let Some((filename, content, file_path)) = query_file_to_open {
-                debug!(
-                    "📋 Collected query file to open: {} (path: {})",
-                    filename, file_path
-                );
                 query_files_to_open.push((filename, content, file_path));
-                debug!(
-                    "📋 Added to query_files_to_open. Total count: {}",
-                    query_files_to_open.len()
-                );
-                debug!(
-                    "💾 PUSH SUCCESS: query_files_to_open now has {} items",
-                    query_files_to_open.len()
-                );
-            } else {
-                debug!("📋 No query_file_to_open for node: {}", node.name);
             }
             // Collect DBA quick view requests
             if let Some((conn_id, node_type)) = dba_click_request {
@@ -8983,6 +8959,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         self.last_update_check = Some(std::time::Instant::now());
         self.manual_update_check = manual;
 
+        // Persist last check time to avoid multiple checks within 24 hours
+        if let (Some(store), Some(rt)) = (self.config_store.as_ref(), self.runtime.as_ref()) {
+            rt.block_on(store.set_last_update_check_now());
+        }
+
         // Send background task to check for updates
         if let Some(sender) = &self.background_sender {
             let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
@@ -9194,6 +9175,10 @@ impl App for Tabular {
                         },
                         auto_check_updates: app.auto_check_updates,
                         use_server_pagination: app.use_server_pagination,
+                        last_update_check_iso: app
+                            .last_saved_prefs
+                            .as_ref()
+                            .and_then(|p| p.last_update_check_iso.clone()),
                     };
                     rt.block_on(store.save(&prefs));
                     log::info!(
@@ -9218,7 +9203,7 @@ impl App for Tabular {
             ctx.request_repaint();
         }
 
-        // Lazy load preferences once (before applying visuals)
+    // Lazy load preferences once (before applying visuals)
         if self.config_store.is_none()
             && !self.prefs_loaded
             && let Some(rt) = &self.runtime
@@ -9262,11 +9247,34 @@ impl App for Tabular {
                     self.prefs_loaded = true;
                     log::info!("Preferences loaded successfully on startup");
 
-                    // Check for updates on startup if enabled
-                    if prefs.auto_check_updates
-                        && let Some(sender) = &self.background_sender
-                    {
-                        let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
+                    // Check for updates on startup if enabled, but only once per day
+                    if prefs.auto_check_updates {
+                        let mut should_check = true;
+                        if let Some(store_ref) = self.config_store.as_ref() {
+                            if let Some(last_iso) = rt.block_on(store_ref.get_last_update_check()) {
+                                if let Ok(parsed) = DateTime::parse_from_rfc3339(&last_iso) {
+                                    let last_utc = parsed.with_timezone(&Utc);
+                                    let now = Utc::now();
+                                    if now.signed_duration_since(last_utc) < Duration::days(1) {
+                                        should_check = false;
+                                        debug!(
+                                            "⏱️ Skipping auto update check; last check at {} (< 24h)",
+                                            last_iso
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if should_check {
+                            if let (Some(sender), Some(store_ref)) =
+                                (&self.background_sender, self.config_store.as_ref())
+                            {
+                                // Persist timestamp immediately to prevent repeated checks this session
+                                rt.block_on(store_ref.set_last_update_check_now());
+                                let _ = sender
+                                    .send(models::enums::BackgroundTask::CheckForUpdates);
+                            }
+                        }
                     }
                 }
                 Err(e) => {

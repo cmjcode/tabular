@@ -18,6 +18,8 @@ pub struct AppPreferences {
     pub data_directory: Option<String>,
     pub auto_check_updates: bool,
     pub use_server_pagination: bool,
+    // RFC3339 timestamp of the last time we checked GitHub releases (persisted)
+    pub last_update_check_iso: Option<String>,
 }
 
 pub struct ConfigStore {
@@ -107,6 +109,7 @@ impl ConfigStore {
                 data_directory: None,
                 auto_check_updates: true,
                 use_server_pagination: true, // Default to true for better performance
+                last_update_check_iso: None,
             };
 
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences")
@@ -127,6 +130,9 @@ impl ConfigStore {
                         }
                         "auto_check_updates" => prefs.auto_check_updates = v == "1",
                         "use_server_pagination" => prefs.use_server_pagination = v == "1",
+                        "last_update_check_iso" => {
+                            prefs.last_update_check_iso = if v.is_empty() { None } else { Some(v) }
+                        }
                         _ => {}
                     }
                 }
@@ -203,6 +209,15 @@ impl ConfigStore {
                     .await;
             }
 
+            // Persist last_update_check_iso if present so it isn't lost on preference save
+            if let Some(ref iso) = prefs.last_update_check_iso {
+                let _ = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
+                    .bind("last_update_check_iso")
+                    .bind(iso)
+                    .execute(pool)
+                    .await;
+            }
+
             info!(
                 "Saved prefs to SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}",
                 prefs.is_dark_mode,
@@ -244,6 +259,47 @@ impl ConfigStore {
         let content = serde_json::to_string_pretty(prefs)?;
         std::fs::write(path, content)?;
         Ok(())
+    }
+
+    /// Get the RFC3339 string of last update check, if any
+    pub async fn get_last_update_check(&self) -> Option<String> {
+        if self.use_json_fallback {
+            if let Ok(p) = self.load_from_json() {
+                return p.last_update_check_iso;
+            }
+            return None;
+        }
+        if let Some(ref pool) = self.pool {
+            if let Ok(row) = sqlx::query_as::<_, (String,)>(
+                "SELECT value FROM preferences WHERE key = ?",
+            )
+            .bind("last_update_check_iso")
+            .fetch_optional(pool)
+            .await
+            {
+                return row.map(|(v,)| v).filter(|s| !s.is_empty());
+            }
+        }
+        None
+    }
+
+    /// Set last update check to now (UTC) and persist
+    pub async fn set_last_update_check_now(&self) {
+        let now = chrono::Utc::now().to_rfc3339();
+        if self.use_json_fallback {
+            // Load, update, then save back to JSON
+            let mut prefs = self.load_from_json().unwrap_or_default();
+            prefs.last_update_check_iso = Some(now);
+            let _ = self.save_to_json(&prefs);
+            return;
+        }
+        if let Some(ref pool) = self.pool {
+            let _ = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
+                .bind("last_update_check_iso")
+                .bind(now)
+                .execute(pool)
+                .await;
+        }
     }
 }
 
