@@ -2,6 +2,45 @@ use log::debug;
 
 use crate::{models, window_egui};
 
+/// Format query text for display in the sidebar history
+fn format_query_for_sidebar(query: &str, _connection_name: &str) -> String {
+    // Remove extra whitespace and newlines
+    let cleaned_query = query
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with("--"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    
+    // Truncate if too long, with ellipsis
+    let max_length = 80;
+    if cleaned_query.len() > max_length {
+        format!("{}...", &cleaned_query[0..max_length].trim())
+    } else {
+        cleaned_query
+    }
+}
+
+/// Format date for better display in history folders
+fn format_date_for_display(date_str: &str) -> String {
+    // Check if it's today's date
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let yesterday = (chrono::Local::now() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+    
+    match date_str {
+        d if d == today => "📅 Today".to_string(),
+        d if d == yesterday => "📅 Yesterday".to_string(),
+        _ => {
+            // Try to parse the date and format it nicely
+            if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                format!("📅 {}", parsed_date.format("%B %d, %Y"))
+            } else {
+                format!("📅 {}", date_str)
+            }
+        }
+    }
+}
+
 pub(crate) fn load_query_history(tabular: &mut window_egui::Tabular) {
     if let Some(pool) = &tabular.db_pool {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -96,18 +135,25 @@ pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
 
     // Iterasi mundur (tanggal terbaru dulu)
     for (date, items) in grouped.iter().rev() {
+        // Format date for better display
+        let formatted_date = format_date_for_display(date);
         let mut date_node = models::structs::TreeNode::new(
-            date.clone(),
+            formatted_date,
             models::enums::NodeType::HistoryDateFolder,
         );
         date_node.is_expanded = true; // Expand default supaya user langsung lihat isinya
 
         for item in items {
+            // Format query for better display in sidebar
+            let formatted_query = format_query_for_sidebar(&item.query, &item.connection_name);
             let mut hist_node = models::structs::TreeNode::new(
-                item.query.clone(),
+                formatted_query,
                 models::enums::NodeType::QueryHistItem,
             );
             hist_node.connection_id = Some(item.connection_id);
+            // Store original query and connection info in file_path field (we'll use this to identify the actual query)
+            // Format: "connection_name||original_query" for easy parsing
+            hist_node.file_path = Some(format!("{}||{}", item.connection_name, item.query));
             date_node.children.push(hist_node);
         }
 

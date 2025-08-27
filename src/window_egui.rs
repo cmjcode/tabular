@@ -649,6 +649,7 @@ impl Tabular {
         let mut query_files_to_open = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
+            debug!("🔄 Processing node {}: {} (type: {:?})", index, node.name, node.node_type);
             let (
                 expansion_request,
                 table_expansion,
@@ -707,6 +708,10 @@ impl Tabular {
                     filename, file_path
                 );
                 query_files_to_open.push((filename, content, file_path));
+                debug!("📋 Added to query_files_to_open. Total count: {}", query_files_to_open.len());
+                debug!("💾 PUSH SUCCESS: query_files_to_open now has {} items", query_files_to_open.len());
+            } else {
+                debug!("📋 No query_file_to_open for node: {}", node.name);
             }
             // Collect DBA quick view requests
             if let Some((conn_id, node_type)) = dba_click_request {
@@ -1647,9 +1652,29 @@ impl Tabular {
         }
 
         // Handle query file open requests
+        debug!("🔍 Processing query_files_to_open. Count: {}", query_files_to_open.len());
         let results = query_files_to_open.clone();
         for (filename, content, file_path) in query_files_to_open {
             debug!("📂 Processing file: {} (path: {})", filename, file_path);
+            // History items: filename starts with "History:" and have empty file_path
+            if file_path.is_empty() && filename.starts_with("History:") {
+                debug!("🧭 Detected history open request -> create NEW TAB");
+                let new_tab_id = crate::editor::create_new_tab(self, filename.clone(), content.clone());
+                debug!("✅ History new tab created: {}", new_tab_id);
+
+                // Try to set connection_id for the new tab based on exact query match
+                if let Some(h) = self.history_items.iter().find(|h| h.query == content) {
+                    self.current_connection_id = Some(h.connection_id);
+                    if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        active_tab.connection_id = Some(h.connection_id);
+                    }
+                    debug!("🔗 Set connection_id from history: {}", h.connection_id);
+                } else {
+                    debug!("❌ No matching history item found to set connection_id");
+                }
+                continue;
+            }
+
             if file_path.is_empty() {
                 // This is a placeholder query without a file path - create a new unsaved tab
                 debug!("📝 Creating new tab for placeholder query: {}", filename);
@@ -2333,6 +2358,10 @@ impl Tabular {
                         if let Some(child_context_id) = child_context {
                             context_menu_request = Some(child_context_id);
                         }
+                        // Propagate child query file open requests (History) to parent
+                        if let Some(child_query_file) = _child_query_file {
+                            query_file_to_open = Some(child_query_file);
+                        }
                     }
                 } else {
                     ui.indent(id, |ui| {
@@ -2423,16 +2452,25 @@ impl Tabular {
             }
         } else {
             let response = if node.node_type == models::enums::NodeType::QueryHistItem {
-                // Special handling for history items - text only, completely left aligned with no indentation
+                // Special handling for history items - make the entire area clickable
                 let available_width = ui.available_width();
-                ui.add_sized(
-                    [
-                        available_width,
-                        ui.text_style_height(&egui::TextStyle::Body) * 3.0,
-                    ], // Allow up to 3 lines
-                    // Replaced deprecated SelectableLabel: for non-selectable history item just show label
-                    egui::Label::new(&node.name),
-                )
+                let button_response = ui.add_sized(
+                    [available_width, ui.text_style_height(&egui::TextStyle::Body)],
+                    egui::Button::new(format!("📜  {}", node.name))
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::NONE)
+                );
+                
+                // Add tooltip with the full query if available
+                if let Some(data) = &node.file_path {
+                    if let Some((connection_name, original_query)) = data.split_once("||") {
+                        button_response.on_hover_text_at_pointer(format!("Connection: {}\nFull query:\n{}", connection_name, original_query))
+                    } else {
+                        button_response.on_hover_text_at_pointer(format!("Full query:\n{}", data))
+                    }
+                } else {
+                    button_response
+                }
             } else {
                 // For all other node types, use horizontal layout with icons
                 ui.horizontal(|ui| {
@@ -2476,6 +2514,7 @@ impl Tabular {
             };
 
             if response.clicked() {
+                debug!("🎯 CLICK DETECTED! Node type: {:?}, Name: {}", node.node_type, node.name);
                 // Handle node selection
                 match node.node_type {
                     models::enums::NodeType::Table | models::enums::NodeType::View => {
@@ -2530,8 +2569,34 @@ impl Tabular {
                         }
                     }
                     models::enums::NodeType::QueryHistItem => {
-                        // Store the display name for processing later
-                        *editor_text = node.name.clone();
+                        debug!("🖱️ QueryHistItem clicked: {}", node.name);
+                        // For history items, create a new tab with the original query
+                        if let Some(data) = &node.file_path {
+                            // Parse connection name and query from the stored data
+                            if let Some((_connection_name, original_query)) = data.split_once("||") {
+                                // Create a descriptive tab title based on the query type
+                                let tab_title = if original_query.len() > 50 {
+                                    format!("History: {}...", &original_query[0..50].replace("\n", " ").trim())
+                                } else {
+                                    format!("History: {}", original_query.replace("\n", " ").trim())
+                                };
+                                // Collect to be handled by parent (render_tree) -> will create a NEW TAB
+                                debug!("📝 Setting query_file_to_open (history): title='{}', query_len={}", tab_title, original_query.len());
+                                // Pass the original data (connection_name||query) in the 3rd field so caller can bind connection
+                                query_file_to_open = Some((tab_title, original_query.to_string(), data.clone()));
+                            } else {
+                                debug!("📝 Using fallback format for old history item");
+                                // Fallback for old format without connection name
+                                query_file_to_open = Some((
+                                    "History Query".to_string(),
+                                    data.clone(),
+                                    String::new(),
+                                ));
+                            }
+                        } else {
+                            debug!("❌ No file_path data for history item");
+                            // Fallback to display name if no original query stored
+                        }
                     }
                     _ => {}
                 }
@@ -2565,6 +2630,34 @@ impl Tabular {
                             // Format: -20000 - simple index to differentiate from connections
                             let remove_id = -20000 - (file_path.len() as i64 % 1000); // Simple deterministic ID
                             context_menu_request = Some(remove_id);
+                        }
+                        ui.close();
+                    }
+                });
+            }
+
+            // Add context menu for history items
+            if node.node_type == models::enums::NodeType::QueryHistItem {
+                response.context_menu(|ui| {
+                    if ui.button("📋 Copy Query").clicked() {
+                        if let Some(data) = &node.file_path {
+                            if let Some((_connection_name, original_query)) = data.split_once("||") {
+                                ui.ctx().copy_text(original_query.to_string());
+                            } else {
+                                ui.ctx().copy_text(data.clone());
+                            }
+                        }
+                        ui.close();
+                    }
+
+                    if ui.button("▶️ Execute Query").clicked() {
+                        if let Some(data) = &node.file_path {
+                            if let Some((_connection_name, original_query)) = data.split_once("||") {
+                                *editor_text = original_query.to_string();
+                            } else {
+                                *editor_text = data.clone();
+                            }
+                            // This will trigger the execution flow when the context menu closes
                         }
                         ui.close();
                     }
@@ -10068,59 +10161,55 @@ impl App for Tabular {
                                     }
                                 });
 
-                                // Render the queries tree normally
+                                // Render the queries tree and process any clicked items into new tabs
                                 let mut queries_tree = std::mem::take(&mut self.queries_tree);
-                                let _ = self.render_tree(ui, &mut queries_tree, false);
+                                let query_files_to_open = self.render_tree(ui, &mut queries_tree, false);
                                 self.queries_tree = queries_tree;
+
+                                for (filename, content, _file_path) in query_files_to_open {
+                                    log::debug!("✅ Processing query click: Creating new tab for '{}'", filename);
+                                    crate::editor::create_new_tab(self, filename, content);
+                                }
                             }
                             "History" => {
+                                // Render history tree and process clicks into new tabs
                                 let mut history_tree = std::mem::take(&mut self.history_tree);
-                                let query_files_to_open =
-                                    self.render_tree(ui, &mut history_tree, false);
+                                let query_files_to_open = self.render_tree(ui, &mut history_tree, false);
                                 self.history_tree = history_tree;
 
-                                // Handle history item clicks
-                                for (display_name, _, _) in query_files_to_open {
-                                    if let Some(history_item) =
-                                        self.history_items.iter().find(|item| {
-                                            // Use full query text for comparison instead of truncated preview
-                                            item.query == display_name
-                                        })
-                                    {
-                                        // Set the query text in the active tab
-                                        if let Some(active_tab) =
-                                            self.query_tabs.get_mut(self.active_tab_index)
-                                        {
-                                            active_tab.content = history_item.query.clone();
-                                            active_tab.is_modified = true;
-                                            self.editor_text = history_item.query.clone();
-                                        }
-                                        // Set the connection and execute automatically
-                                        self.current_connection_id =
-                                            Some(history_item.connection_id);
-                                        // Execute the query immediately
-                                        if let Some((headers, data)) =
-                                            connection::execute_query_with_connection(
+                                for (filename, content, file_data) in query_files_to_open {
+                                    // file_data for history contains "connection_name||query"
+                                    if let Some((connection_name, _query)) = file_data.split_once("||") {
+                                        // Try to find matching connection by name to preselect in the new tab
+                                        let conn_id = self
+                                            .connections
+                                            .iter()
+                                            .find(|c| c.name == connection_name)
+                                            .and_then(|c| c.id);
+                                        if let Some(cid) = conn_id {
+                                            log::debug!(
+                                                "✅ Processing history click: New tab '{}' with connection '{}' (id={})",
+                                                filename, connection_name, cid
+                                            );
+                                            crate::editor::create_new_tab_with_connection(
                                                 self,
-                                                history_item.connection_id,
-                                                history_item.query.clone(),
-                                            )
-                                        {
-                                            self.current_table_headers = headers;
-                                            self.current_table_data = data;
-                                            self.is_table_browse_mode = false; // Disable filter for manual queries
-                                            if self.current_table_data.is_empty() {
-                                                self.current_table_name =
-                                                    "Query executed successfully (no results)"
-                                                        .to_string();
-                                            } else {
-                                                self.current_table_name = format!(
-                                                    "Query Results ({} rows)",
-                                                    self.current_table_data.len()
-                                                );
-                                            }
+                                                filename,
+                                                content,
+                                                Some(cid),
+                                            );
+                                            continue;
+                                        } else if !connection_name.is_empty() {
+                                            log::debug!(
+                                                "⚠️ Connection '{}' from history not found. Opening tab without binding.",
+                                                connection_name
+                                            );
                                         }
                                     }
+                                    log::debug!(
+                                        "✅ Processing history click: Creating new tab for '{}' (no connection binding)",
+                                        filename
+                                    );
+                                    crate::editor::create_new_tab(self, filename, content);
                                 }
                             }
                             _ => {}
