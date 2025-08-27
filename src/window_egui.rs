@@ -7706,12 +7706,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             .find(|c| c.id == Some(conn_id))
             .cloned()
         {
-            let mut table_guess = self.current_table_name.clone();
-            if let Some(pos) = table_guess.find(':') {
-                table_guess = table_guess[pos + 1..].trim().to_string();
-            }
-            if let Some(pos) = table_guess.find('(') {
-                table_guess = table_guess[..pos].trim().to_string();
+            // Infer actual table name from current UI state (avoids using captions like "Query Results")
+            let table_guess = self.infer_current_table_name();
+            if table_guess.trim().is_empty() {
+                // Nothing to load if we can't determine a concrete table
+                return;
             }
             let database = if !active_tab_db.is_empty() {
                 active_tab_db.clone()

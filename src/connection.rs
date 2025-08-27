@@ -1223,12 +1223,10 @@ async fn create_connection_pool_for_config(
             }
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let enc_user = modules::url_encode(&connection.username);
-            let enc_pass = modules::url_encode(&connection.password);
             let connection_string = format!(
                 "postgresql://{}:{}@{}:{}/{}",
-                enc_user,
-                enc_pass,
+                connection.username,
+                connection.password,
                 connection.host,
                 connection.port,
                 connection.database
@@ -1637,12 +1635,10 @@ pub(crate) async fn create_database_pool(
             }
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let enc_user = modules::url_encode(&connection.username);
-            let enc_pass = modules::url_encode(&connection.password);
             let connection_string = format!(
                 "postgresql://{}:{}@{}:{}/{}",
-                enc_user,
-                enc_pass,
+                connection.username,
+                connection.password,
                 connection.host,
                 connection.port,
                 connection.database

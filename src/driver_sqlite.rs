@@ -34,9 +34,7 @@ pub async fn fetch_data(connection_id: i64, pool: &SqlitePool, cache_pool: &Sqli
                             .await;
 
                 // Fetch columns for this table
-                // Quote and escape table name to avoid issues with special characters or injection
-                let escaped_table = table_name.replace("'", "''");
-                let col_query = format!("PRAGMA table_info('{}')", escaped_table);
+                let col_query = format!("PRAGMA table_info({})", table_name);
                 if let Ok(col_rows) = sqlx::query(&col_query).fetch_all(pool).await {
                     for col_row in col_rows {
                         if let (Ok(col_name), Ok(col_type)) = (
