@@ -292,8 +292,15 @@ pub(crate) fn open_query_file(
 
     // Parse optional connection metadata from file content
     let file_meta = parse_query_metadata(&content);
-    // Try resolve connection_id: prefer explicit ID, fallback to name
+    // Try resolve connection_id: prefer explicit ID, but validate it exists; fallback to name
     let mut resolved_connection_id = file_meta.connection_id;
+    // If an ID is present but no longer exists in current connections, treat as None
+    if let Some(cid) = resolved_connection_id {
+        let still_exists = tabular.connections.iter().any(|c| c.id == Some(cid));
+        if !still_exists {
+            resolved_connection_id = None;
+        }
+    }
     if resolved_connection_id.is_none() {
         resolved_connection_id = file_meta.connection_name.as_ref().and_then(|name| {
             tabular

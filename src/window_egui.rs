@@ -1651,44 +1651,9 @@ impl Tabular {
             }
         }
 
-        // Handle query file open requests
-        debug!("🔍 Processing query_files_to_open. Count: {}", query_files_to_open.len());
-        let results = query_files_to_open.clone();
-        for (filename, content, file_path) in query_files_to_open {
-            debug!("📂 Processing file: {} (path: {})", filename, file_path);
-            // History items: filename starts with "History:" and have empty file_path
-            if file_path.is_empty() && filename.starts_with("History:") {
-                debug!("🧭 Detected history open request -> create NEW TAB");
-                let new_tab_id = crate::editor::create_new_tab(self, filename.clone(), content.clone());
-                debug!("✅ History new tab created: {}", new_tab_id);
-
-                // Try to set connection_id for the new tab based on exact query match
-                if let Some(h) = self.history_items.iter().find(|h| h.query == content) {
-                    self.current_connection_id = Some(h.connection_id);
-                    if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                        active_tab.connection_id = Some(h.connection_id);
-                    }
-                    debug!("🔗 Set connection_id from history: {}", h.connection_id);
-                } else {
-                    debug!("❌ No matching history item found to set connection_id");
-                }
-                continue;
-            }
-
-            if file_path.is_empty() {
-                // This is a placeholder query without a file path - create a new unsaved tab
-                debug!("📝 Creating new tab for placeholder query: {}", filename);
-                editor::create_new_tab(self, filename, content);
-            } else {
-                // Use existing open_query_file logic which checks for already open tabs
-                debug!("📁 Opening query file: {}", file_path);
-                if let Err(err) = sidebar_query::open_query_file(self, &file_path) {
-                    debug!("❌ Failed to open query file: {}", err);
-                } else {
-                    debug!("✅ Successfully opened query file: {}", file_path);
-                }
-            }
-        }
+    // Handle query file open requests in caller to avoid double-processing. Just return them here.
+    debug!("🔍 Processing query_files_to_open. Count: {}", query_files_to_open.len());
+    let results = query_files_to_open.clone();
 
         // Handle context menu requests (deduplicate to avoid multiple calls)
         let mut processed_removals = std::collections::HashSet::new();
@@ -10166,9 +10131,18 @@ impl App for Tabular {
                                 let query_files_to_open = self.render_tree(ui, &mut queries_tree, false);
                                 self.queries_tree = queries_tree;
 
-                                for (filename, content, _file_path) in query_files_to_open {
-                                    log::debug!("✅ Processing query click: Creating new tab for '{}'", filename);
-                                    crate::editor::create_new_tab(self, filename, content);
+                                for (filename, content, file_path) in query_files_to_open {
+                                    if file_path.is_empty() {
+                                        // Placeholder or unsaved query; open as new tab
+                                        log::debug!("✅ Processing query click: New unsaved tab '{}'", filename);
+                                        crate::editor::create_new_tab(self, filename, content);
+                                    } else {
+                                        // Open actual file via centralized logic (handles de-dup and metadata)
+                                        log::debug!("✅ Processing query click: Opening file '{}'", file_path);
+                                        if let Err(err) = sidebar_query::open_query_file(self, &file_path) {
+                                            log::debug!("❌ Failed to open query file '{}': {}", file_path, err);
+                                        }
+                                    }
                                 }
                             }
                             "History" => {

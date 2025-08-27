@@ -210,6 +210,15 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
         if conn_meta.is_some() || db_meta.is_some() {
             if let Some(id) = conn_meta {
                 header_lines.push(format!("-- tabular: connection_id={}", id));
+                // Also persist connection_name for resilience if IDs change later
+                if let Some(conn_name) = tabular
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(id))
+                    .map(|c| c.name.clone())
+                {
+                    header_lines.push(format!("-- tabular: connection_name={}", conn_name));
+                }
             }
             if let Some(db) = db_meta.filter(|d| !d.trim().is_empty()) {
                 header_lines.push(format!("-- tabular: database={}", db));
@@ -228,7 +237,57 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
                 filtered_existing.trim_start_matches('\n')
             );
         }
-        tab.content = final_content;
+    // Keep a clone for potential content-based file path resolution below
+    tab.content = final_content.clone();
+
+        // Best-effort: if file_path is missing but this tab likely comes from a query file,
+        // try to resolve the path from the queries tree by matching the tab title (filename).
+        if tab.file_path.is_none() {
+            let title_name = tab.title.clone();
+            if title_name.ends_with(".sql") {
+                // Flatten queries_tree and find unique match by name
+                fn collect_matches(nodes: &Vec<crate::models::structs::TreeNode>, name: &str, out: &mut Vec<String>) {
+                    for n in nodes {
+                        if let Some(path) = &n.file_path {
+                            if n.node_type == crate::models::enums::NodeType::Query && n.name == name {
+                                out.push(path.clone());
+                            }
+                        }
+                        if !n.children.is_empty() {
+                            collect_matches(&n.children, name, out);
+                        }
+                    }
+                }
+                let mut candidates = Vec::new();
+                collect_matches(&tabular.queries_tree, &title_name, &mut candidates);
+                if candidates.len() == 1 {
+                    tab.file_path = Some(candidates.remove(0));
+                } else if candidates.len() > 1 {
+                    // Ambiguous by name; try content-based disambiguation (ignore tabular headers)
+                    let strip_headers = |s: &str| -> String {
+                        s.lines()
+                            .filter(|l| !l.trim_start().starts_with("-- tabular:"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .trim_start_matches('\n')
+                            .to_string()
+                    };
+                    let current_body = strip_headers(&final_content);
+                    let mut match_path: Option<String> = None;
+                    for p in candidates.iter() {
+                        if let Ok(c) = std::fs::read_to_string(p) {
+                            if strip_headers(&c) == current_body {
+                                match_path = Some(p.clone());
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(p) = match_path {
+                        tab.file_path = Some(p);
+                    }
+                }
+            }
+        }
 
         if tab.file_path.is_some() {
             // File already exists, save directly
@@ -277,6 +336,15 @@ pub(crate) fn save_current_tab_with_name(
         if conn_meta.is_some() || db_meta.is_some() {
             if let Some(id) = conn_meta {
                 header_lines.push(format!("-- tabular: connection_id={}", id));
+                // Also persist connection_name for resilience
+                if let Some(conn_name) = tabular
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(id))
+                    .map(|c| c.name.clone())
+                {
+                    header_lines.push(format!("-- tabular: connection_name={}", conn_name));
+                }
             }
             if let Some(db) = db_meta.filter(|d| !d.trim().is_empty()) {
                 header_lines.push(format!("-- tabular: database={}", db));
