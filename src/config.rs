@@ -269,8 +269,8 @@ impl ConfigStore {
             }
             return None;
         }
-        if let Some(ref pool) = self.pool {
-            if let Ok(row) = sqlx::query_as::<_, (String,)>(
+        if let Some(ref pool) = self.pool
+            && let Ok(row) = sqlx::query_as::<_, (String,)>(
                 "SELECT value FROM preferences WHERE key = ?",
             )
             .bind("last_update_check_iso")
@@ -279,7 +279,6 @@ impl ConfigStore {
             {
                 return row.map(|(v,)| v).filter(|s| !s.is_empty());
             }
-        }
         None
     }
 

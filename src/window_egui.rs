@@ -9250,9 +9250,9 @@ impl App for Tabular {
                     // Check for updates on startup if enabled, but only once per day
                     if prefs.auto_check_updates {
                         let mut should_check = true;
-                        if let Some(store_ref) = self.config_store.as_ref() {
-                            if let Some(last_iso) = rt.block_on(store_ref.get_last_update_check()) {
-                                if let Ok(parsed) = DateTime::parse_from_rfc3339(&last_iso) {
+                        if let Some(store_ref) = self.config_store.as_ref()
+                            && let Some(last_iso) = rt.block_on(store_ref.get_last_update_check())
+                                && let Ok(parsed) = DateTime::parse_from_rfc3339(&last_iso) {
                                     let last_utc = parsed.with_timezone(&Utc);
                                     let now = Utc::now();
                                     if now.signed_duration_since(last_utc) < Duration::days(1) {
@@ -9263,10 +9263,8 @@ impl App for Tabular {
                                         );
                                     }
                                 }
-                            }
-                        }
-                        if should_check {
-                            if let (Some(sender), Some(store_ref)) =
+                        if should_check
+                            && let (Some(sender), Some(store_ref)) =
                                 (&self.background_sender, self.config_store.as_ref())
                             {
                                 // Persist timestamp immediately to prevent repeated checks this session
@@ -9274,7 +9272,6 @@ impl App for Tabular {
                                 let _ = sender
                                     .send(models::enums::BackgroundTask::CheckForUpdates);
                             }
-                        }
                     }
                 }
                 Err(e) => {
