@@ -1382,7 +1382,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                 tab.total_rows = tabular.total_rows;
                 tab.base_query = tabular.current_base_query.clone(); // Save the base query to the tab
             }
-    } else {
+        } else {
             tabular.current_table_name = "Query execution failed".to_string();
             tabular.current_table_headers.clear();
             tabular.current_table_data.clear();

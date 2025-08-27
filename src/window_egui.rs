@@ -1449,16 +1449,22 @@ impl Tabular {
                                 // Attempt a quick readiness check using the runtime (non-blocking)
                                 let created_now = if let Some(rt) = self.runtime.clone() {
                                     rt.block_on(async {
-                                        crate::connection::try_get_connection_pool(self, connection_id)
-                                            .await
-                                            .is_some()
+                                        crate::connection::try_get_connection_pool(
+                                            self,
+                                            connection_id,
+                                        )
+                                        .await
+                                        .is_some()
                                     })
                                 } else {
                                     let rt = self.get_runtime();
                                     rt.block_on(async {
-                                        crate::connection::try_get_connection_pool(self, connection_id)
-                                            .await
-                                            .is_some()
+                                        crate::connection::try_get_connection_pool(
+                                            self,
+                                            connection_id,
+                                        )
+                                        .await
+                                        .is_some()
                                     })
                                 };
                                 if !created_now {
@@ -1468,13 +1474,17 @@ impl Tabular {
 
                             if !pool_ready {
                                 // Prepare server pagination state but defer execution
-                                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                if let Some(active_tab) =
+                                    self.query_tabs.get_mut(self.active_tab_index)
+                                {
                                     active_tab.base_query = base_query.clone();
                                 }
                                 self.current_base_query = base_query.clone();
                                 self.current_page = 0;
                                 // Assume a large default total so paging UI is enabled
-                                if let Some(total) = self.execute_count_query() { self.actual_total_rows = Some(total); }
+                                if let Some(total) = self.execute_count_query() {
+                                    self.actual_total_rows = Some(total);
+                                }
 
                                 // Build the first page query to run as soon as pool is ready
                                 let first_query = self.build_paginated_query(0, self.page_size);
@@ -1483,7 +1493,8 @@ impl Tabular {
                                 self.pool_wait_query = first_query;
                                 self.pool_wait_started_at = Some(std::time::Instant::now());
                                 // Friendly status; keep current data intact
-                                self.current_table_name = "Connecting… waiting for pool".to_string();
+                                self.current_table_name =
+                                    "Connecting… waiting for pool".to_string();
                             } else {
                                 // Initialize server-side pagination now
                                 self.initialize_server_pagination(base_query);
@@ -1508,19 +1519,27 @@ impl Tabular {
                             } else if !self.connection_pools.contains_key(&connection_id) {
                                 let created_now = if let Some(rt) = self.runtime.clone() {
                                     rt.block_on(async {
-                                        crate::connection::try_get_connection_pool(self, connection_id)
-                                            .await
-                                            .is_some()
+                                        crate::connection::try_get_connection_pool(
+                                            self,
+                                            connection_id,
+                                        )
+                                        .await
+                                        .is_some()
                                     })
                                 } else {
                                     let rt = self.get_runtime();
                                     rt.block_on(async {
-                                        crate::connection::try_get_connection_pool(self, connection_id)
-                                            .await
-                                            .is_some()
+                                        crate::connection::try_get_connection_pool(
+                                            self,
+                                            connection_id,
+                                        )
+                                        .await
+                                        .is_some()
                                     })
                                 };
-                                if !created_now { pool_ready = false; }
+                                if !created_now {
+                                    pool_ready = false;
+                                }
                             }
 
                             if !pool_ready {
@@ -1528,12 +1547,15 @@ impl Tabular {
                                 self.pool_wait_connection_id = Some(connection_id);
                                 self.pool_wait_query = safe_query;
                                 self.pool_wait_started_at = Some(std::time::Instant::now());
-                                self.current_table_name = "Connecting… waiting for pool".to_string();
-                            } else if let Some((headers, data)) = connection::execute_query_with_connection(
-                                self,
-                                connection_id,
-                                safe_query,
-                            ) {
+                                self.current_table_name =
+                                    "Connecting… waiting for pool".to_string();
+                            } else if let Some((headers, data)) =
+                                connection::execute_query_with_connection(
+                                    self,
+                                    connection_id,
+                                    safe_query,
+                                )
+                            {
                                 self.current_table_headers = headers;
                                 self.current_table_data = data.clone();
                                 self.all_table_data = data;
@@ -5612,7 +5634,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 );
                 return;
             }
-            
+
             let offset = self.current_page * self.page_size;
             debug!(
                 "🔥 About to build paginated query with offset={}, page_size={}, connection_id={}",
@@ -6878,13 +6900,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         .max_rect(scroll_rect)
                         .layout(egui::Layout::top_down(egui::Align::LEFT)),
                 );
-        let _scroll_area_response = egui::ScrollArea::both()
+                let _scroll_area_response = egui::ScrollArea::both()
                     .id_salt("table_data_scroll")
                     .auto_shrink([false, false])
                     .show(&mut scroll_child, |ui| {
             // Capture target rect of the selected cell during layout
             let mut target_cell_rect: Option<egui::Rect> = None;
-                        
                         let grid_response = egui::Grid::new("table_data_grid")
                             .striped(true)
                             .spacing([0.0, 0.0])
@@ -7016,50 +7037,48 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     col_sel_requests.push((col_index, modifiers));
                                                 }
                                             });
-                                            // Add resize handle for all columns except the last one,
-                                            // BUT always add for error columns (even if they are the last/only column)
-                                            if col_index < headers.len() - 1 || Some(col_index) == error_column_index {
-                                                let handle_x = ui.max_rect().max.x;
-                                                let handle_y = ui.max_rect().min.y;
-                                                let handle_height = available_height;
-                                                let resize_handle_rect = egui::Rect::from_min_size(
-                                                    egui::pos2(handle_x - 3.0, handle_y),
-                                                    egui::vec2(6.0, handle_height)
+                                            // Add resize handle for all columns, including the last (rightmost) one
+                                            // so users can resize the final column as well.
+                                            let handle_x = ui.max_rect().max.x;
+                                            let handle_y = ui.max_rect().min.y;
+                                            let handle_height = available_height;
+                                            let resize_handle_rect = egui::Rect::from_min_size(
+                                                egui::pos2(handle_x - 3.0, handle_y),
+                                                egui::vec2(6.0, handle_height)
+                                            );
+                                            let resize_response = ui.allocate_rect(resize_handle_rect, egui::Sense::drag());
+
+                                            // Always show a subtle resize indicator
+                                            let indicator_color = if resize_response.hovered() || resize_response.dragged() {
+                                                egui::Color32::from_rgba_unmultiplied(100, 150, 255, 200)
+                                            } else if ui.visuals().dark_mode {
+                                                egui::Color32::from_rgba_unmultiplied(120, 120, 120, 80)
+                                            } else {
+                                                egui::Color32::from_rgba_unmultiplied(150, 150, 150, 60)
+                                            };
+
+                                            // Draw the resize handle with dotted pattern
+                                            let center_x = handle_x - 1.5;
+                                            let dot_size = 1.0;
+                                            let dot_spacing = 4.0;
+                                            let start_y = handle_y + 8.0;
+                                            let end_y = handle_y + handle_height - 8.0;
+
+                                            for y in (start_y as i32..end_y as i32).step_by(dot_spacing as usize) {
+                                                ui.painter().circle_filled(
+                                                    egui::pos2(center_x, y as f32),
+                                                    dot_size,
+                                                    indicator_color
                                                 );
-                                                let resize_response = ui.allocate_rect(resize_handle_rect, egui::Sense::drag());
+                                            }
 
-                                                // Always show a subtle resize indicator
-                                                let indicator_color = if resize_response.hovered() || resize_response.dragged() {
-                                                    egui::Color32::from_rgba_unmultiplied(100, 150, 255, 200)
-                                                } else if ui.visuals().dark_mode {
-                                                    egui::Color32::from_rgba_unmultiplied(120, 120, 120, 80)
-                                                } else {
-                                                    egui::Color32::from_rgba_unmultiplied(150, 150, 150, 60)
-                                                };
-
-                                                // Draw the resize handle with dotted pattern
-                                                let center_x = handle_x - 1.5;
-                                                let dot_size = 1.0;
-                                                let dot_spacing = 4.0;
-                                                let start_y = handle_y + 8.0;
-                                                let end_y = handle_y + handle_height - 8.0;
-
-                                                for y in (start_y as i32..end_y as i32).step_by(dot_spacing as usize) {
-                                                    ui.painter().circle_filled(
-                                                        egui::pos2(center_x, y as f32),
-                                                        dot_size,
-                                                        indicator_color
-                                                    );
-                                                }
-
-                                                if resize_response.hovered() {
-                                                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                                                }
-                                                if resize_response.dragged() {
-                                                    let delta_x = resize_response.drag_delta().x;
-                                                    let new_width = column_width + delta_x;
-                                                    self.set_column_width(col_index, new_width);
-                                                }
+                                            if resize_response.hovered() {
+                                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                                            }
+                                            if resize_response.dragged() {
+                                                let delta_x = resize_response.drag_delta().x;
+                                                let new_width = column_width + delta_x;
+                                                self.set_column_width(col_index, new_width);
                                             }
                                         }
                                     );
@@ -7300,13 +7319,15 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     self.selected_cell = Some((r, c));
                     self.table_recently_clicked = true; // Mark that table was clicked
                 }
-                
+
                 for (column_index, ascending) in sort_requests {
                     self.sort_table_data(column_index, ascending);
                 }
-                
+
                 // Reset scroll request flag after attempting scroll inside the ScrollArea
-                if self.scroll_to_selected_cell { self.scroll_to_selected_cell = false; }
+                if self.scroll_to_selected_cell {
+                    self.scroll_to_selected_cell = false;
+                }
                 // If there are no rows, display an explicit message under the header grid
                 // if self.current_table_data.is_empty() {
                 //     ui.add_space(4.0);
@@ -9055,10 +9076,13 @@ impl App for Tabular {
         // Periodic cleanup of stuck connection pools to prevent infinite loops
         if self.pending_connection_pools.len() > 10 {
             // If we have too many pending connections, force cleanup
-            log::debug!("🧹 Force cleaning up {} pending connections", self.pending_connection_pools.len());
+            log::debug!(
+                "🧹 Force cleaning up {} pending connections",
+                self.pending_connection_pools.len()
+            );
             self.pending_connection_pools.clear();
         }
-        
+
         // helper closure to save immediately when prefs_dirty flagged
         let try_save_prefs = |app: &mut Tabular| {
             if app.prefs_dirty {
@@ -9177,14 +9201,14 @@ impl App for Tabular {
             if let Some(conn_id) = self.pool_wait_connection_id {
                 if self.connection_pools.contains_key(&conn_id) {
                     ready = true;
-                } else if let Ok(shared) = self.shared_connection_pools.lock() {
-                    if shared.contains_key(&conn_id) {
-                        // Move to local cache for speed
-                        if let Some(pool) = shared.get(&conn_id).cloned() {
-                            self.connection_pools.insert(conn_id, pool);
-                        }
-                        ready = true;
+                } else if let Ok(shared) = self.shared_connection_pools.lock()
+                    && shared.contains_key(&conn_id)
+                {
+                    // Move to local cache for speed
+                    if let Some(pool) = shared.get(&conn_id).cloned() {
+                        self.connection_pools.insert(conn_id, pool);
                     }
+                    ready = true;
                 }
             }
 
@@ -9652,15 +9676,14 @@ impl App for Tabular {
                             .pool_wait_connection_id
                             .and_then(|id| self.get_connection_name(id))
                             .unwrap_or_else(|| "(connection)".to_string());
-                        ui.label(format!(
-                            "Establishing connection pool for '{}'…",
-                            conn_name
-                        ));
+                        ui.label(format!("Establishing connection pool for '{}'…", conn_name));
                     });
                     if elapsed.as_secs() >= 10 {
-                        ui.label(egui::RichText::new(
-                            "This can take a while for slow networks."
-                        ).size(11.0).weak());
+                        ui.label(
+                            egui::RichText::new("This can take a while for slow networks.")
+                                .size(11.0)
+                                .weak(),
+                        );
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -9668,12 +9691,9 @@ impl App for Tabular {
                             keep_open = false;
                         }
                         ui.label(
-                            egui::RichText::new(format!(
-                                "Waiting {}s",
-                                elapsed.as_secs()
-                            ))
-                            .size(11.0)
-                            .weak(),
+                            egui::RichText::new(format!("Waiting {}s", elapsed.as_secs()))
+                                .size(11.0)
+                                .weak(),
                         );
                     });
                 });
@@ -10596,7 +10616,12 @@ impl App for Tabular {
 
 // Helper to finalize query result display from a raw execution result
 impl Tabular {
-    fn apply_query_result(&mut self, connection_id: i64, query: String, result: Option<(Vec<String>, Vec<Vec<String>>)>) {
+    fn apply_query_result(
+        &mut self,
+        connection_id: i64,
+        query: String,
+        result: Option<(Vec<String>, Vec<Vec<String>>)>,
+    ) {
         // Mark active tab as executed
         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
             tab.has_executed_query = true;
@@ -10636,7 +10661,7 @@ impl Tabular {
                 String::new()
             };
             // Preserve pre-set base query for server-side pagination; otherwise use computed base
-            if !(self.use_server_pagination && !self.current_base_query.is_empty()) {
+            if !self.use_server_pagination || self.current_base_query.is_empty() {
                 self.current_base_query = base_query_for_pagination.clone();
             }
 
@@ -10655,7 +10680,7 @@ impl Tabular {
                 tab.page_size = self.page_size;
                 tab.total_rows = self.total_rows;
                 // Preserve pre-set base query for server-side pagination; otherwise store computed base
-                if !(self.use_server_pagination && !self.current_base_query.is_empty()) {
+                if !self.use_server_pagination || self.current_base_query.is_empty() {
                     tab.base_query = self.current_base_query.clone();
                 }
             }

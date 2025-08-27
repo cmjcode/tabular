@@ -290,15 +290,14 @@ tabular.set_active_tab_connection_with_database(Some(connection_id), default_dat
 
             // Attempt to create/get the pool quickly; if not ready, show loading and queue the query
             let mut ready = tabular.connection_pools.contains_key(&connection_id);
-            if !ready {
-                if let Ok(shared) = tabular.shared_connection_pools.lock() {
+            if !ready
+                && let Ok(shared) = tabular.shared_connection_pools.lock() {
                     ready = shared.contains_key(&connection_id);
                 }
-            }
             if !ready {
                 // Trigger quick creation/background spawn via runtime, but don't block UI long
                 if let Some(rt) = tabular.runtime.clone() {
-                    let _ = rt.block_on(async {
+                    rt.block_on(async {
                         // This will either quickly return a pool or start background creation
                         let _ = crate::connection::get_or_create_connection_pool(tabular, connection_id).await;
                     });
@@ -963,12 +962,16 @@ fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
     // Remove any connection that's been pending too long to prevent permanent locks
     // This is a safety net in case background tasks fail to complete
     if !tabular.pending_connection_pools.is_empty() {
-        let stuck_connections: Vec<i64> = tabular.pending_connection_pools.iter().copied().collect();
+        let stuck_connections: Vec<i64> =
+            tabular.pending_connection_pools.iter().copied().collect();
         for connection_id in stuck_connections {
             // Check if we have the pool in shared pools or local cache
-            let has_pool = tabular.connection_pools.contains_key(&connection_id) ||
-                tabular.shared_connection_pools.lock().is_ok_and(|pools| pools.contains_key(&connection_id));
-            
+            let has_pool = tabular.connection_pools.contains_key(&connection_id)
+                || tabular
+                    .shared_connection_pools
+                    .lock()
+                    .is_ok_and(|pools| pools.contains_key(&connection_id));
+
             if has_pool {
                 debug!(
                     "🧹 Removing stuck pending status for connection {} (pool exists)",
@@ -1000,10 +1003,10 @@ pub(crate) async fn get_or_create_connection_pool(
 ) -> Option<models::enums::DatabasePool> {
     // Clean up any completed background pools first
     cleanup_completed_background_pools(tabular);
-    
+
     // Clean up any stuck pending connections (safety net)
     cleanup_stuck_pending_connections(tabular);
-    
+
     // First check if we already have a cached connection pool for this connection
     if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
         debug!(
@@ -1399,10 +1402,10 @@ pub(crate) async fn try_get_connection_pool(
 ) -> Option<models::enums::DatabasePool> {
     // Clean up any completed background pools first
     cleanup_completed_background_pools(tabular);
-    
+
     // Clean up any stuck pending connections (safety net)
     cleanup_stuck_pending_connections(tabular);
-    
+
     // Check cache first
     if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
         debug!(
