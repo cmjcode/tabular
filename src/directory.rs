@@ -1,8 +1,8 @@
 use crate::models;
 
 pub(crate) fn get_app_data_dir() -> std::path::PathBuf {
-    let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    home_dir.join(".tabular")
+    // Use the configurable data directory from config.rs
+    crate::config::get_data_dir()
 }
 
 pub(crate) fn get_data_dir() -> std::path::PathBuf {

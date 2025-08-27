@@ -27,7 +27,6 @@ pub mod window_egui;
 pub fn run() -> Result<(), eframe::Error> {
     dotenv::dotenv().ok();
     let _ = env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
         .filter_module("tabular", log::LevelFilter::Error)
         .is_test(false)
         .try_init();
