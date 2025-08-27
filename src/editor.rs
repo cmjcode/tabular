@@ -202,7 +202,33 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
 
 pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(), String> {
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-        tab.content = tabular.editor_text.clone();
+        // Ensure content holds editor text plus metadata header (id + optional db)
+        let mut final_content = tabular.editor_text.clone();
+        // Prepare or update metadata header at top of file
+        let (conn_meta, db_meta) = (tab.connection_id, tab.database_name.clone());
+        let mut header_lines: Vec<String> = Vec::new();
+        if conn_meta.is_some() || db_meta.is_some() {
+            if let Some(id) = conn_meta {
+                header_lines.push(format!("-- tabular: connection_id={}", id));
+            }
+            if let Some(db) = db_meta.filter(|d| !d.trim().is_empty()) {
+                header_lines.push(format!("-- tabular: database={}", db));
+            }
+        }
+        if !header_lines.is_empty() {
+            // Remove existing tabular header lines to avoid duplicates
+            let filtered_existing: String = final_content
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("-- tabular:"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            final_content = format!(
+                "{}\n\n{}",
+                header_lines.join("\n"),
+                filtered_existing.trim_start_matches('\n')
+            );
+        }
+        tab.content = final_content;
 
         if tab.file_path.is_some() {
             // File already exists, save directly
@@ -244,6 +270,31 @@ pub(crate) fn save_current_tab_with_name(
     filename: String,
 ) -> Result<(), String> {
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        // Mirror header injection as in save_current_tab
+        let mut final_content = tabular.editor_text.clone();
+        let (conn_meta, db_meta) = (tab.connection_id, tab.database_name.clone());
+        let mut header_lines: Vec<String> = Vec::new();
+        if conn_meta.is_some() || db_meta.is_some() {
+            if let Some(id) = conn_meta {
+                header_lines.push(format!("-- tabular: connection_id={}", id));
+            }
+            if let Some(db) = db_meta.filter(|d| !d.trim().is_empty()) {
+                header_lines.push(format!("-- tabular: database={}", db));
+            }
+        }
+        if !header_lines.is_empty() {
+            let filtered_existing: String = final_content
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("-- tabular:"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            final_content = format!(
+                "{}\n\n{}",
+                header_lines.join("\n"),
+                filtered_existing.trim_start_matches('\n')
+            );
+        }
+        tab.content = final_content;
         // Use selected save directory or fallback to query directory
         let target_dir = if !tabular.save_directory.is_empty() {
             std::path::PathBuf::from(&tabular.save_directory)

@@ -3,6 +3,39 @@ use log::debug;
 
 use crate::{directory, editor, models, sidebar_query, window_egui};
 
+// Lightweight metadata parsed from .sql files
+#[derive(Debug, Default, Clone)]
+struct QueryMetadata {
+    connection_id: Option<i64>,
+    connection_name: Option<String>,
+    database: Option<String>,
+}
+
+fn parse_query_metadata(content: &str) -> QueryMetadata {
+    let mut meta = QueryMetadata::default();
+    // Scan first N lines for comment metadata
+    for line in content.lines().take(50) {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("--") {
+            continue;
+        }
+        if let Some(idx) = trimmed.find("tabular:") {
+            let rest = trimmed[idx + "tabular:".len()..].trim();
+            // Support one key per line: e.g., "connection_id=123", "database=mydb"
+            if let Some(val) = rest.strip_prefix("connection_id=") {
+                if let Ok(id) = val.trim().parse::<i64>() {
+                    meta.connection_id = Some(id);
+                }
+            } else if let Some(val) = rest.strip_prefix("connection_name=") {
+                meta.connection_name = Some(val.trim().to_string());
+            } else if let Some(val) = rest.strip_prefix("database=") {
+                meta.database = Some(val.trim().to_string());
+            }
+        }
+    }
+    meta
+}
+
 pub(crate) fn load_queries_from_directory(tabular: &mut window_egui::Tabular) {
     tabular.queries_tree.clear();
 
@@ -257,6 +290,21 @@ pub(crate) fn open_query_file(
     let content =
         std::fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
+    // Parse optional connection metadata from file content
+    let file_meta = parse_query_metadata(&content);
+    // Try resolve connection_id: prefer explicit ID, fallback to name
+    let mut resolved_connection_id = file_meta.connection_id;
+    if resolved_connection_id.is_none() {
+        resolved_connection_id = file_meta.connection_name.as_ref().and_then(|name| {
+            tabular
+                .connections
+                .iter()
+                .find(|c| &c.name == name)
+                .and_then(|c| c.id)
+        });
+    }
+    let resolved_database = file_meta.database.clone();
+
     let filename = std::path::Path::new(file_path)
         .file_name()
         .and_then(|name| name.to_str())
@@ -271,15 +319,15 @@ pub(crate) fn open_query_file(
         }
     }
 
-    // Create new tab for the file
+    // Create new tab for the file (with parsed connection metadata if any)
     let new_tab = models::structs::QueryTab {
         title: filename,
         content: content.clone(),
         file_path: Some(file_path.to_string()),
         is_saved: true,
         is_modified: false,
-        connection_id: None, // File queries don't have connection by default
-        database_name: None, // File queries don't have database by default
+        connection_id: resolved_connection_id,
+        database_name: resolved_database.clone(),
         has_executed_query: false, // New tab hasn't executed any query yet
         result_headers: Vec::new(),
         result_rows: Vec::new(),
@@ -296,6 +344,19 @@ pub(crate) fn open_query_file(
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;
     tabular.editor_text = content;
+
+    // If the file specified a connection, set it for active tab and eagerly create the pool
+    if let Some(conn_id) = resolved_connection_id {
+        tabular.set_active_tab_connection_with_database(Some(conn_id), resolved_database);
+        tabular.current_connection_id = Some(conn_id);
+
+        // Trigger connection creation in the background (non-blocking for UI)
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(async {
+                let _ = crate::connection::get_or_create_connection_pool(tabular, conn_id).await;
+            });
+        }
+    }
 
     Ok(())
 }
