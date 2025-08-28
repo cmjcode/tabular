@@ -91,10 +91,10 @@ build-macos: create-dirs
 
 build-linux: create-dirs
 	@echo "🐧 Build Linux (x86_64 + aarch64)"
-	cross build --release --target $(LINUX_X86_TARGET)
-	cross build --release --target $(LINUX_ARM_TARGET)
+	cargo build --release --target $(LINUX_X86_TARGET)
+# 	cargo build --release --target $(LINUX_ARM_TARGET)
 	cp $(BUILD_DIR)/$(LINUX_X86_TARGET)/release/tabular $(LINUX_DIR)/tabular-x86_64
-	cp $(BUILD_DIR)/$(LINUX_ARM_TARGET)/release/tabular $(LINUX_DIR)/tabular-aarch64
+# 	cp $(BUILD_DIR)/$(LINUX_ARM_TARGET)/release/tabular $(LINUX_DIR)/tabular-aarch64
 	@echo "✅ Linux builds ready."
 
 build-windows: create-dirs
