@@ -30,8 +30,8 @@ fn format_date_for_display(date_str: &str) -> String {
         .to_string();
 
     match date_str {
-        d if d == today => "📅 Today".to_string(),
-        d if d == yesterday => "📅 Yesterday".to_string(),
+        d if d == today => "Today".to_string(),
+        d if d == yesterday => "Yesterday".to_string(),
         _ => {
             // Try to parse the date and format it nicely
             if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
