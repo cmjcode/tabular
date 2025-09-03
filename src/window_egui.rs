@@ -7441,6 +7441,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 let mut deferred_width_updates: Vec<(usize, f32)> = Vec::new();
                 // Defer delete-row action to avoid mutable borrow inside UI closures
                 let mut delete_row_index_request: Option<usize> = None;
+                let mut add_row_request: Option<usize> = None;
 
                 // Ensure column widths are initialized
                 if self.column_widths.len() != headers.len() {
@@ -7821,6 +7822,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                 hover_response.context_menu(|ui| {
                                                     ui.set_min_width(150.0);
                                                     ui.vertical(|ui| {
+                                                        if ui.button("📋 Add New Row").clicked() {
+                                                            add_row_request = Some(0);
+                                                            ui.close();
+                                                        }
                                                         if ui.button("📋 Copy Cell Value").clicked() {
                                                             ui.ctx().copy_text(cell.clone());
                                                             ui.close();
@@ -8019,6 +8024,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     // Ensure the row intended for deletion is selected, then delete
                     self.selected_row = Some(ri);
                     self.spreadsheet_delete_selected_row();
+                }
+
+                if let Some(ri) = add_row_request.take() {
+                    self.spreadsheet_add_row();
                 }
 
                 for (column_index, ascending) in sort_requests {
