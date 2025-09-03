@@ -7392,16 +7392,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         // WHERE filter
                         ui.label("WHERE:");
                         let filter_response = ui.add_sized(
-                            [ui.available_width() * 0.6, 25.0],
+                            [ui.available_width() * 0.8, 25.0],
                             egui::TextEdit::singleline(&mut self.sql_filter_text)
                                 .hint_text("column = 'value' AND col2 > 0"),
                         );
                         // Only apply filter when:
                         // 1) The filter field loses focus after edits, or
                         // 2) Enter is pressed while the filter field has focus.
-                        if (filter_response.lost_focus() && filter_response.changed())
-                            || (filter_response.has_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                        if (filter_response.lost_focus() && filter_response.changed()) || (filter_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                         {
                             self.apply_sql_filter();
                         }
@@ -7409,21 +7407,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             self.sql_filter_text.clear();
                             self.apply_sql_filter();
                         }
-                        ui.separator();
-                        // Spreadsheet actions
-                        if ui.button("➕ Add row").clicked() {
-                            self.spreadsheet_add_row();
-                        }
-                        let can_delete = self.selected_row.is_some();
-                        if ui
-                            .add_enabled(can_delete, egui::Button::new("🗑 Delete row"))
-                            .clicked()
-                        {
-                            println!("🔥 Delete button clicked!");
-                            self.spreadsheet_delete_selected_row();
-                        }
                         if self.spreadsheet_state.is_dirty {
-                            ui.colored_label(egui::Color32::YELLOW, "● Unsaved changes (⌘S)");
+                            ui.separator();
+                            ui.colored_label(egui::Color32::RED, "Unsaved changes (⌘S)");
                         }
                     });
                     ui.separator();
