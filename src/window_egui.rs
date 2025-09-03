@@ -7337,6 +7337,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 let mut cell_edit_text_update: Option<String> = None;
                 // Defer any column width updates to avoid mut borrow in closures
                 let mut deferred_width_updates: Vec<(usize, f32)> = Vec::new();
+                // Defer delete-row action to avoid mutable borrow inside UI closures
+                let mut delete_row_index_request: Option<usize> = None;
 
                 // Ensure column widths are initialized
                 if self.column_widths.len() != headers.len() {
@@ -7755,6 +7757,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                             export::export_to_xlsx(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
                                                             ui.close();
                                                         }
+                                                        ui.separator();
+                                                        if ui.button("🗑 Delete this Row").clicked() {
+                                                            // Defer the actual deletion until after the grid borrow ends
+                                                            delete_row_index_request = Some(row_index);
+                                                            ui.close();
+                                                        }
+
                                                     });
                                                 });
                                             }
@@ -7841,6 +7850,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 // Apply cell edit text updates
                 if let Some(new_text) = cell_edit_text_update.take() {
                     self.spreadsheet_state.cell_edit_text = new_text;
+                }
+
+                // Perform deferred delete after UI borrows are released
+                if let Some(ri) = delete_row_index_request.take() {
+                    // Ensure the row intended for deletion is selected, then delete
+                    self.selected_row = Some(ri);
+                    self.spreadsheet_delete_selected_row();
                 }
 
                 for (column_index, ascending) in sort_requests {
