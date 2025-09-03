@@ -1,7 +1,7 @@
+use chrono::{DateTime, Duration, Utc};
 use eframe::{App, Frame, egui};
 use egui_code_editor::ColorTheme; // for integrated editor theme selection
 use log::{debug, error};
-use chrono::{DateTime, Duration, Utc};
 use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -223,6 +223,8 @@ pub struct Tabular {
     pub pool_wait_connection_id: Option<i64>,
     pub pool_wait_query: String,
     pub pool_wait_started_at: Option<std::time::Instant>,
+    // Spreadsheet editing state
+    pub spreadsheet_state: crate::models::structs::SpreadsheetState,
 }
 
 // Preference tabs enumeration
@@ -236,6 +238,391 @@ pub enum PrefTab {
 }
 
 impl Tabular {
+    // Begin: Spreadsheet helpers
+    fn spreadsheet_start_cell_edit(&mut self, row: usize, col: usize) {
+        if let Some(val) = self
+            .current_table_data
+            .get(row)
+            .and_then(|r| r.get(col))
+            .cloned()
+        {
+            self.spreadsheet_state.editing_cell = Some((row, col));
+            self.spreadsheet_state.cell_edit_text = val;
+        }
+    }
+
+    fn spreadsheet_finish_cell_edit(&mut self, save: bool) {
+        if let Some((row, col)) = self.spreadsheet_state.editing_cell.take() {
+            let new_val = self.spreadsheet_state.cell_edit_text.clone();
+            self.spreadsheet_state.cell_edit_text.clear();
+            if save {
+                if let Some(old_val) = self
+                    .all_table_data
+                    .get(row)
+                    .and_then(|r| r.get(col))
+                    .cloned()
+                {
+                    if old_val != new_val {
+                        if let Some(r1) = self.current_table_data.get_mut(row) {
+                            if let Some(c1) = r1.get_mut(col) {
+                                *c1 = new_val.clone();
+                            }
+                        }
+                        if let Some(r2) = self.all_table_data.get_mut(row) {
+                            if let Some(c2) = r2.get_mut(col) {
+                                *c2 = new_val.clone();
+                            }
+                        }
+                        self.spreadsheet_state.pending_operations.push(
+                            crate::models::structs::CellEditOperation::Update {
+                                row_index: row,
+                                col_index: col,
+                                old_value: old_val,
+                                new_value: new_val,
+                            },
+                        );
+                        self.spreadsheet_state.is_dirty = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn spreadsheet_add_row(&mut self) {
+        let new_row: Vec<String> = self
+            .current_table_headers
+            .iter()
+            .map(|_| String::new())
+            .collect();
+        let row_index = self.all_table_data.len();
+        self.all_table_data.push(new_row.clone());
+        self.current_table_data.push(new_row.clone());
+        self.total_rows = self.total_rows.saturating_add(1);
+        self.spreadsheet_state.pending_operations.push(
+            crate::models::structs::CellEditOperation::InsertRow {
+                row_index,
+                values: new_row,
+            },
+        );
+        self.spreadsheet_state.is_dirty = true;
+        self.selected_row = Some(row_index);
+        self.selected_cell = Some((row_index, 0));
+        self.table_recently_clicked = true;
+        self.spreadsheet_start_cell_edit(row_index, 0);
+    }
+
+    fn spreadsheet_delete_selected_row(&mut self) {
+        debug!(
+            "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
+            self.selected_row
+        );
+        println!(
+            "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
+            self.selected_row
+        );
+
+        if let Some(row) = self.selected_row {
+            // Get the row values BEFORE removing from any data structures
+            let values = if let Some(values) = self.all_table_data.get(row).cloned() {
+                values
+            } else if let Some(values) = self.current_table_data.get(row).cloned() {
+                values
+            } else {
+                println!("🔥 Could not get values for row {}", row);
+                debug!("🔥 Could not get values for row {}", row);
+                return;
+            };
+
+            println!(
+                "🔥 Adding DeleteRow operation for row {} with {} values: {:?}",
+                row,
+                values.len(),
+                values
+            );
+            debug!(
+                "🔥 Adding DeleteRow operation for row {} with {} values",
+                row,
+                values.len()
+            );
+
+            self.spreadsheet_state.pending_operations.push(
+                crate::models::structs::CellEditOperation::DeleteRow {
+                    row_index: row,
+                    values,
+                },
+            );
+            self.spreadsheet_state.is_dirty = true;
+
+            println!(
+                "🔥 Now have {} pending operations, is_dirty: {}",
+                self.spreadsheet_state.pending_operations.len(),
+                self.spreadsheet_state.is_dirty
+            );
+            debug!(
+                "🔥 Now have {} pending operations, is_dirty: {}",
+                self.spreadsheet_state.pending_operations.len(),
+                self.spreadsheet_state.is_dirty
+            );
+
+            // Now remove from data structures
+            if row < self.current_table_data.len() {
+                self.current_table_data.remove(row);
+            }
+            if row < self.all_table_data.len() {
+                self.all_table_data.remove(row);
+            }
+            self.total_rows = self.total_rows.saturating_sub(1);
+            self.selected_row = None;
+            self.selected_cell = None;
+        } else {
+            println!("🔥 No row selected for deletion");
+            debug!("🔥 No row selected for deletion");
+        }
+    }
+
+    fn spreadsheet_extract_table_name(&self) -> Option<String> {
+        println!(
+            "🔥 spreadsheet_extract_table_name called with current_table_name: '{}'",
+            self.current_table_name
+        );
+
+        if self.current_table_name.starts_with("Table: ") {
+            let s = self.current_table_name.strip_prefix("Table: ")?;
+            let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
+            println!("🔥 Extracted table name: {:?}", result);
+            result
+        } else {
+            // Try to extract from active tab if it's a table browse tab
+            if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
+                println!("🔥 Checking active tab title: '{}'", tab.title);
+                if tab.title.starts_with("Table: ") {
+                    let s = tab.title.strip_prefix("Table: ")?;
+                    let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
+                    println!("🔥 Extracted table name from tab: {:?}", result);
+                    return result;
+                }
+            }
+            println!("🔥 Table name does not start with 'Table: ' and no suitable tab found");
+            None
+        }
+    }
+
+    fn spreadsheet_quote_ident(
+        &self,
+        conn: &crate::models::structs::ConnectionConfig,
+        ident: &str,
+    ) -> String {
+        match conn.connection_type {
+            crate::models::enums::DatabaseType::MySQL => format!("`{}`", ident),
+            crate::models::enums::DatabaseType::PostgreSQL => format!("\"{}\"", ident),
+            crate::models::enums::DatabaseType::MsSQL => format!("[{}]", ident),
+            crate::models::enums::DatabaseType::SQLite => format!("\"{}\"", ident),
+            _ => ident.to_string(),
+        }
+    }
+
+    fn spreadsheet_quote_value(
+        &self,
+        conn: &crate::models::structs::ConnectionConfig,
+        v: &str,
+    ) -> String {
+        // Handle NULL values properly - don't quote them
+        if v.is_empty() || v.eq_ignore_ascii_case("null") {
+            return "NULL".to_string();
+        }
+        match conn.connection_type {
+            crate::models::enums::DatabaseType::MySQL
+            | crate::models::enums::DatabaseType::PostgreSQL
+            | crate::models::enums::DatabaseType::MsSQL
+            | crate::models::enums::DatabaseType::SQLite => format!("'{}'", v.replace("'", "''")),
+            _ => format!("'{}'", v),
+        }
+    }
+
+    fn spreadsheet_row_where_all_columns(
+        &self,
+        conn: &crate::models::structs::ConnectionConfig,
+        row_index: usize,
+    ) -> Option<String> {
+        let row = self.current_table_data.get(row_index)?;
+        
+        // Use only the first column (usually primary key like RecID) for WHERE clause
+        if let (Some(first_header), Some(first_value)) = (
+            self.current_table_headers.get(0),
+            row.get(0)
+        ) {
+            let lhs = self.spreadsheet_quote_ident(conn, first_header);
+            let rhs = self.spreadsheet_quote_value(conn, first_value);
+            Some(format!("{} = {}", lhs, rhs))
+        } else {
+            None
+        }
+    }
+
+    fn spreadsheet_generate_sql(&self) -> Option<String> {
+        println!("🔥 spreadsheet_generate_sql called");
+
+        let conn_id = self.current_connection_id?;
+        println!("🔥 Found connection ID: {}", conn_id);
+
+        let conn = self
+            .connections
+            .iter()
+            .find(|c| c.id == Some(conn_id))
+            .cloned()?;
+        println!("🔥 Found connection config");
+
+        let table = self.spreadsheet_extract_table_name()?;
+        println!("🔥 Extracted table name: {}", table);
+
+        let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
+        let qv = |s: &str| self.spreadsheet_quote_value(&conn, s);
+
+        let mut stmts: Vec<String> = Vec::new();
+        println!(
+            "🔥 Processing {} operations",
+            self.spreadsheet_state.pending_operations.len()
+        );
+        for op in &self.spreadsheet_state.pending_operations {
+            match op {
+                crate::models::structs::CellEditOperation::Update {
+                    row_index,
+                    col_index,
+                    old_value: _,
+                    new_value,
+                } => {
+                    let col = self.current_table_headers.get(*col_index)?;
+                    let where_clause = self.spreadsheet_row_where_all_columns(&conn, *row_index)?;
+                    let sql = format!(
+                        "UPDATE {} SET {} = {} WHERE {}",
+                        qt(&table),
+                        qt(col),
+                        qv(new_value),
+                        where_clause
+                    );
+                    stmts.push(sql);
+                }
+                crate::models::structs::CellEditOperation::InsertRow {
+                    row_index: _,
+                    values,
+                } => {
+                    let cols: Vec<String> =
+                        self.current_table_headers.iter().map(|c| qt(c)).collect();
+                    let vals: Vec<String> = values.iter().map(|v| qv(v)).collect();
+                    let sql = format!(
+                        "INSERT INTO {} ({}) VALUES ({})",
+                        qt(&table),
+                        cols.join(", "),
+                        vals.join(", ")
+                    );
+                    stmts.push(sql);
+                }
+                crate::models::structs::CellEditOperation::DeleteRow {
+                    row_index: _,
+                    values,
+                } => {
+                    // Use a smarter WHERE clause - prefer just the first column if it looks like a primary key
+                    if values.is_empty() || self.current_table_headers.is_empty() {
+                        continue;
+                    }
+                    
+                    let first_header = &self.current_table_headers[0];
+                    let first_value = &values[0];
+                    
+                    // If the first column looks like a primary key (RecID, ID, etc.), use just that
+                    if first_header.to_lowercase().contains("id") || 
+                       first_header.to_lowercase().contains("recid") ||
+                       first_header.to_lowercase() == "pk" {
+                        let where_clause = format!("{} = {}", qt(first_header), qv(first_value));
+                        let sql = format!("DELETE FROM {} WHERE {}", qt(&table), where_clause);
+                        println!("🔥 Using primary key WHERE: {}", where_clause);
+                        stmts.push(sql);
+                    } else {
+                        // Fallback to all columns if no obvious primary key
+                        if values.len() != self.current_table_headers.len() {
+                            continue;
+                        }
+                        let parts: Vec<String> = self
+                            .current_table_headers
+                            .iter()
+                            .zip(values.iter())
+                            .map(|(col, v)| format!("{} = {}", qt(col), qv(v)))
+                            .collect();
+                        let where_clause = parts.join(" AND ");
+                        let sql = format!("DELETE FROM {} WHERE {}", qt(&table), where_clause);
+                        println!("🔥 Using full row WHERE (no obvious PK): {} columns", parts.len());
+                        stmts.push(sql);
+                    }
+                }
+            }
+        }
+        if stmts.is_empty() {
+            None
+        } else {
+            Some(stmts.join(";\n"))
+        }
+    }
+
+    fn spreadsheet_save_changes(&mut self) {
+        println!(
+            "🔥 spreadsheet_save_changes called with {} pending operations",
+            self.spreadsheet_state.pending_operations.len()
+        );
+        debug!(
+            "🔥 spreadsheet_save_changes called with {} pending operations",
+            self.spreadsheet_state.pending_operations.len()
+        );
+
+        if self.spreadsheet_state.pending_operations.is_empty() {
+            println!("🔥 No pending operations to save");
+            debug!("🔥 No pending operations to save");
+            return;
+        }
+        if let Some(sql) = self.spreadsheet_generate_sql() {
+            println!("🔥 Generated SQL: {}", sql);
+            debug!("🔥 Generated SQL: {}", sql);
+            if let Some(conn_id) = self.current_connection_id {
+                println!("🔥 Executing SQL with connection {}", conn_id);
+                debug!("🔥 Executing SQL with connection {}", conn_id);
+                
+                // Execute without transaction wrapper to avoid MySQL prepared statement issues
+                println!("🔥 Executing SQL: {}", sql);
+                
+                if connection::execute_query_with_connection(self, conn_id, sql).is_some() {
+                    debug!("🔥 SQL executed successfully, clearing pending operations");
+                    self.spreadsheet_state.pending_operations.clear();
+                    self.spreadsheet_state.is_dirty = false;
+
+                    // // Force refresh the table data to show changes
+                    // println!("🔥 Refreshing table data after successful save");
+                    // if let Some(table_name) = self.spreadsheet_extract_table_name() {
+                    //     // Re-execute the table browse query to refresh data
+                    //     let refresh_query =
+                    //         if self.use_server_pagination && !self.current_base_query.is_empty() {
+                    //             self.build_paginated_query(self.current_page, self.page_size)
+                    //         } else {
+                    //             // Build a simple SELECT * query for the table
+                    //             format!("SELECT * FROM `{}`", table_name)
+                    //         };
+                    //     println!("🔥 Executing refresh query: {}", refresh_query);
+                    //     let _ =
+                    //         connection::execute_query_with_connection(self, conn_id, refresh_query);
+                    // }
+                } else {
+                    debug!("🔥 SQL execution failed");
+                    self.error_message = "Failed to save table changes".to_string();
+                    self.show_error_message = true;
+                }
+            } else {
+                println!("🔥 No current connection ID");
+                debug!("🔥 No current connection ID");
+            }
+        } else {
+            println!("🔥 Failed to generate SQL");
+            debug!("🔥 Failed to generate SQL");
+        }
+    }
+    // End: Spreadsheet helpers
     // Ensure a shared Tokio runtime exists (lazy init) to avoid spawning many runtimes
     fn get_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
         if self.runtime.is_none() {
@@ -552,6 +939,8 @@ impl Tabular {
             pool_wait_connection_id: None,
             pool_wait_query: String::new(),
             pool_wait_started_at: None,
+            // Spreadsheet editing state
+            spreadsheet_state: crate::models::structs::SpreadsheetState::default(),
         };
 
         // Clear any old cached pools
@@ -1636,11 +2025,6 @@ impl Tabular {
             }
         }
 
-        // Handle query file open requests in caller to avoid double-processing. Just return them here.
-        debug!(
-            "🔍 Processing query_files_to_open. Count: {}",
-            query_files_to_open.len()
-        );
         let results = query_files_to_open.clone();
 
         // Handle context menu requests (deduplicate to avoid multiple calls)
@@ -6900,23 +7284,40 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
             // Show grid whenever we have headers (even if 0 rows) so user sees column structure
             if !self.current_table_headers.is_empty() {
-                // Add SQL filter textbox above the table, but only for table browse mode
+                // Toolbar: filter + spreadsheet actions (only in table browse mode)
                 if self.is_table_browse_mode {
                     ui.horizontal(|ui| {
-                        ui.label("WHERE clause:");
+                        // WHERE filter
+                        ui.label("WHERE:");
                         let filter_response = ui.add_sized(
-                            [ui.available_width() - 50.0, 25.0],
+                            [ui.available_width() * 0.6, 25.0],
                             egui::TextEdit::singleline(&mut self.sql_filter_text)
-                                .hint_text("Enter SQL WHERE condition (e.g., column1 = 'value' AND column2 > 100)")
+                                .hint_text("column = 'value' AND col2 > 0"),
                         );
-
-                        if filter_response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if filter_response.lost_focus()
+                            || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
                             self.apply_sql_filter();
                         }
-
                         if ui.button("❌").on_hover_text("Clear filter").clicked() {
                             self.sql_filter_text.clear();
                             self.apply_sql_filter();
+                        }
+                        ui.separator();
+                        // Spreadsheet actions
+                        if ui.button("➕ Add row").clicked() {
+                            self.spreadsheet_add_row();
+                        }
+                        let can_delete = self.selected_row.is_some();
+                        if ui
+                            .add_enabled(can_delete, egui::Button::new("🗑 Delete row"))
+                            .clicked()
+                        {
+                            println!("🔥 Delete button clicked!");
+                            self.spreadsheet_delete_selected_row();
+                        }
+                        if self.spreadsheet_state.is_dirty {
+                            ui.colored_label(egui::Color32::YELLOW, "● Unsaved changes (⌘S)");
                         }
                     });
                     ui.separator();
@@ -6931,6 +7332,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 let mut col_sel_requests: Vec<(usize, egui::Modifiers)> = Vec::new();
                 let mut cell_sel_requests: Vec<(usize, usize)> = Vec::new();
                 let mut select_all_rows_request = false;
+                // Defer actions that would mutate self during borrow of iter
+                let mut start_edit_request: Option<(usize, usize)> = None;
+                let mut cell_edit_text_update: Option<String> = None;
+                // Defer any column width updates to avoid mut borrow in closures
+                let mut deferred_width_updates: Vec<(usize, f32)> = Vec::new();
 
                 // Ensure column widths are initialized
                 if self.column_widths.len() != headers.len() {
@@ -7143,7 +7549,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                             if resize_response.dragged() {
                                                 let delta_x = resize_response.drag_delta().x;
                                                 let new_width = column_width + delta_x;
-                                                self.set_column_width(col_index, new_width);
+                                                deferred_width_updates.push((col_index, new_width));
                                             }
                                         }
                                     );
@@ -7252,7 +7658,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                     cell.clone()
                                                 };
                                                 let cell_response = ui.allocate_response(rect.size(), egui::Sense::click());
-                                                if cell_response.clicked() {
+                                                if self.is_table_browse_mode && cell_response.double_clicked() {
+                                                    // queue edit start to avoid mutable borrow inside iteration
+                                                    start_edit_request = Some((row_index, col_index));
+                                                } else if cell_response.clicked() {
                                                     cell_sel_requests.push((row_index, col_index));
                                                 }
                                                 let hover_response = if cell.chars().count() > max_chars || !cell.is_empty() {
@@ -7260,22 +7669,51 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                 } else {
                                                     cell_response
                                                 };
-                                                let text_pos = rect.left_top() + egui::vec2(5.0, rect.height() * 0.5);
-                                                ui.painter().text(
-                                                    text_pos,
-                                                    egui::Align2::LEFT_CENTER,
-                                                    &display_text,
-                                                    egui::FontId::default(),
-                                                    if is_selected_cell {
-                                                        if ui.visuals().dark_mode {
-                                                            egui::Color32::WHITE
-                                                        } else {
-                                                            egui::Color32::BLACK
+                                                // Check if this cell is being edited
+                                                let is_editing_this_cell = self.spreadsheet_state.editing_cell == Some((row_index, col_index));
+                                                
+                                                if is_editing_this_cell {
+                                                    // Show TextEdit overlay for editing
+                                                    let mut text_edit_rect = rect;
+                                                    text_edit_rect = text_edit_rect.shrink(2.0); // Small margin
+                                                    
+                                                    // Store cell edit text in a local variable to avoid borrow conflict
+                                                    let mut edit_text = self.spreadsheet_state.cell_edit_text.clone();
+                                                    
+                                                    ui.scope_builder(egui::UiBuilder::new().max_rect(text_edit_rect), |ui| {
+                                                        let text_edit = egui::TextEdit::singleline(&mut edit_text)
+                                                            .desired_width(text_edit_rect.width())
+                                                            .margin(egui::vec2(2.0, 2.0));
+                                                        
+                                                        let response = ui.add(text_edit);
+                                                        
+                                                        // Auto-focus the text edit when we start editing
+                                                        if !response.has_focus() {
+                                                            response.request_focus();
                                                         }
-                                                    } else {
-                                                        ui.visuals().text_color()
-                                                    }
-                                                );
+                                                    });
+                                                    
+                                                    // Store the updated text to apply later
+                                                    cell_edit_text_update = Some(edit_text);
+                                                } else {
+                                                    // Show normal cell text
+                                                    let text_pos = rect.left_top() + egui::vec2(5.0, rect.height() * 0.5);
+                                                    ui.painter().text(
+                                                        text_pos,
+                                                        egui::Align2::LEFT_CENTER,
+                                                        &display_text,
+                                                        egui::FontId::default(),
+                                                        if is_selected_cell {
+                                                            if ui.visuals().dark_mode {
+                                                                egui::Color32::WHITE
+                                                            } else {
+                                                                egui::Color32::BLACK
+                                                            }
+                                                        } else {
+                                                            ui.visuals().text_color()
+                                                        }
+                                                    );
+                                                }
                                                 hover_response.context_menu(|ui| {
                                                     ui.set_min_width(150.0);
                                                     ui.vertical(|ui| {
@@ -7362,6 +7800,16 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             }
                         }
                     });
+                // If editing a cell, allow Enter/Escape to commit/cancel globally for now
+                if self.spreadsheet_state.editing_cell.is_some() {
+                    let commit = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    if commit {
+                        self.spreadsheet_finish_cell_edit(true);
+                    } else if cancel {
+                        self.spreadsheet_finish_cell_edit(false);
+                    }
+                }
                 // Apply deferred selection changes after UI borrow ends
                 if select_all_rows_request {
                     if self.selected_rows.len() == self.current_table_data.len() {
@@ -7384,9 +7832,23 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     self.selected_cell = Some((r, c));
                     self.table_recently_clicked = true; // Mark that table was clicked
                 }
+                if let Some((r, c)) = start_edit_request.take() {
+                    self.selected_row = Some(r);
+                    self.selected_cell = Some((r, c));
+                    self.table_recently_clicked = true;
+                    self.spreadsheet_start_cell_edit(r, c);
+                }
+                // Apply cell edit text updates
+                if let Some(new_text) = cell_edit_text_update.take() {
+                    self.spreadsheet_state.cell_edit_text = new_text;
+                }
 
                 for (column_index, ascending) in sort_requests {
                     self.sort_table_data(column_index, ascending);
+                }
+                // Apply any deferred column width updates now
+                for (ci, w) in deferred_width_updates {
+                    self.set_column_width(ci, w);
                 }
 
                 // Reset scroll request flag after attempting scroll inside the ScrollArea
@@ -9203,7 +9665,7 @@ impl App for Tabular {
             ctx.request_repaint();
         }
 
-    // Lazy load preferences once (before applying visuals)
+        // Lazy load preferences once (before applying visuals)
         if self.config_store.is_none()
             && !self.prefs_loaded
             && let Some(rt) = &self.runtime
@@ -9252,26 +9714,26 @@ impl App for Tabular {
                         let mut should_check = true;
                         if let Some(store_ref) = self.config_store.as_ref()
                             && let Some(last_iso) = rt.block_on(store_ref.get_last_update_check())
-                                && let Ok(parsed) = DateTime::parse_from_rfc3339(&last_iso) {
-                                    let last_utc = parsed.with_timezone(&Utc);
-                                    let now = Utc::now();
-                                    if now.signed_duration_since(last_utc) < Duration::days(1) {
-                                        should_check = false;
-                                        debug!(
-                                            "⏱️ Skipping auto update check; last check at {} (< 24h)",
-                                            last_iso
-                                        );
-                                    }
-                                }
+                            && let Ok(parsed) = DateTime::parse_from_rfc3339(&last_iso)
+                        {
+                            let last_utc = parsed.with_timezone(&Utc);
+                            let now = Utc::now();
+                            if now.signed_duration_since(last_utc) < Duration::days(1) {
+                                should_check = false;
+                                debug!(
+                                    "⏱️ Skipping auto update check; last check at {} (< 24h)",
+                                    last_iso
+                                );
+                            }
+                        }
                         if should_check
                             && let (Some(sender), Some(store_ref)) =
                                 (&self.background_sender, self.config_store.as_ref())
-                            {
-                                // Persist timestamp immediately to prevent repeated checks this session
-                                rt.block_on(store_ref.set_last_update_check_now());
-                                let _ = sender
-                                    .send(models::enums::BackgroundTask::CheckForUpdates);
-                            }
+                        {
+                            // Persist timestamp immediately to prevent repeated checks this session
+                            rt.block_on(store_ref.set_last_update_check_now());
+                            let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
+                        }
                     }
                 }
                 Err(e) => {
@@ -9376,6 +9838,17 @@ impl App for Tabular {
         // Check if editor has focus before entering input closure
         let editor_has_focus = ctx.memory(|m| m.has_focus(egui::Id::new("sql_editor")));
 
+        // Detect Save shortcut using consume_key so it works reliably on macOS/Windows/Linux
+        let mut save_shortcut = false;
+        ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)
+                || i.consume_key(egui::Modifiers::CTRL, egui::Key::S)
+            {
+                save_shortcut = true;
+                println!("🔥 Save shortcut detected!");
+            }
+        });
+
         ctx.input(|i| {
             // Detect Copy event (Cmd/Ctrl+C) which on some platforms (macOS) may emit Event::Copy instead of Key::C with modifiers
             let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
@@ -9407,15 +9880,7 @@ impl App for Tabular {
                     debug!("⚠️ copy intent but no selection");
                 }
             }
-            // CMD+S or CTRL+S to save current tab
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl)
-                && i.key_pressed(egui::Key::S)
-                && !self.query_tabs.is_empty()
-                && let Err(error) = editor::save_current_tab(self)
-            {
-                self.error_message = format!("Save failed: {}", error);
-                self.show_error_message = true;
-            }
+            // (Save shortcut is handled via consume_key above)
 
             // CMD+W or CTRL+W to close current tab
             if (i.modifiers.mac_cmd || i.modifiers.ctrl)
@@ -9571,6 +10036,48 @@ impl App for Tabular {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Execute Save action if shortcut was pressed
+        if save_shortcut {
+            println!(
+                "🔥 Save shortcut execution block reached! pending_operations: {}, is_dirty: {}",
+                self.spreadsheet_state.pending_operations.len(),
+                self.spreadsheet_state.is_dirty
+            );
+            debug!(
+                "🔥 Save shortcut pressed! pending_operations: {}, is_dirty: {}",
+                self.spreadsheet_state.pending_operations.len(),
+                self.spreadsheet_state.is_dirty
+            );
+
+            // If a cell is being edited, commit it first so its change is included in save
+            if self.spreadsheet_state.editing_cell.is_some() {
+                println!("🔥 Committing active cell edit");
+                debug!("🔥 Committing active cell edit");
+                self.spreadsheet_finish_cell_edit(true);
+            }
+            // Prefer saving pending spreadsheet changes if any are queued
+            if !self.spreadsheet_state.pending_operations.is_empty() {
+                println!(
+                    "🔥 Calling spreadsheet_save_changes with {} operations",
+                    self.spreadsheet_state.pending_operations.len()
+                );
+                debug!(
+                    "🔥 Calling spreadsheet_save_changes with {} operations",
+                    self.spreadsheet_state.pending_operations.len()
+                );
+                self.spreadsheet_save_changes();
+            } else if !self.query_tabs.is_empty() {
+                println!("🔥 No spreadsheet operations, saving query tab instead");
+                debug!("🔥 No spreadsheet operations, saving query tab instead");
+                if let Err(error) = editor::save_current_tab(self) {
+                    self.error_message = format!("Save failed: {}", error);
+                    self.show_error_message = true;
+                }
+            } else {
+                println!("🔥 Nothing to save - no operations and no query tabs");
             }
         }
 
