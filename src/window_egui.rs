@@ -7,6 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
+use crate::driver_mssql;
 use crate::{
     cache_data, connection, dialog, directory, driver_mysql, driver_postgres, driver_redis,
     driver_sqlite, editor, export, models, sidebar_database, sidebar_query, 
@@ -1509,7 +1510,7 @@ impl Tabular {
                             // For MsSQL, we need to strip TOP from query_content to avoid conflicts
                             let safe_query =
                                 if conn.connection_type == models::enums::DatabaseType::MsSQL {
-                                    Self::sanitize_mssql_select_for_pagination(&query_content)
+                                    driver_mssql::sanitize_mssql_select_for_pagination(&query_content)
                                 } else {
                                     query_content.clone()
                                 };
@@ -5776,84 +5777,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         }
     }
 
-    // Helper: Remove TOP clauses from MsSQL SELECT for pagination compatibility
-    fn sanitize_mssql_select_for_pagination(select_part: &str) -> String {
-        let mut result = select_part.to_string();
-
-        // Pattern: SELECT [whitespace] TOP [whitespace] number/expression [whitespace]
-        // Use simple case-insensitive string manipulation to avoid regex dependency
-        let lower = result.to_lowercase();
-
-        // Find "select" followed by optional whitespace and "top"
-        if let Some(select_pos) = lower.find("select") {
-            let after_select = select_pos + "select".len();
-
-            // Skip whitespace after SELECT
-            let mut scan_pos = after_select;
-            let bytes = result.as_bytes();
-            while scan_pos < bytes.len() && bytes[scan_pos].is_ascii_whitespace() {
-                scan_pos += 1;
-            }
-
-            // Check if "TOP" follows
-            let remaining_lower = &lower[scan_pos..];
-            if remaining_lower.starts_with("top") {
-                let top_end = scan_pos + 3; // "top".len()
-
-                // Skip whitespace after TOP
-                let mut after_top = top_end;
-                while after_top < bytes.len() && bytes[after_top].is_ascii_whitespace() {
-                    after_top += 1;
-                }
-
-                // Skip the number/expression after TOP
-                let mut value_end = after_top;
-
-                // Handle parenthesized expressions like TOP (100)
-                if after_top < bytes.len() && bytes[after_top] == b'(' {
-                    value_end += 1;
-                    while value_end < bytes.len() && bytes[value_end] != b')' {
-                        value_end += 1;
-                    }
-                    if value_end < bytes.len() {
-                        value_end += 1;
-                    } // include closing )
-                } else {
-                    // Handle simple numbers and PERCENT keyword
-                    while value_end < bytes.len()
-                        && (bytes[value_end].is_ascii_digit() || bytes[value_end] == b'%')
-                    {
-                        value_end += 1;
-                    }
-
-                    // Check for optional PERCENT keyword
-                    let mut temp_pos = value_end;
-                    while temp_pos < bytes.len() && bytes[temp_pos].is_ascii_whitespace() {
-                        temp_pos += 1;
-                    }
-                    if temp_pos < bytes.len() {
-                        let remaining = &lower[temp_pos..];
-                        if remaining.starts_with("percent") {
-                            value_end = temp_pos + "percent".len();
-                        }
-                    }
-                }
-
-                // Skip trailing whitespace after the TOP value
-                while value_end < bytes.len() && bytes[value_end].is_ascii_whitespace() {
-                    value_end += 1;
-                }
-
-                // Reconstruct: SELECT + everything after the TOP clause
-                let select_part = &result[..select_pos + "select".len()];
-                let remaining_part = &result[value_end..];
-                result = format!("{} {}", select_part, remaining_part.trim_start());
-            }
-        }
-
-        result
-    }
-
     fn build_paginated_query(&self, offset: usize, limit: usize) -> String {
         // Get the base query from the active tab - NO fallback to global state
         let base_query = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
@@ -5919,7 +5842,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 debug!("🔍 MsSQL select part before TOP removal: {}", select_part);
 
                 // Enhanced TOP removal using case-insensitive regex-like approach
-                select_part = Self::sanitize_mssql_select_for_pagination(&select_part);
+                select_part = driver_mssql::sanitize_mssql_select_for_pagination(&select_part);
                 debug!("🔍 MsSQL select part after TOP removal: {}", select_part);
 
                 // Detect ORDER BY (case-insensitive)
