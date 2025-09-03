@@ -67,28 +67,26 @@ pub trait SpreadsheetOperations {
                     .and_then(|r| r.get(col))
                     .cloned();
                     
-                if let Some(old_val) = old_val {
-                    if old_val != new_val {
+                if let Some(old_val) = old_val
+                    && old_val != new_val {
                         // Update current_table_data
-                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row) {
-                            if let Some(c1) = r1.get_mut(col) {
+                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row)
+                            && let Some(c1) = r1.get_mut(col) {
                                 *c1 = new_val.clone();
                             }
-                        }
                         // Update all_table_data
-                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row) {
-                            if let Some(c2) = r2.get_mut(col) {
+                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row)
+                            && let Some(c2) = r2.get_mut(col) {
                                 *c2 = new_val.clone();
                             }
-                        }
                         
                         // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
                         let mut updated_insert_row = false;
                         let headers_len = self.get_current_table_headers().len();
                         let state = self.get_spreadsheet_state_mut();
                         for op in &mut state.pending_operations {
-                            if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op {
-                                if *row_index == row {
+                            if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op
+                                && *row_index == row {
                                     // Ensure values vector has enough columns
                                     if values.len() < headers_len {
                                         values.resize(headers_len, String::new());
@@ -99,7 +97,6 @@ pub trait SpreadsheetOperations {
                                     updated_insert_row = true;
                                     break;
                                 }
-                            }
                         }
                         // If not an InsertRow case, record as an Update operation
                         if !updated_insert_row {
@@ -115,7 +112,6 @@ pub trait SpreadsheetOperations {
                         }
                         self.get_spreadsheet_state_mut().is_dirty = true;
                     }
-                }
             }
         }
     }
