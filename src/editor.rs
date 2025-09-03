@@ -1325,6 +1325,7 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
 }
 
 pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
+    tabular.is_table_browse_mode = false;
     // Priority: 1) Selected text, 2) Query from cursor position, 3) Full editor text
     let query = if !tabular.selected_text.trim().is_empty() {
         tabular.selected_text.trim().to_string()

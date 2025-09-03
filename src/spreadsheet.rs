@@ -83,20 +83,22 @@ pub trait SpreadsheetOperations {
                         // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
                         let mut updated_insert_row = false;
                         let headers_len = self.get_current_table_headers().len();
-                        let state = self.get_spreadsheet_state_mut();
-                        for op in &mut state.pending_operations {
-                            if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op
-                                && *row_index == row {
-                                    // Ensure values vector has enough columns
-                                    if values.len() < headers_len {
-                                        values.resize(headers_len, String::new());
+                        {
+                            let state = self.get_spreadsheet_state_mut();
+                            for op in &mut state.pending_operations {
+                                if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op
+                                    && *row_index == row {
+                                        // Ensure values vector has enough columns
+                                        if values.len() < headers_len {
+                                            values.resize(headers_len, String::new());
+                                        }
+                                        if col < values.len() {
+                                            values[col] = new_val.clone();
+                                        }
+                                        updated_insert_row = true;
+                                        break;
                                     }
-                                    if col < values.len() {
-                                        values[col] = new_val.clone();
-                                    }
-                                    updated_insert_row = true;
-                                    break;
-                                }
+                            }
                         }
                         // If not an InsertRow case, record as an Update operation
                         if !updated_insert_row {

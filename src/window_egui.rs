@@ -7334,10 +7334,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                 hover_response.context_menu(|ui| {
                                                     ui.set_min_width(150.0);
                                                     ui.vertical(|ui| {
-                                                        if ui.button("📋 Add New Row").clicked() {
-                                                            add_row_request = Some(0);
-                                                            ui.close();
-                                                        }
+                                                        if self.is_table_browse_mode && ui.button("📋 Add New Row").clicked() {
+                                                                add_row_request = Some(0);
+                                                                ui.close();
+                                                                ui.separator();
+                                                            }
                                                         if ui.button("📋 Copy Cell Value").clicked() {
                                                             ui.ctx().copy_text(cell.clone());
                                                             ui.close();
@@ -7376,12 +7377,13 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                             export::export_to_xlsx(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
                                                             ui.close();
                                                         }
-                                                        ui.separator();
-                                                        if ui.button("🗑 Delete this Row").clicked() {
-                                                            // Defer the actual deletion until after the grid borrow ends
-                                                            delete_row_index_request = Some(row_index);
-                                                            ui.close();
-                                                        }
+                                                        if self.is_table_browse_mode
+                                                            && ui.button("🗑 Delete this Row").clicked() {
+                                                                ui.separator();
+                                                                // Defer the actual deletion until after the grid borrow ends
+                                                                delete_row_index_request = Some(row_index);
+                                                                ui.close();
+                                                            }
 
                                                     });
                                                 });
