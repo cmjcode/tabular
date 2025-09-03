@@ -238,6 +238,11 @@ pub enum PrefTab {
 }
 
 impl Tabular {
+    // Clear spreadsheet editing state (pending ops, active edit, etc.)
+    fn reset_spreadsheet_state(&mut self) {
+        self.spreadsheet_state = crate::models::structs::SpreadsheetState::default();
+    }
+
     // Begin: Spreadsheet helpers
     fn spreadsheet_start_cell_edit(&mut self, row: usize, col: usize) {
         if let Some(val) = self
@@ -273,14 +278,34 @@ impl Tabular {
                                 *c2 = new_val.clone();
                             }
                         }
-                        self.spreadsheet_state.pending_operations.push(
-                            crate::models::structs::CellEditOperation::Update {
-                                row_index: row,
-                                col_index: col,
-                                old_value: old_val,
-                                new_value: new_val,
-                            },
-                        );
+                        // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
+                        let mut updated_insert_row = false;
+                        for op in &mut self.spreadsheet_state.pending_operations {
+                            if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op {
+                                if *row_index == row {
+                                    // Ensure values vector has enough columns
+                                    if values.len() < self.current_table_headers.len() {
+                                        values.resize(self.current_table_headers.len(), String::new());
+                                    }
+                                    if col < values.len() {
+                                        values[col] = new_val.clone();
+                                    }
+                                    updated_insert_row = true;
+                                    break;
+                                }
+                            }
+                        }
+                        // If not an InsertRow case, record as an Update operation
+                        if !updated_insert_row {
+                            self.spreadsheet_state.pending_operations.push(
+                                crate::models::structs::CellEditOperation::Update {
+                                    row_index: row,
+                                    col_index: col,
+                                    old_value: old_val,
+                                    new_value: new_val,
+                                },
+                            );
+                        }
                         self.spreadsheet_state.is_dirty = true;
                     }
                 }
@@ -421,6 +446,63 @@ impl Tabular {
         }
     }
 
+    // Quote a possibly schema-qualified table identifier appropriately per-DB.
+    // Examples:
+    // - MySQL: schema.table -> `schema`.`table`
+    // - PostgreSQL: schema.table -> "schema"."table"
+    // - MsSQL: schema.table -> [schema].[table]
+    // - SQLite: table -> "table" (no schemas)
+    fn spreadsheet_quote_table_ident(
+        &self,
+        conn: &crate::models::structs::ConnectionConfig,
+        ident: &str,
+    ) -> String {
+        // If identifier already appears quoted for the target DB, return as-is
+        let already_mysql = ident.contains('`');
+        let already_pg_sqlite = ident.contains('"');
+        let already_mssql = ident.contains('[') && ident.contains(']');
+
+        match conn.connection_type {
+            crate::models::enums::DatabaseType::MySQL => {
+                if already_mysql { return ident.to_string(); }
+                if ident.contains('.') {
+                    ident
+                        .split('.')
+                        .map(|p| format!("`{}`", p))
+                        .collect::<Vec<_>>()
+                        .join(".")
+                } else {
+                    format!("`{}`", ident)
+                }
+            }
+            crate::models::enums::DatabaseType::PostgreSQL | crate::models::enums::DatabaseType::SQLite => {
+                if already_pg_sqlite { return ident.to_string(); }
+                if ident.contains('.') {
+                    ident
+                        .split('.')
+                        .map(|p| format!("\"{}\"", p))
+                        .collect::<Vec<_>>()
+                        .join(".")
+                } else {
+                    format!("\"{}\"", ident)
+                }
+            }
+            crate::models::enums::DatabaseType::MsSQL => {
+                if already_mssql { return ident.to_string(); }
+                if ident.contains('.') {
+                    ident
+                        .split('.')
+                        .map(|p| format!("[{}]", p.trim_matches(['[', ']'])))
+                        .collect::<Vec<_>>()
+                        .join(".")
+                } else {
+                    format!("[{}]", ident.trim_matches(['[', ']']))
+                }
+            }
+            _ => ident.to_string(),
+        }
+    }
+
     fn spreadsheet_quote_value(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
@@ -475,7 +557,8 @@ impl Tabular {
         let table = self.spreadsheet_extract_table_name()?;
         println!("🔥 Extracted table name: {}", table);
 
-        let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
+    let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
+    let qt_table = |s: &str| self.spreadsheet_quote_table_ident(&conn, s);
         let qv = |s: &str| self.spreadsheet_quote_value(&conn, s);
 
         let mut stmts: Vec<String> = Vec::new();
@@ -495,28 +578,35 @@ impl Tabular {
                     let where_clause = self.spreadsheet_row_where_all_columns(&conn, *row_index)?;
                     let sql = format!(
                         "UPDATE {} SET {} = {} WHERE {}",
-                        qt(&table),
+                        qt_table(&table),
                         qt(col),
                         qv(new_value),
                         where_clause
                     );
                     stmts.push(sql);
                 }
-                crate::models::structs::CellEditOperation::InsertRow {
-                    row_index: _,
-                    values,
-                } => {
-                    let cols: Vec<String> =
-                        self.current_table_headers.iter().map(|c| qt(c)).collect();
-                    let vals: Vec<String> = values.iter().map(|v| qv(v)).collect();
-                    let sql = format!(
-                        "INSERT INTO {} ({}) VALUES ({})",
-                        qt(&table),
-                        cols.join(", "),
-                        vals.join(", ")
-                    );
-                    stmts.push(sql);
-                }
+                
+                    crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
+                        let cols: Vec<String> = self.current_table_headers.iter().map(|c| qt(c)).collect();
+                        // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
+                        let latest_vals_src: Option<&Vec<String>> = self
+                            .all_table_data
+                            .get(*row_index)
+                            .or_else(|| self.current_table_data.get(*row_index));
+                        let vals_vec: Vec<String> = if let Some(src) = latest_vals_src {
+                            src.clone()
+                        } else {
+                            values.clone()
+                        };
+                        let vals: Vec<String> = vals_vec.iter().map(|v| qv(v)).collect();
+                        let sql = format!(
+                            "INSERT INTO {} ({}) VALUES ({})",
+                            qt_table(&table),
+                            cols.join(", "),
+                            vals.join(", ")
+                        );
+                        stmts.push(sql);
+                    }
                 crate::models::structs::CellEditOperation::DeleteRow {
                     row_index: _,
                     values,
@@ -534,7 +624,7 @@ impl Tabular {
                        first_header.to_lowercase().contains("recid") ||
                        first_header.to_lowercase() == "pk" {
                         let where_clause = format!("{} = {}", qt(first_header), qv(first_value));
-                        let sql = format!("DELETE FROM {} WHERE {}", qt(&table), where_clause);
+                        let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
                         println!("🔥 Using primary key WHERE: {}", where_clause);
                         stmts.push(sql);
                     } else {
@@ -549,7 +639,7 @@ impl Tabular {
                             .map(|(col, v)| format!("{} = {}", qt(col), qv(v)))
                             .collect();
                         let where_clause = parts.join(" AND ");
-                        let sql = format!("DELETE FROM {} WHERE {}", qt(&table), where_clause);
+                        let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
                         println!("🔥 Using full row WHERE (no obvious PK): {} columns", parts.len());
                         stmts.push(sql);
                     }
@@ -588,26 +678,31 @@ impl Tabular {
                 // Execute without transaction wrapper to avoid MySQL prepared statement issues
                 println!("🔥 Executing SQL: {}", sql);
                 
-                if connection::execute_query_with_connection(self, conn_id, sql).is_some() {
-                    debug!("🔥 SQL executed successfully, clearing pending operations");
-                    self.spreadsheet_state.pending_operations.clear();
-                    self.spreadsheet_state.is_dirty = false;
+                if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, sql) {
+                    // Detect error tables returned by executor (headers == ["Error"]) and treat as failure
+                    let is_error_table = headers.len() == 1 && headers[0].eq_ignore_ascii_case("error");
+                    if is_error_table {
+                        let msg = data.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_else(|| "Unknown query error".to_string());
+                        debug!("❌ SQL execution returned error table: {}", msg);
+                        self.error_message = msg;
+                        self.show_error_message = true;
+                        // Do NOT clear pending operations on failure
+                    } else {
+                        debug!("🔥 SQL executed successfully, clearing pending operations");
+                        self.spreadsheet_state.pending_operations.clear();
+                        self.spreadsheet_state.is_dirty = false;
 
-                    // // Force refresh the table data to show changes
-                    // println!("🔥 Refreshing table data after successful save");
-                    // if let Some(table_name) = self.spreadsheet_extract_table_name() {
-                    //     // Re-execute the table browse query to refresh data
-                    //     let refresh_query =
-                    //         if self.use_server_pagination && !self.current_base_query.is_empty() {
-                    //             self.build_paginated_query(self.current_page, self.page_size)
-                    //         } else {
-                    //             // Build a simple SELECT * query for the table
-                    //             format!("SELECT * FROM `{}`", table_name)
-                    //         };
-                    //     println!("🔥 Executing refresh query: {}", refresh_query);
-                    //     let _ =
-                    //         connection::execute_query_with_connection(self, conn_id, refresh_query);
-                    // }
+                        // Refresh grid after save so inserted rows become visible
+                        if self.is_table_browse_mode {
+                            if self.use_server_pagination && !self.current_base_query.is_empty() {
+                                // Re-run current page of the base query
+                                self.execute_paginated_query();
+                            } else {
+                                // Client-side mode: simply re-sync current page slice
+                                self.update_current_page_data();
+                            }
+                        }
+                    }
                 } else {
                     debug!("🔥 SQL execution failed");
                     self.error_message = "Failed to save table changes".to_string();
@@ -1624,6 +1719,8 @@ impl Tabular {
 
                             // Set database and auto-execute
                             self.current_connection_id = Some(connection_id);
+                            // Reset spreadsheet editing state when opening a key browse
+                            self.reset_spreadsheet_state();
                             if let Some((headers, data)) = connection::execute_query_with_connection(
                                 self,
                                 connection_id,
@@ -1662,6 +1759,8 @@ impl Tabular {
                                 database_name.clone(),
                             );
                             self.current_connection_id = Some(connection_id);
+                            // Reset spreadsheet editing state when opening a collection
+                            self.reset_spreadsheet_state();
                             if let Some((headers, data)) =
                                 crate::driver_mongodb::sample_collection_documents(
                                     self,
@@ -1749,6 +1848,9 @@ impl Tabular {
                             Some(connection_id),
                             database_name.clone(),
                         );
+
+                        // Reset spreadsheet editing state when opening a table
+                        self.reset_spreadsheet_state();
 
                         // Set database context for current tab and auto-execute the query and display results in bottom
                         self.current_connection_id = Some(connection_id);
@@ -7809,16 +7911,73 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             }
                         }
                     });
-                // If editing a cell, allow Enter/Escape to commit/cancel globally for now
-                if self.spreadsheet_state.editing_cell.is_some() {
-                    let commit = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                    if commit {
+                // If editing a cell, support keyboard-only editing/navigation
+                if let Some((erow, ecol)) = self.spreadsheet_state.editing_cell {
+                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    let right = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
+                    let left = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
+                    let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+                    let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+
+                    // Enter/Escape behavior (commit/cancel)
+                    if enter {
+                        // Apply in-flight text from the overlay before committing
+                        if let Some(new_text) = cell_edit_text_update.take() {
+                            self.spreadsheet_state.cell_edit_text = new_text;
+                        }
                         self.spreadsheet_finish_cell_edit(true);
-                    } else if cancel {
+                    } else if esc {
                         self.spreadsheet_finish_cell_edit(false);
                     }
+
+                    // Arrow key navigation while editing: commit current and move edit focus
+                    let mut target: Option<(usize, usize)> = None;
+                    if right {
+                        if let Some(row_vec) = self.current_table_data.get(erow) {
+                            if ecol + 1 < row_vec.len() {
+                                target = Some((erow, ecol + 1));
+                            }
+                        }
+                    } else if left {
+                        if ecol > 0 {
+                            target = Some((erow, ecol - 1));
+                        }
+                    } else if down {
+                        if erow + 1 < self.current_table_data.len() {
+                            if let Some(next_row) = self.current_table_data.get(erow + 1) {
+                                let tcol = ecol.min(next_row.len().saturating_sub(1));
+                                target = Some((erow + 1, tcol));
+                            }
+                        }
+                    } else if up {
+                        if erow > 0 {
+                            if let Some(prev_row) = self.current_table_data.get(erow - 1) {
+                                let tcol = ecol.min(prev_row.len().saturating_sub(1));
+                                target = Some((erow - 1, tcol));
+                            }
+                        }
+                    }
+
+                    if let Some((tr, tc)) = target {
+                        // Apply in-flight overlay text and commit current edit before moving
+                        if let Some(new_text) = cell_edit_text_update.take() {
+                            self.spreadsheet_state.cell_edit_text = new_text;
+                        }
+                        self.spreadsheet_finish_cell_edit(true);
+                        self.selected_row = Some(tr);
+                        self.selected_cell = Some((tr, tc));
+                        self.table_recently_clicked = true;
+                        self.scroll_to_selected_cell = true;
+                        self.spreadsheet_start_cell_edit(tr, tc);
+                    }
                 }
+                // First, apply any live text changes captured from the TextEdit overlay
+                // so that if we switch to a different cell, the previous cell's final text is preserved.
+                if let Some(new_text) = cell_edit_text_update.take() {
+                    self.spreadsheet_state.cell_edit_text = new_text;
+                }
+
                 // Apply deferred selection changes after UI borrow ends
                 if select_all_rows_request {
                     if self.selected_rows.len() == self.current_table_data.len() {
@@ -7842,15 +8001,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     self.table_recently_clicked = true; // Mark that table was clicked
                 }
                 if let Some((r, c)) = start_edit_request.take() {
+                    // If we're switching from one editing cell to another, commit the previous edit first
+                    if self.spreadsheet_state.editing_cell.is_some()
+                        && self.spreadsheet_state.editing_cell != Some((r, c))
+                    {
+                        self.spreadsheet_finish_cell_edit(true);
+                    }
                     self.selected_row = Some(r);
                     self.selected_cell = Some((r, c));
                     self.table_recently_clicked = true;
                     self.spreadsheet_start_cell_edit(r, c);
                 }
-                // Apply cell edit text updates
-                if let Some(new_text) = cell_edit_text_update.take() {
-                    self.spreadsheet_state.cell_edit_text = new_text;
-                }
+                // (Cell edit text updates already applied above before changing edit target)
 
                 // Perform deferred delete after UI borrows are released
                 if let Some(ri) = delete_row_index_request.take() {
