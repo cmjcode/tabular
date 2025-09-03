@@ -9,7 +9,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use crate::{
     cache_data, connection, dialog, directory, driver_mysql, driver_postgres, driver_redis,
-    driver_sqlite, editor, export, models, sidebar_database, sidebar_query,
+    driver_sqlite, editor, export, models, sidebar_database, sidebar_query, 
+    spreadsheet::{self, SpreadsheetOperations},
 };
 
 pub struct Tabular {
@@ -238,479 +239,6 @@ pub enum PrefTab {
 }
 
 impl Tabular {
-    // Clear spreadsheet editing state (pending ops, active edit, etc.)
-    fn reset_spreadsheet_state(&mut self) {
-        self.spreadsheet_state = crate::models::structs::SpreadsheetState::default();
-    }
-
-    // Begin: Spreadsheet helpers
-    fn spreadsheet_start_cell_edit(&mut self, row: usize, col: usize) {
-        if let Some(val) = self
-            .current_table_data
-            .get(row)
-            .and_then(|r| r.get(col))
-            .cloned()
-        {
-            self.spreadsheet_state.editing_cell = Some((row, col));
-            self.spreadsheet_state.cell_edit_text = val;
-        }
-    }
-
-    fn spreadsheet_finish_cell_edit(&mut self, save: bool) {
-        if let Some((row, col)) = self.spreadsheet_state.editing_cell.take() {
-            let new_val = self.spreadsheet_state.cell_edit_text.clone();
-            self.spreadsheet_state.cell_edit_text.clear();
-            if save
-                && let Some(old_val) = self
-                    .all_table_data
-                    .get(row)
-                    .and_then(|r| r.get(col))
-                    .cloned()
-                    && old_val != new_val {
-                        if let Some(r1) = self.current_table_data.get_mut(row)
-                            && let Some(c1) = r1.get_mut(col) {
-                                *c1 = new_val.clone();
-                            }
-                        if let Some(r2) = self.all_table_data.get_mut(row)
-                            && let Some(c2) = r2.get_mut(col) {
-                                *c2 = new_val.clone();
-                            }
-                        // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
-                        let mut updated_insert_row = false;
-                        for op in &mut self.spreadsheet_state.pending_operations {
-                            if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op
-                                && *row_index == row {
-                                    // Ensure values vector has enough columns
-                                    if values.len() < self.current_table_headers.len() {
-                                        values.resize(self.current_table_headers.len(), String::new());
-                                    }
-                                    if col < values.len() {
-                                        values[col] = new_val.clone();
-                                    }
-                                    updated_insert_row = true;
-                                    break;
-                                }
-                        }
-                        // If not an InsertRow case, record as an Update operation
-                        if !updated_insert_row {
-                            self.spreadsheet_state.pending_operations.push(
-                                crate::models::structs::CellEditOperation::Update {
-                                    row_index: row,
-                                    col_index: col,
-                                    old_value: old_val,
-                                    new_value: new_val,
-                                },
-                            );
-                        }
-                        self.spreadsheet_state.is_dirty = true;
-                    }
-        }
-    }
-
-    fn spreadsheet_add_row(&mut self) {
-        let new_row: Vec<String> = self
-            .current_table_headers
-            .iter()
-            .map(|_| String::new())
-            .collect();
-        let row_index = self.all_table_data.len();
-        self.all_table_data.push(new_row.clone());
-        self.current_table_data.push(new_row.clone());
-        self.total_rows = self.total_rows.saturating_add(1);
-        self.spreadsheet_state.pending_operations.push(
-            crate::models::structs::CellEditOperation::InsertRow {
-                row_index,
-                values: new_row,
-            },
-        );
-        self.spreadsheet_state.is_dirty = true;
-        self.selected_row = Some(row_index);
-        self.selected_cell = Some((row_index, 0));
-        self.table_recently_clicked = true;
-        self.spreadsheet_start_cell_edit(row_index, 0);
-    }
-
-    fn spreadsheet_delete_selected_row(&mut self) {
-        debug!(
-            "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
-            self.selected_row
-        );
-        println!(
-            "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
-            self.selected_row
-        );
-
-        if let Some(row) = self.selected_row {
-            // Get the row values BEFORE removing from any data structures
-            let values = if let Some(values) = self.all_table_data.get(row).cloned() {
-                values
-            } else if let Some(values) = self.current_table_data.get(row).cloned() {
-                values
-            } else {
-                println!("🔥 Could not get values for row {}", row);
-                debug!("🔥 Could not get values for row {}", row);
-                return;
-            };
-
-            println!(
-                "🔥 Adding DeleteRow operation for row {} with {} values: {:?}",
-                row,
-                values.len(),
-                values
-            );
-            debug!(
-                "🔥 Adding DeleteRow operation for row {} with {} values",
-                row,
-                values.len()
-            );
-
-            self.spreadsheet_state.pending_operations.push(
-                crate::models::structs::CellEditOperation::DeleteRow {
-                    row_index: row,
-                    values,
-                },
-            );
-            self.spreadsheet_state.is_dirty = true;
-
-            println!(
-                "🔥 Now have {} pending operations, is_dirty: {}",
-                self.spreadsheet_state.pending_operations.len(),
-                self.spreadsheet_state.is_dirty
-            );
-            debug!(
-                "🔥 Now have {} pending operations, is_dirty: {}",
-                self.spreadsheet_state.pending_operations.len(),
-                self.spreadsheet_state.is_dirty
-            );
-
-            // Now remove from data structures
-            if row < self.current_table_data.len() {
-                self.current_table_data.remove(row);
-            }
-            if row < self.all_table_data.len() {
-                self.all_table_data.remove(row);
-            }
-            self.total_rows = self.total_rows.saturating_sub(1);
-            self.selected_row = None;
-            self.selected_cell = None;
-        } else {
-            println!("🔥 No row selected for deletion");
-            debug!("🔥 No row selected for deletion");
-        }
-    }
-
-    fn spreadsheet_extract_table_name(&self) -> Option<String> {
-        println!(
-            "🔥 spreadsheet_extract_table_name called with current_table_name: '{}'",
-            self.current_table_name
-        );
-
-        if self.current_table_name.starts_with("Table: ") {
-            let s = self.current_table_name.strip_prefix("Table: ")?;
-            let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
-            println!("🔥 Extracted table name: {:?}", result);
-            result
-        } else {
-            // Try to extract from active tab if it's a table browse tab
-            if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-                println!("🔥 Checking active tab title: '{}'", tab.title);
-                if tab.title.starts_with("Table: ") {
-                    let s = tab.title.strip_prefix("Table: ")?;
-                    let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
-                    println!("🔥 Extracted table name from tab: {:?}", result);
-                    return result;
-                }
-            }
-            println!("🔥 Table name does not start with 'Table: ' and no suitable tab found");
-            None
-        }
-    }
-
-    fn spreadsheet_quote_ident(
-        &self,
-        conn: &crate::models::structs::ConnectionConfig,
-        ident: &str,
-    ) -> String {
-        match conn.connection_type {
-            crate::models::enums::DatabaseType::MySQL => format!("`{}`", ident),
-            crate::models::enums::DatabaseType::PostgreSQL => format!("\"{}\"", ident),
-            crate::models::enums::DatabaseType::MsSQL => format!("[{}]", ident),
-            crate::models::enums::DatabaseType::SQLite => format!("\"{}\"", ident),
-            _ => ident.to_string(),
-        }
-    }
-
-    // Quote a possibly schema-qualified table identifier appropriately per-DB.
-    // Examples:
-    // - MySQL: schema.table -> `schema`.`table`
-    // - PostgreSQL: schema.table -> "schema"."table"
-    // - MsSQL: schema.table -> [schema].[table]
-    // - SQLite: table -> "table" (no schemas)
-    fn spreadsheet_quote_table_ident(
-        &self,
-        conn: &crate::models::structs::ConnectionConfig,
-        ident: &str,
-    ) -> String {
-        // If identifier already appears quoted for the target DB, return as-is
-        let already_mysql = ident.contains('`');
-        let already_pg_sqlite = ident.contains('"');
-        let already_mssql = ident.contains('[') && ident.contains(']');
-
-        match conn.connection_type {
-            crate::models::enums::DatabaseType::MySQL => {
-                if already_mysql { return ident.to_string(); }
-                if ident.contains('.') {
-                    ident
-                        .split('.')
-                        .map(|p| format!("`{}`", p))
-                        .collect::<Vec<_>>()
-                        .join(".")
-                } else {
-                    format!("`{}`", ident)
-                }
-            }
-            crate::models::enums::DatabaseType::PostgreSQL | crate::models::enums::DatabaseType::SQLite => {
-                if already_pg_sqlite { return ident.to_string(); }
-                if ident.contains('.') {
-                    ident
-                        .split('.')
-                        .map(|p| format!("\"{}\"", p))
-                        .collect::<Vec<_>>()
-                        .join(".")
-                } else {
-                    format!("\"{}\"", ident)
-                }
-            }
-            crate::models::enums::DatabaseType::MsSQL => {
-                if already_mssql { return ident.to_string(); }
-                if ident.contains('.') {
-                    ident
-                        .split('.')
-                        .map(|p| format!("[{}]", p.trim_matches(['[', ']'])))
-                        .collect::<Vec<_>>()
-                        .join(".")
-                } else {
-                    format!("[{}]", ident.trim_matches(['[', ']']))
-                }
-            }
-            _ => ident.to_string(),
-        }
-    }
-
-    fn spreadsheet_quote_value(
-        &self,
-        conn: &crate::models::structs::ConnectionConfig,
-        v: &str,
-    ) -> String {
-        // Handle NULL values properly - don't quote them
-        if v.is_empty() || v.eq_ignore_ascii_case("null") {
-            return "NULL".to_string();
-        }
-        match conn.connection_type {
-            crate::models::enums::DatabaseType::MySQL
-            | crate::models::enums::DatabaseType::PostgreSQL
-            | crate::models::enums::DatabaseType::MsSQL
-            | crate::models::enums::DatabaseType::SQLite => format!("'{}'", v.replace("'", "''")),
-            _ => format!("'{}'", v),
-        }
-    }
-
-    fn spreadsheet_row_where_all_columns(
-        &self,
-        conn: &crate::models::structs::ConnectionConfig,
-        row_index: usize,
-    ) -> Option<String> {
-        let row = self.current_table_data.get(row_index)?;
-        
-        // Use only the first column (usually primary key like RecID) for WHERE clause
-        if let (Some(first_header), Some(first_value)) = (
-            self.current_table_headers.first(),
-            row.first()
-        ) {
-            let lhs = self.spreadsheet_quote_ident(conn, first_header);
-            let rhs = self.spreadsheet_quote_value(conn, first_value);
-            Some(format!("{} = {}", lhs, rhs))
-        } else {
-            None
-        }
-    }
-
-    fn spreadsheet_generate_sql(&self) -> Option<String> {
-        println!("🔥 spreadsheet_generate_sql called");
-
-        let conn_id = self.current_connection_id?;
-        println!("🔥 Found connection ID: {}", conn_id);
-
-        let conn = self
-            .connections
-            .iter()
-            .find(|c| c.id == Some(conn_id))
-            .cloned()?;
-        println!("🔥 Found connection config");
-
-        let table = self.spreadsheet_extract_table_name()?;
-        println!("🔥 Extracted table name: {}", table);
-
-    let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
-    let qt_table = |s: &str| self.spreadsheet_quote_table_ident(&conn, s);
-        let qv = |s: &str| self.spreadsheet_quote_value(&conn, s);
-
-        let mut stmts: Vec<String> = Vec::new();
-        println!(
-            "🔥 Processing {} operations",
-            self.spreadsheet_state.pending_operations.len()
-        );
-        for op in &self.spreadsheet_state.pending_operations {
-            match op {
-                crate::models::structs::CellEditOperation::Update {
-                    row_index,
-                    col_index,
-                    old_value: _,
-                    new_value,
-                } => {
-                    let col = self.current_table_headers.get(*col_index)?;
-                    let where_clause = self.spreadsheet_row_where_all_columns(&conn, *row_index)?;
-                    let sql = format!(
-                        "UPDATE {} SET {} = {} WHERE {}",
-                        qt_table(&table),
-                        qt(col),
-                        qv(new_value),
-                        where_clause
-                    );
-                    stmts.push(sql);
-                }
-                
-                    crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
-                        let cols: Vec<String> = self.current_table_headers.iter().map(|c| qt(c)).collect();
-                        // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
-                        let latest_vals_src: Option<&Vec<String>> = self
-                            .all_table_data
-                            .get(*row_index)
-                            .or_else(|| self.current_table_data.get(*row_index));
-                        let vals_vec: Vec<String> = if let Some(src) = latest_vals_src {
-                            src.clone()
-                        } else {
-                            values.clone()
-                        };
-                        let vals: Vec<String> = vals_vec.iter().map(|v| qv(v)).collect();
-                        let sql = format!(
-                            "INSERT INTO {} ({}) VALUES ({})",
-                            qt_table(&table),
-                            cols.join(", "),
-                            vals.join(", ")
-                        );
-                        stmts.push(sql);
-                    }
-                crate::models::structs::CellEditOperation::DeleteRow {
-                    row_index: _,
-                    values,
-                } => {
-                    // Use a smarter WHERE clause - prefer just the first column if it looks like a primary key
-                    if values.is_empty() || self.current_table_headers.is_empty() {
-                        continue;
-                    }
-                    
-                    let first_header = &self.current_table_headers[0];
-                    let first_value = &values[0];
-                    
-                    // If the first column looks like a primary key (RecID, ID, etc.), use just that
-                    if first_header.to_lowercase().contains("id") || 
-                       first_header.to_lowercase().contains("recid") ||
-                       first_header.to_lowercase() == "pk" {
-                        let where_clause = format!("{} = {}", qt(first_header), qv(first_value));
-                        let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                        println!("🔥 Using primary key WHERE: {}", where_clause);
-                        stmts.push(sql);
-                    } else {
-                        // Fallback to all columns if no obvious primary key
-                        if values.len() != self.current_table_headers.len() {
-                            continue;
-                        }
-                        let parts: Vec<String> = self
-                            .current_table_headers
-                            .iter()
-                            .zip(values.iter())
-                            .map(|(col, v)| format!("{} = {}", qt(col), qv(v)))
-                            .collect();
-                        let where_clause = parts.join(" AND ");
-                        let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                        println!("🔥 Using full row WHERE (no obvious PK): {} columns", parts.len());
-                        stmts.push(sql);
-                    }
-                }
-            }
-        }
-        if stmts.is_empty() {
-            None
-        } else {
-            Some(stmts.join(";\n"))
-        }
-    }
-
-    fn spreadsheet_save_changes(&mut self) {
-        println!(
-            "🔥 spreadsheet_save_changes called with {} pending operations",
-            self.spreadsheet_state.pending_operations.len()
-        );
-        debug!(
-            "🔥 spreadsheet_save_changes called with {} pending operations",
-            self.spreadsheet_state.pending_operations.len()
-        );
-
-        if self.spreadsheet_state.pending_operations.is_empty() {
-            println!("🔥 No pending operations to save");
-            debug!("🔥 No pending operations to save");
-            return;
-        }
-        if let Some(sql) = self.spreadsheet_generate_sql() {
-            println!("🔥 Generated SQL: {}", sql);
-            debug!("🔥 Generated SQL: {}", sql);
-            if let Some(conn_id) = self.current_connection_id {
-                println!("🔥 Executing SQL with connection {}", conn_id);
-                debug!("🔥 Executing SQL with connection {}", conn_id);
-                
-                // Execute without transaction wrapper to avoid MySQL prepared statement issues
-                println!("🔥 Executing SQL: {}", sql);
-                
-                if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, sql) {
-                    // Detect error tables returned by executor (headers == ["Error"]) and treat as failure
-                    let is_error_table = headers.len() == 1 && headers[0].eq_ignore_ascii_case("error");
-                    if is_error_table {
-                        let msg = data.first().and_then(|r| r.first()).cloned().unwrap_or_else(|| "Unknown query error".to_string());
-                        debug!("❌ SQL execution returned error table: {}", msg);
-                        self.error_message = msg;
-                        self.show_error_message = true;
-                        // Do NOT clear pending operations on failure
-                    } else {
-                        debug!("🔥 SQL executed successfully, clearing pending operations");
-                        self.spreadsheet_state.pending_operations.clear();
-                        self.spreadsheet_state.is_dirty = false;
-
-                        // Refresh grid after save so inserted rows become visible
-                        if self.is_table_browse_mode {
-                            if self.use_server_pagination && !self.current_base_query.is_empty() {
-                                // Re-run current page of the base query
-                                self.execute_paginated_query();
-                            } else {
-                                // Client-side mode: simply re-sync current page slice
-                                self.update_current_page_data();
-                            }
-                        }
-                    }
-                } else {
-                    debug!("🔥 SQL execution failed");
-                    self.error_message = "Failed to save table changes".to_string();
-                    self.show_error_message = true;
-                }
-            } else {
-                println!("🔥 No current connection ID");
-                debug!("🔥 No current connection ID");
-            }
-        } else {
-            println!("🔥 Failed to generate SQL");
-            debug!("🔥 Failed to generate SQL");
-        }
-    }
     // End: Spreadsheet helpers
     // Ensure a shared Tokio runtime exists (lazy init) to avoid spawning many runtimes
     fn get_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
@@ -9765,6 +9293,150 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
         } else {
             log::error!("❌ No update info available");
+        }
+    }
+}
+
+// Implement the SpreadsheetOperations trait for Tabular
+impl spreadsheet::SpreadsheetOperations for Tabular {
+    fn get_spreadsheet_state(&self) -> &crate::models::structs::SpreadsheetState {
+        &self.spreadsheet_state
+    }
+
+    fn get_spreadsheet_state_mut(&mut self) -> &mut crate::models::structs::SpreadsheetState {
+        &mut self.spreadsheet_state
+    }
+
+    fn get_current_table_data(&self) -> &Vec<Vec<String>> {
+        &self.current_table_data
+    }
+
+    fn get_current_table_data_mut(&mut self) -> &mut Vec<Vec<String>> {
+        &mut self.current_table_data
+    }
+
+    fn get_all_table_data(&self) -> &Vec<Vec<String>> {
+        &self.all_table_data
+    }
+
+    fn get_all_table_data_mut(&mut self) -> &mut Vec<Vec<String>> {
+        &mut self.all_table_data
+    }
+
+    fn get_current_table_headers(&self) -> &Vec<String> {
+        &self.current_table_headers
+    }
+
+    fn get_current_table_name(&self) -> &str {
+        &self.current_table_name
+    }
+
+    fn get_query_tabs(&self) -> &Vec<models::structs::QueryTab> {
+        &self.query_tabs
+    }
+
+    fn get_active_tab_index(&self) -> usize {
+        self.active_tab_index
+    }
+
+    fn get_connections(&self) -> &Vec<models::structs::ConnectionConfig> {
+        &self.connections
+    }
+
+    fn get_current_connection_id(&self) -> Option<i64> {
+        self.current_connection_id
+    }
+
+    fn get_total_rows(&self) -> usize {
+        self.total_rows
+    }
+
+    fn set_total_rows(&mut self, rows: usize) {
+        self.total_rows = rows;
+    }
+
+    fn get_selected_row(&self) -> Option<usize> {
+        self.selected_row
+    }
+
+    fn set_selected_row(&mut self, row: Option<usize>) {
+        self.selected_row = row;
+    }
+
+    fn get_selected_cell(&self) -> Option<(usize, usize)> {
+        self.selected_cell
+    }
+
+    fn set_selected_cell(&mut self, cell: Option<(usize, usize)>) {
+        self.selected_cell = cell;
+    }
+
+    fn set_table_recently_clicked(&mut self, clicked: bool) {
+        self.table_recently_clicked = clicked;
+    }
+
+    fn get_use_server_pagination(&self) -> bool {
+        self.use_server_pagination
+    }
+
+    fn get_current_base_query(&self) -> &str {
+        &self.current_base_query
+    }
+
+    fn get_is_table_browse_mode(&self) -> bool {
+        self.is_table_browse_mode
+    }
+
+    fn set_error_message(&mut self, message: String) {
+        self.error_message = message;
+    }
+
+    fn set_show_error_message(&mut self, show: bool) {
+        self.show_error_message = show;
+    }
+
+    fn execute_paginated_query(&mut self) {
+        // Call the existing method
+        self.execute_paginated_query();
+    }
+
+    fn update_current_page_data(&mut self) {
+        // Call the existing method
+        self.update_current_page_data();
+    }
+
+    fn execute_spreadsheet_sql(&mut self, sql: String) {
+        if let Some(conn_id) = self.current_connection_id {
+            if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, sql) {
+                // Detect error tables returned by executor (headers == ["Error"]) and treat as failure
+                let is_error_table = headers.len() == 1 && headers[0].eq_ignore_ascii_case("error");
+                if is_error_table {
+                    let msg = data.first().and_then(|r| r.first()).cloned().unwrap_or_else(|| "Unknown query error".to_string());
+                    debug!("❌ SQL execution returned error table: {}", msg);
+                    self.error_message = msg;
+                    self.show_error_message = true;
+                    // Do NOT clear pending operations on failure
+                } else {
+                    debug!("🔥 SQL executed successfully, clearing pending operations");
+                    self.spreadsheet_state.pending_operations.clear();
+                    self.spreadsheet_state.is_dirty = false;
+
+                    // Refresh grid after save so inserted rows become visible
+                    if self.is_table_browse_mode {
+                        if self.use_server_pagination && !self.current_base_query.is_empty() {
+                            // Re-run current page of the base query
+                            self.execute_paginated_query();
+                        } else {
+                            // Client-side mode: simply re-sync current page slice
+                            self.update_current_page_data();
+                        }
+                    }
+                }
+            } else {
+                debug!("🔥 SQL execution failed");
+                self.error_message = "Failed to save table changes".to_string();
+                self.show_error_message = true;
+            }
         }
     }
 }

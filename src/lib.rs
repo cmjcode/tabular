@@ -21,6 +21,7 @@ pub mod self_update;
 pub mod sidebar_database;
 pub mod sidebar_history;
 pub mod sidebar_query;
+pub mod spreadsheet;
 pub mod window_egui;
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
