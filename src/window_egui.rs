@@ -260,29 +260,26 @@ impl Tabular {
         if let Some((row, col)) = self.spreadsheet_state.editing_cell.take() {
             let new_val = self.spreadsheet_state.cell_edit_text.clone();
             self.spreadsheet_state.cell_edit_text.clear();
-            if save {
-                if let Some(old_val) = self
+            if save
+                && let Some(old_val) = self
                     .all_table_data
                     .get(row)
                     .and_then(|r| r.get(col))
                     .cloned()
-                {
-                    if old_val != new_val {
-                        if let Some(r1) = self.current_table_data.get_mut(row) {
-                            if let Some(c1) = r1.get_mut(col) {
+                    && old_val != new_val {
+                        if let Some(r1) = self.current_table_data.get_mut(row)
+                            && let Some(c1) = r1.get_mut(col) {
                                 *c1 = new_val.clone();
                             }
-                        }
-                        if let Some(r2) = self.all_table_data.get_mut(row) {
-                            if let Some(c2) = r2.get_mut(col) {
+                        if let Some(r2) = self.all_table_data.get_mut(row)
+                            && let Some(c2) = r2.get_mut(col) {
                                 *c2 = new_val.clone();
                             }
-                        }
                         // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
                         let mut updated_insert_row = false;
                         for op in &mut self.spreadsheet_state.pending_operations {
-                            if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op {
-                                if *row_index == row {
+                            if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op
+                                && *row_index == row {
                                     // Ensure values vector has enough columns
                                     if values.len() < self.current_table_headers.len() {
                                         values.resize(self.current_table_headers.len(), String::new());
@@ -293,7 +290,6 @@ impl Tabular {
                                     updated_insert_row = true;
                                     break;
                                 }
-                            }
                         }
                         // If not an InsertRow case, record as an Update operation
                         if !updated_insert_row {
@@ -308,8 +304,6 @@ impl Tabular {
                         }
                         self.spreadsheet_state.is_dirty = true;
                     }
-                }
-            }
         }
     }
 
@@ -530,8 +524,8 @@ impl Tabular {
         
         // Use only the first column (usually primary key like RecID) for WHERE clause
         if let (Some(first_header), Some(first_value)) = (
-            self.current_table_headers.get(0),
-            row.get(0)
+            self.current_table_headers.first(),
+            row.first()
         ) {
             let lhs = self.spreadsheet_quote_ident(conn, first_header);
             let rhs = self.spreadsheet_quote_value(conn, first_value);
@@ -682,7 +676,7 @@ impl Tabular {
                     // Detect error tables returned by executor (headers == ["Error"]) and treat as failure
                     let is_error_table = headers.len() == 1 && headers[0].eq_ignore_ascii_case("error");
                     if is_error_table {
-                        let msg = data.get(0).and_then(|r| r.get(0)).cloned().unwrap_or_else(|| "Unknown query error".to_string());
+                        let msg = data.first().and_then(|r| r.first()).cloned().unwrap_or_else(|| "Unknown query error".to_string());
                         debug!("❌ SQL execution returned error table: {}", msg);
                         self.error_message = msg;
                         self.show_error_message = true;
@@ -7929,30 +7923,26 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     // Arrow key navigation while editing: commit current and move edit focus
                     let mut target: Option<(usize, usize)> = None;
                     if right {
-                        if let Some(row_vec) = self.current_table_data.get(erow) {
-                            if ecol + 1 < row_vec.len() {
+                        if let Some(row_vec) = self.current_table_data.get(erow)
+                            && ecol + 1 < row_vec.len() {
                                 target = Some((erow, ecol + 1));
                             }
-                        }
                     } else if left {
                         if ecol > 0 {
                             target = Some((erow, ecol - 1));
                         }
                     } else if down {
-                        if erow + 1 < self.current_table_data.len() {
-                            if let Some(next_row) = self.current_table_data.get(erow + 1) {
+                        if erow + 1 < self.current_table_data.len()
+                            && let Some(next_row) = self.current_table_data.get(erow + 1) {
                                 let tcol = ecol.min(next_row.len().saturating_sub(1));
                                 target = Some((erow + 1, tcol));
                             }
-                        }
-                    } else if up {
-                        if erow > 0 {
-                            if let Some(prev_row) = self.current_table_data.get(erow - 1) {
+                    } else if up
+                        && erow > 0
+                            && let Some(prev_row) = self.current_table_data.get(erow - 1) {
                                 let tcol = ecol.min(prev_row.len().saturating_sub(1));
                                 target = Some((erow - 1, tcol));
                             }
-                        }
-                    }
 
                     if let Some((tr, tc)) = target {
                         // Apply in-flight overlay text and commit current edit before moving

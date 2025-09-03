@@ -244,6 +244,7 @@ pub enum CellEditOperation {
 }
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct SpreadsheetState {
     pub editing_cell: Option<(usize, usize)>, // (row, col) being edited
     pub cell_edit_text: String,               // Text being edited in the cell
@@ -252,17 +253,6 @@ pub struct SpreadsheetState {
     pub primary_key_columns: Vec<String>,     // Primary key column names for generating SQL
 }
 
-impl Default for SpreadsheetState {
-    fn default() -> Self {
-        Self {
-            editing_cell: None,
-            cell_edit_text: String::new(),
-            pending_operations: Vec::new(),
-            is_dirty: false,
-            primary_key_columns: Vec::new(),
-        }
-    }
-}
 
 /// Type alias for the complex tuple returned by render_tree_node_with_table_expansion
 pub type RenderTreeNodeResult = (

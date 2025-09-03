@@ -37,7 +37,7 @@ fn format_date_for_display(date_str: &str) -> String {
             if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                 format!("{}", parsed_date.format("%B %d, %Y"))
             } else {
-                format!("{}", date_str)
+                date_str.to_string()
             }
         }
     }
