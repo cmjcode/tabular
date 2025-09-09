@@ -7037,6 +7037,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         .max_rect(scroll_rect)
                         .layout(egui::Layout::top_down(egui::Align::LEFT)),
                 );
+                // Defer refresh action to avoid mutable borrow inside UI closures
+                let mut refresh_request_data = false;
                 let _scroll_area_response = egui::ScrollArea::both()
                     .id_salt("table_data_scroll")
                     .auto_shrink([false, false])
@@ -7383,6 +7385,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                                 hover_response.context_menu(|ui| {
                                                     ui.set_min_width(150.0);
                                                     ui.vertical(|ui| {
+                            if ui.button("🔄 Refresh Data").clicked() { refresh_request_data = true; ui.close(); }
+                            ui.separator();
                                                         if self.is_table_browse_mode && ui.button("📋 Add New Row").clicked() {
                                                                 add_row_request = Some(0);
                                                                 ui.close();
@@ -7442,10 +7446,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                     ui.end_row();
                                 }
                             });
-                        grid_response.response.context_menu(|ui| {
+            grid_response.response.context_menu(|ui| {
                             ui.set_min_width(150.0);
                             ui.vertical(|ui| {
-                                if ui.button("🔄 Refresh Data").clicked() { self.refresh_current_table_data(); ui.close(); }
+                if ui.button("🔄 Refresh Data").clicked() { refresh_request_data = true; ui.close(); }
                                 if ui.button("📄 Export to CSV").clicked() {
                                     export::export_to_csv(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
                                     ui.close();
@@ -7480,6 +7484,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             }
                         }
                     });
+                // Execute deferred refresh after UI borrows are released
+                if refresh_request_data { self.refresh_current_table_data(); }
                 // If editing a cell, support keyboard-only editing/navigation
                 if let Some((erow, ecol)) = self.spreadsheet_state.editing_cell {
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
