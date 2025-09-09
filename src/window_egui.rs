@@ -177,6 +177,10 @@ pub struct Tabular {
     pub structure_col_widths: Vec<f32>,     // for columns table
     pub structure_idx_col_widths: Vec<f32>, // for indexes table
     pub structure_sub_view: models::structs::StructureSubView,
+    // Track last loaded structure target to avoid redundant reloads on tab toggles
+    pub last_structure_target: Option<(i64, String, String)>, // (connection_id, database, table)
+    // Flag to force next structure load even if target unchanged (used by manual refresh)
+    pub request_structure_refresh: bool,
     // Inline add/edit column state for Structure -> Columns
     pub adding_column: bool,
     pub new_column_name: String,
@@ -507,6 +511,8 @@ impl Tabular {
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,
+            last_structure_target: None,
+            request_structure_refresh: false,
             adding_column: false,
             new_column_name: String::new(),
             new_column_type: String::new(),
@@ -1417,6 +1423,8 @@ impl Tabular {
                                     self.total_rows = self.all_table_data.len();
                                     self.current_page = 0;
                                     had_cache = true;
+                                    // Table context changed; ensure future Structure load is for this table
+                                    self.last_structure_target = None;
                                     if let Some(active_tab) =
                                         self.query_tabs.get_mut(self.active_tab_index)
                                     {
@@ -1494,6 +1502,8 @@ impl Tabular {
                                 // Keep browse mode enabled for filters to apply on cached data
                                 self.is_table_browse_mode = true;
                                 self.sql_filter_text.clear();
+                                // New table opened; structure target should refresh on demand
+                                self.last_structure_target = None;
                             } else {
                                 println!("================== A ============================ ");
                                 debug!("🚀 Taking server-side pagination path");
@@ -1548,6 +1558,8 @@ impl Tabular {
                                     database_name.clone().unwrap_or_default(),
                                     table_name
                                 );
+                                // New table; force structure reload on next toggle
+                                self.last_structure_target = None;
                             // Fallback to client-side pagination (original behavior)
                             // For MsSQL, we need to strip TOP from query_content to avoid conflicts
                             let safe_query =
@@ -1647,6 +1659,7 @@ impl Tabular {
                             }
                             } else {
                                 debug!("🛑 Skipping client-side live load on table click because cache exists");
+                                self.last_structure_target = None;
                             }
                         }
                     }
@@ -1657,7 +1670,26 @@ impl Tabular {
             // sebelumnya struktur tidak di-refresh sehingga masih menampilkan struktur table lama.
             // Di sini kita paksa reload struktur untuk table baru.
             if self.table_bottom_view == models::structs::TableBottomView::Structure {
-                self.load_structure_info_for_current_table();
+                // Load only if target changed
+                if let Some(conn_id) = self.current_connection_id {
+                    let db = self
+                        .query_tabs
+                        .get(self.active_tab_index)
+                        .and_then(|t| t.database_name.clone())
+                        .unwrap_or_default();
+                    let table = self.infer_current_table_name();
+                    let current_target = (conn_id, db.clone(), table.clone());
+                    if self
+                        .last_structure_target
+                        .as_ref()
+                        .map(|t| t != &current_target)
+                        .unwrap_or(true)
+                    {
+                        self.load_structure_info_for_current_table();
+                    }
+                } else {
+                    self.load_structure_info_for_current_table();
+                }
             } else {
                 // Pastikan struktur lama dibersihkan agar ketika user pindah ke Structure langsung memicu load.
                 self.structure_columns.clear();
@@ -7991,8 +8023,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
     // Fetch structure (columns & indexes) metadata for current table for Structure tab.
     pub(crate) fn load_structure_info_for_current_table(&mut self) {
-        self.structure_columns.clear();
-        self.structure_indexes.clear();
+    // Determine current target
         let Some(conn_id) = self.current_connection_id else {
             return;
         };
@@ -8018,6 +8049,26 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             } else {
                 conn.database.clone()
             };
+
+        // Short-circuit: if target unchanged and columns already loaded, do nothing
+        let target = (conn_id, database.clone(), table_guess.clone());
+    if !self.request_structure_refresh && self
+            .last_structure_target
+            .as_ref()
+            .map(|t| t == &target)
+            .unwrap_or(false)
+            && !self.structure_columns.is_empty()
+        {
+            debug!(
+                "✅ Structure already loaded in-memory for {}/{} (skip reload)",
+                database, table_guess
+            );
+            return;
+        }
+
+        // Reset current in-memory structure before (re)loading
+        self.structure_columns.clear();
+        self.structure_indexes.clear();
 
         // 1) Try to populate from cache immediately for instant UI
         let mut had_struct_cache = false;
@@ -8079,9 +8130,16 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 }
             }
         }
-            // NEW: detailed index metadata
-            self.structure_indexes =
-                self.fetch_index_details_for_table(conn_id, &conn, &database, &table_guess);
+
+            // Detailed index metadata: defer until Indexes subview is shown to avoid extra delay
+            if self.structure_sub_view == models::structs::StructureSubView::Indexes {
+                self.structure_indexes =
+                    self.fetch_index_details_for_table(conn_id, &conn, &database, &table_guess);
+            }
+
+            // Remember last loaded structure target and clear refresh request
+            self.last_structure_target = Some((conn_id, database, table_guess));
+            self.request_structure_refresh = false;
         }
     }
 
@@ -8285,7 +8343,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                     if !self.adding_index { self.start_inline_add_index(); }
                                     ui.close();
                                 }
-                                if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
+                                if ui.button("🔄 Refresh").clicked() { self.request_structure_refresh = true; self.load_structure_info_for_current_table(); ui.close(); }
                             });
                         }
                     });
@@ -8312,7 +8370,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                                 ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                                 resp.context_menu(|ui| {
                                     if ui.button("➕ Add Index").clicked() { if !self.adding_index { self.start_inline_add_index(); } ui.close(); }
-                                    if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
+                                    if ui.button("🔄 Refresh").clicked() { self.request_structure_refresh = true; self.load_structure_info_for_current_table(); ui.close(); }
                                     if ui.button("❌ Drop Index").clicked() {
                                         if let Some(conn_id) = self.current_connection_id && let Some(conn) = self.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
                                             let table_name = self.infer_current_table_name();
@@ -8457,7 +8515,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
                     // Context menu on any header cell
                     resp.context_menu(|ui| {
-                        if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
+                        if ui.button("🔄 Refresh").clicked() { self.request_structure_refresh = true; self.load_structure_info_for_current_table(); ui.close(); }
                         if ui.button("➕ Add Column").clicked() {
                             if !self.adding_column { // initialize add column row
                                 self.adding_column = true;
@@ -8496,7 +8554,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                         // Context menu on every cell
                         resp.context_menu(|ui| {
-                            if ui.button("🔄 Refresh").clicked() { self.load_structure_info_for_current_table(); ui.close(); }
+                            if ui.button("🔄 Refresh").clicked() { self.request_structure_refresh = true; self.load_structure_info_for_current_table(); ui.close(); }
                             if ui.button("➕ Add Column").clicked() {
                                 if !self.adding_column {
                                     self.adding_column = true;
@@ -11042,14 +11100,69 @@ impl App for Tabular {
                                 self.table_bottom_view == models::structs::TableBottomView::Data;
                             if ui.selectable_label(is_data, "📊 Data").clicked() {
                                 self.table_bottom_view = models::structs::TableBottomView::Data;
+                                // Ensure DATA view uses persisted cache when available.
+                                if self.current_table_headers.is_empty() {
+                                    if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
+                                        if let Some(conn_id) = tab.connection_id {
+                                            let db_name = tab.database_name.clone().unwrap_or_default();
+                                            let table = self.infer_current_table_name();
+                                            if !db_name.is_empty() && !table.is_empty() {
+                                                if let Some((hdrs, rows)) = crate::cache_data::get_table_rows_from_cache(self, conn_id, &db_name, &table) {
+                                                    if !hdrs.is_empty() {
+                                                        info!("📦 Showing cached data (toggle) for {}/{} ({} cols, {} rows)", db_name, table, hdrs.len(), rows.len());
+                                                        self.current_table_headers = hdrs.clone();
+                                                        self.current_table_data = rows.clone();
+                                                        self.all_table_data = rows;
+                                                        self.total_rows = self.all_table_data.len();
+                                                        self.current_page = 0;
+                                                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                                            active_tab.result_headers = self.current_table_headers.clone();
+                                                            active_tab.result_rows = self.current_table_data.clone();
+                                                            active_tab.result_all_rows = self.all_table_data.clone();
+                                                            active_tab.result_table_name = self.current_table_name.clone();
+                                                            active_tab.is_table_browse_mode = true;
+                                                            active_tab.current_page = self.current_page;
+                                                            active_tab.page_size = self.page_size;
+                                                            active_tab.total_rows = self.total_rows;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Data already present in memory; no need to hit persistent cache
+                                    debug!("✅ Using in-memory data for Data tab (no cached reload)");
+                                }
                             }
                             let is_struct = self.table_bottom_view
                                 == models::structs::TableBottomView::Structure;
                             if ui.selectable_label(is_struct, "🏗 Structure").clicked() {
                                 self.table_bottom_view =
                                     models::structs::TableBottomView::Structure;
-                                // Selalu reload supaya tidak terjebak struktur kosong atau struktur tabel sebelumnya
-                                self.load_structure_info_for_current_table();
+                                // Load structure only if target changed; otherwise keep in-memory (avoid repeated cache hits)
+                                if let Some(conn_id) = self.current_connection_id {
+                                    let db = self
+                                        .query_tabs
+                                        .get(self.active_tab_index)
+                                        .and_then(|t| t.database_name.clone())
+                                        .unwrap_or_default();
+                                    let table = self.infer_current_table_name();
+                                    let current_target = (conn_id, db.clone(), table.clone());
+                                    if self
+                                        .last_structure_target
+                                        .as_ref()
+                                        .map(|t| t != &current_target)
+                                        .unwrap_or(true)
+                                    {
+                                        self.load_structure_info_for_current_table();
+                                    } else {
+                                        debug!("✅ Using in-memory structure for {}/{} (no reload)", db, table);
+                                    }
+                                } else {
+                                    // No active connection, try load to ensure state sane
+                                    self.load_structure_info_for_current_table();
+                                }
                             }
                         });
 

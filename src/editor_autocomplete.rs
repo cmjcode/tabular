@@ -385,6 +385,8 @@ impl ShallowForCache for Tabular {
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,
+            last_structure_target: None,
+            request_structure_refresh: false,
             adding_column: false,
             new_column_name: String::new(),
             new_column_type: String::new(),
