@@ -79,17 +79,15 @@ pub trait SpreadsheetOperations {
                 match maybe_old {
                     Some(ref old) if *old != new_val => {
                         // Update current_table_data
-                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row) {
-                            if let Some(c1) = r1.get_mut(col) {
+                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row)
+                            && let Some(c1) = r1.get_mut(col) {
                                 *c1 = new_val.clone();
                             }
-                        }
                         // Update all_table_data
-                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row) {
-                            if let Some(c2) = r2.get_mut(col) {
+                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row)
+                            && let Some(c2) = r2.get_mut(col) {
                                 *c2 = new_val.clone();
                             }
-                        }
 
                         // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
                         let mut updated_insert_row = false;
@@ -128,16 +126,14 @@ pub trait SpreadsheetOperations {
                     None => {
                         // If old_val is None (e.g., row not present in all_table_data in server pagination),
                         // still update visible data so the edit doesn't disappear. Skip recording pending op.
-                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row) {
-                            if let Some(c1) = r1.get_mut(col) {
+                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row)
+                            && let Some(c1) = r1.get_mut(col) {
                                 *c1 = new_val.clone();
                             }
-                        }
-                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row) {
-                            if let Some(c2) = r2.get_mut(col) {
+                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row)
+                            && let Some(c2) = r2.get_mut(col) {
                                 *c2 = new_val.clone();
                             }
-                        }
                     }
                     _ => { /* unchanged value, do nothing */ }
                 }
