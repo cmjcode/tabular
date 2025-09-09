@@ -28,7 +28,8 @@ pub mod window_egui;
 pub fn run() -> Result<(), eframe::Error> {
     dotenv::dotenv().ok();
     let _ = env_logger::Builder::from_default_env()
-        .filter_module("tabular", log::LevelFilter::Error)
+        // Enable info-level logs for our crate so users can see data source messages
+        .filter_module("tabular", log::LevelFilter::Info)
         .is_test(false)
         .try_init();
     config::init_data_dir();

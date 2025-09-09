@@ -1,4 +1,4 @@
-use log::debug;
+use log::{debug, info};
 
 use crate::{
     cache_data, connection, driver_mysql, driver_redis, driver_sqlite, models,
@@ -447,6 +447,100 @@ pub(crate) fn get_indexed_columns_from_cache(
         match result {
             Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
             Err(_) => None,
+        }
+    } else {
+        None
+    }
+}
+
+// Row cache: store and retrieve first-page (100 rows) snapshot for a table
+pub(crate) fn save_table_rows_to_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+    headers: &[String],
+    rows: &[Vec<String>],
+) {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let database_name = database_name.to_string();
+        let table_name = table_name.to_string();
+        let headers_json = serde_json::to_string(headers).unwrap_or("[]".to_string());
+        let rows_json = serde_json::to_string(rows).unwrap_or("[]".to_string());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+    rt.block_on(async {
+            let _ = sqlx::query(
+                r#"INSERT INTO row_cache (connection_id, database_name, table_name, headers_json, rows_json, updated_at)
+                   VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(connection_id, database_name, table_name)
+                   DO UPDATE SET headers_json=excluded.headers_json, rows_json=excluded.rows_json, updated_at=CURRENT_TIMESTAMP"#,
+            )
+            .bind(connection_id)
+            .bind(&database_name)
+            .bind(&table_name)
+            .bind(headers_json)
+            .bind(rows_json)
+            .execute(pool_clone.as_ref())
+            .await;
+        });
+        info!(
+            "💾 Saved first 100 rows to cache for {}/{}/{}",
+            connection_id, database_name, table_name
+        );
+    }
+}
+
+pub(crate) fn get_table_rows_from_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let result = rt.block_on(async {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT headers_json, rows_json FROM row_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?",
+            )
+            .bind(connection_id)
+            .bind(database_name)
+            .bind(table_name)
+            .fetch_optional(pool_clone.as_ref())
+            .await
+        });
+
+        match result {
+            Ok(Some((headers_json, rows_json))) => {
+                let headers: Vec<String> = serde_json::from_str(&headers_json).unwrap_or_default();
+                let rows: Vec<Vec<String>> = serde_json::from_str(&rows_json).unwrap_or_default();
+                info!(
+                    "📦 Cache hit for rows {}/{}/{} ({} cols, {} rows)",
+                    connection_id,
+                    database_name,
+                    table_name,
+                    headers.len(),
+                    rows.len()
+                );
+                Some((headers, rows))
+            }
+            Ok(None) => {
+                info!(
+                    "🕳️ No row cache found for {}/{}/{} — will use live server",
+                    connection_id, database_name, table_name
+                );
+                None
+            }
+            Err(e) => {
+                debug!(
+                    "Row cache lookup error for {}/{}/{}: {}",
+                    connection_id, database_name, table_name, e
+                );
+                None
+            }
         }
     } else {
         None

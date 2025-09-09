@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use eframe::{App, Frame, egui};
 use egui_code_editor::ColorTheme; // for integrated editor theme selection
-use log::{debug, error};
+use log::{debug, error, info};
 use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -1394,11 +1394,53 @@ impl Tabular {
                             active_tab.result_table_name = self.current_table_name.clone();
                         }
 
-                        // Use server-side pagination for table browsing
+                        // Try show cached 100 rows immediately (cache-first UX)
+                        let mut had_cache = false;
+                        if let Some(dbn) = &database_name {
+                            if let Some((cached_headers, cached_rows)) = crate::cache_data::get_table_rows_from_cache(
+                                self,
+                                connection_id,
+                                dbn,
+                                &table_name,
+                            ) {
+                                if !cached_headers.is_empty() {
+                                    info!(
+                                        "📦 Showing cached data for table {}/{} ({} cols, {} rows)",
+                                        dbn,
+                                        table_name,
+                                        cached_headers.len(),
+                                        cached_rows.len()
+                                    );
+                                    self.current_table_headers = cached_headers.clone();
+                                    self.current_table_data = cached_rows.clone();
+                                    self.all_table_data = cached_rows;
+                                    self.total_rows = self.all_table_data.len();
+                                    self.current_page = 0;
+                                    had_cache = true;
+                                    if let Some(active_tab) =
+                                        self.query_tabs.get_mut(self.active_tab_index)
+                                    {
+                                        active_tab.result_headers =
+                                            self.current_table_headers.clone();
+                                        active_tab.result_rows =
+                                            self.current_table_data.clone();
+                                        active_tab.result_all_rows =
+                                            self.all_table_data.clone();
+                                        active_tab.result_table_name =
+                                            self.current_table_name.clone();
+                                        active_tab.is_table_browse_mode = true;
+                                        active_tab.current_page = self.current_page;
+                                        active_tab.page_size = self.page_size;
+                                        active_tab.total_rows = self.total_rows;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Use server-side pagination only when refreshing or when no cache available.
                         if self.use_server_pagination {
-                            println!("================== A ============================ ");
-                            debug!("🚀 Taking server-side pagination path");
-                            // Build base query without LIMIT for server pagination
+                            // Build base query without LIMIT for potential server pagination (store for future refresh),
+                            // but don't execute it if we already have cache.
                             let base_query = if let Some(db_name) = &database_name {
                                 match conn.connection_type {
                                     models::enums::DatabaseType::MySQL => {
@@ -1440,72 +1482,72 @@ impl Tabular {
                                     _ => format!("SELECT * FROM `{}`", table_name),
                                 }
                             };
-
-                            // current_table_name sudah diset lebih awal
-                            self.is_table_browse_mode = true; // Enable filter for table browse
-                            self.sql_filter_text.clear(); // Clear any previous filter
-
-                            // If the pool is not ready, queue the first-page query and show loading instead of executing immediately
-                            let mut pool_ready = true;
-                            if self.pending_connection_pools.contains(&connection_id) {
-                                pool_ready = false;
-                            } else if !self.connection_pools.contains_key(&connection_id) {
-                                // Attempt a quick readiness check using the runtime (non-blocking)
-                                let created_now = if let Some(rt) = self.runtime.clone() {
-                                    rt.block_on(async {
-                                        crate::connection::try_get_connection_pool(
-                                            self,
-                                            connection_id,
-                                        )
-                                        .await
-                                        .is_some()
-                                    })
-                                } else {
-                                    let rt = self.get_runtime();
-                                    rt.block_on(async {
-                                        crate::connection::try_get_connection_pool(
-                                            self,
-                                            connection_id,
-                                        )
-                                        .await
-                                        .is_some()
-                                    })
-                                };
-                                if !created_now {
-                                    pool_ready = false;
-                                }
+                            // Always store base_query for potential manual refresh
+                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                active_tab.base_query = base_query.clone();
                             }
+                            self.current_base_query = base_query;
 
-                            if !pool_ready {
-                                // Prepare server pagination state but defer execution
-                                if let Some(active_tab) =
-                                    self.query_tabs.get_mut(self.active_tab_index)
-                                {
-                                    active_tab.base_query = base_query.clone();
-                                }
-                                self.current_base_query = base_query.clone();
-                                self.current_page = 0;
-                                // Assume a large default total so paging UI is enabled
-                                if let Some(total) = self.execute_count_query() {
-                                    self.actual_total_rows = Some(total);
-                                }
-
-                                // Build the first page query to run as soon as pool is ready
-                                let first_query = self.build_paginated_query(0, self.page_size);
-                                self.pool_wait_in_progress = true;
-                                self.pool_wait_connection_id = Some(connection_id);
-                                self.pool_wait_query = first_query;
-                                self.pool_wait_started_at = Some(std::time::Instant::now());
-                                // Friendly status; keep current data intact
-                                self.current_table_name =
-                                    "Connecting… waiting for pool".to_string();
+                            // If we already showed cache, do NOT auto-fetch from server now.
+                            if had_cache {
+                                debug!("🛑 Skipping live server load on table click because cache exists");
+                                // Keep browse mode enabled for filters to apply on cached data
+                                self.is_table_browse_mode = true;
+                                self.sql_filter_text.clear();
                             } else {
-                                // Initialize server-side pagination now
-                                self.initialize_server_pagination(base_query);
+                                println!("================== A ============================ ");
+                                debug!("🚀 Taking server-side pagination path");
+                                info!(
+                                    "🌐 Loading live data from server for table {}/{} (server pagination)",
+                                    database_name.clone().unwrap_or_default(),
+                                    table_name
+                                );
+                                // If the pool is not ready, queue the first-page query; otherwise execute.
+                                let mut pool_ready = true;
+                                if self.pending_connection_pools.contains(&connection_id) {
+                                    pool_ready = false;
+                                } else if !self.connection_pools.contains_key(&connection_id) {
+                                    let created_now = if let Some(rt) = self.runtime.clone() {
+                                        rt.block_on(async {
+                                            crate::connection::try_get_connection_pool(self, connection_id).await.is_some()
+                                        })
+                                    } else {
+                                        let rt = self.get_runtime();
+                                        rt.block_on(async {
+                                            crate::connection::try_get_connection_pool(self, connection_id).await.is_some()
+                                        })
+                                    };
+                                    if !created_now {
+                                        pool_ready = false;
+                                    }
+                                }
+
+                                if !pool_ready {
+                                    // Prepare server pagination state but defer execution
+                                    self.current_page = 0;
+                                    if let Some(total) = self.execute_count_query() {
+                                        self.actual_total_rows = Some(total);
+                                    }
+                                    let first_query = self.build_paginated_query(0, self.page_size);
+                                    self.pool_wait_in_progress = true;
+                                    self.pool_wait_connection_id = Some(connection_id);
+                                    self.pool_wait_query = first_query;
+                                    self.pool_wait_started_at = Some(std::time::Instant::now());
+                                    self.current_table_name = "Connecting… waiting for pool".to_string();
+                                } else {
+                                    self.initialize_server_pagination(self.current_base_query.clone());
+                                }
                             }
                         } else {
-                            println!("================== 1 ============================ ");
-                            debug!("🔄 Taking client-side pagination fallback path");
+                            // Client-side path (rare). Only run live query if no cache.
+                            if !had_cache {
+                                println!("================== 1 ============================ ");
+                                debug!("🔄 Taking client-side pagination fallback path");
+                                info!(
+                                    "🌐 Loading live data from server for table {}/{} (client pagination)",
+                                    database_name.clone().unwrap_or_default(),
+                                    table_name
+                                );
                             // Fallback to client-side pagination (original behavior)
                             // For MsSQL, we need to strip TOP from query_content to avoid conflicts
                             let safe_query =
@@ -1580,6 +1622,31 @@ impl Tabular {
                                     active_tab.page_size = self.page_size;
                                     active_tab.total_rows = self.total_rows;
                                 }
+                                // Save latest first page into row cache (best-effort)
+                                if let Some(dbn) = &database_name {
+                                    let snapshot: Vec<Vec<String>> = self
+                                        .all_table_data
+                                        .iter()
+                                        .take(100)
+                                        .cloned()
+                                        .collect();
+                                    let headers_clone = self.current_table_headers.clone();
+                                    crate::cache_data::save_table_rows_to_cache(
+                                        self,
+                                        connection_id,
+                                        dbn,
+                                        &table_name,
+                                        &headers_clone,
+                                        &snapshot,
+                                    );
+                                    info!(
+                                        "💾 Cached first 100 rows after live fetch for {}/{}",
+                                        dbn, table_name
+                                    );
+                                }
+                            }
+                            } else {
+                                debug!("🛑 Skipping client-side live load on table click because cache exists");
                             }
                         }
                     }
@@ -5771,6 +5838,33 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     active_tab.page_size = self.page_size;
                     active_tab.is_table_browse_mode = true;
                 }
+
+                // Save this first page into row cache (only when on first page)
+                if self.current_page == 0 {
+                    // Determine database and table names for cache key
+                    let db_name = self
+                        .query_tabs
+                        .get(self.active_tab_index)
+                        .and_then(|t| t.database_name.clone())
+                        .unwrap_or_default();
+                    let table = self.infer_current_table_name();
+                    if !db_name.is_empty() && !table.is_empty() {
+                        let snapshot: Vec<Vec<String>> = self.current_table_data.iter().take(100).cloned().collect();
+                        let headers_clone = self.current_table_headers.clone();
+                        crate::cache_data::save_table_rows_to_cache(
+                            self,
+                            connection_id,
+                            &db_name,
+                            &table,
+                            &headers_clone,
+                            &snapshot,
+                        );
+                        info!(
+                            "💾 Cached first 100 rows (server pagination) for {}/{}",
+                            db_name, table
+                        );
+                    }
+                }
             }
         } else {
             debug!("🔥 No connection_id available in active tab for paginated query");
@@ -7319,6 +7413,65 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         grid_response.response.context_menu(|ui| {
                             ui.set_min_width(150.0);
                             ui.vertical(|ui| {
+                                if ui.button("🔄 Refresh Data").clicked() {
+                                    // Re-run the query for current page (server or client path)
+                                    if self.use_server_pagination && !self.current_base_query.is_empty() {
+                                        // Reset to first page and execute to refresh
+                                        self.current_page = 0;
+                                        info!("🔄 Manual refresh: server pagination first page reloaded");
+                                        self.execute_paginated_query();
+                                    } else if let Some(conn_id) = self
+                                        .query_tabs
+                                        .get(self.active_tab_index)
+                                        .and_then(|t| t.connection_id)
+                                    {
+                                        // Build a simple SELECT * LIMIT 100 for current table
+                                        let table = self.infer_current_table_name();
+                                        if !table.is_empty() {
+                                            // Find db
+                                            let db_name = self
+                                                .query_tabs
+                                                .get(self.active_tab_index)
+                                                .and_then(|t| t.database_name.clone())
+                                                .unwrap_or_default();
+                                            let db_type = self.connections.iter().find(|c| c.id==Some(conn_id)).map(|c| c.connection_type.clone());
+                                            if let Some(ct) = db_type {
+                                                let query = match ct {
+                                                    models::enums::DatabaseType::MySQL => if db_name.is_empty() { format!("SELECT * FROM `{}` LIMIT 100", table) } else { format!("USE `{}`;\nSELECT * FROM `{}` LIMIT 100", db_name, table) },
+                                                    models::enums::DatabaseType::PostgreSQL => if db_name.is_empty() { format!("SELECT * FROM \"{}\" LIMIT 100", table) } else { format!("SELECT * FROM \"{}\".\"{}\" LIMIT 100", db_name, table) },
+                                                    models::enums::DatabaseType::SQLite => format!("SELECT * FROM `{}` LIMIT 100", table),
+                                                    models::enums::DatabaseType::MsSQL => Self::build_mssql_select_query(db_name.clone(), table.clone()),
+                                                    _ => String::new(),
+                                                };
+                                                if !query.is_empty() {
+                                                    if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, query) {
+                                                        self.current_table_headers = headers;
+                                                        self.current_table_data = data.clone();
+                                                        self.all_table_data = data;
+                                                        self.total_rows = self.all_table_data.len();
+                                                        self.current_page = 0;
+                                                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                                            active_tab.result_headers = self.current_table_headers.clone();
+                                                            active_tab.result_rows = self.current_table_data.clone();
+                                                            active_tab.result_all_rows = self.all_table_data.clone();
+                                                            active_tab.result_table_name = self.current_table_name.clone();
+                                                            active_tab.is_table_browse_mode = true;
+                                                            active_tab.current_page = self.current_page;
+                                                            active_tab.page_size = self.page_size;
+                                                            active_tab.total_rows = self.total_rows;
+                                                        }
+                                                        // Save refreshed first page to cache
+                                                        let snapshot: Vec<Vec<String>> = self.all_table_data.iter().take(100).cloned().collect();
+                                                        let headers_clone = self.current_table_headers.clone();
+                                                        crate::cache_data::save_table_rows_to_cache(self, conn_id, &db_name, &table, &headers_clone, &snapshot);
+                                                        info!("💾 Cached first 100 rows after manual refresh for {}/{}", db_name, table);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ui.close();
+                                }
                                 if ui.button("📄 Export to CSV").clicked() {
                                     export::export_to_csv(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
                                     ui.close();
@@ -7865,12 +8018,57 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             } else {
                 conn.database.clone()
             };
-            if let Some(cols) = crate::connection::fetch_columns_from_database(
+
+        // 1) Try to populate from cache immediately for instant UI
+        let mut had_struct_cache = false;
+            if let Some(cols) = crate::cache_data::get_columns_from_cache(
+                self,
+                conn_id,
+                &database,
+                &table_guess,
+            ) {
+                if !cols.is_empty() {
+                    info!(
+                        "📦 Showing cached structure for {}/{} ({} columns)",
+                        database,
+                        table_guess,
+                        cols.len()
+                    );
+                    self.structure_columns.clear();
+                    for (name, dtype) in cols {
+                        self.structure_columns
+                            .push(models::structs::ColumnStructInfo {
+                                name,
+                                data_type: dtype,
+                                ..Default::default()
+                            });
+                    }
+            had_struct_cache = true;
+                }
+            }
+
+        // 2) Only fetch live structure if no cache yet
+        if !had_struct_cache {
+        if let Some(cols) = crate::connection::fetch_columns_from_database(
                 conn_id,
                 &database,
                 &table_guess,
                 &conn,
             ) {
+                // Keep cache updated with latest structure
+                crate::cache_data::save_columns_to_cache(
+                    self,
+                    conn_id,
+                    &database,
+                    &table_guess,
+                    &cols,
+                );
+                info!(
+                    "🌐 Loaded live structure from server for {}/{} ({} columns)",
+                    database,
+                    table_guess,
+                    cols.len()
+                );
                 for (name, dtype) in cols {
                     self.structure_columns
                         .push(models::structs::ColumnStructInfo {
@@ -7880,6 +8078,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         });
                 }
             }
+        }
             // NEW: detailed index metadata
             self.structure_indexes =
                 self.fetch_index_details_for_table(conn_id, &conn, &database, &table_guess);
