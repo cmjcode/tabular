@@ -61,25 +61,36 @@ pub trait SpreadsheetOperations {
             self.get_spreadsheet_state_mut().editing_cell = None;
             
             if save {
+                // Get old_val from all_table_data if available, otherwise fall back to current_table_data.
+                // In server pagination mode, all_table_data may not contain the current page rows.
                 let old_val = self
                     .get_all_table_data()
                     .get(row)
                     .and_then(|r| r.get(col))
-                    .cloned();
+                    .cloned()
+                    .or_else(|| {
+                        self.get_current_table_data()
+                            .get(row)
+                            .and_then(|r| r.get(col))
+                            .cloned()
+                    });
                     
-                if let Some(old_val) = old_val
-                    && old_val != new_val {
+                let maybe_old = old_val.clone();
+                match maybe_old {
+                    Some(ref old) if *old != new_val => {
                         // Update current_table_data
-                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row)
-                            && let Some(c1) = r1.get_mut(col) {
+                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row) {
+                            if let Some(c1) = r1.get_mut(col) {
                                 *c1 = new_val.clone();
                             }
+                        }
                         // Update all_table_data
-                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row)
-                            && let Some(c2) = r2.get_mut(col) {
+                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row) {
+                            if let Some(c2) = r2.get_mut(col) {
                                 *c2 = new_val.clone();
                             }
-                        
+                        }
+
                         // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
                         let mut updated_insert_row = false;
                         let headers_len = self.get_current_table_headers().len();
@@ -107,13 +118,29 @@ pub trait SpreadsheetOperations {
                                 crate::models::structs::CellEditOperation::Update {
                                     row_index: row,
                                     col_index: col,
-                                    old_value: old_val,
+                                    old_value: old.clone(),
                                     new_value: new_val,
                                 },
                             );
                         }
                         self.get_spreadsheet_state_mut().is_dirty = true;
                     }
+                    None => {
+                        // If old_val is None (e.g., row not present in all_table_data in server pagination),
+                        // still update visible data so the edit doesn't disappear. Skip recording pending op.
+                        if let Some(r1) = self.get_current_table_data_mut().get_mut(row) {
+                            if let Some(c1) = r1.get_mut(col) {
+                                *c1 = new_val.clone();
+                            }
+                        }
+                        if let Some(r2) = self.get_all_table_data_mut().get_mut(row) {
+                            if let Some(c2) = r2.get_mut(col) {
+                                *c2 = new_val.clone();
+                            }
+                        }
+                    }
+                    _ => { /* unchanged value, do nothing */ }
+                }
             }
         }
     }
