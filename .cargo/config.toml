@@ -1,0 +1,18 @@
+# .cargo/config.toml
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
+
+# supaya bindgen/clang bisa nemuin libc headers
+rustflags = [
+    "-Clinker=x86_64-w64-mingw32-gcc",
+    "-Ctarget-feature=+crt-static",
+]
+
+[env]
+# sesuaikan path brew mingw-w64
+CFLAGS_x86_64_pc_windows_gnu = "--sysroot=/opt/homebrew/opt/mingw-w64/toolchain-x86_64"
+
+
+
+
