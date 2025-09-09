@@ -6967,11 +6967,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                             egui::TextEdit::singleline(&mut self.sql_filter_text)
                                 .hint_text("column = 'value' AND col2 > 0"),
                         );
-                        // Only apply filter when:
-                        // 1) The filter field loses focus after edits, or
-                        // 2) Enter is pressed while the filter field has focus.
-                        if (filter_response.lost_focus() && filter_response.changed()) || (filter_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                        {
+                        // Apply filter when:
+                        // - Enter is pressed while the field has focus, or
+                        // - The field loses focus (more forgiving than requiring `changed()`)
+                        // This avoids cases where `lost_focus && changed` misses due to frame timing.
+                        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (filter_response.has_focus() && enter_pressed) || filter_response.lost_focus() {
                             self.apply_sql_filter();
                         }
                         if ui.button("❌").on_hover_text("Clear filter").clicked() {
