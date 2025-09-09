@@ -7445,65 +7445,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         grid_response.response.context_menu(|ui| {
                             ui.set_min_width(150.0);
                             ui.vertical(|ui| {
-                                if ui.button("🔄 Refresh Data").clicked() {
-                                    // Re-run the query for current page (server or client path)
-                                    if self.use_server_pagination && !self.current_base_query.is_empty() {
-                                        // Reset to first page and execute to refresh
-                                        self.current_page = 0;
-                                        info!("🔄 Manual refresh: server pagination first page reloaded");
-                                        self.execute_paginated_query();
-                                    } else if let Some(conn_id) = self
-                                        .query_tabs
-                                        .get(self.active_tab_index)
-                                        .and_then(|t| t.connection_id)
-                                    {
-                                        // Build a simple SELECT * LIMIT 100 for current table
-                                        let table = self.infer_current_table_name();
-                                        if !table.is_empty() {
-                                            // Find db
-                                            let db_name = self
-                                                .query_tabs
-                                                .get(self.active_tab_index)
-                                                .and_then(|t| t.database_name.clone())
-                                                .unwrap_or_default();
-                                            let db_type = self.connections.iter().find(|c| c.id==Some(conn_id)).map(|c| c.connection_type.clone());
-                                            if let Some(ct) = db_type {
-                                                let query = match ct {
-                                                    models::enums::DatabaseType::MySQL => if db_name.is_empty() { format!("SELECT * FROM `{}` LIMIT 100", table) } else { format!("USE `{}`;\nSELECT * FROM `{}` LIMIT 100", db_name, table) },
-                                                    models::enums::DatabaseType::PostgreSQL => if db_name.is_empty() { format!("SELECT * FROM \"{}\" LIMIT 100", table) } else { format!("SELECT * FROM \"{}\".\"{}\" LIMIT 100", db_name, table) },
-                                                    models::enums::DatabaseType::SQLite => format!("SELECT * FROM `{}` LIMIT 100", table),
-                                                    models::enums::DatabaseType::MsSQL => Self::build_mssql_select_query(db_name.clone(), table.clone()),
-                                                    _ => String::new(),
-                                                };
-                                                if !query.is_empty() {
-                                                    if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, query) {
-                                                        self.current_table_headers = headers;
-                                                        self.current_table_data = data.clone();
-                                                        self.all_table_data = data;
-                                                        self.total_rows = self.all_table_data.len();
-                                                        self.current_page = 0;
-                                                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                                            active_tab.result_headers = self.current_table_headers.clone();
-                                                            active_tab.result_rows = self.current_table_data.clone();
-                                                            active_tab.result_all_rows = self.all_table_data.clone();
-                                                            active_tab.result_table_name = self.current_table_name.clone();
-                                                            active_tab.is_table_browse_mode = true;
-                                                            active_tab.current_page = self.current_page;
-                                                            active_tab.page_size = self.page_size;
-                                                            active_tab.total_rows = self.total_rows;
-                                                        }
-                                                        // Save refreshed first page to cache
-                                                        let snapshot: Vec<Vec<String>> = self.all_table_data.iter().take(100).cloned().collect();
-                                                        let headers_clone = self.current_table_headers.clone();
-                                                        crate::cache_data::save_table_rows_to_cache(self, conn_id, &db_name, &table, &headers_clone, &snapshot);
-                                                        info!("💾 Cached first 100 rows after manual refresh for {}/{}", db_name, table);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    ui.close();
-                                }
+                                if ui.button("🔄 Refresh Data").clicked() { self.refresh_current_table_data(); ui.close(); }
                                 if ui.button("📄 Export to CSV").clicked() {
                                     export::export_to_csv(&self.all_table_data, &self.current_table_headers, &self.current_table_name);
                                     ui.close();
@@ -8052,7 +7994,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
 
         // Short-circuit: if target unchanged and columns already loaded, do nothing
         let target = (conn_id, database.clone(), table_guess.clone());
-    if !self.request_structure_refresh && self
+        if !self.request_structure_refresh && self
             .last_structure_target
             .as_ref()
             .map(|t| t == &target)
@@ -8070,43 +8012,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
         self.structure_columns.clear();
         self.structure_indexes.clear();
 
-        // 1) Try to populate from cache immediately for instant UI
-        let mut had_struct_cache = false;
-            if let Some(cols) = crate::cache_data::get_columns_from_cache(
-                self,
-                conn_id,
-                &database,
-                &table_guess,
-            ) {
-                if !cols.is_empty() {
-                    info!(
-                        "📦 Showing cached structure for {}/{} ({} columns)",
-                        database,
-                        table_guess,
-                        cols.len()
-                    );
-                    self.structure_columns.clear();
-                    for (name, dtype) in cols {
-                        self.structure_columns
-                            .push(models::structs::ColumnStructInfo {
-                                name,
-                                data_type: dtype,
-                                ..Default::default()
-                            });
-                    }
-            had_struct_cache = true;
-                }
-            }
-
-        // 2) Only fetch live structure if no cache yet
-        if !had_struct_cache {
-        if let Some(cols) = crate::connection::fetch_columns_from_database(
+        // Branch: if user explicitly requested refresh, force live fetch and update cache
+        if self.request_structure_refresh {
+            if let Some(cols) = crate::connection::fetch_columns_from_database(
                 conn_id,
                 &database,
                 &table_guess,
                 &conn,
             ) {
-                // Keep cache updated with latest structure
                 crate::cache_data::save_columns_to_cache(
                     self,
                     conn_id,
@@ -8115,7 +8028,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     &cols,
                 );
                 info!(
-                    "🌐 Loaded live structure from server for {}/{} ({} columns)",
+                    "🔄 Manual refresh: loaded live structure from server for {}/{} ({} columns)",
                     database,
                     table_guess,
                     cols.len()
@@ -8129,6 +8042,66 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         });
                 }
             }
+        } else {
+            // 1) Try to populate from cache immediately for instant UI
+            let mut had_struct_cache = false;
+            if let Some(cols) = crate::cache_data::get_columns_from_cache(
+                self,
+                conn_id,
+                &database,
+                &table_guess,
+            ) {
+                if !cols.is_empty() {
+                    info!(
+                        "📦 Showing cached structure for {}/{} ({} columns)",
+                        database,
+                        table_guess,
+                        cols.len()
+                    );
+                    for (name, dtype) in cols {
+                        self.structure_columns
+                            .push(models::structs::ColumnStructInfo {
+                                name,
+                                data_type: dtype,
+                                ..Default::default()
+                            });
+                    }
+                    had_struct_cache = true;
+                }
+            }
+
+            // 2) Only fetch live structure if no cache yet
+            if !had_struct_cache {
+                if let Some(cols) = crate::connection::fetch_columns_from_database(
+                    conn_id,
+                    &database,
+                    &table_guess,
+                    &conn,
+                ) {
+                    // Keep cache updated with latest structure
+                    crate::cache_data::save_columns_to_cache(
+                        self,
+                        conn_id,
+                        &database,
+                        &table_guess,
+                        &cols,
+                    );
+                    info!(
+                        "🌐 Loaded live structure from server for {}/{} ({} columns)",
+                        database,
+                        table_guess,
+                        cols.len()
+                    );
+                    for (name, dtype) in cols {
+                        self.structure_columns
+                            .push(models::structs::ColumnStructInfo {
+                                name,
+                                data_type: dtype,
+                                ..Default::default()
+                            });
+                    }
+                }
+            }
         }
 
             // Detailed index metadata: defer until Indexes subview is shown to avoid extra delay
@@ -8140,6 +8113,68 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             // Remember last loaded structure target and clear refresh request
             self.last_structure_target = Some((conn_id, database, table_guess));
             self.request_structure_refresh = false;
+        }
+    }
+
+    // Execute a manual data refresh for current table and update row cache
+    fn refresh_current_table_data(&mut self) {
+        if self.use_server_pagination && !self.current_base_query.is_empty() {
+            self.current_page = 0;
+            info!("🔄 Manual refresh: server pagination first page reloaded");
+            self.execute_paginated_query();
+            return;
+        }
+
+        if let Some(conn_id) = self
+            .query_tabs
+            .get(self.active_tab_index)
+            .and_then(|t| t.connection_id)
+        {
+            let table = self.infer_current_table_name();
+            if table.is_empty() { return; }
+            let db_name = self
+                .query_tabs
+                .get(self.active_tab_index)
+                .and_then(|t| t.database_name.clone())
+                .unwrap_or_default();
+            let db_type = self
+                .connections
+                .iter()
+                .find(|c| c.id == Some(conn_id))
+                .map(|c| c.connection_type.clone());
+            if let Some(ct) = db_type {
+                let query = match ct {
+                    models::enums::DatabaseType::MySQL => if db_name.is_empty() { format!("SELECT * FROM `{}` LIMIT 100", table) } else { format!("USE `{}`;\nSELECT * FROM `{}` LIMIT 100", db_name, table) },
+                    models::enums::DatabaseType::PostgreSQL => if db_name.is_empty() { format!("SELECT * FROM \"{}\" LIMIT 100", table) } else { format!("SELECT * FROM \"{}\".\"{}\" LIMIT 100", db_name, table) },
+                    models::enums::DatabaseType::SQLite => format!("SELECT * FROM `{}` LIMIT 100", table),
+                    models::enums::DatabaseType::MsSQL => Self::build_mssql_select_query(db_name.clone(), table.clone()),
+                    _ => String::new(),
+                };
+                if !query.is_empty() {
+                    if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, query) {
+                        self.current_table_headers = headers;
+                        self.current_table_data = data.clone();
+                        self.all_table_data = data;
+                        self.total_rows = self.all_table_data.len();
+                        self.current_page = 0;
+                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                            active_tab.result_headers = self.current_table_headers.clone();
+                            active_tab.result_rows = self.current_table_data.clone();
+                            active_tab.result_all_rows = self.all_table_data.clone();
+                            active_tab.result_table_name = self.current_table_name.clone();
+                            active_tab.is_table_browse_mode = true;
+                            active_tab.current_page = self.current_page;
+                            active_tab.page_size = self.page_size;
+                            active_tab.total_rows = self.total_rows;
+                        }
+                        // Save refreshed first page to cache
+                        let snapshot: Vec<Vec<String>> = self.all_table_data.iter().take(100).cloned().collect();
+                        let headers_clone = self.current_table_headers.clone();
+                        crate::cache_data::save_table_rows_to_cache(self, conn_id, &db_name, &table, &headers_clone, &snapshot);
+                        info!("💾 Cached first 100 rows after manual refresh for {}/{}", db_name, table);
+                    }
+                }
+            }
         }
     }
 
@@ -9921,6 +9956,19 @@ impl App for Tabular {
             // CMD+SHIFT+P to open command palette (on macOS)
             if i.modifiers.mac_cmd && i.modifiers.shift && i.key_pressed(egui::Key::P) {
                 editor::open_command_palette(self);
+            }
+
+            // CMD/CTRL+R to refresh current view
+            if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::R) {
+                match self.table_bottom_view {
+                    models::structs::TableBottomView::Structure => {
+                        self.request_structure_refresh = true;
+                        self.load_structure_info_for_current_table();
+                    }
+                    _ => {
+                        self.refresh_current_table_data();
+                    }
+                }
             }
 
             // Handle table cell navigation with arrow keys
