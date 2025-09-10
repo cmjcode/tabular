@@ -5,7 +5,7 @@ use egui_code_editor::{CodeEditor, ColorTheme};
 use log::debug;
 
 use crate::{
-    connection, directory, editor, editor_autocomplete, models, sidebar_history, sidebar_query,
+    connection, data_table, directory, editor, editor_autocomplete, models, sidebar_history, sidebar_query,
     window_egui,
 };
 
@@ -194,7 +194,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 && new_tab.title.starts_with("Table:")
             {
                 // load_structure_info_for_current_table adalah metode pada Tabular (dibuat pub(crate))
-                tabular.load_structure_info_for_current_table();
+                data_table::load_structure_info_for_current_table(tabular);
             }
         }
     }
@@ -1443,7 +1443,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
             tabular.current_table_headers = headers;
 
             // Use pagination for query results
-            tabular.update_pagination_data(data);
+            data_table::update_pagination_data(tabular, data);
 
             if tabular.total_rows == 0 {
                 tabular.current_table_name = "Query executed successfully (no results)".to_string();
@@ -1452,7 +1452,7 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                     "Query Results ({} total rows, showing page {} of {})",
                     tabular.total_rows,
                     tabular.current_page + 1,
-                    tabular.get_total_pages()
+                    data_table::get_total_pages(tabular)
                 );
             }
             debug!(

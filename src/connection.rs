@@ -1,7 +1,5 @@
 use crate::{
-    connection, driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models,
-    modules,
-    window_egui::{self, Tabular},
+    connection, data_table, driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models, modules, window_egui::{self, Tabular}
 };
 use eframe::egui;
 use futures_util::TryStreamExt; // for MsSQL try_next
@@ -315,7 +313,7 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                                     // Apply result to current UI/tab
                                     if let Some((headers, data)) = result {
                                         tabular.current_table_headers = headers;
-                                        tabular.update_pagination_data(data);
+                                        data_table::update_pagination_data(tabular, data);
                                         if tabular.total_rows == 0 {
                                             tabular.current_table_name = "Query executed successfully (no results)".to_string();
                                         } else {
@@ -323,7 +321,7 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                                                 "Query Results ({} total rows, showing page {} of {})",
                                                 tabular.total_rows,
                                                 tabular.current_page + 1,
-                                                tabular.get_total_pages()
+                                                data_table::get_total_pages(tabular)
                                             );
                                         }
                                     } else {

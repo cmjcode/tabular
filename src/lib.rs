@@ -23,6 +23,7 @@ pub mod sidebar_history;
 pub mod sidebar_query;
 pub mod spreadsheet;
 pub mod window_egui;
+pub mod data_table;
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {
