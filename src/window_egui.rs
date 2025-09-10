@@ -494,13 +494,27 @@ impl Tabular {
         // Start background thread AFTER database is initialized
         app.start_background_worker(background_receiver, result_sender);
 
-        // Kick off an automatic update check once at startup (non-blocking) respecting user preference.
-        // The 24h throttling guard lives in the prefs load section; here we only queue if auto_check_updates default is true.
+        // Do NOT force an immediate update check here; let the preference load path enforce 24h throttling.
+        // If preferences haven't been loaded yet (first run path) we can perform a very conservative check:
+        // Only queue if default auto_check_updates is true AND no persisted timestamp available or older than 24h.
         if app.auto_check_updates
-            && let Some(sender) = &app.background_sender {
-                let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
-            }
-
+            && let (Some(sender), Some(rt)) = (&app.background_sender, &app.runtime)
+                && let Ok(store) = rt.block_on(crate::config::ConfigStore::new()) {
+                    println!("Checking last update check timestamp for initial check...");
+                    let mut should_queue = true;
+                    if let Some(last_iso) = rt.block_on(store.get_last_update_check())
+                        && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&last_iso) {
+                            let last_utc = parsed.with_timezone(&chrono::Utc);
+                            if chrono::Utc::now().signed_duration_since(last_utc) < chrono::Duration::days(1) {
+                                should_queue = false;
+                            }
+                        }
+                    if should_queue {
+                        // Persist immediately to prevent multiple queues in rapid restarts
+                        rt.block_on(store.set_last_update_check_now());
+                        let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
+                    }
+                }
         app
     }
 
