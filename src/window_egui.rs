@@ -494,6 +494,13 @@ impl Tabular {
         // Start background thread AFTER database is initialized
         app.start_background_worker(background_receiver, result_sender);
 
+        // Kick off an automatic update check once at startup (non-blocking) respecting user preference.
+        // The 24h throttling guard lives in the prefs load section; here we only queue if auto_check_updates default is true.
+        if app.auto_check_updates
+            && let Some(sender) = &app.background_sender {
+                let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
+            }
+
         app
     }
 
