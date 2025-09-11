@@ -34,7 +34,7 @@ mongodb = { version = "3.2.4", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = "0.32.1"
-egui_code_editor = "0.2.17"
+egui_code_editor = { git = "https://github.com/tabular-id/egui_code_editor", branch = "main"}
 colorful = "0.3.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
