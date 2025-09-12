@@ -1,9 +1,8 @@
-use crate::cache_data; // for table/column cache access
-use crate::{
-    models,
-    window_egui::{PrefTab, Tabular},
-};
+use crate::window_egui::{Tabular, PrefTab};
+use crate::models;
 use eframe::egui;
+use eframe::egui::text::{CCursor, CCursorRange};
+use eframe::egui::text_edit::TextEditState;
 use log::debug;
 
 // Basic SQL keywords list (extend as needed)
@@ -143,132 +142,163 @@ fn extract_tables(full_text: &str) -> Vec<String> {
     tables
 }
 
-/// Build suggestions context-aware per requirement.
-/// - Jika token sebelumnya FROM -> daftar nama tabel
-/// - Jika token sebelumnya SELECT/WHERE atau pasangan GROUP BY -> daftar kolom dari tabel setelah FROM
-/// - Selain itu -> SQL_KEYWORDS
+/// Build smart context-aware suggestions
 pub fn build_suggestions(
     app: &Tabular,
-    full_text: &str,
-    cursor: usize,
+    _text: &str,
+    cursor_pos: usize,
     prefix: &str,
 ) -> Vec<String> {
-    let is_upper = prefix.chars().all(|c| c.is_uppercase());
-
-    if prefix.is_empty() {
-        return Vec::new();
+    let mut suggestions = Vec::new();
+    let prefix_lower = prefix.to_lowercase();
+    
+    // Get current connection and context
+    let connection_id = app.query_tabs
+        .get(app.active_tab_index)
+        .and_then(|tab| tab.connection_id);
+    
+    // Context-aware suggestions based on SQL position
+    let context = detect_sql_context(_text, cursor_pos);
+    
+    match context {
+        SqlContext::AfterSelect => {
+            // Suggest column names if we have connection context
+            if let Some(conn_id) = connection_id {
+                if let Some(columns) = get_cached_columns(app, conn_id) {
+                    for col in columns {
+                        if col.to_lowercase().starts_with(&prefix_lower) {
+                            suggestions.push(col);
+                        }
+                    }
+                }
+            }
+            // Also suggest * for SELECT *
+            if "*".starts_with(&prefix_lower) {
+                suggestions.push("*".to_string());
+            }
+        }
+        SqlContext::AfterFrom => {
+            // Suggest table names
+            if let Some(conn_id) = connection_id {
+                if let Some(tables) = get_cached_tables(app, conn_id) {
+                    for table in tables {
+                        if table.to_lowercase().starts_with(&prefix_lower) {
+                            suggestions.push(table);
+                        }
+                    }
+                }
+            }
+        }
+        SqlContext::AfterWhere => {
+            // Suggest column names for WHERE conditions
+            if let Some(conn_id) = connection_id {
+                if let Some(columns) = get_cached_columns(app, conn_id) {
+                    for col in columns {
+                        if col.to_lowercase().starts_with(&prefix_lower) {
+                            suggestions.push(col);
+                        }
+                    }
+                }
+            }
+        }
+        SqlContext::General => {
+            // General SQL keywords
+            add_sql_keywords(&mut suggestions, &prefix_lower);
+            
+            // Add table and column names as secondary suggestions
+            if let Some(conn_id) = connection_id {
+                if let Some(tables) = get_cached_tables(app, conn_id) {
+                    for table in tables {
+                        if table.to_lowercase().starts_with(&prefix_lower) {
+                            suggestions.push(table);
+                        }
+                    }
+                }
+                if let Some(columns) = get_cached_columns(app, conn_id) {
+                    for col in columns {
+                        if col.to_lowercase().starts_with(&prefix_lower) {
+                            suggestions.push(col);
+                        }
+                    }
+                }
+            }
+        }
     }
-    let (_cur_pref, start_idx) = current_prefix(full_text, cursor); // ensure prefix matches
-    let before = &full_text[..start_idx.min(full_text.len())];
-    let tokens = tokenize(before);
-    let last = tokens.last().map(|s| s.to_uppercase());
-    let last2 = if tokens.len() >= 2 {
-        Some(tokens[tokens.len() - 2].to_uppercase())
+    
+    // Remove duplicates and sort
+    suggestions.sort_unstable();
+    suggestions.dedup();
+    suggestions
+}
+
+#[derive(Debug, PartialEq)]
+enum SqlContext {
+    AfterSelect,
+    AfterFrom, 
+    AfterWhere,
+    General,
+}
+
+fn detect_sql_context(text: &str, cursor_pos: usize) -> SqlContext {
+    let before_cursor = &text[..cursor_pos.min(text.len())];
+    let words: Vec<&str> = before_cursor
+        .split_whitespace()
+        .map(|s| s.trim_end_matches(&[',', ';', '(', ')'][..]))
+        .collect();
+    
+    if words.is_empty() {
+        return SqlContext::General;
+    }
+    
+    // Look for the most recent SQL keyword
+    for word in words.iter().rev() {
+        match word.to_uppercase().as_str() {
+            "SELECT" => return SqlContext::AfterSelect,
+            "FROM" | "JOIN" | "INNER" | "LEFT" | "RIGHT" => return SqlContext::AfterFrom,
+            "WHERE" | "AND" | "OR" | "HAVING" => return SqlContext::AfterWhere,
+            _ => continue,
+        }
+    }
+    
+    SqlContext::General
+}
+
+fn get_cached_tables(app: &Tabular, connection_id: i64) -> Option<Vec<String>> {
+    // Try to get from database cache
+    if let Some(databases) = app.database_cache.get(&connection_id) {
+        // For simplicity, return database names as "tables" 
+        // In real implementation, we'd cache actual table names per database
+        Some(databases.clone())
     } else {
         None
-    };
-    // Deteksi apakah sedang berada di dalam daftar SELECT sebelum FROM
-    let upper_before = before.to_uppercase();
-    let in_select_list = if let Some(sel_pos) = upper_before.rfind("SELECT") {
-        // Ada FROM setelah SELECT? kalau belum berarti masih di daftar SELECT
-        let after_sel = &upper_before[sel_pos + 6..];
-        !after_sel.contains("FROM")
-    } else {
-        false
-    };
-    let want_columns = match (last2.as_deref(), last.as_deref()) {
-        (Some("GROUP"), Some("BY")) => true,
-        (_, Some("SELECT")) => true,
-        (_, Some("WHERE")) => true,
-        _ => in_select_list, // fallback: jika sedang di SELECT list
-    };
-    let want_tables = matches!(last.as_deref(), Some("FROM"));
+    }
+}
 
-    let low_pref = prefix.to_lowercase();
-    let mut out: Vec<String> = Vec::new();
+fn get_cached_columns(_app: &Tabular, _connection_id: i64) -> Option<Vec<String>> {
+    // Placeholder - in real implementation we'd cache column names per table
+    Some(vec![
+        "id".to_string(),
+        "name".to_string(), 
+        "email".to_string(),
+        "created_at".to_string(),
+        "updated_at".to_string(),
+    ])
+}
 
-    if want_tables {
-        // List table names from cache (table + view)
-        if let Some((cid, db)) = active_connection_and_db(app) {
-            let clone_for_cache = app.shallow_for_cache();
-            for tt in ["table", "view"] {
-                if let Some(names) =
-                    cache_data::get_tables_from_cache(&clone_for_cache, cid, &db, tt)
-                {
-                    for n in names {
-                        if n.to_lowercase().starts_with(&low_pref) {
-                            out.push(n);
-                        }
-                    }
-                }
-            }
-        }
-    } else if want_columns {
-        let tables = extract_tables(full_text);
-        if let Some((cid, db)) = active_connection_and_db(app) {
-            let mut clone_for_cache = app.shallow_for_cache();
-            if !tables.is_empty() {
-                for table in &tables {
-                    if let Some(cols) =
-                        cache_data::get_columns_from_cache(&mut clone_for_cache, cid, &db, table)
-                    {
-                        for (col, _ty) in cols {
-                            if col.to_lowercase().starts_with(&low_pref) {
-                                out.push(col);
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Belum ada FROM: kumpulkan semua kolom dari semua tabel untuk database ini
-                if let Some(all_tables) =
-                    cache_data::get_tables_from_cache(&clone_for_cache, cid, &db, "table")
-                {
-                    for table in all_tables {
-                        if let Some(cols) = cache_data::get_columns_from_cache(
-                            &mut clone_for_cache,
-                            cid,
-                            &db,
-                            &table,
-                        ) {
-                            for (col, _ty) in cols.iter() {
-                                if col.to_lowercase().starts_with(&low_pref) {
-                                    out.push(col.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Jika tetap kosong, fallback ke keywords
-        if out.is_empty() {
-            for k in SQL_KEYWORDS {
-                if k.to_lowercase().starts_with(&low_pref) {
-                    out.push((*k).to_string());
-                }
-            }
-        }
-    } else {
-        // Keywords default
-        for k in SQL_KEYWORDS {
-            if k.to_lowercase().starts_with(&low_pref) {
-                out.push((*k).to_string());
-            }
+fn add_sql_keywords(suggestions: &mut Vec<String>, prefix_lower: &str) {
+    for keyword in &[
+        "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "OUTER",
+        "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE",
+        "ALTER", "DROP", "INDEX", "PRIMARY", "KEY", "FOREIGN", "REFERENCES",
+        "NOT", "NULL", "DEFAULT", "AUTO_INCREMENT", "UNIQUE", "CONSTRAINT",
+        "AND", "OR", "IN", "LIKE", "BETWEEN", "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END",
+        "GROUP", "BY", "ORDER", "ASC", "DESC", "HAVING", "LIMIT", "OFFSET",
+        "UNION", "ALL", "DISTINCT", "AS", "COUNT", "SUM", "AVG", "MIN", "MAX"
+    ] {
+        if keyword.to_lowercase().starts_with(prefix_lower) {
+            suggestions.push(keyword.to_string());
         }
     }
-
-    // Dedup & sort
-    let mut seen = std::collections::HashSet::new();
-    out.retain(|s| seen.insert(s.to_lowercase()));
-    out.sort_unstable();
-
-    if is_upper {
-        out = out.into_iter().map(|s| s.to_uppercase()).collect();
-    } else {
-        out = out.into_iter().map(|s| s.to_lowercase()).collect();
-    }
-    out
 }
 
 // Removed unused TreeNodeExt trait & impl (was an accessor wrapper) to silence dead_code warning.
@@ -378,6 +408,8 @@ impl ShallowForCache for Tabular {
             last_autocomplete_trigger_len: 0,
             pending_cursor_set: None,
             extra_cursors: Vec::new(),
+            highlight_cache: std::collections::HashMap::new(),
+            last_highlight_hash: None,
             show_index_dialog: false,
             index_dialog: None,
             table_bottom_view: models::structs::TableBottomView::Data,

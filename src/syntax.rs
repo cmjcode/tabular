@@ -1,7 +1,9 @@
 //! Simple on-the-fly syntax highlighting (SQL / Redis / Mongo keywords)
 use eframe::egui::{Color32, text::LayoutJob, TextFormat};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LanguageKind { Sql, Redis, Mongo, Plain }
 
 pub fn detect_language_from_name(name: &str) -> LanguageKind {
@@ -10,6 +12,37 @@ pub fn detect_language_from_name(name: &str) -> LanguageKind {
     if lower.contains("redis") { return LanguageKind::Redis; }
     if lower.contains("mongo") { return LanguageKind::Mongo; }
     LanguageKind::Plain
+}
+
+// Cached highlighting with hash-based lookup
+pub fn highlight_text_cached(
+    text: &str, 
+    lang: LanguageKind, 
+    dark: bool,
+    cache: &mut std::collections::HashMap<u64, LayoutJob>
+) -> LayoutJob {
+    // Create hash from text + lang + theme
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    lang.hash(&mut hasher);
+    dark.hash(&mut hasher);
+    let hash = hasher.finish();
+    
+    // Check cache first
+    if let Some(cached_job) = cache.get(&hash) {
+        return cached_job.clone();
+    }
+    
+    // Generate new highlighting
+    let job = highlight_text(text, lang, dark);
+    
+    // Cache the result (limit cache size to prevent memory bloat)
+    if cache.len() > 100 {
+        cache.clear(); // Simple eviction: clear all when limit reached
+    }
+    cache.insert(hash, job.clone());
+    
+    job
 }
 
 // Simple highlighting that processes the entire text at once

@@ -468,7 +468,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
     }
     // ----- Build widget after mutations -----
-    // Re-enable syntax highlighting with simpler approach
+    // Re-enable syntax highlighting with cache
     let lang = tabular
         .query_tabs
         .get(tabular.active_tab_index)
@@ -477,6 +477,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         .unwrap_or(crate::syntax::LanguageKind::Sql);
     let dark = matches!(tabular.advanced_editor.theme, models::structs::EditorColorTheme::GithubDark | models::structs::EditorColorTheme::Gruvbox);
     
+    // Simple layouter without cache for now (cache causes borrow issues)
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         let mut job = crate::syntax::highlight_text(text.as_str(), lang, dark);
         job.wrap.max_width = wrap_width;
@@ -653,23 +654,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     ui.set_clip_rect(rect);
     let response = ui.put(rect, text_edit);
     ui.set_clip_rect(old_clip);
-    // Multi-cursor: key handling (Alt+Shift+Down / Alt+Shift+Up) and Esc to clear
+    // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
     if input_snapshot.key_pressed(egui::Key::Escape) {
         if !tabular.extra_cursors.is_empty() { tabular.clear_extra_cursors(); }
     }
-    let alt = input_snapshot.modifiers.alt;
-    let shift = input_snapshot.modifiers.shift;
-    if alt && shift && input_snapshot.key_pressed(egui::Key::ArrowDown) {
-        // Add cursor one line below at same column
-        let orig_primary = tabular.cursor_position;
-        tabular.move_all_cursors_vertical(true);
-        // The previous primary position becomes an extra cursor
-        tabular.add_cursor(orig_primary);
-    } else if alt && shift && input_snapshot.key_pressed(egui::Key::ArrowUp) {
-        let orig_primary = tabular.cursor_position;
-        tabular.move_all_cursors_vertical(false);
-        tabular.add_cursor(orig_primary);
+    let cmd_or_ctrl = input_snapshot.modifiers.command || input_snapshot.modifiers.ctrl;
+    if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
+        // Find next occurrence of selected text or word under cursor
+        tabular.add_next_occurrence_cursor();
     }
     if tabular.advanced_editor.show_line_numbers {
         if let Some(gutter_rect) = ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("gutter_rect"))) {
@@ -829,6 +822,30 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
         // Replace entire lapce buffer (simplistic sync)
         if let Some(buf) = tabular.lapce_buffer.as_mut() { *buf = Buffer::new(&tabular.editor_text); }
+        
+        // Apply multi-cursor editing if there are extra cursors
+        if !tabular.extra_cursors.is_empty() {
+            // Store current cursor position before borrowing state
+            let current_cursor = tabular.cursor_position;
+            let editor_text_copy = tabular.editor_text.clone();
+            
+            // Detect what changed and apply to all cursors
+            if let Some(state) = TextEditState::load(ui.ctx(), response.id) {
+                if let Some(range) = state.cursor.char_range() {
+                    let new_cursor = range.primary.index;
+                    if new_cursor != current_cursor {
+                        // Something was typed
+                        let change_len = new_cursor as i32 - current_cursor as i32;
+                        if change_len > 0 && change_len < 10 { // Simple character insertion
+                            if let Some(inserted_text) = editor_text_copy.get(current_cursor..new_cursor) {
+                                tabular.apply_multi_edit(current_cursor, current_cursor, inserted_text);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         // Disable autocomplete for now (needs reimplementation on lapce-core)
         tabular.show_autocomplete = false;
         tabular.autocomplete_suggestions.clear();

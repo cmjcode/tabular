@@ -162,6 +162,9 @@ pub struct Tabular {
     pub pending_cursor_set: Option<usize>,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)
     pub extra_cursors: Vec<usize>,
+    // Syntax highlighting cache (text_hash -> LayoutJob)
+    pub highlight_cache: std::collections::HashMap<u64, eframe::egui::text::LayoutJob>,
+    pub last_highlight_hash: Option<u64>,
     // Index dialog
     pub show_index_dialog: bool,
     pub index_dialog: Option<models::structs::IndexDialogState>,
@@ -259,6 +262,133 @@ impl Tabular {
     }
 
     pub fn clear_extra_cursors(&mut self) { self.extra_cursors.clear(); }
+
+    // Add cursor at next occurrence of selected text or word under cursor (like Cmd+D in VS Code)
+    pub fn add_next_occurrence_cursor(&mut self) {
+        let text = &self.editor_text;
+        let current_pos = self.cursor_position.min(text.len());
+        
+        // Get the text to search for
+        let search_text = if !self.selected_text.is_empty() {
+            // Use selected text
+            self.selected_text.clone()
+        } else {
+            // Get word under cursor
+            let word_start = self.find_word_start(text, current_pos);
+            let word_end = self.find_word_end(text, current_pos);
+            if word_start < word_end {
+                text[word_start..word_end].to_string()
+            } else {
+                return; // No word to search for
+            }
+        };
+        
+        if search_text.is_empty() {
+            return;
+        }
+        
+        // Find the next occurrence after the current cursor position
+        let search_start = if self.extra_cursors.is_empty() {
+            // First time - search after current position
+            current_pos + search_text.len()
+        } else {
+            // Find the last cursor position and search after that
+            let last_cursor = self.extra_cursors.iter().max().copied().unwrap_or(current_pos);
+            last_cursor + search_text.len()
+        };
+        
+        if let Some(next_pos) = text[search_start..].find(&search_text) {
+            let absolute_pos = search_start + next_pos;
+            self.add_cursor(absolute_pos);
+        } else {
+            // Wrap around - search from beginning
+            if let Some(first_pos) = text.find(&search_text) {
+                if first_pos != current_pos {
+                    self.add_cursor(first_pos);
+                }
+            }
+        }
+    }
+
+    // Apply text edit to all cursor positions
+    pub fn apply_multi_edit(&mut self, edit_start: usize, edit_end: usize, new_text: &str) {
+        if self.extra_cursors.is_empty() {
+            return; // No multi-cursor, normal editing
+        }
+        
+        let old_len = edit_end - edit_start;
+        let new_len = new_text.len();
+        let offset_change = new_len as i32 - old_len as i32;
+        
+        // Collect all cursor positions including primary
+        let mut all_cursors = self.extra_cursors.clone();
+        all_cursors.push(self.cursor_position);
+        all_cursors.sort_unstable();
+        all_cursors.dedup();
+        
+        // Apply edits in reverse order to avoid offset problems
+        let mut text = self.editor_text.clone();
+        let mut applied_edits = 0;
+        
+        for &cursor_pos in all_cursors.iter().rev() {
+            // Skip if this cursor is at the same position as the primary edit
+            if cursor_pos >= edit_start && cursor_pos <= edit_end {
+                continue;
+            }
+            
+            // Find word boundaries around cursor
+            let word_start = self.find_word_start(&text, cursor_pos);
+            let word_end = self.find_word_end(&text, cursor_pos);
+            
+            if word_start < word_end {
+                text.replace_range(word_start..word_end, new_text);
+                applied_edits += 1;
+            }
+        }
+        
+        if applied_edits > 0 {
+            self.editor_text = text;
+            // Update cursor positions accounting for all changes
+            self.update_cursor_positions_after_multi_edit(offset_change, applied_edits);
+        }
+    }
+    
+    fn find_word_start(&self, text: &str, pos: usize) -> usize {
+        let bytes = text.as_bytes();
+        let mut start = pos.min(bytes.len());
+        while start > 0 {
+            let ch = bytes[start - 1] as char;
+            if ch.is_alphanumeric() || ch == '_' {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        start
+    }
+    
+    fn find_word_end(&self, text: &str, pos: usize) -> usize {
+        let bytes = text.as_bytes();
+        let mut end = pos;
+        while end < bytes.len() {
+            let ch = bytes[end] as char;
+            if ch.is_alphanumeric() || ch == '_' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        end
+    }
+    
+    fn update_cursor_positions_after_multi_edit(&mut self, offset_change: i32, _edit_count: usize) {
+        // Simple approach: adjust all cursors by the offset
+        self.cursor_position = (self.cursor_position as i32 + offset_change).max(0) as usize;
+        self.extra_cursors = self.extra_cursors
+            .iter()
+            .map(|&pos| (pos as i32 + offset_change).max(0) as usize)
+            .collect();
+    }
 
     pub fn move_all_cursors_vertical(&mut self, down: bool) {
         // For each cursor (primary + extras) move to same column on next/prev line
@@ -532,6 +662,8 @@ impl Tabular {
             spreadsheet_state: crate::models::structs::SpreadsheetState::default(),
             lapce_buffer: Some(Buffer::new("")),
             extra_cursors: Vec::new(),
+            highlight_cache: std::collections::HashMap::new(),
+            last_highlight_hash: None,
         };
 
         // Clear any old cached pools
