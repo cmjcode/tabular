@@ -350,7 +350,7 @@ pub(crate) fn open_query_file(
     tabular.query_tabs.push(new_tab);
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;
-    tabular.editor_text = content;
+    tabular.editor.set_text(content);
 
     // If the file specified a connection, set it for active tab and eagerly create the pool
     if let Some(conn_id) = resolved_connection_id {

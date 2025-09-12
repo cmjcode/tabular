@@ -315,7 +315,7 @@ impl ShallowForCache for Tabular {
             query_tabs: self.query_tabs.clone(),
             active_tab_index: self.active_tab_index,
             // The rest are default/empty; not used by cache getters
-            editor_text: String::new(),
+            editor: crate::editor_buffer::EditorBuffer::new(""),
             selected_menu: String::new(),
             items_tree: Vec::new(),
             queries_tree: Vec::new(),
@@ -476,15 +476,14 @@ impl ShallowForCache for Tabular {
             pool_wait_query: String::new(),
             pool_wait_started_at: None,
             spreadsheet_state: models::structs::SpreadsheetState::default(),
-            lapce_buffer: Some(lapce_core::buffer::Buffer::new("")),
         })
     }
 }
 
 /// Update autocomplete state after text change or cursor move.
 pub fn update_autocomplete(app: &mut Tabular) {
-    let cursor = app.cursor_position.min(app.editor_text.len());
-    let (prefix, start_idx) = current_prefix(&app.editor_text, cursor);
+    let cursor = app.cursor_position.min(app.editor.text.len());
+    let (prefix, start_idx) = current_prefix(&app.editor.text, cursor);
     app.autocomplete_prefix = prefix.clone();
 
     if prefix.is_empty() {
@@ -496,7 +495,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
 
     // Only rebuild if prefix length changed or previously hidden
     if app.last_autocomplete_trigger_len != prefix.len() || !app.show_autocomplete {
-        let suggestions = build_suggestions(app, &app.editor_text, cursor, &prefix);
+        let suggestions = build_suggestions(app, &app.editor.text, cursor, &prefix);
         if suggestions.is_empty() {
             app.show_autocomplete = false;
         } else {
@@ -519,13 +518,13 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         .autocomplete_suggestions
         .get(app.selected_autocomplete_index)
     {
-        let cursor = app.cursor_position.min(app.editor_text.len());
-        let (prefix, start_idx) = current_prefix(&app.editor_text, cursor);
+    let cursor = app.cursor_position.min(app.editor.text.len());
+    let (prefix, start_idx) = current_prefix(&app.editor.text, cursor);
         debug!("Current prefix: '{}', start index: {}", prefix, start_idx);
         // If prefix empty but we still want to accept (e.g., early Tab) try to look back until whitespace
         let (effective_start, effective_prefix_len) = if prefix.is_empty() {
             // Scan backwards for contiguous identifier chars just typed
-            let bytes = app.editor_text.as_bytes();
+            let bytes = app.editor.text.as_bytes();
             let mut s = cursor;
             while s > 0 {
                 let ch = bytes[s - 1] as char;
@@ -541,11 +540,12 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         };
 
         if effective_prefix_len > 0 || !prefix.is_empty() {
-            let mut new_text = String::with_capacity(app.editor_text.len() + sugg.len());
-            new_text.push_str(&app.editor_text[..effective_start]);
+            let mut new_text = String::with_capacity(app.editor.text.len() + sugg.len());
+            new_text.push_str(&app.editor.text[..effective_start]);
             new_text.push_str(sugg);
-            new_text.push_str(&app.editor_text[cursor..]);
-            app.editor_text = new_text;
+            new_text.push_str(&app.editor.text[cursor..]);
+            app.editor.set_text(new_text);
+            app.editor.mark_text_modified();
             app.cursor_position = effective_start + sugg.len();
         }
         app.show_autocomplete = false;

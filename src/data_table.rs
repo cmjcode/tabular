@@ -1485,7 +1485,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                             };
                                             tabular.pending_drop_index_name = Some(ix.name.clone());
                                             tabular.pending_drop_index_stmt = Some(drop_stmt.clone());
-                                            tabular.editor_text.push('\n'); tabular.editor_text.push_str(&drop_stmt);
+                                            tabular.editor.text.push('\n'); tabular.editor.text.push_str(&drop_stmt);
                                         }
                                         ui.close();
                                     }
@@ -1687,7 +1687,7 @@ pub(crate) fn render_structure_columns_editor(tabular: &mut window_egui::Tabular
                                     };
                                     tabular.pending_drop_column_name = Some(col.name.clone());
                                     tabular.pending_drop_column_stmt = Some(stmt.clone());
-                                    tabular.editor_text.push('\n'); tabular.editor_text.push_str(&stmt);
+                                    tabular.editor.text.push('\n'); tabular.editor.text.push_str(&stmt);
                                 }
                                 ui.close();
                             }
@@ -1921,8 +1921,8 @@ pub(crate) fn commit_edit_column(tabular: &mut window_egui::Tabular) {
 
         let full = stmts.join("\n");
         if !full.is_empty() {
-            tabular.editor_text.push('\n');
-            tabular.editor_text.push_str(&full);
+            tabular.editor.text.push('\n');
+            tabular.editor.text.push_str(&full);
         }
         tabular.editing_column = false;
         // Execute sequentially
@@ -2061,9 +2061,9 @@ fn commit_new_column(tabular: &mut window_egui::Tabular) {
 
         // Append to editor for visibility
         if !stmt.starts_with("--") {
-            tabular.editor_text.push('\n');
+            tabular.editor.text.push('\n');
         }
-        tabular.editor_text.push_str(&stmt);
+    tabular.editor.text.push_str(&stmt);
 
         // Reset UI state
         tabular.adding_column = false;
@@ -2257,9 +2257,9 @@ fn commit_new_index(tabular: &mut window_egui::Tabular) {
             _ => "-- Create index not supported for this database type".to_string(),
         };
         if !stmt.starts_with("--") {
-            tabular.editor_text.push('\n');
+            tabular.editor.text.push('\n');
         }
-        tabular.editor_text.push_str(&stmt);
+    tabular.editor.text.push_str(&stmt);
         // Append optimistic row
         tabular.structure_indexes
             .push(models::structs::IndexStructInfo {

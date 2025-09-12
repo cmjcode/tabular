@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use eframe::{App, Frame, egui};
 // Removed egui_code_editor; using simple TextEdit + lapce-core buffer backend
 use lapce_core::buffer::Buffer; // basic rope buffer
+use crate::editor_buffer::EditorBuffer;
 use log::{debug, error, info};
 use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap};
@@ -16,7 +17,7 @@ use crate::{
 };
 
 pub struct Tabular {
-    pub editor_text: String,
+    pub editor: EditorBuffer,
     pub selected_menu: String,
     pub items_tree: Vec<models::structs::TreeNode>,
     pub queries_tree: Vec<models::structs::TreeNode>,
@@ -162,7 +163,7 @@ pub struct Tabular {
     pub pending_cursor_set: Option<usize>,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)
     pub extra_cursors: Vec<usize>,
-    pub last_editor_text: String, // For detecting text changes in multi-cursor mode
+    pub last_editor_text: String, // For detecting text changes in multi-cursor mode (deprecated; will derive from editor.text)
     // Syntax highlighting cache (text_hash -> LayoutJob)
     pub highlight_cache: std::collections::HashMap<u64, eframe::egui::text::LayoutJob>,
     pub last_highlight_hash: Option<u64>,
@@ -239,7 +240,8 @@ pub struct Tabular {
     // Spreadsheet editing state
     pub spreadsheet_state: crate::models::structs::SpreadsheetState,
     // Lapce buffer integration for editor (replaces egui_code_editor)
-    pub lapce_buffer: Option<Buffer>,
+    // Deprecated standalone lapce buffer (now integrated in EditorBuffer)
+    // pub lapce_buffer: Option<Buffer>,
 }
 
 // Preference tabs enumeration
@@ -255,7 +257,7 @@ pub enum PrefTab {
 impl Tabular {
     // Multi-cursor: add a new cursor position if not existing
     pub fn add_cursor(&mut self, pos: usize) {
-        let p = pos.min(self.editor_text.len());
+        let p = pos.min(self.editor.text.len());
         if !self.extra_cursors.contains(&p) {
             self.extra_cursors.push(p);
             self.extra_cursors.sort_unstable();
@@ -268,7 +270,7 @@ impl Tabular {
     pub fn add_next_occurrence_cursor(&mut self) {
         println!("DEBUG: Cmd+D pressed");
         
-        let text = &self.editor_text;
+    let text = &self.editor.text;
         let current_pos = self.cursor_position.min(text.len());
 
         // Jika ini pertama kali (belum ada extra cursor), simpan posisi utama sekarang
@@ -366,7 +368,7 @@ impl Tabular {
         all_cursors.dedup();
         
         // Apply edits in reverse order to avoid offset problems
-        let mut text = self.editor_text.clone();
+    let mut text = self.editor.text.clone();
         let mut applied_edits = 0;
         
         for &cursor_pos in all_cursors.iter().rev() {
@@ -386,7 +388,7 @@ impl Tabular {
         }
         
         if applied_edits > 0 {
-            self.editor_text = text;
+            self.editor.text = text;
             // Update cursor positions accounting for all changes
             self.update_cursor_positions_after_multi_edit(offset_change, applied_edits);
         }
@@ -432,8 +434,8 @@ impl Tabular {
     pub fn move_all_cursors_vertical(&mut self, down: bool) {
         // For each cursor (primary + extras) move to same column on next/prev line
         let mut all = self.extra_cursors.clone();
-        all.push(self.cursor_position.min(self.editor_text.len()));
-        let text = &self.editor_text;
+    all.push(self.cursor_position.min(self.editor.text.len()));
+    let text = &self.editor.text;
         let mut new_positions = Vec::with_capacity(all.len());
         for &cpos in &all {
             // Determine current line start and column
@@ -528,7 +530,7 @@ impl Tabular {
         };
 
         let mut app = Self {
-            editor_text: String::new(),
+            editor: EditorBuffer::new(""),
             selected_menu: "Database".to_string(),
             items_tree: Vec::new(),
             queries_tree: Vec::new(),
@@ -699,7 +701,6 @@ impl Tabular {
             pool_wait_started_at: None,
             // Spreadsheet editing state
             spreadsheet_state: crate::models::structs::SpreadsheetState::default(),
-            lapce_buffer: Some(Buffer::new("")),
             extra_cursors: Vec::new(),
             last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
@@ -839,7 +840,7 @@ impl Tabular {
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
-                &mut self.editor_text,
+                &mut self.editor,
                 index,
                 &self.refreshing_connections,
                 is_search_mode,
@@ -2037,7 +2038,7 @@ impl Tabular {
     fn render_tree_node_with_table_expansion(
         ui: &mut egui::Ui,
         node: &mut models::structs::TreeNode,
-        editor_text: &mut String,
+        editor: &mut crate::editor_buffer::EditorBuffer,
         node_index: usize,
         refreshing_connections: &std::collections::HashSet<i64>,
         is_search_mode: bool,
@@ -2408,17 +2409,19 @@ impl Tabular {
                         }
                         if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
                             let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                            *editor_text = format!("SELECT COUNT(*) FROM {};", actual_table_name);
+                            editor.set_text(format!("SELECT COUNT(*) FROM {};", actual_table_name));
+                            editor.mark_text_modified();
                             ui.close();
                         }
                         if ui.button("📝 DESCRIBE Query (Current Tab)").clicked() {
                             let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
                             // Different DESCRIBE syntax for different database types
                             if node.database_name.is_some() {
-                                *editor_text = format!("DESCRIBE {};", actual_table_name);
+                                editor.set_text(format!("DESCRIBE {};", actual_table_name));
                             } else {
-                                *editor_text = format!("PRAGMA table_info({});", actual_table_name); // SQLite syntax
+                                editor.set_text(format!("PRAGMA table_info({});", actual_table_name)); // SQLite syntax
                             }
+                            editor.mark_text_modified();
                             ui.close();
                         }
                         ui.separator();
@@ -2463,16 +2466,18 @@ impl Tabular {
                         }
                         if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
                             let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                            *editor_text = format!("SELECT COUNT(*) FROM {};", actual_table_name);
+                            editor.set_text(format!("SELECT COUNT(*) FROM {};", actual_table_name));
+                            editor.mark_text_modified();
                             ui.close();
                         }
                         if ui.button("📝 DESCRIBE View (Current Tab)").clicked() {
                             // Different DESCRIBE syntax for different database types
                             if node.database_name.is_some() {
-                                *editor_text = format!("DESCRIBE {};", node.name);
+                                editor.set_text(format!("DESCRIBE {};", node.name));
                             } else {
-                                *editor_text = format!("PRAGMA table_info({});", node.name); // SQLite syntax
+                                editor.set_text(format!("PRAGMA table_info({});", node.name)); // SQLite syntax
                             }
+                            editor.mark_text_modified();
                             ui.close();
                         }
                         ui.separator();
@@ -2544,7 +2549,7 @@ impl Tabular {
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
-                            editor_text,
+                            editor,
                             child_index,
                             refreshing_connections,
                             is_search_mode,
@@ -2601,7 +2606,7 @@ impl Tabular {
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
-                                editor_text,
+                                editor,
                                 child_index,
                                 refreshing_connections,
                                 is_search_mode,
@@ -2890,12 +2895,12 @@ impl Tabular {
 
                     if ui.button("▶️ Execute Query").clicked() {
                         if let Some(data) = &node.file_path {
-                            if let Some((_connection_name, original_query)) = data.split_once("||")
-                            {
-                                *editor_text = original_query.to_string();
+                            if let Some((_connection_name, original_query)) = data.split_once("||") {
+                                editor.set_text(original_query.to_string());
                             } else {
-                                *editor_text = data.clone();
+                                editor.set_text(data.clone());
                             }
+                            editor.mark_text_modified();
                             // This will trigger the execution flow when the context menu closes
                         }
                         ui.close();
@@ -3075,7 +3080,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                 };
 
                 // Set the ALTER TABLE template in the editor
-                self.editor_text = alter_template;
+                self.editor.text = alter_template;
                 self.current_connection_id = Some(connection_id);
             } else {
                 // If no specific table is selected, show a generic template
@@ -3088,7 +3093,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     models::enums::DatabaseType::MongoDB => "-- MongoDB does not support ALTER TABLE; modify documents with update operators".to_string(),
                 };
 
-                self.editor_text = alter_template;
+                self.editor.text = alter_template;
                 self.current_connection_id = Some(connection_id);
             }
         } else {
@@ -9136,9 +9141,9 @@ impl App for Tabular {
                 );
 
                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
-                    && tab.content != self.editor_text
+                    && tab.content != self.editor.text
                 {
-                    tab.content = self.editor_text.clone();
+                    tab.content = self.editor.text.clone();
                     tab.is_modified = true;
                 }
 
@@ -9311,7 +9316,7 @@ impl App for Tabular {
                                     true
                                 } else {
                                     let cq = editor::extract_query_from_cursor(self);
-                                    !cq.trim().is_empty() || !self.editor_text.trim().is_empty()
+                                    !cq.trim().is_empty() || !self.editor.text.trim().is_empty()
                                 };
                                 if has_q {
                                     editor::execute_query(self);
