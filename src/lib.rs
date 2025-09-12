@@ -4,6 +4,7 @@ pub mod auto_updater;
 pub mod cache_data;
 pub mod config;
 pub mod connection;
+pub mod data_table;
 pub mod dialog;
 pub mod directory;
 pub mod driver_mongodb;
@@ -26,9 +27,8 @@ pub mod sidebar_database;
 pub mod sidebar_history;
 pub mod sidebar_query;
 pub mod spreadsheet;
-pub mod window_egui;
-pub mod data_table;
-pub mod syntax; // re-enabled syntax highlighting helpers
+pub mod syntax;
+pub mod window_egui; // re-enabled syntax highlighting helpers
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {

@@ -8,12 +8,12 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use crate::{data_table, driver_mssql};
 use crate::{
     cache_data, connection, dialog, directory, driver_mysql, driver_postgres, driver_redis,
-    driver_sqlite, editor, models, sidebar_database, sidebar_query, 
+    driver_sqlite, editor, models, sidebar_database, sidebar_query,
     spreadsheet::{self, SpreadsheetOperations},
 };
+use crate::{data_table, driver_mssql};
 
 pub struct Tabular {
     pub editor: EditorBuffer,
@@ -172,7 +172,8 @@ pub struct Tabular {
     pub highlight_cache: std::collections::HashMap<u64, eframe::egui::text::LayoutJob>,
     pub last_highlight_hash: Option<u64>,
     // New per-line highlight cache for custom editor: key = (line_index, revision_hash)
-    pub per_line_highlight_cache: std::collections::HashMap<(usize, u64), eframe::egui::text::LayoutJob>,
+    pub per_line_highlight_cache:
+        std::collections::HashMap<(usize, u64), eframe::egui::text::LayoutJob>,
     // Index dialog
     pub show_index_dialog: bool,
     pub index_dialog: Option<models::structs::IndexDialogState>,
@@ -270,29 +271,35 @@ impl Tabular {
         }
         // Transitional mirror to structured selections
         if self.multi_selection.carets.is_empty() {
-            self.multi_selection.add_collapsed(self.cursor_position.min(self.editor.text.len()));
+            self.multi_selection
+                .add_collapsed(self.cursor_position.min(self.editor.text.len()));
         }
         self.multi_selection.add_collapsed(p);
     }
 
-    pub fn clear_extra_cursors(&mut self) { self.extra_cursors.clear(); }
+    pub fn clear_extra_cursors(&mut self) {
+        self.extra_cursors.clear();
+    }
 
     // Add cursor at next occurrence of selected text or word under cursor (like Cmd+D in VS Code)
     pub fn add_next_occurrence_cursor(&mut self) {
         println!("DEBUG: Cmd+D pressed");
-        
-    let text = &self.editor.text;
+
+        let text = &self.editor.text;
         let current_pos = self.cursor_position.min(text.len());
 
         // Jika ini pertama kali (belum ada extra cursor), simpan posisi utama sekarang
         if self.extra_cursors.is_empty() {
             if !self.extra_cursors.contains(&current_pos) {
-                println!("DEBUG: Priming multi-cursor, menambahkan posisi awal {} ke extra_cursors", current_pos);
+                println!(
+                    "DEBUG: Priming multi-cursor, menambahkan posisi awal {} ke extra_cursors",
+                    current_pos
+                );
                 self.extra_cursors.push(current_pos);
             }
             self.multi_selection.ensure_primary(current_pos);
         }
-        
+
         // Get the text to search for
         let search_text = if !self.selected_text.is_empty() {
             // Use selected text
@@ -304,19 +311,25 @@ impl Tabular {
             let word_end = self.find_word_end(text, current_pos);
             if word_start < word_end {
                 let word = text[word_start..word_end].to_string();
-                println!("DEBUG: Using word under cursor: '{}' (pos {} to {})", word, word_start, word_end);
+                println!(
+                    "DEBUG: Using word under cursor: '{}' (pos {} to {})",
+                    word, word_start, word_end
+                );
                 word
             } else {
-                println!("DEBUG: No word found under cursor at position {}", current_pos);
+                println!(
+                    "DEBUG: No word found under cursor at position {}",
+                    current_pos
+                );
                 return; // No word to search for
             }
         };
-        
+
         if search_text.is_empty() {
             println!("DEBUG: Search text is empty");
             return;
         }
-        
+
         // Find where to start searching from
         // If we have extra cursors, search from after the last cursor
         // Otherwise, search from after current position
@@ -327,16 +340,20 @@ impl Tabular {
             .copied()
             .max()
             .unwrap_or(current_pos);
-        let search_from = max_existing + 1;        
-        
-        println!("DEBUG: Searching for '{}' starting from position {} (current={}, extra_cursors={:?})", 
-                search_text, search_from, current_pos, self.extra_cursors);
-        
+        let search_from = max_existing + 1;
+
+        println!(
+            "DEBUG: Searching for '{}' starting from position {} (current={}, extra_cursors={:?})",
+            search_text, search_from, current_pos, self.extra_cursors
+        );
+
         if search_from < text.len() {
             if let Some(next_pos_rel) = text[search_from..].find(&search_text) {
                 let absolute_pos = search_from + next_pos_rel;
                 println!("DEBUG: Found next occurrence at position {}", absolute_pos);
-                if !self.extra_cursors.contains(&absolute_pos) && absolute_pos != self.cursor_position {
+                if !self.extra_cursors.contains(&absolute_pos)
+                    && absolute_pos != self.cursor_position
+                {
                     self.extra_cursors.push(absolute_pos);
                     self.extra_cursors.sort_unstable();
                 }
@@ -348,16 +365,22 @@ impl Tabular {
                 return;
             }
         }
-        
+
         // Try from beginning (wrap around) only if we didn't find anything above
-        println!("DEBUG: No occurrence found after position {}, trying wrap-around", search_from);
+        println!(
+            "DEBUG: No occurrence found after position {}, trying wrap-around",
+            search_from
+        );
         if let Some(first_pos) = text.find(&search_text) {
             if !self.extra_cursors.contains(&first_pos) && first_pos != self.cursor_position {
                 println!("DEBUG: Wrap-around adding position {}", first_pos);
                 self.extra_cursors.push(first_pos);
                 self.extra_cursors.sort_unstable();
             } else {
-                println!("DEBUG: Wrap-around found position {} but already present (done)", first_pos);
+                println!(
+                    "DEBUG: Wrap-around found position {} but already present (done)",
+                    first_pos
+                );
             }
             self.multi_selection.add_collapsed(first_pos);
         } else {
@@ -370,44 +393,44 @@ impl Tabular {
         if self.extra_cursors.is_empty() {
             return; // No multi-cursor, normal editing
         }
-        
+
         let old_len = edit_end - edit_start;
         let new_len = new_text.len();
         let offset_change = new_len as i32 - old_len as i32;
-        
+
         // Collect all cursor positions including primary
         let mut all_cursors = self.extra_cursors.clone();
         all_cursors.push(self.cursor_position);
         all_cursors.sort_unstable();
         all_cursors.dedup();
-        
+
         // Apply edits in reverse order to avoid offset problems
-    let mut text = self.editor.text.clone();
+        let mut text = self.editor.text.clone();
         let mut applied_edits = 0;
-        
+
         for &cursor_pos in all_cursors.iter().rev() {
             // Skip if this cursor is at the same position as the primary edit
             if cursor_pos >= edit_start && cursor_pos <= edit_end {
                 continue;
             }
-            
+
             // Find word boundaries around cursor
             let word_start = self.find_word_start(&text, cursor_pos);
             let word_end = self.find_word_end(&text, cursor_pos);
-            
+
             if word_start < word_end {
                 text.replace_range(word_start..word_end, new_text);
                 applied_edits += 1;
             }
         }
-        
+
         if applied_edits > 0 {
             self.editor.text = text;
             // Update cursor positions accounting for all changes
             self.update_cursor_positions_after_multi_edit(offset_change, applied_edits);
         }
     }
-    
+
     fn find_word_start(&self, text: &str, pos: usize) -> usize {
         let bytes = text.as_bytes();
         let mut start = pos.min(bytes.len());
@@ -421,7 +444,7 @@ impl Tabular {
         }
         start
     }
-    
+
     fn find_word_end(&self, text: &str, pos: usize) -> usize {
         let bytes = text.as_bytes();
         let mut end = pos;
@@ -435,11 +458,12 @@ impl Tabular {
         }
         end
     }
-    
+
     fn update_cursor_positions_after_multi_edit(&mut self, offset_change: i32, _edit_count: usize) {
         // Simple approach: adjust all cursors by the offset
         self.cursor_position = (self.cursor_position as i32 + offset_change).max(0) as usize;
-        self.extra_cursors = self.extra_cursors
+        self.extra_cursors = self
+            .extra_cursors
             .iter()
             .map(|&pos| (pos as i32 + offset_change).max(0) as usize)
             .collect();
@@ -448,38 +472,57 @@ impl Tabular {
     pub fn move_all_cursors_vertical(&mut self, down: bool) {
         // For each cursor (primary + extras) move to same column on next/prev line
         let mut all = self.extra_cursors.clone();
-    all.push(self.cursor_position.min(self.editor.text.len()));
-    let text = &self.editor.text;
+        all.push(self.cursor_position.min(self.editor.text.len()));
+        let text = &self.editor.text;
         let mut new_positions = Vec::with_capacity(all.len());
         for &cpos in &all {
             // Determine current line start and column
             let bytes = text.as_bytes();
             let mut line_start = cpos;
-            while line_start > 0 && bytes[line_start-1] != b'\n' { line_start -= 1; }
+            while line_start > 0 && bytes[line_start - 1] != b'\n' {
+                line_start -= 1;
+            }
             let mut line_end = cpos;
-            while line_end < bytes.len() && bytes[line_end] != b'\n' { line_end += 1; }
+            while line_end < bytes.len() && bytes[line_end] != b'\n' {
+                line_end += 1;
+            }
             let column = cpos - line_start;
             let target_line_start = if down {
-                if line_end >= bytes.len() { // last line
+                if line_end >= bytes.len() {
+                    // last line
                     line_start // stay
-                } else { line_end + 1 }
+                } else {
+                    line_end + 1
+                }
             } else {
-                if line_start == 0 { 0 } else {
+                if line_start == 0 {
+                    0
+                } else {
                     // find previous line start
                     let mut idx = line_start - 2; // skip the previous newline char
-                    while idx > 0 && bytes[idx] != b'\n' { idx -= 1; }
-                    if bytes.get(idx) == Some(&b'\n') { idx + 1 } else { idx }
+                    while idx > 0 && bytes[idx] != b'\n' {
+                        idx -= 1;
+                    }
+                    if bytes.get(idx) == Some(&b'\n') {
+                        idx + 1
+                    } else {
+                        idx
+                    }
                 }
             };
             // Compute target line end
             let mut target_end = target_line_start;
-            while target_end < bytes.len() && bytes[target_end] != b'\n' { target_end += 1; }
+            while target_end < bytes.len() && bytes[target_end] != b'\n' {
+                target_end += 1;
+            }
             let target_len = target_end - target_line_start;
             let new_col = column.min(target_len);
             new_positions.push(target_line_start + new_col);
         }
         // First element in new_positions corresponds to extras order then primary at end
-        if let Some(primary_new) = new_positions.pop() { self.cursor_position = primary_new; }
+        if let Some(primary_new) = new_positions.pop() {
+            self.cursor_position = primary_new;
+        }
         self.extra_cursors = new_positions;
         self.extra_cursors.sort_unstable();
     }
@@ -526,7 +569,6 @@ impl Tabular {
 
         response
     }
-
 
     pub fn new() -> Self {
         // Create background processing channels
@@ -746,22 +788,24 @@ impl Tabular {
         // Only queue if default auto_check_updates is true AND no persisted timestamp available or older than 24h.
         if app.auto_check_updates
             && let (Some(sender), Some(rt)) = (&app.background_sender, &app.runtime)
-                && let Ok(store) = rt.block_on(crate::config::ConfigStore::new()) {
-                    println!("Checking last update check timestamp for initial check...");
-                    let mut should_queue = true;
-                    if let Some(last_iso) = rt.block_on(store.get_last_update_check())
-                        && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&last_iso) {
-                            let last_utc = parsed.with_timezone(&chrono::Utc);
-                            if chrono::Utc::now().signed_duration_since(last_utc) < chrono::Duration::days(1) {
-                                should_queue = false;
-                            }
-                        }
-                    if should_queue {
-                        // Persist immediately to prevent multiple queues in rapid restarts
-                        rt.block_on(store.set_last_update_check_now());
-                        let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
-                    }
+            && let Ok(store) = rt.block_on(crate::config::ConfigStore::new())
+        {
+            println!("Checking last update check timestamp for initial check...");
+            let mut should_queue = true;
+            if let Some(last_iso) = rt.block_on(store.get_last_update_check())
+                && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&last_iso)
+            {
+                let last_utc = parsed.with_timezone(&chrono::Utc);
+                if chrono::Utc::now().signed_duration_since(last_utc) < chrono::Duration::days(1) {
+                    should_queue = false;
                 }
+            }
+            if should_queue {
+                // Persist immediately to prevent multiple queues in rapid restarts
+                rt.block_on(store.set_last_update_check_now());
+                let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
+            }
+        }
         app
     }
 
@@ -783,9 +827,11 @@ impl Tabular {
                         // would go here (e.g. ping DB, refresh tables, etc.). For now we simply
                         // report success so UI can clear any spinners.
                         let success = true;
-                        let _ = result_sender.send(
-                            models::enums::BackgroundResult::RefreshComplete { connection_id, success }
-                        );
+                        let _ =
+                            result_sender.send(models::enums::BackgroundResult::RefreshComplete {
+                                connection_id,
+                                success,
+                            });
                     }
                     models::enums::BackgroundTask::CheckForUpdates => {
                         // Perform update check on a lightweight runtime (if required by async API)
@@ -795,9 +841,8 @@ impl Tabular {
                         } else {
                             Err("Failed to create runtime for update check".to_string())
                         };
-                        let _ = result_sender.send(
-                            models::enums::BackgroundResult::UpdateCheckComplete { result }
-                        );
+                        let _ = result_sender
+                            .send(models::enums::BackgroundResult::UpdateCheckComplete { result });
                     }
                 }
             }
@@ -1600,45 +1645,42 @@ impl Tabular {
                         // Try show cached 100 rows immediately (cache-first UX)
                         let mut had_cache = false;
                         if let Some(dbn) = &database_name
-                            && let Some((cached_headers, cached_rows)) = crate::cache_data::get_table_rows_from_cache(
-                                self,
-                                connection_id,
+                            && let Some((cached_headers, cached_rows)) =
+                                crate::cache_data::get_table_rows_from_cache(
+                                    self,
+                                    connection_id,
+                                    dbn,
+                                    &table_name,
+                                )
+                            && !cached_headers.is_empty()
+                        {
+                            info!(
+                                "📦 Showing cached data for table {}/{} ({} cols, {} rows)",
                                 dbn,
-                                &table_name,
-                            )
-                                && !cached_headers.is_empty() {
-                                    info!(
-                                        "📦 Showing cached data for table {}/{} ({} cols, {} rows)",
-                                        dbn,
-                                        table_name,
-                                        cached_headers.len(),
-                                        cached_rows.len()
-                                    );
-                                    self.current_table_headers = cached_headers.clone();
-                                    self.current_table_data = cached_rows.clone();
-                                    self.all_table_data = cached_rows;
-                                    self.total_rows = self.all_table_data.len();
-                                    self.current_page = 0;
-                                    had_cache = true;
-                                    // Table context changed; ensure future Structure load is for this table
-                                    self.last_structure_target = None;
-                                    if let Some(active_tab) =
-                                        self.query_tabs.get_mut(self.active_tab_index)
-                                    {
-                                        active_tab.result_headers =
-                                            self.current_table_headers.clone();
-                                        active_tab.result_rows =
-                                            self.current_table_data.clone();
-                                        active_tab.result_all_rows =
-                                            self.all_table_data.clone();
-                                        active_tab.result_table_name =
-                                            self.current_table_name.clone();
-                                        active_tab.is_table_browse_mode = true;
-                                        active_tab.current_page = self.current_page;
-                                        active_tab.page_size = self.page_size;
-                                        active_tab.total_rows = self.total_rows;
-                                    }
-                                }
+                                table_name,
+                                cached_headers.len(),
+                                cached_rows.len()
+                            );
+                            self.current_table_headers = cached_headers.clone();
+                            self.current_table_data = cached_rows.clone();
+                            self.all_table_data = cached_rows;
+                            self.total_rows = self.all_table_data.len();
+                            self.current_page = 0;
+                            had_cache = true;
+                            // Table context changed; ensure future Structure load is for this table
+                            self.last_structure_target = None;
+                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index)
+                            {
+                                active_tab.result_headers = self.current_table_headers.clone();
+                                active_tab.result_rows = self.current_table_data.clone();
+                                active_tab.result_all_rows = self.all_table_data.clone();
+                                active_tab.result_table_name = self.current_table_name.clone();
+                                active_tab.is_table_browse_mode = true;
+                                active_tab.current_page = self.current_page;
+                                active_tab.page_size = self.page_size;
+                                active_tab.total_rows = self.total_rows;
+                            }
+                        }
 
                         // Use server-side pagination only when refreshing or when no cache available.
                         if self.use_server_pagination {
@@ -1686,14 +1728,17 @@ impl Tabular {
                                 }
                             };
                             // Always store base_query for potential manual refresh
-                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index)
+                            {
                                 active_tab.base_query = base_query.clone();
                             }
                             self.current_base_query = base_query;
 
                             // If we already showed cache, do NOT auto-fetch from server now.
                             if had_cache {
-                                debug!("🛑 Skipping live server load on table click because cache exists");
+                                debug!(
+                                    "🛑 Skipping live server load on table click because cache exists"
+                                );
                                 // Keep browse mode enabled for filters to apply on cached data
                                 self.is_table_browse_mode = true;
                                 self.sql_filter_text.clear();
@@ -1714,12 +1759,22 @@ impl Tabular {
                                 } else if !self.connection_pools.contains_key(&connection_id) {
                                     let created_now = if let Some(rt) = self.runtime.clone() {
                                         rt.block_on(async {
-                                            crate::connection::try_get_connection_pool(self, connection_id).await.is_some()
+                                            crate::connection::try_get_connection_pool(
+                                                self,
+                                                connection_id,
+                                            )
+                                            .await
+                                            .is_some()
                                         })
                                     } else {
                                         let rt = self.get_runtime();
                                         rt.block_on(async {
-                                            crate::connection::try_get_connection_pool(self, connection_id).await.is_some()
+                                            crate::connection::try_get_connection_pool(
+                                                self,
+                                                connection_id,
+                                            )
+                                            .await
+                                            .is_some()
                                         })
                                     };
                                     if !created_now {
@@ -1738,9 +1793,12 @@ impl Tabular {
                                     self.pool_wait_connection_id = Some(connection_id);
                                     self.pool_wait_query = first_query;
                                     self.pool_wait_started_at = Some(std::time::Instant::now());
-                                    self.current_table_name = "Connecting… waiting for pool".to_string();
+                                    self.current_table_name =
+                                        "Connecting… waiting for pool".to_string();
                                 } else {
-                                    self.initialize_server_pagination(self.current_base_query.clone());
+                                    self.initialize_server_pagination(
+                                        self.current_base_query.clone(),
+                                    );
                                 }
                             }
                         } else {
@@ -1755,105 +1813,107 @@ impl Tabular {
                                 );
                                 // New table; force structure reload on next toggle
                                 self.last_structure_target = None;
-                            // Fallback to client-side pagination (original behavior)
-                            // For MsSQL, we need to strip TOP from query_content to avoid conflicts
-                            let safe_query =
-                                if conn.connection_type == models::enums::DatabaseType::MsSQL {
-                                    driver_mssql::sanitize_mssql_select_for_pagination(&query_content)
-                                } else {
-                                    query_content.clone()
-                                };
-                            debug!("🔄 Client-side query after sanitization: {}", safe_query);
+                                // Fallback to client-side pagination (original behavior)
+                                // For MsSQL, we need to strip TOP from query_content to avoid conflicts
+                                let safe_query =
+                                    if conn.connection_type == models::enums::DatabaseType::MsSQL {
+                                        driver_mssql::sanitize_mssql_select_for_pagination(
+                                            &query_content,
+                                        )
+                                    } else {
+                                        query_content.clone()
+                                    };
+                                debug!("🔄 Client-side query after sanitization: {}", safe_query);
 
-                            // If pool not ready, queue and show loading; otherwise execute now
-                            let mut pool_ready = true;
-                            if self.pending_connection_pools.contains(&connection_id) {
-                                pool_ready = false;
-                            } else if !self.connection_pools.contains_key(&connection_id) {
-                                let created_now = if let Some(rt) = self.runtime.clone() {
-                                    rt.block_on(async {
-                                        crate::connection::try_get_connection_pool(
-                                            self,
-                                            connection_id,
-                                        )
-                                        .await
-                                        .is_some()
-                                    })
-                                } else {
-                                    let rt = self.get_runtime();
-                                    rt.block_on(async {
-                                        crate::connection::try_get_connection_pool(
-                                            self,
-                                            connection_id,
-                                        )
-                                        .await
-                                        .is_some()
-                                    })
-                                };
-                                if !created_now {
+                                // If pool not ready, queue and show loading; otherwise execute now
+                                let mut pool_ready = true;
+                                if self.pending_connection_pools.contains(&connection_id) {
                                     pool_ready = false;
+                                } else if !self.connection_pools.contains_key(&connection_id) {
+                                    let created_now = if let Some(rt) = self.runtime.clone() {
+                                        rt.block_on(async {
+                                            crate::connection::try_get_connection_pool(
+                                                self,
+                                                connection_id,
+                                            )
+                                            .await
+                                            .is_some()
+                                        })
+                                    } else {
+                                        let rt = self.get_runtime();
+                                        rt.block_on(async {
+                                            crate::connection::try_get_connection_pool(
+                                                self,
+                                                connection_id,
+                                            )
+                                            .await
+                                            .is_some()
+                                        })
+                                    };
+                                    if !created_now {
+                                        pool_ready = false;
+                                    }
                                 }
-                            }
 
-                            if !pool_ready {
-                                self.pool_wait_in_progress = true;
-                                self.pool_wait_connection_id = Some(connection_id);
-                                self.pool_wait_query = safe_query;
-                                self.pool_wait_started_at = Some(std::time::Instant::now());
-                                self.current_table_name =
-                                    "Connecting… waiting for pool".to_string();
-                            } else if let Some((headers, data)) =
-                                connection::execute_query_with_connection(
-                                    self,
-                                    connection_id,
-                                    safe_query,
-                                )
-                            {
-                                self.current_table_headers = headers;
-                                self.current_table_data = data.clone();
-                                self.all_table_data = data;
-                                // current_table_name sudah diset lebih awal
-                                self.is_table_browse_mode = true; // Enable filter for table browse
-                                self.sql_filter_text.clear(); // Clear any previous filter
-                                self.total_rows = self.all_table_data.len();
-                                self.current_page = 0;
-                                if let Some(active_tab) =
-                                    self.query_tabs.get_mut(self.active_tab_index)
-                                {
-                                    active_tab.result_headers = self.current_table_headers.clone();
-                                    active_tab.result_rows = self.current_table_data.clone();
-                                    active_tab.result_all_rows = self.all_table_data.clone();
-                                    active_tab.result_table_name = self.current_table_name.clone();
-                                    active_tab.is_table_browse_mode = self.is_table_browse_mode;
-                                    active_tab.current_page = self.current_page;
-                                    active_tab.page_size = self.page_size;
-                                    active_tab.total_rows = self.total_rows;
-                                }
-                                // Save latest first page into row cache (best-effort)
-                                if let Some(dbn) = &database_name {
-                                    let snapshot: Vec<Vec<String>> = self
-                                        .all_table_data
-                                        .iter()
-                                        .take(100)
-                                        .cloned()
-                                        .collect();
-                                    let headers_clone = self.current_table_headers.clone();
-                                    crate::cache_data::save_table_rows_to_cache(
+                                if !pool_ready {
+                                    self.pool_wait_in_progress = true;
+                                    self.pool_wait_connection_id = Some(connection_id);
+                                    self.pool_wait_query = safe_query;
+                                    self.pool_wait_started_at = Some(std::time::Instant::now());
+                                    self.current_table_name =
+                                        "Connecting… waiting for pool".to_string();
+                                } else if let Some((headers, data)) =
+                                    connection::execute_query_with_connection(
                                         self,
                                         connection_id,
-                                        dbn,
-                                        &table_name,
-                                        &headers_clone,
-                                        &snapshot,
-                                    );
-                                    info!(
-                                        "💾 Cached first 100 rows after live fetch for {}/{}",
-                                        dbn, table_name
-                                    );
+                                        safe_query,
+                                    )
+                                {
+                                    self.current_table_headers = headers;
+                                    self.current_table_data = data.clone();
+                                    self.all_table_data = data;
+                                    // current_table_name sudah diset lebih awal
+                                    self.is_table_browse_mode = true; // Enable filter for table browse
+                                    self.sql_filter_text.clear(); // Clear any previous filter
+                                    self.total_rows = self.all_table_data.len();
+                                    self.current_page = 0;
+                                    if let Some(active_tab) =
+                                        self.query_tabs.get_mut(self.active_tab_index)
+                                    {
+                                        active_tab.result_headers =
+                                            self.current_table_headers.clone();
+                                        active_tab.result_rows = self.current_table_data.clone();
+                                        active_tab.result_all_rows = self.all_table_data.clone();
+                                        active_tab.result_table_name =
+                                            self.current_table_name.clone();
+                                        active_tab.is_table_browse_mode = self.is_table_browse_mode;
+                                        active_tab.current_page = self.current_page;
+                                        active_tab.page_size = self.page_size;
+                                        active_tab.total_rows = self.total_rows;
+                                    }
+                                    // Save latest first page into row cache (best-effort)
+                                    if let Some(dbn) = &database_name {
+                                        let snapshot: Vec<Vec<String>> =
+                                            self.all_table_data.iter().take(100).cloned().collect();
+                                        let headers_clone = self.current_table_headers.clone();
+                                        crate::cache_data::save_table_rows_to_cache(
+                                            self,
+                                            connection_id,
+                                            dbn,
+                                            &table_name,
+                                            &headers_clone,
+                                            &snapshot,
+                                        );
+                                        info!(
+                                            "💾 Cached first 100 rows after live fetch for {}/{}",
+                                            dbn, table_name
+                                        );
+                                    }
                                 }
-                            }
                             } else {
-                                debug!("🛑 Skipping client-side live load on table click because cache exists");
+                                debug!(
+                                    "🛑 Skipping client-side live load on table click because cache exists"
+                                );
                                 self.last_structure_target = None;
                             }
                         }
@@ -2455,7 +2515,8 @@ impl Tabular {
                             if node.database_name.is_some() {
                                 editor.set_text(format!("DESCRIBE {};", actual_table_name));
                             } else {
-                                editor.set_text(format!("PRAGMA table_info({});", actual_table_name)); // SQLite syntax
+                                editor
+                                    .set_text(format!("PRAGMA table_info({});", actual_table_name)); // SQLite syntax
                             }
                             editor.mark_text_modified();
                             ui.close();
@@ -2931,7 +2992,8 @@ impl Tabular {
 
                     if ui.button("▶️ Execute Query").clicked() {
                         if let Some(data) = &node.file_path {
-                            if let Some((_connection_name, original_query)) = data.split_once("||") {
+                            if let Some((_connection_name, original_query)) = data.split_once("||")
+                            {
                                 editor.set_text(original_query.to_string());
                             } else {
                                 editor.set_text(data.clone());
@@ -5917,7 +5979,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                         .unwrap_or_default();
                     let table = data_table::infer_current_table_name(self);
                     if !db_name.is_empty() && !table.is_empty() {
-                        let snapshot: Vec<Vec<String>> = self.current_table_data.iter().take(100).cloned().collect();
+                        let snapshot: Vec<Vec<String>> =
+                            self.current_table_data.iter().take(100).cloned().collect();
                         let headers_clone = self.current_table_headers.clone();
                         crate::cache_data::save_table_rows_to_cache(
                             self,
@@ -6101,7 +6164,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             data_table::get_total_pages(self)
         );
     }
-
 
     fn render_tree_for_database_section(&mut self, ui: &mut egui::Ui) {
         // Add responsive search box
@@ -7193,11 +7255,17 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
 
     fn execute_spreadsheet_sql(&mut self, sql: String) {
         if let Some(conn_id) = self.current_connection_id {
-            if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, sql) {
+            if let Some((headers, data)) =
+                connection::execute_query_with_connection(self, conn_id, sql)
+            {
                 // Detect error tables returned by executor (headers == ["Error"]) and treat as failure
                 let is_error_table = headers.len() == 1 && headers[0].eq_ignore_ascii_case("error");
                 if is_error_table {
-                    let msg = data.first().and_then(|r| r.first()).cloned().unwrap_or_else(|| "Unknown query error".to_string());
+                    let msg = data
+                        .first()
+                        .and_then(|r| r.first())
+                        .cloned()
+                        .unwrap_or_else(|| "Unknown query error".to_string());
                     debug!("❌ SQL execution returned error table: {}", msg);
                     self.error_message = msg;
                     self.show_error_message = true;
@@ -7225,11 +7293,11 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             }
         }
     }
-    
+
     fn reset_spreadsheet_state(&mut self) {
         *self.get_spreadsheet_state_mut() = crate::models::structs::SpreadsheetState::default();
     }
-    
+
     fn spreadsheet_start_cell_edit(&mut self, row: usize, col: usize) {
         if let Some(val) = self
             .get_current_table_data()
@@ -7242,14 +7310,14 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             state.cell_edit_text = val;
         }
     }
-    
+
     fn spreadsheet_finish_cell_edit(&mut self, save: bool) {
         let editing_cell = self.get_spreadsheet_state().editing_cell;
         if let Some((row, col)) = editing_cell {
             let new_val = self.get_spreadsheet_state().cell_edit_text.clone();
             self.get_spreadsheet_state_mut().cell_edit_text.clear();
             self.get_spreadsheet_state_mut().editing_cell = None;
-        
+
             if save {
                 // Get old_val from all_table_data if available, otherwise fall back to current_table_data.
                 // In server pagination mode, all_table_data may not contain the current page rows.
@@ -7264,39 +7332,45 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                             .and_then(|r| r.get(col))
                             .cloned()
                     });
-                
+
                 let maybe_old = old_val.clone();
                 match maybe_old {
                     Some(ref old) if *old != new_val => {
                         // Update current_table_data
                         if let Some(r1) = self.get_current_table_data_mut().get_mut(row)
-                            && let Some(c1) = r1.get_mut(col) {
-                                *c1 = new_val.clone();
-                            }
+                            && let Some(c1) = r1.get_mut(col)
+                        {
+                            *c1 = new_val.clone();
+                        }
                         // Update all_table_data
                         if let Some(r2) = self.get_all_table_data_mut().get_mut(row)
-                            && let Some(c2) = r2.get_mut(col) {
-                                *c2 = new_val.clone();
-                            }
-    
+                            && let Some(c2) = r2.get_mut(col)
+                        {
+                            *c2 = new_val.clone();
+                        }
+
                         // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
                         let mut updated_insert_row = false;
                         let headers_len = self.get_current_table_headers().len();
                         {
                             let state = self.get_spreadsheet_state_mut();
                             for op in &mut state.pending_operations {
-                                if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op
-                                    && *row_index == row {
-                                        // Ensure values vector has enough columns
-                                        if values.len() < headers_len {
-                                            values.resize(headers_len, String::new());
-                                        }
-                                        if col < values.len() {
-                                            values[col] = new_val.clone();
-                                        }
-                                        updated_insert_row = true;
-                                        break;
+                                if let crate::models::structs::CellEditOperation::InsertRow {
+                                    row_index,
+                                    values,
+                                } = op
+                                    && *row_index == row
+                                {
+                                    // Ensure values vector has enough columns
+                                    if values.len() < headers_len {
+                                        values.resize(headers_len, String::new());
                                     }
+                                    if col < values.len() {
+                                        values[col] = new_val.clone();
+                                    }
+                                    updated_insert_row = true;
+                                    break;
+                                }
                             }
                         }
                         // If not an InsertRow case, record as an Update operation
@@ -7317,20 +7391,22 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                         // If old_val is None (e.g., row not present in all_table_data in server pagination),
                         // still update visible data so the edit doesn't disappear. Skip recording pending op.
                         if let Some(r1) = self.get_current_table_data_mut().get_mut(row)
-                            && let Some(c1) = r1.get_mut(col) {
-                                *c1 = new_val.clone();
-                            }
+                            && let Some(c1) = r1.get_mut(col)
+                        {
+                            *c1 = new_val.clone();
+                        }
                         if let Some(r2) = self.get_all_table_data_mut().get_mut(row)
-                            && let Some(c2) = r2.get_mut(col) {
-                                *c2 = new_val.clone();
-                            }
+                            && let Some(c2) = r2.get_mut(col)
+                        {
+                            *c2 = new_val.clone();
+                        }
                     }
                     _ => { /* unchanged value, do nothing */ }
                 }
             }
         }
     }
-    
+
     fn spreadsheet_add_row(&mut self) {
         let new_row: Vec<String> = self
             .get_current_table_headers()
@@ -7341,22 +7417,22 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
         self.get_all_table_data_mut().push(new_row.clone());
         self.get_current_table_data_mut().push(new_row.clone());
         self.set_total_rows(self.get_total_rows().saturating_add(1));
-    
+
         let state = self.get_spreadsheet_state_mut();
-        state.pending_operations.push(
-            crate::models::structs::CellEditOperation::InsertRow {
+        state
+            .pending_operations
+            .push(crate::models::structs::CellEditOperation::InsertRow {
                 row_index,
                 values: new_row,
-            },
-        );
+            });
         state.is_dirty = true;
-    
+
         self.set_selected_row(Some(row_index));
         self.set_selected_cell(Some((row_index, 0)));
         self.set_table_recently_clicked(true);
         self.spreadsheet_start_cell_edit(row_index, 0);
     }
-    
+
     fn spreadsheet_delete_selected_row(&mut self) {
         debug!(
             "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
@@ -7366,7 +7442,7 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
             self.get_selected_row()
         );
-    
+
         if let Some(row) = self.get_selected_row() {
             // Get the row values BEFORE removing from any data structures
             let values = if let Some(values) = self.get_all_table_data().get(row).cloned() {
@@ -7378,7 +7454,7 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                 debug!("🔥 Could not get values for row {}", row);
                 return;
             };
-    
+
             std::println!(
                 "🔥 Adding DeleteRow operation for row {} with {} values: {:?}",
                 row,
@@ -7390,16 +7466,16 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                 row,
                 values.len()
             );
-    
+
             let state = self.get_spreadsheet_state_mut();
-            state.pending_operations.push(
-                crate::models::structs::CellEditOperation::DeleteRow {
+            state
+                .pending_operations
+                .push(crate::models::structs::CellEditOperation::DeleteRow {
                     row_index: row,
                     values,
-                },
-            );
+                });
             state.is_dirty = true;
-    
+
             std::println!(
                 "🔥 Now have {} pending operations, is_dirty: {}",
                 state.pending_operations.len(),
@@ -7410,7 +7486,7 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                 state.pending_operations.len(),
                 state.is_dirty
             );
-    
+
             // Now remove from data structures
             if row < self.get_current_table_data().len() {
                 self.get_current_table_data_mut().remove(row);
@@ -7426,13 +7502,13 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             debug!("🔥 No row selected for deletion");
         }
     }
-    
+
     fn spreadsheet_extract_table_name(&self) -> Option<String> {
         std::println!(
             "🔥 spreadsheet_extract_table_name called with current_table_name: '{}'",
             self.get_current_table_name()
         );
-    
+
         if self.get_current_table_name().starts_with("Table: ") {
             let s = self.get_current_table_name().strip_prefix("Table: ")?;
             let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
@@ -7453,7 +7529,7 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             None
         }
     }
-    
+
     fn spreadsheet_quote_ident(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
@@ -7467,7 +7543,7 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             _ => ident.to_string(),
         }
     }
-    
+
     fn spreadsheet_quote_table_ident(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
@@ -7477,10 +7553,12 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
         let already_mysql = ident.contains('`');
         let already_pg_sqlite = ident.contains('"');
         let already_mssql = ident.contains('[') && ident.contains(']');
-    
+
         match conn.connection_type {
             crate::models::enums::DatabaseType::MySQL => {
-                if already_mysql { return ident.to_string(); }
+                if already_mysql {
+                    return ident.to_string();
+                }
                 if ident.contains('.') {
                     ident
                         .split('.')
@@ -7491,8 +7569,11 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                     std::format!("`{}`", ident)
                 }
             }
-            crate::models::enums::DatabaseType::PostgreSQL | crate::models::enums::DatabaseType::SQLite => {
-                if already_pg_sqlite { return ident.to_string(); }
+            crate::models::enums::DatabaseType::PostgreSQL
+            | crate::models::enums::DatabaseType::SQLite => {
+                if already_pg_sqlite {
+                    return ident.to_string();
+                }
                 if ident.contains('.') {
                     ident
                         .split('.')
@@ -7504,7 +7585,9 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                 }
             }
             crate::models::enums::DatabaseType::MsSQL => {
-                if already_mssql { return ident.to_string(); }
+                if already_mssql {
+                    return ident.to_string();
+                }
                 if ident.contains('.') {
                     ident
                         .split('.')
@@ -7518,7 +7601,7 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             _ => ident.to_string(),
         }
     }
-    
+
     fn spreadsheet_quote_value(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
@@ -7532,23 +7615,24 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             crate::models::enums::DatabaseType::MySQL
             | crate::models::enums::DatabaseType::PostgreSQL
             | crate::models::enums::DatabaseType::MsSQL
-            | crate::models::enums::DatabaseType::SQLite => std::format!("'{}'", v.replace("'", "''")),
+            | crate::models::enums::DatabaseType::SQLite => {
+                std::format!("'{}'", v.replace("'", "''"))
+            }
             _ => std::format!("'{}'", v),
         }
     }
-    
+
     fn spreadsheet_row_where_all_columns(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
         row_index: usize,
     ) -> Option<String> {
         let row = self.get_current_table_data().get(row_index)?;
-    
+
         // Use only the first column (usually primary key like RecID) for WHERE clause
-        if let (Some(first_header), Some(first_value)) = (
-            self.get_current_table_headers().first(),
-            row.first()
-        ) {
+        if let (Some(first_header), Some(first_value)) =
+            (self.get_current_table_headers().first(), row.first())
+        {
             let lhs = self.spreadsheet_quote_ident(conn, first_header);
             let rhs = self.spreadsheet_quote_value(conn, first_value);
             Some(std::format!("{} = {}", lhs, rhs))
@@ -7556,27 +7640,27 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             None
         }
     }
-    
+
     fn spreadsheet_generate_sql(&self) -> Option<String> {
         std::println!("🔥 spreadsheet_generate_sql called");
-    
+
         let conn_id = self.get_current_connection_id()?;
         std::println!("🔥 Found connection ID: {}", conn_id);
-    
+
         let conn = self
             .get_connections()
             .iter()
             .find(|c| c.id == Some(conn_id))
             .cloned()?;
         std::println!("🔥 Found connection config");
-    
+
         let table = self.spreadsheet_extract_table_name()?;
         std::println!("🔥 Extracted table name: {}", table);
-    
+
         let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
         let qt_table = |s: &str| self.spreadsheet_quote_table_ident(&conn, s);
         let qv = |s: &str| self.spreadsheet_quote_value(&conn, s);
-    
+
         let mut stmts: Vec<String> = Vec::new();
         std::println!(
             "🔥 Processing {} operations",
@@ -7601,9 +7685,13 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                     );
                     stmts.push(sql);
                 }
-            
+
                 crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
-                    let cols: Vec<String> = self.get_current_table_headers().iter().map(|c| qt(c)).collect();
+                    let cols: Vec<String> = self
+                        .get_current_table_headers()
+                        .iter()
+                        .map(|c| qt(c))
+                        .collect();
                     // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
                     let latest_vals_src: Option<&Vec<String>> = self
                         .get_all_table_data()
@@ -7631,16 +7719,19 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                     if values.is_empty() || self.get_current_table_headers().is_empty() {
                         continue;
                     }
-                
+
                     let first_header = &self.get_current_table_headers()[0];
                     let first_value = &values[0];
-                
+
                     // If the first column looks like a primary key (RecID, ID, etc.), use just that
-                    if first_header.to_lowercase().contains("id") || 
-                       first_header.to_lowercase().contains("recid") ||
-                       first_header.to_lowercase() == "pk" {
-                        let where_clause = std::format!("{} = {}", qt(first_header), qv(first_value));
-                        let sql = std::format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
+                    if first_header.to_lowercase().contains("id")
+                        || first_header.to_lowercase().contains("recid")
+                        || first_header.to_lowercase() == "pk"
+                    {
+                        let where_clause =
+                            std::format!("{} = {}", qt(first_header), qv(first_value));
+                        let sql =
+                            std::format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
                         std::println!("🔥 Using primary key WHERE: {}", where_clause);
                         stmts.push(sql);
                     } else {
@@ -7655,8 +7746,12 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
                             .map(|(col, v)| std::format!("{} = {}", qt(col), qv(v)))
                             .collect();
                         let where_clause = parts.join(" AND ");
-                        let sql = std::format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                        std::println!("🔥 Using full row WHERE (no obvious PK): {} columns", parts.len());
+                        let sql =
+                            std::format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
+                        std::println!(
+                            "🔥 Using full row WHERE (no obvious PK): {} columns",
+                            parts.len()
+                        );
                         stmts.push(sql);
                     }
                 }
@@ -7668,7 +7763,7 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             Some(stmts.join(";\n"))
         }
     }
-    
+
     fn spreadsheet_save_changes(&mut self) {
         std::println!(
             "🔥 spreadsheet_save_changes called with {} pending operations",
@@ -7678,7 +7773,7 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             "🔥 spreadsheet_save_changes called with {} pending operations",
             self.get_spreadsheet_state().pending_operations.len()
         );
-    
+
         if self.get_spreadsheet_state().pending_operations.is_empty() {
             std::println!("🔥 No pending operations to save");
             debug!("🔥 No pending operations to save");
@@ -7690,10 +7785,10 @@ impl spreadsheet::SpreadsheetOperations for Tabular {
             if let Some(conn_id) = self.get_current_connection_id() {
                 std::println!("🔥 Executing SQL with connection {}", conn_id);
                 debug!("🔥 Executing SQL with connection {}", conn_id);
-            
+
                 // Execute without transaction wrapper to avoid MySQL prepared statement issues
                 std::println!("🔥 Executing SQL: {}", sql);
-            
+
                 // Note: This is a bit tricky because we need to call connection::execute_query_with_connection
                 // but this trait doesn't know about the full Tabular struct. We'll need to implement this
                 // in the actual implementation of the trait.
@@ -7729,7 +7824,9 @@ impl App for Tabular {
                         is_dark_mode: app.is_dark_mode,
                         link_editor_theme: app.link_editor_theme,
                         editor_theme: match app.advanced_editor.theme {
-                            crate::models::structs::EditorColorTheme::GithubLight => "GITHUB_LIGHT".into(),
+                            crate::models::structs::EditorColorTheme::GithubLight => {
+                                "GITHUB_LIGHT".into()
+                            }
                             crate::models::structs::EditorColorTheme::Gruvbox => "GRUVBOX".into(),
                             _ => "GITHUB_DARK".into(),
                         },

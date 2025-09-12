@@ -1,5 +1,7 @@
 use crate::{
-    connection, data_table, driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models, modules, window_egui::{self, Tabular}
+    connection, data_table, driver_mssql, driver_mysql, driver_postgres, driver_redis,
+    driver_sqlite, models, modules,
+    window_egui::{self, Tabular},
 };
 use eframe::egui;
 use futures_util::TryStreamExt; // for MsSQL try_next
@@ -972,9 +974,9 @@ fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
             // Check if we have the pool in shared pools or local cache
             let has_pool = tabular.connection_pools.contains_key(&connection_id)
                 || tabular
-                .shared_connection_pools
-                .lock()
-                .is_ok_and(|pools| pools.contains_key(&connection_id));
+                    .shared_connection_pools
+                    .lock()
+                    .is_ok_and(|pools| pools.contains_key(&connection_id));
 
             if has_pool {
                 debug!(
@@ -1089,7 +1091,7 @@ async fn try_quick_pool_creation(
         std::time::Duration::from_millis(100),
         create_connection_pool_for_config(&connection),
     )
-        .await;
+    .await;
 
     match result {
         Ok(pool) => pool,
@@ -1506,15 +1508,15 @@ pub(crate) async fn refresh_connection_background_async(
             .await;
 
         if let Ok(Some((
-                           id,
-                           name,
-                           host,
-                           port,
-                           username,
-                           password,
-                           database_name,
-                           connection_type,
-                       ))) = connection_result
+            id,
+            name,
+            host,
+            port,
+            username,
+            password,
+            database_name,
+            connection_type,
+        ))) = connection_result
         {
             let connection = models::structs::ConnectionConfig {
                 id: Some(id),
@@ -1555,7 +1557,7 @@ pub(crate) async fn refresh_connection_background_async(
                 std::time::Duration::from_secs(30), // 30 second timeout
                 create_database_pool(&connection),
             )
-                .await
+            .await
             {
                 Ok(Some(new_pool)) => {
                     fetch_and_cache_all_data(
@@ -1564,7 +1566,7 @@ pub(crate) async fn refresh_connection_background_async(
                         &new_pool,
                         cache_pool_arc.as_ref(),
                     )
-                        .await
+                    .await
                 }
                 Ok(None) => false,
                 Err(_) => false,
@@ -1984,7 +1986,7 @@ pub(crate) async fn fetch_databases_from_connection_async(
             match result {
                 Ok(rows) => Some(
                     rows.into_iter()
-                        .map(|(db_name, )| db_name)
+                        .map(|(db_name,)| db_name)
                         .filter(|db| {
                             !["information_schema", "performance_schema", "mysql", "sys"]
                                 .contains(&db.as_str())
@@ -2006,7 +2008,7 @@ pub(crate) async fn fetch_databases_from_connection_async(
             )
                 .fetch_all(pg_pool.as_ref()).await;
             match result {
-                Ok(rows) => Some(rows.into_iter().map(|(db_name, )| db_name).collect()),
+                Ok(rows) => Some(rows.into_iter().map(|(db_name,)| db_name).collect()),
                 Err(e) => {
                     debug!("Error querying PostgreSQL databases: {}", e);
                     None
@@ -2017,8 +2019,8 @@ pub(crate) async fn fetch_databases_from_connection_async(
             let result = sqlx::query_as::<_, (String,)>(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             )
-                .fetch_all(sqlite_pool.as_ref())
-                .await;
+            .fetch_all(sqlite_pool.as_ref())
+            .await;
             match result {
                 Ok(_rows) => Some(vec!["main".to_string()]),
                 Err(e) => {
@@ -2084,7 +2086,7 @@ pub(crate) async fn fetch_databases_from_connection_async(
                 }
                 Ok::<_, String>(dbs)
             }
-                .await;
+            .await;
             match rt_res {
                 Ok(mut list) => {
                     if list.is_empty() {
@@ -2723,7 +2725,7 @@ pub(crate) fn test_database_connection(
                     }
                     Ok::<_, String>(())
                 }
-                    .await;
+                .await;
                 match res {
                     Ok(_) => (true, "MsSQL connection successful!".to_string()),
                     Err(e) => (false, format!("MsSQL connection failed: {}", e)),

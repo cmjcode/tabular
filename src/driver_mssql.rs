@@ -423,7 +423,6 @@ async fn run_query(
     Ok((headers, data))
 }
 
-
 // Helper: Remove TOP clauses from MsSQL SELECT for pagination compatibility
 pub(crate) fn sanitize_mssql_select_for_pagination(select_part: &str) -> String {
     let mut result = select_part.to_string();
@@ -506,89 +505,89 @@ pub(crate) fn sanitize_mssql_select_for_pagination(select_part: &str) -> String 
 // db_name: selected database (can be empty -> fallback to object-provided or omit USE)
 // raw_name: could be formats: table, [schema].[object], schema.object, [db].[schema].[object], db.schema.object
 pub(crate) fn build_mssql_select_query(db_name: String, raw_name: String) -> String {
-        // Normalize raw name: remove trailing semicolons/spaces
-        let cleaned = raw_name.trim().trim_end_matches(';').to_string();
+    // Normalize raw name: remove trailing semicolons/spaces
+    let cleaned = raw_name.trim().trim_end_matches(';').to_string();
 
-        // Split by '.' ignoring brackets segments
-        // Strategy: remove outer brackets then split, re-wrap each part with []
-        let mut parts = Vec::new();
-        let mut current = String::new();
-        let mut in_bracket = false;
-        for ch in cleaned.chars() {
-            match ch {
-                '[' => {
-                    in_bracket = true;
-                    current.push(ch);
-                }
-                ']' => {
-                    in_bracket = false;
-                    current.push(ch);
-                }
-                '.' if !in_bracket => {
-                    parts.push(current.clone());
-                    current.clear();
-                }
-                _ => current.push(ch),
+    // Split by '.' ignoring brackets segments
+    // Strategy: remove outer brackets then split, re-wrap each part with []
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_bracket = false;
+    for ch in cleaned.chars() {
+        match ch {
+            '[' => {
+                in_bracket = true;
+                current.push(ch);
             }
-        }
-        if !current.is_empty() {
-            parts.push(current);
-        }
-
-        // Remove surrounding brackets from each part and re-apply sanitized
-        let mut plain_parts: Vec<String> = parts
-            .into_iter()
-            .map(|p| {
-                let p2 = p.trim();
-                let p2 = p2.strip_prefix('[').unwrap_or(p2);
-                let p2 = p2.strip_suffix(']').unwrap_or(p2);
-                p2.to_string()
-            })
-            .collect();
-
-        // Decide final composition
-        // Cases by length: 1=object, 2=schema.object, 3=db.schema.object
-        // If db_name provided, override database part.
-        let (database_part, schema_part, object_part) = match plain_parts.len() {
-            3 => {
-                let obj = plain_parts.pop().unwrap();
-                let schema = plain_parts.pop().unwrap();
-                let db = if !db_name.is_empty() {
-                    db_name.clone()
-                } else {
-                    plain_parts.pop().unwrap()
-                };
-                (db, schema, obj)
+            ']' => {
+                in_bracket = false;
+                current.push(ch);
             }
-            2 => {
-                let obj = plain_parts.pop().unwrap();
-                let schema = plain_parts.pop().unwrap();
-                let db = if !db_name.is_empty() {
-                    db_name.clone()
-                } else {
-                    String::new()
-                };
-                (db, schema, obj)
+            '.' if !in_bracket => {
+                parts.push(current.clone());
+                current.clear();
             }
-            1 => {
-                let obj = plain_parts.pop().unwrap();
-                let db = db_name.clone();
-                (db, "dbo".to_string(), obj)
-            }
-            _ => (db_name.clone(), "dbo".to_string(), cleaned),
-        };
-
-        // Build fully qualified name with brackets
-        let fq = if database_part.is_empty() {
-            format!("[{}].[{}]", schema_part, object_part)
-        } else {
-            format!("[{}].[{}].[{}]", database_part, schema_part, object_part)
-        };
-
-        // If database part present, prepend USE to ensure context
-        if database_part.is_empty() {
-            format!("SELECT TOP 100 * FROM {};", fq)
-        } else {
-            format!("USE [{}];\nSELECT TOP 100 * FROM {};", database_part, fq)
+            _ => current.push(ch),
         }
     }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    // Remove surrounding brackets from each part and re-apply sanitized
+    let mut plain_parts: Vec<String> = parts
+        .into_iter()
+        .map(|p| {
+            let p2 = p.trim();
+            let p2 = p2.strip_prefix('[').unwrap_or(p2);
+            let p2 = p2.strip_suffix(']').unwrap_or(p2);
+            p2.to_string()
+        })
+        .collect();
+
+    // Decide final composition
+    // Cases by length: 1=object, 2=schema.object, 3=db.schema.object
+    // If db_name provided, override database part.
+    let (database_part, schema_part, object_part) = match plain_parts.len() {
+        3 => {
+            let obj = plain_parts.pop().unwrap();
+            let schema = plain_parts.pop().unwrap();
+            let db = if !db_name.is_empty() {
+                db_name.clone()
+            } else {
+                plain_parts.pop().unwrap()
+            };
+            (db, schema, obj)
+        }
+        2 => {
+            let obj = plain_parts.pop().unwrap();
+            let schema = plain_parts.pop().unwrap();
+            let db = if !db_name.is_empty() {
+                db_name.clone()
+            } else {
+                String::new()
+            };
+            (db, schema, obj)
+        }
+        1 => {
+            let obj = plain_parts.pop().unwrap();
+            let db = db_name.clone();
+            (db, "dbo".to_string(), obj)
+        }
+        _ => (db_name.clone(), "dbo".to_string(), cleaned),
+    };
+
+    // Build fully qualified name with brackets
+    let fq = if database_part.is_empty() {
+        format!("[{}].[{}]", schema_part, object_part)
+    } else {
+        format!("[{}].[{}].[{}]", database_part, schema_part, object_part)
+    };
+
+    // If database part present, prepend USE to ensure context
+    if database_part.is_empty() {
+        format!("SELECT TOP 100 * FROM {};", fq)
+    } else {
+        format!("USE [{}];\nSELECT TOP 100 * FROM {};", database_part, fq)
+    }
+}

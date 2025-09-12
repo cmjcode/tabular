@@ -5,7 +5,11 @@
 use eframe::egui;
 use egui::Ui;
 
-use crate::{editor_buffer::EditorBuffer, editor_selection::MultiSelection, syntax::{LanguageKind, highlight_line}};
+use crate::{
+    editor_buffer::EditorBuffer,
+    editor_selection::MultiSelection,
+    syntax::{LanguageKind, highlight_line},
+};
 
 #[derive(Default)]
 pub struct EditorViewState {
@@ -25,7 +29,10 @@ pub struct EditorWidgetState {
 
 impl EditorWidgetState {
     pub fn new() -> Self {
-        Self { view: EditorViewState::default(), show_line_numbers: true }
+        Self {
+            view: EditorViewState::default(),
+            show_line_numbers: true,
+        }
     }
 }
 
@@ -48,7 +55,9 @@ pub fn show(
     current_revision: u64,
 ) -> EditorSignals {
     let mut signals = EditorSignals::default();
-    if selection.carets.is_empty() { selection.ensure_primary(0); }
+    if selection.carets.is_empty() {
+        selection.ensure_primary(0);
+    }
 
     // --- Layout & interaction base ---
     let available = ui.available_rect_before_wrap();
@@ -73,31 +82,94 @@ pub fn show(
     // Reserve interaction space across available region for now.
     let provisional_rect = available;
     let response = ui.interact(provisional_rect, id, egui::Sense::click_and_drag());
-    if response.has_focus() || response.clicked() { ui.memory_mut(|m| m.request_focus(id)); }
+    if response.has_focus() || response.clicked() {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
 
     ui.input(|i| {
         for ev in &i.events {
             match ev {
                 egui::Event::Text(t) => {
-                    if !t.chars().all(|c| c < ' ' && c != '\t') { inserted_batch.push_str(t); }
-                }
-                egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
-                    inserted_batch.push('\n');
-                }
-                egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => { backspace = true; }
-                egui::Event::Key { key: egui::Key::ArrowLeft, pressed: true, modifiers, .. } => { move_left = true; shift = shift || modifiers.shift; }
-                egui::Event::Key { key: egui::Key::ArrowRight, pressed: true, modifiers, .. } => { move_right = true; shift = shift || modifiers.shift; }
-                egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, modifiers, .. } => { move_up = true; shift = shift || modifiers.shift; }
-                egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, modifiers, .. } => { move_down = true; shift = shift || modifiers.shift; }
-                egui::Event::Key { key: egui::Key::Z, pressed: true, modifiers, .. } => {
-                    // Cmd/Ctrl+Z -> undo ; Shift+Cmd/Ctrl+Z -> redo
-                    if modifiers.command || modifiers.ctrl { // command covers mac_cmd on macOS
-                        if modifiers.shift { redo_cmd = true; } else { undo_cmd = true; }
+                    if !t.chars().all(|c| c < ' ' && c != '\t') {
+                        inserted_batch.push_str(t);
                     }
                 }
-                egui::Event::Key { key: egui::Key::Y, pressed: true, modifiers, .. } => {
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                } => {
+                    inserted_batch.push('\n');
+                }
+                egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    pressed: true,
+                    ..
+                } => {
+                    backspace = true;
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowLeft,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    move_left = true;
+                    shift = shift || modifiers.shift;
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowRight,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    move_right = true;
+                    shift = shift || modifiers.shift;
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowUp,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    move_up = true;
+                    shift = shift || modifiers.shift;
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    move_down = true;
+                    shift = shift || modifiers.shift;
+                }
+                egui::Event::Key {
+                    key: egui::Key::Z,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    // Cmd/Ctrl+Z -> undo ; Shift+Cmd/Ctrl+Z -> redo
+                    if modifiers.command || modifiers.ctrl {
+                        // command covers mac_cmd on macOS
+                        if modifiers.shift {
+                            redo_cmd = true;
+                        } else {
+                            undo_cmd = true;
+                        }
+                    }
+                }
+                egui::Event::Key {
+                    key: egui::Key::Y,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
                     // Ctrl+Y often redo on Windows/Linux
-                    if modifiers.command || modifiers.ctrl { redo_cmd = true; }
+                    if modifiers.command || modifiers.ctrl {
+                        redo_cmd = true;
+                    }
                 }
                 _ => {}
             }
@@ -106,9 +178,15 @@ pub fn show(
 
     // --- Text mutations ---
     if undo_cmd {
-        if buffer.undo() { signals.text_changed = true; line_cache.clear(); }
+        if buffer.undo() {
+            signals.text_changed = true;
+            line_cache.clear();
+        }
     } else if redo_cmd {
-        if buffer.redo() { signals.text_changed = true; line_cache.clear(); }
+        if buffer.redo() {
+            signals.text_changed = true;
+            line_cache.clear();
+        }
     } else if !inserted_batch.is_empty() {
         selection.apply_insert_text(&mut buffer.text, &inserted_batch);
         signals.text_changed = true;
@@ -117,54 +195,92 @@ pub fn show(
         selection.apply_backspace(&mut buffer.text);
         signals.text_changed = true;
     }
-    if signals.text_changed { line_cache.clear(); }
+    if signals.text_changed {
+        line_cache.clear();
+    }
 
     // --- Movement (primary caret only for now) ---
     if let Some(primary) = selection.primary_mut() {
         let prev_head = primary.head;
         if move_left {
-            if primary.head > 0 { primary.head -= 1; while primary.head > 0 && !buffer.text.is_char_boundary(primary.head) { primary.head -= 1; } }
-            if !shift { primary.anchor = primary.head; }
+            if primary.head > 0 {
+                primary.head -= 1;
+                while primary.head > 0 && !buffer.text.is_char_boundary(primary.head) {
+                    primary.head -= 1;
+                }
+            }
+            if !shift {
+                primary.anchor = primary.head;
+            }
         }
         if move_right {
-            if primary.head < buffer.text.len() { primary.head += 1; while primary.head < buffer.text.len() && !buffer.text.is_char_boundary(primary.head) { primary.head += 1; } }
-            if !shift { primary.anchor = primary.head; }
+            if primary.head < buffer.text.len() {
+                primary.head += 1;
+                while primary.head < buffer.text.len()
+                    && !buffer.text.is_char_boundary(primary.head)
+                {
+                    primary.head += 1;
+                }
+            }
+            if !shift {
+                primary.anchor = primary.head;
+            }
         }
         if move_up || move_down {
             let lines = compute_line_starts(&buffer.text);
             let (line_idx, col) = index_to_line_col(primary.head, &lines, &buffer.text);
-            let target_line = if move_up { line_idx.saturating_sub(1) } else { line_idx + 1 };
+            let target_line = if move_up {
+                line_idx.saturating_sub(1)
+            } else {
+                line_idx + 1
+            };
             if target_line < lines.len() {
                 let start = lines[target_line];
-                let end = if target_line + 1 < lines.len() { lines[target_line + 1] - 1 } else { buffer.text.len() };
+                let end = if target_line + 1 < lines.len() {
+                    lines[target_line + 1] - 1
+                } else {
+                    buffer.text.len()
+                };
                 let new_col = col.min(end.saturating_sub(start));
                 let new_pos = start + new_col;
                 primary.head = new_pos.min(buffer.text.len());
-                if !shift { primary.anchor = primary.head; }
-            } else if move_down { // beyond last line
+                if !shift {
+                    primary.anchor = primary.head;
+                }
+            } else if move_down {
+                // beyond last line
                 primary.head = buffer.text.len();
-                if !shift { primary.anchor = primary.head; }
+                if !shift {
+                    primary.anchor = primary.head;
+                }
             }
         }
-        if primary.head != prev_head { signals.caret_moved = true; }
+        if primary.head != prev_head {
+            signals.caret_moved = true;
+        }
     }
 
     // --- After movement, ensure visible (primitive scroll) ---
-    if let Some(primary) = selection.primary() { // compute logical line/col without scroll
+    if let Some(primary) = selection.primary() {
+        // compute logical line/col without scroll
         let lines = compute_line_starts(&buffer.text);
-        let (line_idx, col) = index_to_line_col(primary.head.min(buffer.text.len()), &lines, &buffer.text);
-        let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
+        let (line_idx, col) =
+            index_to_line_col(primary.head.min(buffer.text.len()), &lines, &buffer.text);
+        let char_w =
+            ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
         let caret_x = (col as f32) * char_w;
         let caret_y = (line_idx as f32) * line_height;
         let margin = 8.0;
         // vertical
-        if caret_y < state.view.scroll_y { state.view.scroll_y = caret_y.saturating_sub_f32(margin); }
-        else if caret_y + line_height > state.view.scroll_y + state.view.viewport_h {
+        if caret_y < state.view.scroll_y {
+            state.view.scroll_y = caret_y.saturating_sub_f32(margin);
+        } else if caret_y + line_height > state.view.scroll_y + state.view.viewport_h {
             state.view.scroll_y = (caret_y + line_height) - state.view.viewport_h + margin;
         }
         // horizontal
-        if caret_x < state.view.scroll_x { state.view.scroll_x = (caret_x - margin).max(0.0); }
-        else if caret_x + char_w > state.view.scroll_x + state.view.viewport_w {
+        if caret_x < state.view.scroll_x {
+            state.view.scroll_x = (caret_x - margin).max(0.0);
+        } else if caret_x + char_w > state.view.scroll_x + state.view.viewport_w {
             state.view.scroll_x = caret_x + char_w - state.view.viewport_w + margin;
         }
     }
@@ -176,15 +292,24 @@ pub fn show(
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
-    let gutter_w = if state.show_line_numbers { 8.0 * (line_count.to_string().len() as f32 + 1.0) } else { 0.0 };
-    let text_origin = egui::pos2(rect.left() + gutter_w + 6.0 - state.view.scroll_x, rect.top() + 4.0 - state.view.scroll_y);
+    let gutter_w = if state.show_line_numbers {
+        8.0 * (line_count.to_string().len() as f32 + 1.0)
+    } else {
+        0.0
+    };
+    let text_origin = egui::pos2(
+        rect.left() + gutter_w + 6.0 - state.view.scroll_x,
+        rect.top() + 4.0 - state.view.scroll_y,
+    );
     let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
     let lines_vec = build_lines(&buffer.text); // (start,end_exclusive,no_newline_end)
 
     // Selection highlighting (per caret range, merged duplicates internally by MultiSelection.ranges())
     let sel_color = ui.visuals().selection.bg_fill;
     for (start, end) in selection.ranges() {
-        if start == end { continue; }
+        if start == end {
+            continue;
+        }
         highlight_range(
             painter,
             &buffer.text,
@@ -214,7 +339,9 @@ pub fn show(
             );
         }
         let key = (idx, current_revision);
-        let job = if let Some(cached) = line_cache.get(&key) { cached.clone() } else {
+        let job = if let Some(cached) = line_cache.get(&key) {
+            cached.clone()
+        } else {
             let mut lj = highlight_line(line_str, lang, dark);
             // Set wrapping width large so we don't wrap inside line (horizontal scroll later)
             lj.wrap.max_width = f32::INFINITY;
@@ -222,7 +349,11 @@ pub fn show(
             lj
         };
         let galley = ui.fonts(|f| f.layout_job(job));
-        painter.galley(egui::pos2(text_origin.x, y), galley, ui.visuals().text_color());
+        painter.galley(
+            egui::pos2(text_origin.x, y),
+            galley,
+            ui.visuals().text_color(),
+        );
         y += line_height;
     }
 
@@ -230,7 +361,8 @@ pub fn show(
     let caret_color = egui::Color32::from_rgb(120, 180, 250);
     for caret in &selection.carets {
         let head = caret.head.min(buffer.text.len());
-        let (line_idx, col) = index_to_line_col(head, &compute_line_starts(&buffer.text), &buffer.text);
+        let (line_idx, col) =
+            index_to_line_col(head, &compute_line_starts(&buffer.text), &buffer.text);
         let x = text_origin.x + (col as f32) * char_w;
         let y = text_origin.y + (line_idx as f32) * line_height;
         let caret_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(1.5, line_height));
@@ -245,18 +377,33 @@ pub fn show(
 fn compute_line_starts(text: &str) -> Vec<usize> {
     let mut starts = Vec::with_capacity(128);
     starts.push(0);
-    for (i, ch) in text.char_indices() { if ch == '\n' { if i + 1 < text.len() { starts.push(i + 1); } } }
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            if i + 1 < text.len() {
+                starts.push(i + 1);
+            }
+        }
+    }
     starts
 }
 
 fn index_to_line_col(idx: usize, starts: &[usize], text: &str) -> (usize, usize) {
     // linear scan acceptable for now; optimize with binary search if large
     let mut line = 0usize;
-    for (i, s) in starts.iter().enumerate() { if *s > idx { break; } line = i; }
+    for (i, s) in starts.iter().enumerate() {
+        if *s > idx {
+            break;
+        }
+        line = i;
+    }
     let line_start = starts[line];
     let mut line_end = text.len();
-    if line + 1 < starts.len() { line_end = starts[line + 1] - 1; }
-    let col = idx.saturating_sub(line_start).min(line_end.saturating_sub(line_start));
+    if line + 1 < starts.len() {
+        line_end = starts[line + 1] - 1;
+    }
+    let col = idx
+        .saturating_sub(line_start)
+        .min(line_end.saturating_sub(line_start));
     (line, col)
 }
 
@@ -269,7 +416,9 @@ fn build_lines(text: &str) -> Vec<(usize, usize)> {
             start = i + 1;
         }
     }
-    if start <= text.len() { out.push((start, text.len())); }
+    if start <= text.len() {
+        out.push((start, text.len()));
+    }
     out
 }
 
@@ -287,23 +436,38 @@ fn highlight_range(
     _show_line_numbers: bool,
     _gutter_w: f32,
 ) {
-    if start >= end { return; }
+    if start >= end {
+        return;
+    }
     for (idx, (ls, le)) in lines.iter().enumerate() {
-        if *le <= start { continue; }
-        if *ls >= end { break; }
+        if *le <= start {
+            continue;
+        }
+        if *ls >= end {
+            break;
+        }
         let seg_start = start.max(*ls);
         let seg_end = end.min(*le);
-        if seg_start >= seg_end { continue; }
+        if seg_start >= seg_end {
+            continue;
+        }
         let col_start = seg_start - *ls;
         let col_end = seg_end - *ls;
         let x0 = origin.x + (col_start as f32) * char_w;
         let width = (col_end - col_start) as f32 * char_w;
         let y = origin.y + (idx as f32) * line_height;
-        let rect = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(width.max(1.0), line_height));
+        let rect =
+            egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(width.max(1.0), line_height));
         painter.rect_filled(rect, 0.0, color.gamma_multiply(0.8));
     }
 }
 
 // Utility for f32 saturating subtraction
-trait SaturatingSubF32 { fn saturating_sub_f32(self, other: f32) -> f32; }
-impl SaturatingSubF32 for f32 { fn saturating_sub_f32(self, other: f32) -> f32 { if self > other { self - other } else { 0.0 } } }
+trait SaturatingSubF32 {
+    fn saturating_sub_f32(self, other: f32) -> f32;
+}
+impl SaturatingSubF32 for f32 {
+    fn saturating_sub_f32(self, other: f32) -> f32 {
+        if self > other { self - other } else { 0.0 }
+    }
+}

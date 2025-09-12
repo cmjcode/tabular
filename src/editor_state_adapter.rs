@@ -22,7 +22,11 @@ impl EditorStateAdapter {
         let secondary = range.secondary.index;
         let start = primary.min(secondary);
         let end = primary.max(secondary);
-        Some(AdapterCursorRange { start, end, primary })
+        Some(AdapterCursorRange {
+            start,
+            end,
+            primary,
+        })
     }
 
     pub fn set_single(ctx: &egui::Context, id: egui::Id, pos: usize) {

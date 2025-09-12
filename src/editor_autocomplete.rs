@@ -1,5 +1,5 @@
-use crate::window_egui::{Tabular, PrefTab};
 use crate::models;
+use crate::window_egui::{PrefTab, Tabular};
 use eframe::egui;
 use log::debug;
 
@@ -149,15 +149,16 @@ pub fn build_suggestions(
 ) -> Vec<String> {
     let mut suggestions = Vec::new();
     let prefix_lower = prefix.to_lowercase();
-    
+
     // Get current connection and context
-    let connection_id = app.query_tabs
+    let connection_id = app
+        .query_tabs
         .get(app.active_tab_index)
         .and_then(|tab| tab.connection_id);
-    
+
     // Context-aware suggestions based on SQL position
     let context = detect_sql_context(_text, cursor_pos);
-    
+
     match context {
         SqlContext::AfterSelect => {
             // Suggest column names if we have connection context
@@ -202,7 +203,7 @@ pub fn build_suggestions(
         SqlContext::General => {
             // General SQL keywords
             add_sql_keywords(&mut suggestions, &prefix_lower);
-            
+
             // Add table and column names as secondary suggestions
             if let Some(conn_id) = connection_id {
                 if let Some(tables) = get_cached_tables(app, conn_id) {
@@ -222,7 +223,7 @@ pub fn build_suggestions(
             }
         }
     }
-    
+
     // Remove duplicates and sort
     suggestions.sort_unstable();
     suggestions.dedup();
@@ -232,7 +233,7 @@ pub fn build_suggestions(
 #[derive(Debug, PartialEq)]
 enum SqlContext {
     AfterSelect,
-    AfterFrom, 
+    AfterFrom,
     AfterWhere,
     General,
 }
@@ -243,11 +244,11 @@ fn detect_sql_context(text: &str, cursor_pos: usize) -> SqlContext {
         .split_whitespace()
         .map(|s| s.trim_end_matches(&[',', ';', '(', ')'][..]))
         .collect();
-    
+
     if words.is_empty() {
         return SqlContext::General;
     }
-    
+
     // Look for the most recent SQL keyword
     for word in words.iter().rev() {
         match word.to_uppercase().as_str() {
@@ -257,14 +258,14 @@ fn detect_sql_context(text: &str, cursor_pos: usize) -> SqlContext {
             _ => continue,
         }
     }
-    
+
     SqlContext::General
 }
 
 fn get_cached_tables(app: &Tabular, connection_id: i64) -> Option<Vec<String>> {
     // Try to get from database cache
     if let Some(databases) = app.database_cache.get(&connection_id) {
-        // For simplicity, return database names as "tables" 
+        // For simplicity, return database names as "tables"
         // In real implementation, we'd cache actual table names per database
         Some(databases.clone())
     } else {
@@ -276,7 +277,7 @@ fn get_cached_columns(_app: &Tabular, _connection_id: i64) -> Option<Vec<String>
     // Placeholder - in real implementation we'd cache column names per table
     Some(vec![
         "id".to_string(),
-        "name".to_string(), 
+        "name".to_string(),
         "email".to_string(),
         "created_at".to_string(),
         "updated_at".to_string(),
@@ -285,13 +286,63 @@ fn get_cached_columns(_app: &Tabular, _connection_id: i64) -> Option<Vec<String>
 
 fn add_sql_keywords(suggestions: &mut Vec<String>, prefix_lower: &str) {
     for keyword in &[
-        "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "OUTER",
-        "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE",
-        "ALTER", "DROP", "INDEX", "PRIMARY", "KEY", "FOREIGN", "REFERENCES",
-        "NOT", "NULL", "DEFAULT", "AUTO_INCREMENT", "UNIQUE", "CONSTRAINT",
-        "AND", "OR", "IN", "LIKE", "BETWEEN", "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END",
-        "GROUP", "BY", "ORDER", "ASC", "DESC", "HAVING", "LIMIT", "OFFSET",
-        "UNION", "ALL", "DISTINCT", "AS", "COUNT", "SUM", "AVG", "MIN", "MAX"
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "JOIN",
+        "INNER",
+        "LEFT",
+        "RIGHT",
+        "OUTER",
+        "INSERT",
+        "INTO",
+        "VALUES",
+        "UPDATE",
+        "SET",
+        "DELETE",
+        "CREATE",
+        "TABLE",
+        "ALTER",
+        "DROP",
+        "INDEX",
+        "PRIMARY",
+        "KEY",
+        "FOREIGN",
+        "REFERENCES",
+        "NOT",
+        "NULL",
+        "DEFAULT",
+        "AUTO_INCREMENT",
+        "UNIQUE",
+        "CONSTRAINT",
+        "AND",
+        "OR",
+        "IN",
+        "LIKE",
+        "BETWEEN",
+        "EXISTS",
+        "CASE",
+        "WHEN",
+        "THEN",
+        "ELSE",
+        "END",
+        "GROUP",
+        "BY",
+        "ORDER",
+        "ASC",
+        "DESC",
+        "HAVING",
+        "LIMIT",
+        "OFFSET",
+        "UNION",
+        "ALL",
+        "DISTINCT",
+        "AS",
+        "COUNT",
+        "SUM",
+        "AVG",
+        "MIN",
+        "MAX",
     ] {
         if keyword.to_lowercase().starts_with(prefix_lower) {
             suggestions.push(keyword.to_string());
@@ -520,8 +571,8 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         .autocomplete_suggestions
         .get(app.selected_autocomplete_index)
     {
-    let cursor = app.cursor_position.min(app.editor.text.len());
-    let (prefix, start_idx) = current_prefix(&app.editor.text, cursor);
+        let cursor = app.cursor_position.min(app.editor.text.len());
+        let (prefix, start_idx) = current_prefix(&app.editor.text, cursor);
         debug!("Current prefix: '{}', start index: {}", prefix, start_idx);
         // If prefix empty but we still want to accept (e.g., early Tab) try to look back until whitespace
         let (effective_start, effective_prefix_len) = if prefix.is_empty() {

@@ -8,10 +8,26 @@ pub struct Caret {
 }
 
 impl Caret {
-    pub fn new(pos: usize) -> Self { Self { anchor: pos, head: pos } }
-    pub fn collapsed(&self) -> bool { self.anchor == self.head }
-    pub fn range(&self) -> (usize, usize) { if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) } }
-    pub fn set(&mut self, anchor: usize, head: usize) { self.anchor = anchor; self.head = head; }
+    pub fn new(pos: usize) -> Self {
+        Self {
+            anchor: pos,
+            head: pos,
+        }
+    }
+    pub fn collapsed(&self) -> bool {
+        self.anchor == self.head
+    }
+    pub fn range(&self) -> (usize, usize) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+    pub fn set(&mut self, anchor: usize, head: usize) {
+        self.anchor = anchor;
+        self.head = head;
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -20,33 +36,66 @@ pub struct MultiSelection {
 }
 
 impl MultiSelection {
-    pub fn new() -> Self { Self { carets: Vec::new() } }
-    pub fn clear(&mut self) { self.carets.clear(); }
-    pub fn primary(&self) -> Option<&Caret> { self.carets.get(0) }
-    pub fn primary_mut(&mut self) -> Option<&mut Caret> { self.carets.get_mut(0) }
-    pub fn ensure_primary(&mut self, pos: usize) { if self.carets.is_empty() { self.carets.push(Caret::new(pos)); } }
-    pub fn add_caret(&mut self, caret: Caret) { self.carets.push(caret); self.dedup_and_sort(); }
-    pub fn add_collapsed(&mut self, pos: usize) { self.add_caret(Caret::new(pos)); }
+    pub fn new() -> Self {
+        Self { carets: Vec::new() }
+    }
+    pub fn clear(&mut self) {
+        self.carets.clear();
+    }
+    pub fn primary(&self) -> Option<&Caret> {
+        self.carets.get(0)
+    }
+    pub fn primary_mut(&mut self) -> Option<&mut Caret> {
+        self.carets.get_mut(0)
+    }
+    pub fn ensure_primary(&mut self, pos: usize) {
+        if self.carets.is_empty() {
+            self.carets.push(Caret::new(pos));
+        }
+    }
+    pub fn add_caret(&mut self, caret: Caret) {
+        self.carets.push(caret);
+        self.dedup_and_sort();
+    }
+    pub fn add_collapsed(&mut self, pos: usize) {
+        self.add_caret(Caret::new(pos));
+    }
     pub fn dedup_and_sort(&mut self) {
         self.carets.sort_by_key(|c| c.range());
-        self.carets.dedup_by(|a,b| a.range()==b.range());
+        self.carets.dedup_by(|a, b| a.range() == b.range());
     }
-    pub fn collapse_all(&mut self) { for c in &mut self.carets { c.anchor = c.head; } }
+    pub fn collapse_all(&mut self) {
+        for c in &mut self.carets {
+            c.anchor = c.head;
+        }
+    }
     pub fn apply_simple_insert(&mut self, at: usize, len: usize) {
         for c in &mut self.carets {
-            if c.head >= at { c.head += len; }
-            if c.anchor >= at { c.anchor += len; }
+            if c.head >= at {
+                c.head += len;
+            }
+            if c.anchor >= at {
+                c.anchor += len;
+            }
         }
     }
     pub fn apply_simple_delete(&mut self, at: usize, del_len: usize) {
         let end = at + del_len;
         for c in &mut self.carets {
             // If caret inside deleted span, move to start
-            if c.head >= at && c.head < end { c.head = at; }
-            if c.anchor >= at && c.anchor < end { c.anchor = at; }
+            if c.head >= at && c.head < end {
+                c.head = at;
+            }
+            if c.anchor >= at && c.anchor < end {
+                c.anchor = at;
+            }
             // Shift positions after deletion
-            if c.head >= end { c.head -= del_len; }
-            if c.anchor >= end { c.anchor -= del_len; }
+            if c.head >= end {
+                c.head -= del_len;
+            }
+            if c.anchor >= end {
+                c.anchor -= del_len;
+            }
         }
     }
     /// Return a Vec of (anchor, head) sorted & deduped by the min position.
@@ -66,15 +115,21 @@ impl MultiSelection {
     /// Apply same inserted text at each collapsed caret (multi-cursor typing).
     /// Assumes all carets are collapsed. Processes from right to left to avoid shifting earlier indices.
     pub fn apply_insert_text(&mut self, text: &mut String, insert: &str) {
-        if insert.is_empty() { return; }
+        if insert.is_empty() {
+            return;
+        }
         let len = insert.len();
-    let positions = self.caret_positions();
+        let positions = self.caret_positions();
         // process descending
         for &pos in positions.iter().rev() {
-            if pos <= text.len() { text.insert_str(pos, insert); }
+            if pos <= text.len() {
+                text.insert_str(pos, insert);
+            }
         }
         // Update caret positions
-        for &pos in &positions { self.apply_simple_insert(pos, len); }
+        for &pos in &positions {
+            self.apply_simple_insert(pos, len);
+        }
     }
     /// Apply backspace (delete one char to the left) for each collapsed caret.
     pub fn apply_backspace(&mut self, text: &mut String) {
@@ -84,21 +139,29 @@ impl MultiSelection {
         positions.sort_unstable();
         let mut performed: Vec<(usize, usize)> = Vec::new(); // (start,len)
         for &pos in positions.iter() {
-            if pos == 0 { continue; }
+            if pos == 0 {
+                continue;
+            }
             let del_start = pos - 1;
             if del_start < text.len() {
                 // Remove single char (could be part of multi-byte; assume ASCII for now – future: use char boundary)
                 // Ensure char boundary
                 let mut real_start = del_start;
-                while !text.is_char_boundary(real_start) && real_start > 0 { real_start -= 1; }
+                while !text.is_char_boundary(real_start) && real_start > 0 {
+                    real_start -= 1;
+                }
                 let mut real_end = pos;
-                while real_end < text.len() && !text.is_char_boundary(real_end) { real_end += 1; }
+                while real_end < text.len() && !text.is_char_boundary(real_end) {
+                    real_end += 1;
+                }
                 text.replace_range(real_start..real_end, "");
                 performed.push((real_start, real_end - real_start));
             }
         }
         // Apply selection updates from last deletion to first to avoid double shifting logic.
         performed.sort_by_key(|(s, _)| *s);
-        for (start, len) in performed.into_iter().rev() { self.apply_simple_delete(start, len); }
+        for (start, len) in performed.into_iter().rev() {
+            self.apply_simple_delete(start, len);
+        }
     }
 }

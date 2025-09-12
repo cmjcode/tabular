@@ -27,7 +27,9 @@ struct EditRecord {
 }
 
 impl Default for EditorBuffer {
-    fn default() -> Self { Self::new("") }
+    fn default() -> Self {
+        Self::new("")
+    }
 }
 
 impl EditorBuffer {
@@ -50,7 +52,9 @@ impl EditorBuffer {
     }
 
     /// Get immutable access to current rope content as &str (alloc-free).
-    pub fn as_str(&self) -> &str { &self.text }
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
 
     /// Replace whole content (fast path). Avoid for large texts; use edit ranges later.
     pub fn set_text(&mut self, new_text: String) {
@@ -59,7 +63,11 @@ impl EditorBuffer {
         let old_len = old.len();
         // Push edit record (full doc replace) unless this is initial empty -> initial text
         if !(old.is_empty() && new_text.is_empty()) {
-            self.undo_stack.push(EditRecord { range: 0..old_len, inserted: new_text.clone(), removed: old });
+            self.undo_stack.push(EditRecord {
+                range: 0..old_len,
+                inserted: new_text.clone(),
+                removed: old,
+            });
             self.redo_stack.clear();
         }
         self.text = new_text.clone();
@@ -91,8 +99,12 @@ impl EditorBuffer {
 
     /// Insert text at byte offset (rope edit).
     /// Placeholder APIs for future granular editing (currently full text binding via egui String).
-    pub fn len(&self) -> usize { self.text.len() }
-    pub fn is_empty(&self) -> bool { self.text.is_empty() }
+    pub fn len(&self) -> usize {
+        self.text.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
 
     /// Apply a single replace (delete old_range and insert replacement) on both rope and cached text.
     /// old_range is byte indices in current text before change.
@@ -111,35 +123,49 @@ impl EditorBuffer {
         self.dirty_to_rope = false;
         self.dirty_to_string = false;
         // Record edit for undo (merge with previous if adjacent & simple? future optimization)
-        self.undo_stack.push(EditRecord { range: start..start + replacement.len(), inserted: replacement.to_string(), removed });
+        self.undo_stack.push(EditRecord {
+            range: start..start + replacement.len(),
+            inserted: replacement.to_string(),
+            removed,
+        });
         self.redo_stack.clear();
     }
 
     /// Heuristic diff between previous and new full text; if it matches a single contiguous replace,
     /// apply via apply_single_replace and return true. Else return false (caller can fallback to set_text).
     pub fn try_single_span_update(&mut self, previous: &str, new_full: &str) -> bool {
-        if previous == new_full { return true; }
+        if previous == new_full {
+            return true;
+        }
         // Quick bounds: find common prefix
         let mut prefix = 0usize;
         let prev_bytes = previous.as_bytes();
         let new_bytes = new_full.as_bytes();
         let min_len = prev_bytes.len().min(new_bytes.len());
-        while prefix < min_len && prev_bytes[prefix] == new_bytes[prefix] { prefix += 1; }
+        while prefix < min_len && prev_bytes[prefix] == new_bytes[prefix] {
+            prefix += 1;
+        }
         // Find common suffix (excluding prefix region)
         let mut suffix = 0usize;
         while suffix < (prev_bytes.len() - prefix)
             && suffix < (new_bytes.len() - prefix)
             && prev_bytes[prev_bytes.len() - 1 - suffix] == new_bytes[new_bytes.len() - 1 - suffix]
-        { suffix += 1; }
+        {
+            suffix += 1;
+        }
         // Compute differing spans
         let prev_mid_start = prefix;
         let prev_mid_end = prev_bytes.len() - suffix;
         let new_mid_start = prefix;
         let new_mid_end = new_bytes.len() - suffix;
         // If no change region -> done
-        if prev_mid_start == prev_mid_end && new_mid_start == new_mid_end { return true; }
+        if prev_mid_start == prev_mid_end && new_mid_start == new_mid_end {
+            return true;
+        }
         // Extract replacement slice
-        if new_mid_start > new_mid_end || prev_mid_start > prev_mid_end { return false; }
+        if new_mid_start > new_mid_end || prev_mid_start > prev_mid_end {
+            return false;
+        }
         if let Some(replacement) = new_full.get(new_mid_start..new_mid_end) {
             self.apply_single_replace(prev_mid_start..prev_mid_end, replacement);
             return true;
@@ -150,9 +176,13 @@ impl EditorBuffer {
 
 impl EditorBuffer {
     /// Can we undo?
-    pub fn can_undo(&self) -> bool { !self.undo_stack.is_empty() }
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
     /// Can we redo?
-    pub fn can_redo(&self) -> bool { !self.redo_stack.is_empty() }
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
 
     /// Undo last edit (if any). Returns true if something changed.
     pub fn undo(&mut self) -> bool {
@@ -167,7 +197,11 @@ impl EditorBuffer {
                 self.buffer = Buffer::new(&self.text);
                 self.last_revision = 0;
                 // Push inverse onto redo stack
-                let inverse = EditRecord { range: start..start + edit.removed.len(), inserted: edit.removed.clone(), removed: edit.inserted }; // note swapped roles
+                let inverse = EditRecord {
+                    range: start..start + edit.removed.len(),
+                    inserted: edit.removed.clone(),
+                    removed: edit.inserted,
+                }; // note swapped roles
                 self.redo_stack.push(inverse);
                 return true;
             }
@@ -185,7 +219,11 @@ impl EditorBuffer {
                 self.buffer = Buffer::new(&self.text);
                 self.last_revision = 0;
                 // Push inverse back to undo
-                let inverse = EditRecord { range: start..start + edit.removed.len(), inserted: edit.removed.clone(), removed: edit.inserted };
+                let inverse = EditRecord {
+                    range: start..start + edit.removed.len(),
+                    inserted: edit.removed.clone(),
+                    removed: edit.inserted,
+                };
                 self.undo_stack.push(inverse);
                 return true;
             }

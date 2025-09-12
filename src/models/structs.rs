@@ -250,8 +250,7 @@ pub enum CellEditOperation {
     },
 }
 
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SpreadsheetState {
     pub editing_cell: Option<(usize, usize)>, // (row, col) being edited
     pub cell_edit_text: String,               // Text being edited in the cell
@@ -259,7 +258,6 @@ pub struct SpreadsheetState {
     pub is_dirty: bool,                       // Whether there are unsaved changes
     pub primary_key_columns: Vec<String>,     // Primary key column names for generating SQL
 }
-
 
 /// Type alias for the complex tuple returned by render_tree_node_with_table_expansion
 pub type RenderTreeNodeResult = (

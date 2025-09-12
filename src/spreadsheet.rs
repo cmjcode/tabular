@@ -1,5 +1,5 @@
-use log::debug;
 use crate::models;
+use log::debug;
 
 // This trait provides spreadsheet functionality that can be implemented by any struct
 // that has the necessary data fields to support spreadsheet operations
@@ -29,7 +29,7 @@ pub trait SpreadsheetOperations {
     fn get_is_table_browse_mode(&self) -> bool;
     fn set_error_message(&mut self, message: String);
     fn set_show_error_message(&mut self, show: bool);
-    
+
     // Methods that need to be implemented by the parent struct
     fn execute_paginated_query(&mut self);
     fn update_current_page_data(&mut self);
@@ -59,7 +59,7 @@ pub trait SpreadsheetOperations {
             let new_val = self.get_spreadsheet_state().cell_edit_text.clone();
             self.get_spreadsheet_state_mut().cell_edit_text.clear();
             self.get_spreadsheet_state_mut().editing_cell = None;
-            
+
             if save {
                 // Get old_val from all_table_data if available, otherwise fall back to current_table_data.
                 // In server pagination mode, all_table_data may not contain the current page rows.
@@ -74,20 +74,22 @@ pub trait SpreadsheetOperations {
                             .and_then(|r| r.get(col))
                             .cloned()
                     });
-                    
+
                 let maybe_old = old_val.clone();
                 match maybe_old {
                     Some(ref old) if *old != new_val => {
                         // Update current_table_data
                         if let Some(r1) = self.get_current_table_data_mut().get_mut(row)
-                            && let Some(c1) = r1.get_mut(col) {
-                                *c1 = new_val.clone();
-                            }
+                            && let Some(c1) = r1.get_mut(col)
+                        {
+                            *c1 = new_val.clone();
+                        }
                         // Update all_table_data
                         if let Some(r2) = self.get_all_table_data_mut().get_mut(row)
-                            && let Some(c2) = r2.get_mut(col) {
-                                *c2 = new_val.clone();
-                            }
+                            && let Some(c2) = r2.get_mut(col)
+                        {
+                            *c2 = new_val.clone();
+                        }
 
                         // If this row is a freshly inserted row, update its pending InsertRow values instead of pushing an Update
                         let mut updated_insert_row = false;
@@ -95,18 +97,22 @@ pub trait SpreadsheetOperations {
                         {
                             let state = self.get_spreadsheet_state_mut();
                             for op in &mut state.pending_operations {
-                                if let crate::models::structs::CellEditOperation::InsertRow { row_index, values } = op
-                                    && *row_index == row {
-                                        // Ensure values vector has enough columns
-                                        if values.len() < headers_len {
-                                            values.resize(headers_len, String::new());
-                                        }
-                                        if col < values.len() {
-                                            values[col] = new_val.clone();
-                                        }
-                                        updated_insert_row = true;
-                                        break;
+                                if let crate::models::structs::CellEditOperation::InsertRow {
+                                    row_index,
+                                    values,
+                                } = op
+                                    && *row_index == row
+                                {
+                                    // Ensure values vector has enough columns
+                                    if values.len() < headers_len {
+                                        values.resize(headers_len, String::new());
                                     }
+                                    if col < values.len() {
+                                        values[col] = new_val.clone();
+                                    }
+                                    updated_insert_row = true;
+                                    break;
+                                }
                             }
                         }
                         // If not an InsertRow case, record as an Update operation
@@ -127,13 +133,15 @@ pub trait SpreadsheetOperations {
                         // If old_val is None (e.g., row not present in all_table_data in server pagination),
                         // still update visible data so the edit doesn't disappear. Skip recording pending op.
                         if let Some(r1) = self.get_current_table_data_mut().get_mut(row)
-                            && let Some(c1) = r1.get_mut(col) {
-                                *c1 = new_val.clone();
-                            }
+                            && let Some(c1) = r1.get_mut(col)
+                        {
+                            *c1 = new_val.clone();
+                        }
                         if let Some(r2) = self.get_all_table_data_mut().get_mut(row)
-                            && let Some(c2) = r2.get_mut(col) {
-                                *c2 = new_val.clone();
-                            }
+                            && let Some(c2) = r2.get_mut(col)
+                        {
+                            *c2 = new_val.clone();
+                        }
                     }
                     _ => { /* unchanged value, do nothing */ }
                 }
@@ -151,16 +159,16 @@ pub trait SpreadsheetOperations {
         self.get_all_table_data_mut().push(new_row.clone());
         self.get_current_table_data_mut().push(new_row.clone());
         self.set_total_rows(self.get_total_rows().saturating_add(1));
-        
+
         let state = self.get_spreadsheet_state_mut();
-        state.pending_operations.push(
-            crate::models::structs::CellEditOperation::InsertRow {
+        state
+            .pending_operations
+            .push(crate::models::structs::CellEditOperation::InsertRow {
                 row_index,
                 values: new_row,
-            },
-        );
+            });
         state.is_dirty = true;
-        
+
         self.set_selected_row(Some(row_index));
         self.set_selected_cell(Some((row_index, 0)));
         self.set_table_recently_clicked(true);
@@ -202,12 +210,12 @@ pub trait SpreadsheetOperations {
             );
 
             let state = self.get_spreadsheet_state_mut();
-            state.pending_operations.push(
-                crate::models::structs::CellEditOperation::DeleteRow {
+            state
+                .pending_operations
+                .push(crate::models::structs::CellEditOperation::DeleteRow {
                     row_index: row,
                     values,
-                },
-            );
+                });
             state.is_dirty = true;
 
             println!(
@@ -296,7 +304,9 @@ pub trait SpreadsheetOperations {
 
         match conn.connection_type {
             crate::models::enums::DatabaseType::MySQL => {
-                if already_mysql { return ident.to_string(); }
+                if already_mysql {
+                    return ident.to_string();
+                }
                 if ident.contains('.') {
                     ident
                         .split('.')
@@ -307,8 +317,11 @@ pub trait SpreadsheetOperations {
                     format!("`{}`", ident)
                 }
             }
-            crate::models::enums::DatabaseType::PostgreSQL | crate::models::enums::DatabaseType::SQLite => {
-                if already_pg_sqlite { return ident.to_string(); }
+            crate::models::enums::DatabaseType::PostgreSQL
+            | crate::models::enums::DatabaseType::SQLite => {
+                if already_pg_sqlite {
+                    return ident.to_string();
+                }
                 if ident.contains('.') {
                     ident
                         .split('.')
@@ -320,7 +333,9 @@ pub trait SpreadsheetOperations {
                 }
             }
             crate::models::enums::DatabaseType::MsSQL => {
-                if already_mssql { return ident.to_string(); }
+                if already_mssql {
+                    return ident.to_string();
+                }
                 if ident.contains('.') {
                     ident
                         .split('.')
@@ -359,12 +374,11 @@ pub trait SpreadsheetOperations {
         row_index: usize,
     ) -> Option<String> {
         let row = self.get_current_table_data().get(row_index)?;
-        
+
         // Use only the first column (usually primary key like RecID) for WHERE clause
-        if let (Some(first_header), Some(first_value)) = (
-            self.get_current_table_headers().first(),
-            row.first()
-        ) {
+        if let (Some(first_header), Some(first_value)) =
+            (self.get_current_table_headers().first(), row.first())
+        {
             let lhs = self.spreadsheet_quote_ident(conn, first_header);
             let rhs = self.spreadsheet_quote_value(conn, first_value);
             Some(format!("{} = {}", lhs, rhs))
@@ -417,9 +431,13 @@ pub trait SpreadsheetOperations {
                     );
                     stmts.push(sql);
                 }
-                
+
                 crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
-                    let cols: Vec<String> = self.get_current_table_headers().iter().map(|c| qt(c)).collect();
+                    let cols: Vec<String> = self
+                        .get_current_table_headers()
+                        .iter()
+                        .map(|c| qt(c))
+                        .collect();
                     // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
                     let latest_vals_src: Option<&Vec<String>> = self
                         .get_all_table_data()
@@ -447,16 +465,18 @@ pub trait SpreadsheetOperations {
                     if values.is_empty() || self.get_current_table_headers().is_empty() {
                         continue;
                     }
-                    
+
                     let first_header = &self.get_current_table_headers()[0];
                     let first_value = &values[0];
-                    
+
                     // If the first column looks like a primary key (RecID, ID, etc.), use just that
-                    if first_header.to_lowercase().contains("id") || 
-                       first_header.to_lowercase().contains("recid") ||
-                       first_header.to_lowercase() == "pk" {
+                    if first_header.to_lowercase().contains("id")
+                        || first_header.to_lowercase().contains("recid")
+                        || first_header.to_lowercase() == "pk"
+                    {
                         let where_clause = format!("{} = {}", qt(first_header), qv(first_value));
-                        let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
+                        let sql =
+                            format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
                         println!("🔥 Using primary key WHERE: {}", where_clause);
                         stmts.push(sql);
                     } else {
@@ -471,8 +491,12 @@ pub trait SpreadsheetOperations {
                             .map(|(col, v)| format!("{} = {}", qt(col), qv(v)))
                             .collect();
                         let where_clause = parts.join(" AND ");
-                        let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                        println!("🔥 Using full row WHERE (no obvious PK): {} columns", parts.len());
+                        let sql =
+                            format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
+                        println!(
+                            "🔥 Using full row WHERE (no obvious PK): {} columns",
+                            parts.len()
+                        );
                         stmts.push(sql);
                     }
                 }
@@ -506,10 +530,10 @@ pub trait SpreadsheetOperations {
             if let Some(conn_id) = self.get_current_connection_id() {
                 println!("🔥 Executing SQL with connection {}", conn_id);
                 debug!("🔥 Executing SQL with connection {}", conn_id);
-                
+
                 // Execute without transaction wrapper to avoid MySQL prepared statement issues
                 println!("🔥 Executing SQL: {}", sql);
-                
+
                 // Note: This is a bit tricky because we need to call connection::execute_query_with_connection
                 // but this trait doesn't know about the full Tabular struct. We'll need to implement this
                 // in the actual implementation of the trait.

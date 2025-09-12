@@ -14,14 +14,18 @@ pub(crate) fn get_tables_from_cache(
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let fut = async {
-              sqlx::query_as::<_, (String,)>("SELECT table_name FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type = ? ORDER BY table_name")
+            sqlx::query_as::<_, (String,)>("SELECT table_name FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type = ? ORDER BY table_name")
               .bind(connection_id)
               .bind(database_name)
               .bind(table_type)
               .fetch_all(pool_clone.as_ref())
               .await
-       };
-        let result = if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
 
         match result {
             Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
@@ -39,12 +43,16 @@ pub(crate) fn get_databases_from_cache(
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let fut = async {
-              sqlx::query_as::<_, (String,)>("SELECT database_name FROM database_cache WHERE connection_id = ? ORDER BY database_name")
+            sqlx::query_as::<_, (String,)>("SELECT database_name FROM database_cache WHERE connection_id = ? ORDER BY database_name")
               .bind(connection_id)
               .fetch_all(pool_clone.as_ref())
               .await
-       };
-        let result = if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
 
         match result {
             Ok(rows) => {
@@ -121,22 +129,26 @@ pub(crate) fn save_databases_to_cache(
         let pool_clone = pool.clone();
         let databases_clone = databases.to_vec();
         let fut = async {
-              // Clear existing cache for this connection
-              let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
-              .bind(connection_id)
-              .execute(pool_clone.as_ref())
-              .await;
+            // Clear existing cache for this connection
+            let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(pool_clone.as_ref())
+                .await;
 
-              // Insert new database names
-              for db_name in databases_clone {
-              let _ = sqlx::query("INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)")
+            // Insert new database names
+            for db_name in databases_clone {
+                let _ = sqlx::query("INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)")
                      .bind(connection_id)
                      .bind(db_name)
                      .execute(pool_clone.as_ref())
                      .await;
-        }
-    };
-     if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+            }
+        };
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
     }
 }
 
@@ -307,25 +319,31 @@ pub(crate) fn save_tables_to_cache(
         let tables_clone = tables.to_vec();
         let database_name = database_name.to_string();
         let fut = async {
-              // Clear existing cache for this database
-              let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?")
-              .bind(connection_id)
-              .bind(&database_name)
-              .execute(pool_clone.as_ref())
-              .await;
+            // Clear existing cache for this database
+            let _ = sqlx::query(
+                "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
+            )
+            .bind(connection_id)
+            .bind(&database_name)
+            .execute(pool_clone.as_ref())
+            .await;
 
-              // Insert new table names with types
-              for (table_name, table_type) in tables_clone {
-              let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
+            // Insert new table names with types
+            for (table_name, table_type) in tables_clone {
+                let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
                      .bind(connection_id)
                      .bind(&database_name)
                      .bind(table_name)
                      .bind(table_type)
                      .execute(pool_clone.as_ref())
                      .await;
-        }
-    };
-     if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+            }
+        };
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
     }
 }
 
@@ -342,17 +360,17 @@ pub(crate) fn save_columns_to_cache(
         let database_name = database_name.to_string();
         let table_name = table_name.to_string();
         let fut = async {
-              // Clear existing cache for this table
-              let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+            // Clear existing cache for this table
+            let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
               .bind(connection_id)
               .bind(&database_name)
               .bind(&table_name)
               .execute(pool_clone.as_ref())
               .await;
 
-              // Insert new column names with types
-              for (i, (column_name, data_type)) in columns_clone.iter().enumerate() {
-              let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
+            // Insert new column names with types
+            for (i, (column_name, data_type)) in columns_clone.iter().enumerate() {
+                let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
                      .bind(connection_id)
                      .bind(&database_name)
                      .bind(&table_name)
@@ -361,9 +379,13 @@ pub(crate) fn save_columns_to_cache(
                      .bind(i as i64)
                      .execute(pool_clone.as_ref())
                      .await;
-        }
-    };
-     if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+            }
+        };
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
     }
 }
 
@@ -376,14 +398,18 @@ pub(crate) fn get_columns_from_cache(
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let fut = async {
-              sqlx::query_as::<_, (String, String)>("SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY ordinal_position")
+            sqlx::query_as::<_, (String, String)>("SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY ordinal_position")
               .bind(connection_id)
               .bind(database_name)
               .bind(table_name)
               .fetch_all(pool_clone.as_ref())
               .await
-       };
-        let result = if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
 
         result.ok()
     } else {
@@ -400,14 +426,18 @@ pub(crate) fn get_primary_keys_from_cache(
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let fut = async {
-              sqlx::query_as::<_, (String,)>("SELECT column_name FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND is_primary_key = 1 ORDER BY ordinal_position")
+            sqlx::query_as::<_, (String,)>("SELECT column_name FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND is_primary_key = 1 ORDER BY ordinal_position")
               .bind(connection_id)
               .bind(database_name)
               .bind(table_name)
               .fetch_all(pool_clone.as_ref())
               .await
-       };
-        let result = if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
 
         match result {
             Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
@@ -427,14 +457,18 @@ pub(crate) fn get_indexed_columns_from_cache(
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let fut = async {
-              sqlx::query_as::<_, (String,)>("SELECT DISTINCT column_name FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND is_indexed = 1 ORDER BY column_name")
+            sqlx::query_as::<_, (String,)>("SELECT DISTINCT column_name FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND is_indexed = 1 ORDER BY column_name")
               .bind(connection_id)
               .bind(database_name)
               .bind(table_name)
               .fetch_all(pool_clone.as_ref())
               .await
-       };
-        let result = if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
 
         match result {
             Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
@@ -475,7 +509,11 @@ pub(crate) fn save_table_rows_to_cache(
             .execute(pool_clone.as_ref())
             .await;
         };
-        if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
         info!(
             "💾 Saved first 100 rows to cache for {}/{}/{}",
             connection_id, database_name, table_name
@@ -501,7 +539,11 @@ pub(crate) fn get_table_rows_from_cache(
             .fetch_optional(pool_clone.as_ref())
             .await
         };
-        let result = if let Some(rt) = tabular.runtime.clone() { rt.block_on(fut) } else { tokio::runtime::Runtime::new().unwrap().block_on(fut) };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
 
         match result {
             Ok(Some((headers_json, rows_json))) => {
