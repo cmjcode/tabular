@@ -217,7 +217,7 @@ Implemented in `editor_autocomplete.rs` leveraging schema introspection & regex 
 ## 8. Core Dependencies (Crates)
 | Purpose | Crate(s) |
 |---------|----------|
-| UI & App Shell | `eframe`, `egui_extras`, `egui_code_editor` |
+| UI & App Shell | `eframe`, `egui_extras` (custom TextEdit + `lapce-core` buffer) |
 | Async Runtime | `tokio`, `futures`, `futures-util`, `tokio-util` |
 | Relational DB | `sqlx` (postgres, mysql, sqlite features) |
 | SQL Server | `tiberius` (TLS via rustls) |

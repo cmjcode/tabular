@@ -82,10 +82,17 @@ pub struct QueryTab {
     pub base_query: String, // Store the base query (without LIMIT/OFFSET) for pagination
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorColorTheme {
+    GithubDark,
+    GithubLight,
+    Gruvbox,
+}
+
 #[derive(Clone)]
 pub struct AdvancedEditor {
     pub show_line_numbers: bool,
-    pub theme: egui_code_editor::ColorTheme,
+    pub theme: EditorColorTheme,
     pub font_size: f32,
     #[allow(dead_code)]
     pub tab_size: usize,
@@ -107,7 +114,7 @@ impl Default for AdvancedEditor {
     fn default() -> Self {
         Self {
             show_line_numbers: true,
-            theme: egui_code_editor::ColorTheme::GITHUB_DARK,
+            theme: EditorColorTheme::GithubDark,
             font_size: 14.0,
             tab_size: 4,
             auto_indent: true,

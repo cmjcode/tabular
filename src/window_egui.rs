@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use eframe::{App, Frame, egui};
-use egui_code_editor::ColorTheme; // for integrated editor theme selection
+// Removed egui_code_editor; using simple TextEdit + lapce-core buffer backend
+use lapce_core::buffer::Buffer; // basic rope buffer
 use log::{debug, error, info};
 use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap};
@@ -231,6 +232,8 @@ pub struct Tabular {
     pub pool_wait_started_at: Option<std::time::Instant>,
     // Spreadsheet editing state
     pub spreadsheet_state: crate::models::structs::SpreadsheetState,
+    // Lapce buffer integration for editor (replaces egui_code_editor)
+    pub lapce_buffer: Option<Buffer>,
 }
 
 // Preference tabs enumeration
@@ -476,6 +479,7 @@ impl Tabular {
             pool_wait_started_at: None,
             // Spreadsheet editing state
             spreadsheet_state: crate::models::structs::SpreadsheetState::default(),
+            lapce_buffer: Some(Buffer::new("")),
         };
 
         // Clear any old cached pools
@@ -7460,8 +7464,8 @@ impl App for Tabular {
                         is_dark_mode: app.is_dark_mode,
                         link_editor_theme: app.link_editor_theme,
                         editor_theme: match app.advanced_editor.theme {
-                            ColorTheme::GITHUB_LIGHT => "GITHUB_LIGHT".into(),
-                            ColorTheme::GRUVBOX => "GRUVBOX".into(),
+                            crate::models::structs::EditorColorTheme::GithubLight => "GITHUB_LIGHT".into(),
+                            crate::models::structs::EditorColorTheme::Gruvbox => "GRUVBOX".into(),
                             _ => "GITHUB_DARK".into(),
                         },
                         font_size: app.advanced_editor.font_size,
@@ -7514,9 +7518,9 @@ impl App for Tabular {
                     self.is_dark_mode = prefs.is_dark_mode;
                     self.link_editor_theme = prefs.link_editor_theme;
                     self.advanced_editor.theme = match prefs.editor_theme.as_str() {
-                        "GITHUB_LIGHT" => ColorTheme::GITHUB_LIGHT,
-                        "GRUVBOX" => ColorTheme::GRUVBOX,
-                        _ => ColorTheme::GITHUB_DARK,
+                        "GITHUB_LIGHT" => crate::models::structs::EditorColorTheme::GithubLight,
+                        "GRUVBOX" => crate::models::structs::EditorColorTheme::Gruvbox,
+                        _ => crate::models::structs::EditorColorTheme::GithubDark,
                     };
                     self.advanced_editor.font_size = prefs.font_size;
                     self.advanced_editor.word_wrap = prefs.word_wrap;
@@ -7629,9 +7633,9 @@ impl App for Tabular {
         // Sync editor theme only if linking enabled
         if self.link_editor_theme {
             let desired_editor_theme = if self.is_dark_mode {
-                ColorTheme::GITHUB_DARK
+                crate::models::structs::EditorColorTheme::GithubDark
             } else {
-                ColorTheme::GITHUB_LIGHT
+                crate::models::structs::EditorColorTheme::GithubLight
             };
             if self.advanced_editor.theme != desired_editor_theme {
                 self.advanced_editor.theme = desired_editor_theme;
@@ -7986,12 +7990,12 @@ impl App for Tabular {
                                 let prev = self.is_dark_mode;
                                 if ui.radio_value(&mut self.is_dark_mode, true, "🌙 Dark").clicked() {
                                     ctx.set_visuals(egui::Visuals::dark());
-                                    if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_DARK; }
+                                    if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubDark; }
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
                                 if ui.radio_value(&mut self.is_dark_mode, false, "☀️ Light").clicked() {
                                     ctx.set_visuals(egui::Visuals::light());
-                                    if self.link_editor_theme { self.advanced_editor.theme = ColorTheme::GITHUB_LIGHT; }
+                                    if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
                                 if self.is_dark_mode != prev { ctx.request_repaint(); }
@@ -8001,22 +8005,22 @@ impl App for Tabular {
                             ui.heading("Editor Theme");
                             ui.horizontal(|ui| {
                                 if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() {
-                                    if self.link_editor_theme { self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT }; }
+                                    if self.link_editor_theme { self.advanced_editor.theme = if self.is_dark_mode { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight }; }
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
                                 if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
                                     self.link_editor_theme = true;
-                                    self.advanced_editor.theme = if self.is_dark_mode { ColorTheme::GITHUB_DARK } else { ColorTheme::GITHUB_LIGHT };
+                                    self.advanced_editor.theme = if self.is_dark_mode { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight };
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
                             });
                             if self.link_editor_theme { ui.label(egui::RichText::new("(Editor theme follows application theme; uncheck to customize)").size(11.0).color(egui::Color32::from_gray(120))); }
                             ui.label("Choose syntax highlighting theme for SQL editor");
                             ui.add_space(4.0);
-                            let themes: &[(ColorTheme, &str, &str)] = &[
-                                (ColorTheme::GITHUB_DARK, "GitHub Dark", "Dark theme with blue accents"),
-                                (ColorTheme::GITHUB_LIGHT, "GitHub Light", "Clean light theme"),
-                                (ColorTheme::GRUVBOX, "Gruvbox", "Warm earthy retro palette"),
+                            let themes: &[(crate::models::structs::EditorColorTheme, &str, &str)] = &[
+                                (crate::models::structs::EditorColorTheme::GithubDark, "GitHub Dark", "Dark theme with blue accents"),
+                                (crate::models::structs::EditorColorTheme::GithubLight, "GitHub Light", "Clean light theme"),
+                                (crate::models::structs::EditorColorTheme::Gruvbox, "Gruvbox", "Warm earthy retro palette"),
                             ];
                             for (theme, name, desc) in themes {
                                 ui.horizontal(|ui| {

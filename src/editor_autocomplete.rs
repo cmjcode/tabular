@@ -442,6 +442,7 @@ impl ShallowForCache for Tabular {
             pool_wait_query: String::new(),
             pool_wait_started_at: None,
             spreadsheet_state: models::structs::SpreadsheetState::default(),
+            lapce_buffer: Some(lapce_core::buffer::Buffer::new("")),
         })
     }
 }

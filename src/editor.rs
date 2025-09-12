@@ -1,7 +1,8 @@
 use eframe::egui;
 use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
-use egui_code_editor::{CodeEditor, ColorTheme};
+// Removed egui_code_editor; using basic TextEdit and custom theme enum
+use lapce_core::buffer::Buffer;
 use log::debug;
 
 use crate::{
@@ -439,126 +440,40 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         });
     }
 
-    // Main code editor using egui_code_editor
-    // Respect precomputed desired_rows from the parent layout. Inside a ScrollArea,
-    // ui.available_height can be effectively unbounded; recomputing here would cause the editor
-    // to over-expand and create visual gaps. Fallback to a sane default if unset.
-    let rows = if tabular.advanced_editor.desired_rows > 0 {
-        tabular.advanced_editor.desired_rows
-    } else {
-        25 // default rows when parent hasn't specified
-    };
-    let mut editor = CodeEditor::default()
-        .id_source("sql_editor")
-        .with_rows(rows)
-        .with_fontsize(tabular.advanced_editor.font_size)
-        .with_theme(tabular.advanced_editor.theme)
-        .with_syntax(egui_code_editor::Syntax::sql())
-        .with_numlines(tabular.advanced_editor.show_line_numbers);
-    // (Removed pre_text clone; not needed now)
-    // Detect Tab & Enter via key_pressed AND raw events (key_pressed may miss if focus moving)
+    // ----- Pre-widget key handling & indentation (no active borrow of editor_text) -----
+    let rows = if tabular.advanced_editor.desired_rows > 0 { tabular.advanced_editor.desired_rows } else { 25 };
     let mut tab_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Tab));
     let shift_pressed_pre = ui.input(|i| i.modifiers.shift);
-    // Snapshot current selection BEFORE rendering (so we still have original range if CodeEditor would replace it)
-    let pre_selection_start = tabular.selection_start;
-    let pre_selection_end = tabular.selection_end;
-    let pre_selected_text = if pre_selection_start < pre_selection_end
-        && pre_selection_end <= tabular.editor_text.len()
-    {
-        Some(tabular.editor_text[pre_selection_start..pre_selection_end].to_string())
-    } else {
-        None
-    };
-    // (flag removed) multiline indent handled pre-render
-    if tab_pressed_pre
-        && let Some(sel_text) = &pre_selected_text
-        && sel_text.contains('\n')
-    {
-        // multi-line selection
-        // Compute line_start (start of first line)
-        let mut line_start = pre_selection_start;
-        while line_start > 0 && tabular.editor_text.as_bytes()[line_start - 1] != b'\n' {
-            line_start -= 1;
-        }
-        let sel_end_clamped = pre_selection_end.min(tabular.editor_text.len());
-        let block = tabular.editor_text[line_start..sel_end_clamped].to_string();
-        if !shift_pressed_pre {
-            // Indent
-            let mut indented = String::with_capacity(block.len() + 8);
-            for line in block.split_inclusive('\n') {
-                if line == "\n" {
-                    indented.push('\n');
-                    continue;
-                }
-                let (content, nl) = if let Some(p) = line.rfind('\n') {
-                    (&line[..p], &line[p..])
-                } else {
-                    (line, "")
-                };
-                indented.push('\t');
-                indented.push_str(content);
-                indented.push_str(nl);
+    let (sel_start, sel_end) = (tabular.selection_start, tabular.selection_end);
+    if tab_pressed_pre && sel_start < sel_end && sel_end <= tabular.editor_text.len() {
+        let slice = &tabular.editor_text[sel_start..sel_end];
+        if slice.contains('\n') { // multi-line
+            // Find first line start
+            let mut line_start = sel_start;
+            while line_start > 0 && tabular.editor_text.as_bytes()[line_start - 1] != b'\n' { line_start -= 1; }
+            let sel_end_clamped = sel_end.min(tabular.editor_text.len());
+            let block = tabular.editor_text[line_start..sel_end_clamped].to_string();
+            if !shift_pressed_pre {
+                let mut indented = String::with_capacity(block.len() + 8);
+                for line in block.split_inclusive('\n') { if line == "\n" { indented.push('\n'); continue; } let (content,nl)= if let Some(p)=line.rfind('\n'){(&line[..p],&line[p..])} else {(line,"")}; indented.push('\t'); indented.push_str(content); indented.push_str(nl);}            
+                tabular.editor_text.replace_range(line_start..sel_end_clamped, &indented);
+                tabular.selection_start = line_start; tabular.selection_end = line_start + indented.len(); tabular.cursor_position = tabular.selection_end;
+            } else {
+                let mut outdented = String::with_capacity(block.len()); let mut changed=false; for line in block.split_inclusive('\n'){ if line=="\n" { outdented.push('\n'); continue;} let (content,nl)= if let Some(p)=line.rfind('\n'){(&line[..p],&line[p..])} else {(line,"")}; let trimmed = if let Some(rest)=content.strip_prefix('\t'){changed=true;rest} else if let Some(rest)=content.strip_prefix("    "){changed=true;rest} else {content}; outdented.push_str(trimmed); outdented.push_str(nl);} if changed { tabular.editor_text.replace_range(line_start..sel_end_clamped,&outdented); tabular.selection_start=line_start; tabular.selection_end=line_start+outdented.len(); tabular.cursor_position=tabular.selection_end; }
             }
-            tabular
-                .editor_text
-                .replace_range(line_start..sel_end_clamped, &indented);
-            tabular.selection_start = line_start;
-            tabular.selection_end = line_start + indented.len();
-            tabular.cursor_position = tabular.selection_end;
-        } else {
-            // Outdent
-            let mut outdented = String::with_capacity(block.len());
-            let mut changed = false;
-            for line in block.split_inclusive('\n') {
-                if line == "\n" {
-                    outdented.push('\n');
-                    continue;
-                }
-                let (content, nl) = if let Some(p) = line.rfind('\n') {
-                    (&line[..p], &line[p..])
-                } else {
-                    (line, "")
-                };
-                let trimmed = if let Some(rest) = content.strip_prefix('\t') {
-                    changed = true;
-                    rest
-                } else if let Some(rest) = content.strip_prefix("    ") {
-                    changed = true;
-                    rest
-                } else {
-                    content
-                };
-                outdented.push_str(trimmed);
-                outdented.push_str(nl);
-            }
-            if changed {
-                tabular
-                    .editor_text
-                    .replace_range(line_start..sel_end_clamped, &outdented);
-                tabular.selection_start = line_start;
-                tabular.selection_end = line_start + outdented.len();
-                tabular.cursor_position = tabular.selection_end;
-            }
-        }
-        // Prevent CodeEditor from seeing Tab key (so it doesn't insert a tab or replace selection)
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::Tab,
-                        ..
-                    }
-                )
-            });
-        });
-        // indentation applied
-        // Mark changed for autocomplete logic later
-        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-            tab.content = tabular.editor_text.clone();
-            tab.is_modified = true;
+            // consume Tab key event so TextEdit tidak menambah tab baru
+            ui.ctx().input_mut(|ri| { ri.events.retain(|e| !matches!(e, egui::Event::Key{ key:egui::Key::Tab, ..})) });
+            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) { tab.content = tabular.editor_text.clone(); tab.is_modified = true; }
         }
     }
+    // ----- Build widget after mutations -----
+    let text_edit = egui::TextEdit::multiline(&mut tabular.editor_text)
+        .font(egui::TextStyle::Monospace)
+        .desired_rows(rows)
+        .lock_focus(true)
+        .desired_width(f32::INFINITY)
+        .code_editor();
+    // (Old duplicate indentation block removed)
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
     let mut raw_tab = false;
     // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
@@ -699,7 +614,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     //         editor.show(ui, &mut tabular.editor_text)
     //     })
     //     .inner;
-    let response = editor.show(ui, &mut tabular.editor_text);
+    let response = ui.add(text_edit);
 
     // After show(), TextEditState should exist; apply pending cursor now
     if let Some(pos) = tabular.pending_cursor_set {
@@ -773,33 +688,30 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Try to capture selected text from the response
     // Note: This is a simplified approach. The actual implementation may vary depending on the CodeEditor version
-    if let Some(text_cursor_range) = response.cursor_range {
-        let start = text_cursor_range
-            .primary
-            .index
-            .min(text_cursor_range.secondary.index);
-        let end = text_cursor_range
-            .primary
-            .index
-            .max(text_cursor_range.secondary.index);
-        tabular.cursor_position = text_cursor_range.primary.index;
-        tabular.selection_start = start;
-        tabular.selection_end = end;
-        if start != end {
-            if let Some(selected) = tabular.editor_text.get(start..end) {
-                tabular.selected_text = selected.to_string();
+    // Recover cursor + selection from TextEditState (single range only for now)
+    if let Some(state) = TextEditState::load(ui.ctx(), response.id) {
+        if let Some(range) = state.cursor.char_range() {
+            let primary = range.primary;
+            let secondary = range.secondary;
+            let start = primary.index.min(secondary.index);
+            let end = primary.index.max(secondary.index);
+            tabular.cursor_position = primary.index;
+            tabular.selection_start = start;
+            tabular.selection_end = end;
+            if start != end {
+                if let Some(selected) = tabular.editor_text.get(start..end) {
+                    tabular.selected_text = selected.to_string();
+                } else {
+                    tabular.selected_text.clear();
+                }
             } else {
                 tabular.selected_text.clear();
             }
-        } else {
-            tabular.selected_text.clear();
         }
-    } else {
-        tabular.selected_text.clear();
     }
 
     // Reset table focus flag when editor is interacted with
-    if response.response.clicked() || response.response.has_focus() {
+    if response.clicked() || response.has_focus() {
         tabular.table_recently_clicked = false;
     }
 
@@ -811,17 +723,16 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // tabular.editor_text = buffer.text().to_string();
 
     // Update tab content when editor changes (but skip autocomplete update if we're accepting via Tab)
-    if response.response.changed() {
+    if response.changed() {
         if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
             tab.content = tabular.editor_text.clone();
             tab.is_modified = true;
         }
-        if !accept_via_tab_pre {
-            // don't recalc suggestions; we need the old one
-            editor_autocomplete::update_autocomplete(tabular);
-        } else {
-            log::debug!("Skipping update_autocomplete due to Tab acceptance in progress");
-        }
+        // Replace entire lapce buffer (simplistic sync)
+        if let Some(buf) = tabular.lapce_buffer.as_mut() { *buf = Buffer::new(&tabular.editor_text); }
+        // Disable autocomplete for now (needs reimplementation on lapce-core)
+        tabular.show_autocomplete = false;
+        tabular.autocomplete_suggestions.clear();
     }
 
     // (Old forced replacement path removed; injection handles caret advance)
@@ -939,7 +850,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let column = cursor - line_start;
         let char_w = 8.0_f32; // heuristic monospace width
         let line_h = ui.text_style_height(&egui::TextStyle::Monospace);
-        let editor_rect = response.response.rect; // CodeEditor main rect
+    let editor_rect = response.rect; // basic TextEdit rect
         let mut pos = egui::pos2(
             editor_rect.left() + 8.0 + (column as f32) * char_w,
             editor_rect.top() + 4.0 + (line_no as f32 + 1.0) * line_h,
@@ -1099,10 +1010,10 @@ pub(crate) fn navigate_theme_selector(tabular: &mut window_egui::Tabular, direct
 pub(crate) fn select_current_theme(tabular: &mut window_egui::Tabular) {
     // Map index to theme
     let theme = match tabular.theme_selector_selected_index {
-        0 => ColorTheme::GITHUB_DARK,
-        1 => ColorTheme::GITHUB_LIGHT,
-        2 => ColorTheme::GRUVBOX,
-        _ => ColorTheme::GITHUB_DARK, // fallback
+        0 => models::structs::EditorColorTheme::GithubDark,
+        1 => models::structs::EditorColorTheme::GithubLight,
+        2 => models::structs::EditorColorTheme::Gruvbox,
+        _ => models::structs::EditorColorTheme::GithubDark, // fallback
     };
 
     tabular.advanced_editor.theme = theme;
@@ -1245,17 +1156,17 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
                         // Available themes with descriptions
                         let themes = vec![
                             (
-                                ColorTheme::GITHUB_DARK,
+                                models::structs::EditorColorTheme::GithubDark,
                                 "GitHub Dark",
                                 "Dark theme with blue accents",
                             ),
                             (
-                                ColorTheme::GITHUB_LIGHT,
+                                models::structs::EditorColorTheme::GithubLight,
                                 "GitHub Light",
                                 "Light theme with subtle colors",
                             ),
                             (
-                                ColorTheme::GRUVBOX,
+                                models::structs::EditorColorTheme::Gruvbox,
                                 "Gruvbox",
                                 "Retro warm theme with earthy colors",
                             ),
