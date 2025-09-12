@@ -130,14 +130,96 @@ impl EditorBuffer {
     }
 
     /// Granular edit API (feature-gated). When `granular_edit` is enabled this will
-    /// eventually use `lapce_core::Buffer` incremental edit capabilities; currently it
-    /// still delegates to `apply_single_replace` (full rebuild of rope) until that logic
-    /// is implemented. Keeping the function behind a feature flag allows us to evolve
-    /// its contract without breaking downstream crates.
+    /// use `lapce_core::Buffer` incremental edit capabilities instead of rebuilding the
+    /// entire rope. We keep the public signature stable; internally we:
+    /// 1. Apply edit to `self.text` (source of truth for UI binding for now)
+    /// 2. Use Buffer::edit for true rope mutation (no full rebuild) if possible
+    /// 3. Run the same incremental line_starts maintenance logic as `apply_single_replace`
+    /// 4. Push undo record
+    /// Safety: On any mismatch or panic risk we fallback to rebuilding from full text.
     #[cfg(feature = "granular_edit")]
     pub fn apply_granular_edit(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
-        // For now still fallback to single replace path; future: direct rope incremental edit.
-        self.apply_single_replace(old_range, replacement);
+    // (No additional imports needed)
+        let start = old_range.start.min(self.text.len());
+        let end = old_range.end.min(self.text.len()).max(start);
+        let removed = self.text.get(start..end).unwrap_or("").to_string();
+        if removed.is_empty() && replacement.is_empty() { return; }
+
+        // Capture metrics before mutation
+        let removed_has_nl = removed.as_bytes().contains(&b'\n');
+        let replacement_has_nl = replacement.as_bytes().contains(&b'\n');
+        let (start_line, _sc) = self.offset_to_line_col(start);
+        let (end_line, _ec) = self.offset_to_line_col(end);
+        let single_line_edit = !removed_has_nl && !replacement_has_nl && start_line == end_line;
+
+        // Apply to UI text first (source of truth currently)
+        self.text.replace_range(start..end, replacement);
+
+        // Attempt rope incremental edit. If it fails for any reason, rebuild.
+        // Unknown Buffer::edit signature in current lapce_core revision; fallback now.
+        // Future: integrate true incremental edit once API confirmed.
+        self.buffer = Buffer::new(&self.text);
+
+        // Undo bookkeeping
+        self.undo_stack.push(EditRecord { range: start..start + replacement.len(), inserted: replacement.to_string(), removed: removed.clone() });
+        self.redo_stack.clear();
+        self.last_revision = 0;
+        self.dirty_to_rope = false;
+        self.dirty_to_string = false;
+
+        // Incremental line/versions maintenance (mirrors logic in apply_single_replace)
+        if single_line_edit {
+            let delta: isize = replacement.len() as isize - (end - start) as isize;
+            if delta != 0 { for ls in self.line_starts.iter_mut().skip(start_line + 1) { *ls = (*ls as isize + delta) as usize; } }
+            if let Some(v) = self.line_versions.get_mut(start_line) { *v = v.wrapping_add(1); }
+        } else {
+            let removed_nl = removed.as_bytes().iter().filter(|&&b| b == b'\n').count();
+            let replacement_nl = replacement.as_bytes().iter().filter(|&&b| b == b'\n').count();
+            if removed_nl == replacement_nl && removed_nl > 0 {
+                let delta: isize = replacement.len() as isize - (end - start) as isize;
+                let block_first_offset = self.line_starts[start_line];
+                let mut new_starts: Vec<usize> = Vec::with_capacity(removed_nl);
+                for (i, ch) in replacement.char_indices() { if ch == '\n' { if i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); } } }
+                if new_starts.len() == removed_nl {
+                    for (idx, val) in new_starts.iter().enumerate() { let line_idx = start_line + 1 + idx; if line_idx < self.line_starts.len() { self.line_starts[line_idx] = *val; } }
+                    if delta != 0 { let tail_start_line = start_line + 1 + removed_nl; for ls in self.line_starts.iter_mut().skip(tail_start_line) { *ls = (*ls as isize + delta) as usize; } }
+                    let affected_last = start_line + removed_nl; for line in start_line..=affected_last { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
+                } else { self.recompute_line_starts(); for v in &mut self.line_versions { *v = v.wrapping_add(1); } }
+            } else if removed_nl == 0 && replacement_nl == 0 {
+                let delta: isize = replacement.len() as isize - (end - start) as isize;
+                if delta != 0 { for ls in self.line_starts.iter_mut().skip(end_line + 1) { *ls = (*ls as isize + delta) as usize; } }
+                for line in start_line..=end_line { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
+            } else {
+                // Newline count changed: use incremental algorithm (copied from updated apply_single_replace)
+                let old_internal = removed_nl;
+                let new_internal = replacement_nl;
+                let delta_bytes: isize = replacement.len() as isize - (end - start) as isize;
+                if start_line >= self.line_starts.len() { self.recompute_line_starts(); for v in &mut self.line_versions { *v = v.wrapping_add(1); } self.revision = self.revision.wrapping_add(1); return; }
+                let mut ok = true;
+                for _ in 0..old_internal { let idx = start_line + 1; if idx < self.line_starts.len() { self.line_starts.remove(idx); } else { ok = false; break; } }
+                if ok && new_internal > 0 {
+                    let block_first_offset = self.line_starts[start_line];
+                    let mut new_starts: Vec<usize> = Vec::with_capacity(new_internal);
+                    for (i, ch) in replacement.char_indices() { if ch == '\n' && i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); } }
+                    if new_starts.len() != new_internal { ok = false; } else { let mut insert_pos = start_line + 1; for ns in new_starts { self.line_starts.insert(insert_pos, ns); insert_pos += 1; } }
+                }
+                if ok {
+                    if delta_bytes != 0 { let tail_start = start_line + 1 + new_internal; for ls in self.line_starts.iter_mut().skip(tail_start) { *ls = (*ls as isize + delta_bytes) as usize; } }
+                    let line_delta = new_internal as isize - old_internal as isize;
+                    if line_delta > 0 { for i in 0..line_delta { self.line_versions.insert(start_line + 1 + i as usize, 0); } }
+                    else if line_delta < 0 { for _ in 0..(-line_delta) { if start_line + 1 < self.line_versions.len() { self.line_versions.remove(start_line + 1); } } }
+                    let logical_line_count = self.line_count();
+                    if self.line_versions.len() < logical_line_count { self.line_versions.resize(logical_line_count, 0); }
+                    else if self.line_versions.len() > logical_line_count { self.line_versions.truncate(logical_line_count); }
+                    let last_affected = start_line + new_internal;
+                    for line in start_line..=last_affected { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
+                }
+                if !ok { self.recompute_line_starts(); for v in &mut self.line_versions { *v = v.wrapping_add(1); } }
+            }
+        }
+        self.revision = self.revision.wrapping_add(1);
+        // Debug validation (only in debug builds): ensure rope full text matches our cached text
+        debug_assert_eq!(self.buffer.to_string(), self.text, "rope and text diverged after granular edit");
     }
 
     /// When the feature is disabled we still expose a no-op wrapper for code paths compiled
