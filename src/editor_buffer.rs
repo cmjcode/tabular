@@ -56,6 +56,28 @@ impl EditorBuffer {
         }
     }
 
+    /// Replace whole content (used by tab switching / file load)
+    pub fn set_text(&mut self, new_text: String) {
+        if self.text == new_text { return; }
+        let old = std::mem::take(&mut self.text);
+        let old_len = old.len();
+        self.undo_stack.push(EditRecord { range: 0..old_len, inserted: new_text.clone(), removed: old });
+        self.redo_stack.clear();
+        self.text = new_text.clone();
+        self.buffer = Buffer::new(&new_text);
+        self.last_revision = 0;
+        self.dirty_to_string = false;
+        self.dirty_to_rope = false;
+        self.recompute_line_starts();
+        for v in &mut self.line_versions { *v = v.wrapping_add(1); }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Mark that egui-bound text mutated externally (not used heavily now but kept for compatibility)
+    pub fn mark_text_modified(&mut self) {
+        self.dirty_to_rope = true;
+    }
+
     /// Full recompute of line starts (fallback path; later we can do incremental adjustments).
     fn recompute_line_starts(&mut self) {
         self.line_starts = Self::compute_line_starts(&self.text);
@@ -114,173 +136,142 @@ impl EditorBuffer {
     /// its contract without breaking downstream crates.
     #[cfg(feature = "granular_edit")]
     pub fn apply_granular_edit(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
+        // For now still fallback to single replace path; future: direct rope incremental edit.
         self.apply_single_replace(old_range, replacement);
     }
 
     /// When the feature is disabled we still expose a no-op wrapper for code paths compiled
     /// without the feature; this avoids conditional call sites. (Same behavior for now.)
-    #[cfg(not(feature = "granular_edit"))]
-    pub fn apply_granular_edit(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
-        self.apply_single_replace(old_range, replacement);
-    }
-
-    /// Mark that the UI-updated text (egui TextEdit) should overwrite rope on next sync_to_rope.
-    pub fn mark_text_modified(&mut self) {
-        self.dirty_to_rope = true;
-    }
-
-    /// Get immutable access to current rope content as &str (alloc-free).
-    pub fn as_str(&self) -> &str {
-        &self.text
-    }
-
-    /// Replace whole content (fast path). Avoid for large texts; use edit ranges later.
-    pub fn set_text(&mut self, new_text: String) {
-        // Treat as full replacement edit for undo (capture old full content)
-        let old = std::mem::take(&mut self.text);
-        let old_len = old.len();
-        // Push edit record (full doc replace) unless this is initial empty -> initial text
-        if !(old.is_empty() && new_text.is_empty()) {
-            self.undo_stack.push(EditRecord {
-                range: 0..old_len,
-                inserted: new_text.clone(),
-                removed: old,
-            });
-            self.redo_stack.clear();
-        }
-        self.text = new_text.clone();
-        self.buffer = Buffer::new(&new_text); // temporary full rebuild (no granular diff yet)
-        self.last_revision = 0;
-        self.dirty_to_string = false;
-        self.dirty_to_rope = false;
-        self.recompute_line_starts();
-        // Bulk bump all line versions
-        for v in &mut self.line_versions { *v = v.wrapping_add(1); }
-        self.revision = self.revision.wrapping_add(1);
-    }
-
-    /// Sync UI -> rope when user edited via egui bound String.
-    pub fn sync_to_rope(&mut self) {
-        if self.dirty_to_rope {
-            // Full rebuild for now; will be replaced with diff-based incremental edits.
-            self.buffer = Buffer::new(&self.text);
-            self.last_revision = 0;
-            self.dirty_to_rope = false;
-        }
-    }
-
-    /// Sync rope -> UI text (when edits performed programmatically on rope).
-    pub fn sync_to_string(&mut self) {
-        if self.dirty_to_string {
-            // Currently buffer is always rebuilt from text; no reverse sync needed
-            self.text = self.text.clone();
-            self.last_revision = 0;
-            self.dirty_to_string = false;
-        }
-    }
-
-    /// Insert text at byte offset (rope edit).
-    /// Placeholder APIs for future granular editing (currently full text binding via egui String).
-    pub fn len(&self) -> usize {
-        self.text.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.text.is_empty()
-    }
-
-    /// Apply a single replace (delete old_range and insert replacement) on both rope and cached text.
-    /// old_range is byte indices in current text before change.
+    // Core primitive replace used by UI & feature-gated granular path fallback.
     pub fn apply_single_replace(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
-        // Safety clamp
         let start = old_range.start.min(self.text.len());
         let end = old_range.end.min(self.text.len()).max(start);
-        // Capture removed text for undo & newline presence before mutation
         let removed = self.text.get(start..end).unwrap_or("").to_string();
         let removed_has_nl = removed.as_bytes().contains(&b'\n');
         let replacement_has_nl = replacement.as_bytes().contains(&b'\n');
-
-        // Determine if this is a pure single-line edit (no newline creation/removal and both ends within same original line)
-        let (start_line, _start_col) = self.offset_to_line_col(start);
-        let (end_line, _end_col) = self.offset_to_line_col(end);
+        let (start_line, _sc) = self.offset_to_line_col(start);
+        let (end_line, _ec) = self.offset_to_line_col(end);
         let single_line_edit = !removed_has_nl && !replacement_has_nl && start_line == end_line;
 
-        // Perform text mutation
         self.text.replace_range(start..end, replacement);
-
-        // For now still rebuild underlying rope fully (will switch to granular Buffer::edit later)
         self.buffer = Buffer::new(&self.text);
         self.last_revision = 0;
         self.dirty_to_rope = false;
         self.dirty_to_string = false;
-
-        // Record undo information (range of newly inserted text after mutation)
-        self.undo_stack.push(EditRecord {
-            range: start..start + replacement.len(),
-            inserted: replacement.to_string(),
-            removed: removed.clone(),
-        });
+        self.undo_stack.push(EditRecord { range: start..start + replacement.len(), inserted: replacement.to_string(), removed: removed.clone() });
         self.redo_stack.clear();
 
         if single_line_edit {
-            // Incremental path: adjust subsequent line starts by delta instead of full recompute
             let delta: isize = replacement.len() as isize - (end - start) as isize;
-            if delta != 0 {
-                // Shift all following line start offsets
-                for ls in self.line_starts.iter_mut().skip(start_line + 1) {
-                    *ls = (*ls as isize + delta) as usize;
+            if delta != 0 { for ls in self.line_starts.iter_mut().skip(start_line + 1) { *ls = (*ls as isize + delta) as usize; } }
+            if let Some(v) = self.line_versions.get_mut(start_line) { *v = v.wrapping_add(1); }
+        } else {
+            let removed_nl = removed.as_bytes().iter().filter(|&&b| b == b'\n').count();
+            let replacement_nl = replacement.as_bytes().iter().filter(|&&b| b == b'\n').count();
+            if removed_nl == replacement_nl && removed_nl > 0 {
+                let delta: isize = replacement.len() as isize - (end - start) as isize;
+                let block_first_offset = self.line_starts[start_line];
+                let mut new_starts: Vec<usize> = Vec::with_capacity(removed_nl);
+                for (i, ch) in replacement.char_indices() { if ch == '\n' { if i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); } } }
+                if new_starts.len() == removed_nl {
+                    for (idx, val) in new_starts.iter().enumerate() { let line_idx = start_line + 1 + idx; if line_idx < self.line_starts.len() { self.line_starts[line_idx] = *val; } }
+                    if delta != 0 { let tail_start_line = start_line + 1 + removed_nl; for ls in self.line_starts.iter_mut().skip(tail_start_line) { *ls = (*ls as isize + delta) as usize; } }
+                    let affected_last = start_line + removed_nl; for line in start_line..=affected_last { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
+                } else { self.recompute_line_starts(); for v in &mut self.line_versions { *v = v.wrapping_add(1); } }
+            } else if removed_nl == 0 && replacement_nl == 0 {
+                let delta: isize = replacement.len() as isize - (end - start) as isize;
+                if delta != 0 { for ls in self.line_starts.iter_mut().skip(end_line + 1) { *ls = (*ls as isize + delta) as usize; } }
+                for line in start_line..=end_line { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
+            } else {
+                // Newline count changed: attempt incremental adjustment of line_starts instead of full recompute.
+                // Strategy:
+                // 1. Remove old internal line starts belonging to the removed text.
+                // 2. Insert new internal line starts derived from replacement.
+                // 3. Shift subsequent line starts by byte delta.
+                // 4. Adjust line_versions length (insert/remove) and bump affected lines.
+                // On any inconsistency, fall back to full recompute.
+                let old_internal = removed_nl; // number of internal newlines removed
+                let new_internal = replacement_nl; // number of internal newlines inserted
+                let delta_bytes: isize = replacement.len() as isize - (end - start) as isize;
+
+                // Safety guard: if start_line points beyond existing starts, fallback
+                if start_line >= self.line_starts.len() { self.recompute_line_starts(); for v in &mut self.line_versions { *v = v.wrapping_add(1); } self.revision = self.revision.wrapping_add(1); return; }
+
+                // 1. Remove 'old_internal' entries following start_line (these correspond to lines that existed inside removed span).
+                let mut ok = true;
+                for _ in 0..old_internal {
+                    let idx = start_line + 1; // position of next internal line start to remove
+                    if idx < self.line_starts.len() { self.line_starts.remove(idx); } else { ok = false; break; }
+                }
+
+                // 2. Compute new internal starts based on replacement (relative char_indices)
+                if ok {
+                    if new_internal > 0 {
+                        let block_first_offset = self.line_starts[start_line];
+                        let mut new_starts: Vec<usize> = Vec::with_capacity(new_internal);
+                        for (i, ch) in replacement.char_indices() {
+                            if ch == '\n' && i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); }
+                        }
+                        if new_starts.len() != new_internal { ok = false; }
+                        else {
+                            // Insert in ascending order at position start_line+1
+                            let mut insert_pos = start_line + 1;
+                            for ns in new_starts { self.line_starts.insert(insert_pos, ns); insert_pos += 1; }
+                        }
+                    }
+                }
+
+                if ok {
+                    // 3. Shift tail line starts by delta_bytes
+                    if delta_bytes != 0 {
+                        let tail_start = start_line + 1 + new_internal; // first unaffected line after replacement block
+                        for ls in self.line_starts.iter_mut().skip(tail_start) { *ls = (*ls as isize + delta_bytes) as usize; }
+                    }
+
+                    // 4. Adjust line_versions length and bump affected lines
+                    let line_delta = new_internal as isize - old_internal as isize;
+                    if line_delta > 0 {
+                        // Insert new versions after start_line with initial version 0 (will bump below)
+                        for i in 0..line_delta { self.line_versions.insert(start_line + 1 + i as usize, 0); }
+                    } else if line_delta < 0 {
+                        for _ in 0..(-line_delta) { if start_line + 1 < self.line_versions.len() { self.line_versions.remove(start_line + 1); } }
+                    }
+                    // Ensure versions vector is not shorter than logical lines (in pathological edge cases)
+                    let logical_line_count = self.line_count();
+                    if self.line_versions.len() < logical_line_count { self.line_versions.resize(logical_line_count, 0); }
+                    else if self.line_versions.len() > logical_line_count { self.line_versions.truncate(logical_line_count); }
+
+                    // Bump versions for lines directly impacted (original start line through last new internal line)
+                    let last_affected = start_line + new_internal; // inclusive
+                    for line in start_line..=last_affected { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
+                }
+
+                if !ok { // Fallback path
+                    self.recompute_line_starts();
+                    for v in &mut self.line_versions { *v = v.wrapping_add(1); }
                 }
             }
-            // Bump only this line's version; others unchanged
-            if let Some(v) = self.line_versions.get_mut(start_line) {
-                *v = v.wrapping_add(1);
-            }
-            // (Line count unchanged in single-line edit without newlines)
-        } else {
-            // Fallback: full recompute (multi-line or newline-affecting edit)
-            self.recompute_line_starts();
-            // Bump all line versions (simpler for now; could refine to only touched span lines)
-            for v in &mut self.line_versions { *v = v.wrapping_add(1); }
         }
-
-        // Global revision always bumps
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Heuristic diff between previous and new full text; if it matches a single contiguous replace,
-    /// apply via apply_single_replace and return true. Else return false (caller can fallback to set_text).
     pub fn try_single_span_update(&mut self, previous: &str, new_full: &str) -> bool {
-        if previous == new_full {
-            return true;
-        }
-        // Quick bounds: find common prefix
+        if previous == new_full { return true; }
         let mut prefix = 0usize;
         let prev_bytes = previous.as_bytes();
         let new_bytes = new_full.as_bytes();
         let min_len = prev_bytes.len().min(new_bytes.len());
-        while prefix < min_len && prev_bytes[prefix] == new_bytes[prefix] {
-            prefix += 1;
-        }
-        // Find common suffix (excluding prefix region)
+        while prefix < min_len && prev_bytes[prefix] == new_bytes[prefix] { prefix += 1; }
         let mut suffix = 0usize;
         while suffix < (prev_bytes.len() - prefix)
             && suffix < (new_bytes.len() - prefix)
-            && prev_bytes[prev_bytes.len() - 1 - suffix] == new_bytes[new_bytes.len() - 1 - suffix]
-        {
-            suffix += 1;
-        }
-        // Compute differing spans
+            && prev_bytes[prev_bytes.len() - 1 - suffix] == new_bytes[new_bytes.len() - 1 - suffix] { suffix += 1; }
         let prev_mid_start = prefix;
         let prev_mid_end = prev_bytes.len() - suffix;
         let new_mid_start = prefix;
         let new_mid_end = new_bytes.len() - suffix;
-        // If no change region -> done
-        if prev_mid_start == prev_mid_end && new_mid_start == new_mid_end {
-            return true;
-        }
-        // Extract replacement slice
-        if new_mid_start > new_mid_end || prev_mid_start > prev_mid_end {
-            return false;
-        }
+        if prev_mid_start == prev_mid_end && new_mid_start == new_mid_end { return true; }
+        if new_mid_start > new_mid_end || prev_mid_start > prev_mid_end { return false; }
         if let Some(replacement) = new_full.get(new_mid_start..new_mid_end) {
             self.apply_single_replace(prev_mid_start..prev_mid_end, replacement);
             return true;
