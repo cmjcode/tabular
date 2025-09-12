@@ -16,6 +16,10 @@ pub struct EditorBuffer {
     undo_stack: Vec<EditRecord>,
     /// Redo stack.
     redo_stack: Vec<EditRecord>,
+    /// Cached line start offsets (byte indices) for fast line/col translation.
+    line_starts: Vec<usize>,
+    /// Monotonic revision counter we control (separate from any internal lapce buffer revs)
+    pub revision: u64,
 }
 
 /// A simple reversible edit representation (single replace operation)
@@ -35,6 +39,7 @@ impl Default for EditorBuffer {
 impl EditorBuffer {
     pub fn new(initial: &str) -> Self {
         let buffer = Buffer::new(initial);
+        let line_starts = Self::compute_line_starts(initial);
         Self {
             buffer,
             text: initial.to_string(),
@@ -43,7 +48,55 @@ impl EditorBuffer {
             last_revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            line_starts,
+            revision: 0,
         }
+    }
+
+    /// Full recompute of line starts (fallback path; later we can do incremental adjustments).
+    fn recompute_line_starts(&mut self) {
+        self.line_starts = Self::compute_line_starts(&self.text);
+    }
+
+    fn compute_line_starts(s: &str) -> Vec<usize> {
+        let mut v = Vec::with_capacity(128);
+        v.push(0);
+        for (i, ch) in s.char_indices() {
+            if ch == '\n' && i + 1 < s.len() {
+                v.push(i + 1);
+            }
+        }
+        v
+    }
+
+    /// Number of lines (at least 1 even if empty text) – consistent with typical editor semantics.
+    pub fn line_count(&self) -> usize {
+        // If text ends with a newline, last start still counts as an empty trailing line.
+        if self.text.ends_with('\n') { self.line_starts.len() + 1 } else { self.line_starts.len() }
+    }
+
+    /// Get start offset of given line index (returns text.len() if out of range).
+    pub fn line_start(&self, line: usize) -> usize {
+        self.line_starts.get(line).cloned().unwrap_or(self.text.len())
+    }
+
+    /// Translate byte offset to (line, column) in O(log N) using binary search over line_starts.
+    pub fn offset_to_line_col(&self, offset: usize) -> (usize, usize) {
+        let off = offset.min(self.text.len());
+        match self.line_starts.binary_search(&off) {
+            Ok(line) => (line, 0),
+            Err(idx) => {
+                let line = idx - 1; // safe because first element always 0 and Err>0 for off>0
+                let col = off - self.line_starts[line];
+                (line, col)
+            }
+        }
+    }
+
+    /// Placeholder for future granular edit path (Stage2). Currently delegates to single replace.
+    pub fn apply_granular_edit(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
+        // Stage2 TODO: use lapce_core::Buffer edit API instead of rebuild.
+        self.apply_single_replace(old_range, replacement);
     }
 
     /// Mark that the UI-updated text (egui TextEdit) should overwrite rope on next sync_to_rope.
@@ -75,6 +128,8 @@ impl EditorBuffer {
         self.last_revision = 0;
         self.dirty_to_string = false;
         self.dirty_to_rope = false;
+        self.recompute_line_starts();
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Sync UI -> rope when user edited via egui bound String.
@@ -129,6 +184,9 @@ impl EditorBuffer {
             removed,
         });
         self.redo_stack.clear();
+        // Recompute line indices (full for now). Later optimize if replacement single-line.
+        self.recompute_line_starts();
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Heuristic diff between previous and new full text; if it matches a single contiguous replace,
@@ -203,6 +261,8 @@ impl EditorBuffer {
                     removed: edit.inserted,
                 }; // note swapped roles
                 self.redo_stack.push(inverse);
+                self.recompute_line_starts();
+                self.revision = self.revision.wrapping_add(1);
                 return true;
             }
         }
@@ -225,6 +285,8 @@ impl EditorBuffer {
                     removed: edit.inserted,
                 };
                 self.undo_stack.push(inverse);
+                self.recompute_line_starts();
+                self.revision = self.revision.wrapping_add(1);
                 return true;
             }
         }

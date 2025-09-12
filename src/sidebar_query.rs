@@ -327,13 +327,23 @@ pub(crate) fn open_query_file(
     }
 
     // Create new tab for the file (with parsed connection metadata if any)
+    // Fallback: if no connection metadata and exactly one connection exists, attach it
+    let auto_single_connection = if resolved_connection_id.is_none()
+        && tabular.connections.len() == 1
+    {
+        tabular.connections[0].id
+    } else {
+        None
+    };
+    let effective_connection_id = resolved_connection_id.or(auto_single_connection);
+
     let new_tab = models::structs::QueryTab {
         title: filename,
         content: content.clone(),
         file_path: Some(file_path.to_string()),
         is_saved: true,
         is_modified: false,
-        connection_id: resolved_connection_id,
+        connection_id: effective_connection_id,
         database_name: resolved_database.clone(),
         has_executed_query: false, // New tab hasn't executed any query yet
         result_headers: Vec::new(),
@@ -353,7 +363,7 @@ pub(crate) fn open_query_file(
     tabular.editor.set_text(content);
 
     // If the file specified a connection, set it for active tab and eagerly create the pool
-    if let Some(conn_id) = resolved_connection_id {
+    if let Some(conn_id) = effective_connection_id {
         tabular.set_active_tab_connection_with_database(Some(conn_id), resolved_database);
         tabular.current_connection_id = Some(conn_id);
 

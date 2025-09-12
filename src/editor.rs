@@ -145,6 +145,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 }
 
 pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    let mut need_connect: Option<i64> = None;
     if tab_index < tabular.query_tabs.len() {
         // Save current tab content
         if let Some(current_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
@@ -189,6 +190,19 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             // IMPORTANT: kembalikan connection id aktif sesuai tab baru
             tabular.current_connection_id = new_tab.connection_id;
 
+            // Auto-connect restoration: jika tab memiliki connection_id dan pool belum siap, trigger creation
+            if let Some(conn_id) = new_tab.connection_id {
+                let has_pool = tabular.connection_pools.contains_key(&conn_id)
+                    || tabular
+                        .shared_connection_pools
+                        .lock()
+                        .map(|p| p.contains_key(&conn_id))
+                        .unwrap_or(false);
+                if !has_pool {
+                    need_connect = Some(conn_id);
+                }
+            }
+
             // Jika user sedang berada di tampilan Structure dan tab tujuan adalah tab Table, reload struktur tabel tsb.
             if tabular.table_bottom_view == models::structs::TableBottomView::Structure
                 && new_tab.title.starts_with("Table:")
@@ -196,6 +210,15 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 // load_structure_info_for_current_table adalah metode pada Tabular (dibuat pub(crate))
                 data_table::load_structure_info_for_current_table(tabular);
             }
+        }
+    }
+    // Deferred connection attempt after borrows released: perform quick creation now (blocking very briefly)
+    if let Some(conn_id) = need_connect {
+        if let Some(rt) = tabular.runtime.clone() {
+            // This will attempt a fast creation (internal timeout ~100ms). If slow, background path inside API handles it.
+            rt.block_on(async {
+                let _ = crate::connection::get_or_create_connection_pool(tabular, conn_id).await;
+            });
         }
     }
 }

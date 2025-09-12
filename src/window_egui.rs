@@ -9452,9 +9452,8 @@ impl App for Tabular {
                                                 .map(|p| crate::syntax::detect_language_from_name(p))
                                                 .unwrap_or(crate::syntax::LanguageKind::Sql);
                                             let dark = self.is_dark_mode;
-                                            // Re-use app highlight_cache as per-line job cache keyed by (line_index, revision)
-                                            // Use a simple incrementing revision: rely on buffer.text len hash for now
-                                            let rev_hash = self.editor.text.len() as u64 ^ (self.editor.text.as_bytes().iter().fold(0u64, |acc,b| acc.wrapping_mul(131).wrapping_add(*b as u64)) & 0xffff_ffff);
+                                            // Use internal buffer revision for line cache keying
+                                            let current_rev = self.editor.revision;
                                             let signals = crate::editor_widget::show(
                                                 ui,
                                                 state,
@@ -9463,7 +9462,7 @@ impl App for Tabular {
                                                 lang,
                                                 dark,
                                                 &mut self.per_line_highlight_cache,
-                                                rev_hash,
+                                                current_rev,
                                             );
                                             if signals.text_changed {
                                                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {

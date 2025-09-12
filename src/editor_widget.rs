@@ -52,7 +52,7 @@ pub fn show(
     lang: LanguageKind,
     dark: bool,
     line_cache: &mut std::collections::HashMap<(usize, u64), egui::text::LayoutJob>,
-    current_revision: u64,
+    _current_revision: u64, // deprecated param retained for compatibility; will use buffer.revision
 ) -> EditorSignals {
     let mut signals = EditorSignals::default();
     if selection.carets.is_empty() {
@@ -227,17 +227,17 @@ pub fn show(
             }
         }
         if move_up || move_down {
-            let lines = compute_line_starts(&buffer.text);
-            let (line_idx, col) = index_to_line_col(primary.head, &lines, &buffer.text);
+            // Use cached offset translation
+            let (line_idx, col) = buffer.offset_to_line_col(primary.head);
             let target_line = if move_up {
                 line_idx.saturating_sub(1)
             } else {
                 line_idx + 1
             };
-            if target_line < lines.len() {
-                let start = lines[target_line];
-                let end = if target_line + 1 < lines.len() {
-                    lines[target_line + 1] - 1
+            if target_line < buffer.line_count() {
+                let start = buffer.line_start(target_line);
+                let end = if target_line + 1 < buffer.line_count() {
+                    buffer.line_start(target_line + 1) - 1
                 } else {
                     buffer.text.len()
                 };
@@ -262,10 +262,8 @@ pub fn show(
 
     // --- After movement, ensure visible (primitive scroll) ---
     if let Some(primary) = selection.primary() {
-        // compute logical line/col without scroll
-        let lines = compute_line_starts(&buffer.text);
-        let (line_idx, col) =
-            index_to_line_col(primary.head.min(buffer.text.len()), &lines, &buffer.text);
+        // compute logical line/col without extra allocation
+        let (line_idx, col) = buffer.offset_to_line_col(primary.head.min(buffer.text.len()));
         let char_w =
             ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
         let caret_x = (col as f32) * char_w;
@@ -286,7 +284,7 @@ pub fn show(
     }
 
     // --- Recompute size & paint ---
-    let line_count = buffer.text.lines().count().max(1);
+    let line_count = buffer.line_count().max(1);
     let desired_h = line_height * line_count as f32 + line_height * 2.0;
     let rect = egui::Rect::from_min_size(available.min, egui::vec2(available.width(), desired_h));
     let painter = ui.painter();
@@ -302,7 +300,7 @@ pub fn show(
         rect.top() + 4.0 - state.view.scroll_y,
     );
     let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
-    let lines_vec = build_lines(&buffer.text); // (start,end_exclusive,no_newline_end)
+    let lines_vec = build_lines(&buffer.text); // Could be replaced by cached indices; keep for now (Stage2 optimization)
 
     // Selection highlighting (per caret range, merged duplicates internally by MultiSelection.ranges())
     let sel_color = ui.visuals().selection.bg_fill;
@@ -338,7 +336,7 @@ pub fn show(
                 ui.visuals().weak_text_color(),
             );
         }
-        let key = (idx, current_revision);
+        let key = (idx, buffer.revision);
         let job = if let Some(cached) = line_cache.get(&key) {
             cached.clone()
         } else {
@@ -361,8 +359,7 @@ pub fn show(
     let caret_color = egui::Color32::from_rgb(120, 180, 250);
     for caret in &selection.carets {
         let head = caret.head.min(buffer.text.len());
-        let (line_idx, col) =
-            index_to_line_col(head, &compute_line_starts(&buffer.text), &buffer.text);
+        let (line_idx, col) = buffer.offset_to_line_col(head);
         let x = text_origin.x + (col as f32) * char_w;
         let y = text_origin.y + (line_idx as f32) * line_height;
         let caret_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(1.5, line_height));
@@ -374,38 +371,7 @@ pub fn show(
 
 // --- Helpers ---
 
-fn compute_line_starts(text: &str) -> Vec<usize> {
-    let mut starts = Vec::with_capacity(128);
-    starts.push(0);
-    for (i, ch) in text.char_indices() {
-        if ch == '\n' {
-            if i + 1 < text.len() {
-                starts.push(i + 1);
-            }
-        }
-    }
-    starts
-}
-
-fn index_to_line_col(idx: usize, starts: &[usize], text: &str) -> (usize, usize) {
-    // linear scan acceptable for now; optimize with binary search if large
-    let mut line = 0usize;
-    for (i, s) in starts.iter().enumerate() {
-        if *s > idx {
-            break;
-        }
-        line = i;
-    }
-    let line_start = starts[line];
-    let mut line_end = text.len();
-    if line + 1 < starts.len() {
-        line_end = starts[line + 1] - 1;
-    }
-    let col = idx
-        .saturating_sub(line_start)
-        .min(line_end.saturating_sub(line_start));
-    (line, col)
-}
+// Removed local compute_line_starts/index_to_line_col in favor of buffer cached helpers.
 
 fn build_lines(text: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
