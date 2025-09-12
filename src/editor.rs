@@ -1,8 +1,6 @@
 use eframe::egui;
-use egui::text::{CCursor, CCursorRange};
-use egui::text_edit::TextEditState;
-// Removed egui_code_editor; using basic TextEdit and custom theme enum
-use lapce_core::buffer::Buffer;
+// Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
+use crate::editor_state_adapter::EditorStateAdapter;
 // syntax highlighting module temporarily disabled
 use log::debug;
 
@@ -758,28 +756,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
     }
 
-    // After show(), TextEditState should exist; apply pending cursor now
+    // After show(), apply any pending cursor via adapter
     if let Some(pos) = tabular.pending_cursor_set {
         let id = egui::Id::new("sql_editor");
-        if let Some(mut state) = TextEditState::load(ui.ctx(), id) {
-            let clamped = pos.min(tabular.editor.text.len());
-            state
-                .cursor
-                .set_char_range(Some(CCursorRange::one(CCursor::new(clamped))));
-            state.store(ui.ctx(), id);
-            tabular.cursor_position = clamped;
-            tabular.pending_cursor_set = None;
-            ui.memory_mut(|m| m.request_focus(id));
-            debug!("Applied pending cursor position {} post-show", clamped);
-        } else {
-            // Create a new state manually so cursor moves even if CodeEditor doesn't create one
-            let mut state = TextEditState::default();
-            state
-                .cursor
-                .set_char_range(Some(CCursorRange::one(CCursor::new(pos))));
-            state.store(ui.ctx(), id);
-            debug!("Manually created TextEditState with cursor {}", pos);
-        }
+        let clamped = pos.min(tabular.editor.text.len());
+        crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, clamped);
+        tabular.cursor_position = clamped;
+        tabular.pending_cursor_set = None;
+        ui.memory_mut(|m| m.request_focus(id));
+        debug!("Applied pending cursor position {} via adapter", clamped);
     }
 
     // Cleanup stray tab character inside the just-completed identifier (from Tab key) if any
@@ -809,16 +794,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     tabular.cursor_position -= shift;
                     // Adjust egui state cursor
                     let id = egui::Id::new("sql_editor");
-                    if let Some(mut state) = TextEditState::load(ui.ctx(), id) {
-                        state
-                            .cursor
-                            .set_char_range(Some(CCursorRange::one(CCursor::new(
-                                tabular.cursor_position,
-                            ))));
-                        state.store(ui.ctx(), id);
-                    } else {
-                        tabular.pending_cursor_set = Some(tabular.cursor_position);
-                    }
+                    crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, tabular.cursor_position);
                     log::debug!(
                         "Removed tab character from accepted token; new token='{}'",
                         cleaned
@@ -831,24 +807,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Try to capture selected text from the response
     // Note: This is a simplified approach. The actual implementation may vary depending on the CodeEditor version
     // Recover cursor + selection from TextEditState (single range only for now)
-    if let Some(state) = TextEditState::load(ui.ctx(), response.id) {
-        if let Some(range) = state.cursor.char_range() {
-            let primary = range.primary;
-            let secondary = range.secondary;
-            let start = primary.index.min(secondary.index);
-            let end = primary.index.max(secondary.index);
-            tabular.cursor_position = primary.index;
-            tabular.selection_start = start;
-            tabular.selection_end = end;
-            if start != end {
-                if let Some(selected) = tabular.editor.text.get(start..end) {
-                    tabular.selected_text = selected.to_string();
-                } else {
-                    tabular.selected_text.clear();
-                }
+    if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id) {
+        tabular.cursor_position = rng.primary;
+        tabular.selection_start = rng.start;
+        tabular.selection_end = rng.end;
+        if rng.start != rng.end {
+            if let Some(selected) = tabular.editor.text.get(rng.start..rng.end) {
+                tabular.selected_text = selected.to_string();
             } else {
                 tabular.selected_text.clear();
             }
+        } else {
+            tabular.selected_text.clear();
         }
     }
 
@@ -884,25 +854,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Apply multi-cursor editing if there are extra cursors
         if !tabular.multi_selection.carets.is_empty() {
             // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
-            if let Some(state) = TextEditState::load(ui.ctx(), response.id) {
-                if let Some(range) = state.cursor.char_range() {
-                    // Primary caret after edit
-                    let new_primary = range.primary.index;
-                    let old_primary = tabular.cursor_position;
-                    if new_primary > old_primary {
-                        // Insertion occurred at old_primary for primary caret; capture inserted slice
-                        if let Some(inserted_slice) = tabular.editor.text.get(old_primary..new_primary) {
-                            let inserted = inserted_slice.to_string();
-                            tabular.multi_selection.apply_insert_text(&mut tabular.editor.text, &inserted);
-                            tabular.cursor_position = new_primary;
-                        }
-                    } else if new_primary < old_primary {
-                        // Likely backspace (single char) or deletion selection; handle as backspace across carets
-                        // For now treat any left move of 1 as backspace multi
-                        if old_primary.saturating_sub(new_primary) == 1 {
-                            tabular.multi_selection.apply_backspace(&mut tabular.editor.text);
-                            tabular.cursor_position = new_primary; // after state already moved
-                        }
+            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id) {
+                let new_primary = rng.primary;
+                let old_primary = tabular.cursor_position;
+                if new_primary > old_primary {
+                    if let Some(inserted_slice) = tabular.editor.text.get(old_primary..new_primary) {
+                        let inserted = inserted_slice.to_string();
+                        tabular.multi_selection.apply_insert_text(&mut tabular.editor.text, &inserted);
+                        tabular.cursor_position = new_primary;
+                    }
+                } else if new_primary < old_primary {
+                    if old_primary.saturating_sub(new_primary) == 1 {
+                        tabular.multi_selection.apply_backspace(&mut tabular.editor.text);
+                        tabular.cursor_position = new_primary;
                     }
                 }
             }
@@ -982,16 +946,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
             // Update internal egui state for cursor after Enter accept path
             let id = egui::Id::new("sql_editor");
-            if let Some(mut state) = TextEditState::load(ui.ctx(), id) {
-                state
-                    .cursor
-                    .set_char_range(Some(CCursorRange::one(CCursor::new(
-                        tabular.cursor_position,
-                    ))));
-                state.store(ui.ctx(), id);
-            } else {
-                tabular.pending_cursor_set = Some(tabular.cursor_position);
-            }
+            crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, tabular.cursor_position);
             // Re-focus editor so Tab doesn't move focus away
             ui.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
         }
