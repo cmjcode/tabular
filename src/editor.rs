@@ -676,52 +676,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
     if input_snapshot.key_pressed(egui::Key::Escape) {
-        if !tabular.extra_cursors.is_empty() { 
-            tabular.clear_extra_cursors(); 
-            tabular.selected_text.clear(); // Also clear selection
+        if !tabular.multi_selection.carets.is_empty() {
+            tabular.multi_selection.clear();
+            tabular.selected_text.clear();
         }
     }
     let cmd_or_ctrl = input_snapshot.modifiers.command || input_snapshot.modifiers.ctrl;
     if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
         println!("DEBUG: Cmd+D key detected!");
-        // Find next occurrence of selected text or word under cursor
-        tabular.add_next_occurrence_cursor();
+        tabular.add_next_occurrence_cursor(); // already mirrors into multi_selection
     }
     
     // Handle multi-cursor typing - apply changes to all cursors
-    if !tabular.extra_cursors.is_empty() {
-        // Check if text was changed this frame
-        if let Some(state) = TextEditState::load(ui.ctx(), response.id) {
-            if let Some(range) = state.cursor.char_range() {
-                let new_main_cursor = range.primary.index;
-                let old_main_cursor = tabular.cursor_position;
-                
-                // If cursor moved due to typing (not clicking), apply to all cursors
-                if new_main_cursor != old_main_cursor && tabular.editor.text != tabular.last_editor_text {
-                    let cursor_delta = new_main_cursor as i32 - old_main_cursor as i32;
-                    println!("DEBUG: Multi-cursor typing detected, delta: {}", cursor_delta);
-                    
-                    // Update all extra cursors by the same delta
-                    for cursor in &mut tabular.extra_cursors {
-                        let new_pos = (*cursor as i32 + cursor_delta).max(0) as usize;
-                        *cursor = new_pos.min(tabular.editor.text.len());
-                    }
-                    
-                    // Sort and remove duplicates
-                    tabular.extra_cursors.sort_unstable();
-                    tabular.extra_cursors.dedup();
-                    
-                    // Remove any that match main cursor
-                    tabular.extra_cursors.retain(|&pos| pos != new_main_cursor);
-                    
-                    tabular.cursor_position = new_main_cursor;
-                }
-            }
-        }
-        
-        // Store current text for next frame comparison
-    tabular.last_editor_text = tabular.editor.text.clone();
-    }
+    // Multi-selection typing compensations handled later in response.changed() branch now.
     if tabular.advanced_editor.show_line_numbers {
         if let Some(gutter_rect) = ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("gutter_rect"))) {
             let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
@@ -750,7 +717,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Paint extra cursors (after gutter so they appear above text) using approximate positioning
-    if !tabular.extra_cursors.is_empty() {
+    if !tabular.multi_selection.carets.is_empty() {
         let painter = ui.painter();
         let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
         
@@ -763,9 +730,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             0.0
         };
         
-        println!("DEBUG: Drawing {} cursors, gutter_width={}", tabular.extra_cursors.len(), gutter_width);
-        
-        for &cpos in &tabular.extra_cursors {
+        println!("DEBUG: Drawing {} carets (multi_selection)", tabular.multi_selection.carets.len());
+        for caret in &tabular.multi_selection.carets {
+            let cpos = caret.head;
             let mut line_start = 0usize; 
             let mut line_no = 0usize;
             for (i, ch) in tabular.editor.text.char_indices() { 
@@ -787,8 +754,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let color = egui::Color32::from_rgba_unmultiplied(100, 150, 255, 180); // Semi-transparent blue
             painter.rect_filled(caret_rect, 1.0, color);
             
-            println!("DEBUG: Drawing cursor at pos {} -> line {}, col {} -> x={}, y={}", 
-                    cpos, line_no, column, x, y_top);
+            println!("DEBUG: Drawing caret at pos {} -> line {}, col {} -> x={}, y={}", cpos, line_no, column, x, y_top);
         }
     }
 
@@ -907,22 +873,26 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         tabular.editor.mark_text_modified();
         
         // Apply multi-cursor editing if there are extra cursors
-        if !tabular.extra_cursors.is_empty() {
-            // Store current cursor position before borrowing state
-            let current_cursor = tabular.cursor_position;
-            let editor_text_copy = tabular.editor.text.clone();
-            
-            // Detect what changed and apply to all cursors
+        if !tabular.multi_selection.carets.is_empty() {
+            // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
             if let Some(state) = TextEditState::load(ui.ctx(), response.id) {
                 if let Some(range) = state.cursor.char_range() {
-                    let new_cursor = range.primary.index;
-                    if new_cursor != current_cursor {
-                        // Something was typed
-                        let change_len = new_cursor as i32 - current_cursor as i32;
-                        if change_len > 0 && change_len < 10 { // Simple character insertion
-                            if let Some(inserted_text) = editor_text_copy.get(current_cursor..new_cursor) {
-                                tabular.apply_multi_edit(current_cursor, current_cursor, inserted_text);
-                            }
+                    // Primary caret after edit
+                    let new_primary = range.primary.index;
+                    let old_primary = tabular.cursor_position;
+                    if new_primary > old_primary {
+                        // Insertion occurred at old_primary for primary caret; capture inserted slice
+                        if let Some(inserted_slice) = tabular.editor.text.get(old_primary..new_primary) {
+                            let inserted = inserted_slice.to_string();
+                            tabular.multi_selection.apply_insert_text(&mut tabular.editor.text, &inserted);
+                            tabular.cursor_position = new_primary;
+                        }
+                    } else if new_primary < old_primary {
+                        // Likely backspace (single char) or deletion selection; handle as backspace across carets
+                        // For now treat any left move of 1 as backspace multi
+                        if old_primary.saturating_sub(new_primary) == 1 {
+                            tabular.multi_selection.apply_backspace(&mut tabular.editor.text);
+                            tabular.cursor_position = new_primary; // after state already moved
                         }
                     }
                 }

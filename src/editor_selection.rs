@@ -49,4 +49,56 @@ impl MultiSelection {
             if c.anchor >= end { c.anchor -= del_len; }
         }
     }
+    /// Return a Vec of (anchor, head) sorted & deduped by the min position.
+    pub fn ranges(&self) -> Vec<(usize, usize)> {
+        let mut v: Vec<(usize, usize)> = self.carets.iter().map(|c| c.range()).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+    /// Return collapsed caret positions (head) deduped & sorted.
+    pub fn caret_positions(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self.carets.iter().map(|c| c.head).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+    /// Apply same inserted text at each collapsed caret (multi-cursor typing).
+    /// Assumes all carets are collapsed. Processes from right to left to avoid shifting earlier indices.
+    pub fn apply_insert_text(&mut self, text: &mut String, insert: &str) {
+        if insert.is_empty() { return; }
+        let len = insert.len();
+    let positions = self.caret_positions();
+        // process descending
+        for &pos in positions.iter().rev() {
+            if pos <= text.len() { text.insert_str(pos, insert); }
+        }
+        // Update caret positions
+        for &pos in &positions { self.apply_simple_insert(pos, len); }
+    }
+    /// Apply backspace (delete one char to the left) for each collapsed caret.
+    pub fn apply_backspace(&mut self, text: &mut String) {
+        let mut positions = self.caret_positions();
+        // For correctness, operate from left to right? Actually we remove left of caret, which shifts later indices.
+        // So process from left to right but adjust subsequent positions by tracking delta, simpler approach: process descending too.
+        positions.sort_unstable();
+        let mut performed: Vec<(usize, usize)> = Vec::new(); // (start,len)
+        for &pos in positions.iter() {
+            if pos == 0 { continue; }
+            let del_start = pos - 1;
+            if del_start < text.len() {
+                // Remove single char (could be part of multi-byte; assume ASCII for now – future: use char boundary)
+                // Ensure char boundary
+                let mut real_start = del_start;
+                while !text.is_char_boundary(real_start) && real_start > 0 { real_start -= 1; }
+                let mut real_end = pos;
+                while real_end < text.len() && !text.is_char_boundary(real_end) { real_end += 1; }
+                text.replace_range(real_start..real_end, "");
+                performed.push((real_start, real_end - real_start));
+            }
+        }
+        // Apply selection updates from last deletion to first to avoid double shifting logic.
+        performed.sort_by_key(|(s, _)| *s);
+        for (start, len) in performed.into_iter().rev() { self.apply_simple_delete(start, len); }
+    }
 }
