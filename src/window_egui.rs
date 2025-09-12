@@ -20,7 +20,8 @@ pub struct Tabular {
     // Transitional multi-selection model (will move to lapce-core selection)
     pub multi_selection: crate::editor_selection::MultiSelection,
     // Experimental custom editor toggle & state
-        pub editor_widget_state: Option<crate::editor_widget::EditorWidgetState>, // Custom editor state (legacy editor removed)
+    pub use_new_editor: bool,
+    pub editor_widget_state: Option<crate::editor_widget::EditorWidgetState>,
     pub selected_menu: String,
     pub items_tree: Vec<models::structs::TreeNode>,
     pub queries_tree: Vec<models::structs::TreeNode>,
@@ -545,7 +546,7 @@ impl Tabular {
         let mut app = Self {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
-            // Custom editor always enabled (legacy removed)
+            use_new_editor: false, // default off; can be toggled via future settings
             editor_widget_state: None,
             selected_menu: "Database".to_string(),
             items_tree: Vec::new(),
@@ -9319,110 +9320,59 @@ impl App for Tabular {
                                 .show(&mut child_ui, |ui| {
                                     // Constrain width to avoid horizontal grow
                                     ui.set_min_width(avail_w - 4.0);
-                                    // NEW EDITOR (legacy removed)
-                                    if self.editor_widget_state.is_none() {
-                                        self.editor_widget_state = Some(crate::editor_widget::EditorWidgetState::new());
-                                    }
-                                    if let Some(state) = self.editor_widget_state.as_mut() {
-                                        let lang = self
-                                            .query_tabs
-                                            .get(self.active_tab_index)
-                                            .and_then(|t| t.file_path.as_ref())
-                                            .map(|p| crate::syntax::detect_language_from_name(p))
-                                            .unwrap_or(crate::syntax::LanguageKind::Sql);
-                                        let dark = self.is_dark_mode;
-                                        let rev_hash = self.editor.text.len() as u64 ^ (self.editor.text.as_bytes().iter().fold(0u64, |acc,b| acc.wrapping_mul(131).wrapping_add(*b as u64)) & 0xffff_ffff);
-                                        let signals = crate::editor_widget::show(
-                                            ui,
-                                            state,
-                                            &mut self.editor,
-                                            &mut self.multi_selection,
-                                            lang,
-                                            dark,
-                                            &mut self.per_line_highlight_cache,
-                                            rev_hash,
-                                        );
-                                        // Sync primary caret & selection into legacy fields used by query execution
-                                        if let Some(primary) = self.multi_selection.primary() {
-                                            let (s, e) = primary.range();
-                                            self.cursor_position = primary.head.min(self.editor.text.len());
-                                            self.selection_start = s.min(self.editor.text.len());
-                                            self.selection_end = e.min(self.editor.text.len());
-                                            if self.selection_start < self.selection_end {
-                                                if let Some(slice) = self.editor.text.get(self.selection_start..self.selection_end) {
-                                                    self.selected_text = slice.to_string();
-                                                } else { self.selected_text.clear(); }
-                                            } else { self.selected_text.clear(); }
+                                    if self.use_new_editor {
+                                        if self.editor_widget_state.is_none() {
+                                            self.editor_widget_state = Some(crate::editor_widget::EditorWidgetState::new());
                                         }
-                                        if signals.text_changed {
-                                            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                                tab.content = self.editor.text.clone();
-                                                tab.is_modified = true;
-                                            }
-                                        }
-                                        // Execute query via internal editor shortcut (Cmd/Ctrl+Enter)
-                                        if signals.run_query {
-                                            log::debug!("[window_egui] run_query signal received");
-                                            log::debug!("[window_egui] selection_start={}, selection_end={}, selected_text_len={}", self.selection_start, self.selection_end, self.selected_text.len());
-                                            let cursor_query = editor::extract_query_from_cursor(self);
-                                            log::debug!("[window_egui] cursor_query='{}'", cursor_query.replace('\n', " "));
-                                            let trimmed_full = self.editor.text.trim();
-                                            let has_q = if !self.selected_text.trim().is_empty() {
-                                                log::debug!("[window_egui] executing selected region");
-                                                true
-                                            } else if !cursor_query.trim().is_empty() {
-                                                log::debug!("[window_egui] executing cursor statement");
-                                                true
-                                            } else if !trimmed_full.is_empty() {
-                                                log::debug!("[window_egui] executing whole buffer");
-                                                true
-                                            } else { false };
-                                            if has_q {
-                                                editor::execute_query(self);
-                                            } else {
-                                                log::debug!("[window_egui] no query found to execute");
-                                            }
-                                        }
-                                        let mut want_popup = false;
-                                        if signals.text_changed {
-                                            if let Some(pref) = &signals.prefix_text { if !pref.is_empty() { want_popup = true; } }
-                                        }
-                                        let manual = ui.input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd) && ui.input(|i| i.key_pressed(egui::Key::Space));
-                                        if manual { want_popup = true; }
-                                        if want_popup {
-                                            let (pstart, prefix, suggestions) = crate::editor_autocomplete::collect_autocomplete_for_buffer(
-                                                self,
-                                                &self.editor.text,
-                                                signals.primary_caret,
+                                        // Safe unwrap after init
+                                        if let Some(state) = self.editor_widget_state.as_mut() {
+                                            // Determine language & theme
+                                            let lang = self
+                                                .query_tabs
+                                                .get(self.active_tab_index)
+                                                .and_then(|t| t.file_path.as_ref())
+                                                .map(|p| crate::syntax::detect_language_from_name(p))
+                                                .unwrap_or(crate::syntax::LanguageKind::Sql);
+                                            let dark = self.is_dark_mode;
+                                            // Re-use app highlight_cache as per-line job cache keyed by (line_index, revision)
+                                            // Use a simple incrementing revision: rely on buffer.text len hash for now
+                                            let rev_hash = self.editor.text.len() as u64 ^ (self.editor.text.as_bytes().iter().fold(0u64, |acc,b| acc.wrapping_mul(131).wrapping_add(*b as u64)) & 0xffff_ffff);
+                                            let signals = crate::editor_widget::show(
+                                                ui,
+                                                state,
+                                                &mut self.editor,
+                                                &mut self.multi_selection,
+                                                lang,
+                                                dark,
+                                                &mut self.per_line_highlight_cache,
+                                                rev_hash,
                                             );
-                                            if !suggestions.is_empty() {
-                                                self.show_autocomplete = true;
-                                                self.autocomplete_suggestions = suggestions;
-                                                self.selected_autocomplete_index = 0;
-                                                self.autocomplete_prefix = prefix.clone();
-                                                self.last_autocomplete_trigger_len = prefix.len();
-                                            } else {
-                                                self.show_autocomplete = false;
-                                                self.autocomplete_suggestions.clear();
+                                            if signals.text_changed {
+                                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                                    tab.content = self.editor.text.clone();
+                                                    tab.is_modified = true;
+                                                }
                                             }
-                                            let _ = pstart;
                                         }
-                                        if self.show_autocomplete && !self.autocomplete_suggestions.is_empty() {
-                                            let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-                                            let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
-                                            if down { crate::editor_autocomplete::navigate(self, 1); }
-                                            if up { crate::editor_autocomplete::navigate(self, -1); }
-                                            let accept = ui.input(|i| i.key_pressed(egui::Key::Enter)) || ui.input(|i| i.key_pressed(egui::Key::Tab));
-                                            if accept { crate::editor_autocomplete::accept_current_suggestion(self); }
-                                        }
-                                        if self.show_autocomplete && !self.autocomplete_suggestions.is_empty() {
-                                            let caret_pos_screen = ui.ctx().pointer_latest_pos().unwrap_or(rect.left_top());
-                                            let popup_pos = egui::pos2(rect.left() + 40.0, rect.top() + 30.0);
-                                            crate::editor_autocomplete::render_autocomplete(self, ui, popup_pos.max(caret_pos_screen));
-                                        }
+                                    } else {
+                                        editor::render_advanced_editor(self, ui);
                                     }
                                 });
-                            // (Cmd/Ctrl+Enter handled inside editor_widget now)
+                            // Key shortcut check
+                            if ui.input(|i| {
+                                (i.modifiers.ctrl || i.modifiers.mac_cmd)
+                                    && i.key_pressed(egui::Key::Enter)
+                            }) {
+                                let has_q = if !self.selected_text.trim().is_empty() {
+                                    true
+                                } else {
+                                    let cq = editor::extract_query_from_cursor(self);
+                                    !cq.trim().is_empty() || !self.editor.text.trim().is_empty()
+                                };
+                                if has_q {
+                                    editor::execute_query(self);
+                                }
+                            }
                         });
                     if show_bottom {
                         // Draw draggable handle

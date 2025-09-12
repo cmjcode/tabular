@@ -9,7 +9,6 @@ use crate::{connection, driver_mssql, export, models, spreadsheet::SpreadsheetOp
 
 
 pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    debug!("[render_table_data] headers={} rows={} table_name='{}' is_table_browse_mode={}", tabular.current_table_headers.len(), tabular.current_table_data.len(), tabular.current_table_name, tabular.is_table_browse_mode);
         if !tabular.current_table_headers.is_empty() || !tabular.current_table_name.is_empty() {
             // This function now only renders DATA grid (toggle handled at higher level for table tabs)
 
