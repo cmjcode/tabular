@@ -17,6 +17,7 @@ pub mod editor_autocomplete;
 pub mod editor_buffer;
 pub mod editor_selection;
 pub mod editor_state_adapter;
+pub mod editor_widget; // experimental custom editor
 pub mod export;
 pub mod models;
 pub mod modules;
