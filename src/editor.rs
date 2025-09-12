@@ -657,12 +657,51 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
     if input_snapshot.key_pressed(egui::Key::Escape) {
-        if !tabular.extra_cursors.is_empty() { tabular.clear_extra_cursors(); }
+        if !tabular.extra_cursors.is_empty() { 
+            tabular.clear_extra_cursors(); 
+            tabular.selected_text.clear(); // Also clear selection
+        }
     }
     let cmd_or_ctrl = input_snapshot.modifiers.command || input_snapshot.modifiers.ctrl;
     if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
+        println!("DEBUG: Cmd+D key detected!");
         // Find next occurrence of selected text or word under cursor
         tabular.add_next_occurrence_cursor();
+    }
+    
+    // Handle multi-cursor typing - apply changes to all cursors
+    if !tabular.extra_cursors.is_empty() {
+        // Check if text was changed this frame
+        if let Some(state) = TextEditState::load(ui.ctx(), response.id) {
+            if let Some(range) = state.cursor.char_range() {
+                let new_main_cursor = range.primary.index;
+                let old_main_cursor = tabular.cursor_position;
+                
+                // If cursor moved due to typing (not clicking), apply to all cursors
+                if new_main_cursor != old_main_cursor && tabular.editor_text != tabular.last_editor_text {
+                    let cursor_delta = new_main_cursor as i32 - old_main_cursor as i32;
+                    println!("DEBUG: Multi-cursor typing detected, delta: {}", cursor_delta);
+                    
+                    // Update all extra cursors by the same delta
+                    for cursor in &mut tabular.extra_cursors {
+                        let new_pos = (*cursor as i32 + cursor_delta).max(0) as usize;
+                        *cursor = new_pos.min(tabular.editor_text.len());
+                    }
+                    
+                    // Sort and remove duplicates
+                    tabular.extra_cursors.sort_unstable();
+                    tabular.extra_cursors.dedup();
+                    
+                    // Remove any that match main cursor
+                    tabular.extra_cursors.retain(|&pos| pos != new_main_cursor);
+                    
+                    tabular.cursor_position = new_main_cursor;
+                }
+            }
+        }
+        
+        // Store current text for next frame comparison
+        tabular.last_editor_text = tabular.editor_text.clone();
     }
     if tabular.advanced_editor.show_line_numbers {
         if let Some(gutter_rect) = ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("gutter_rect"))) {
@@ -695,16 +734,42 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     if !tabular.extra_cursors.is_empty() {
         let painter = ui.painter();
         let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        
+        // Calculate gutter width
+        let gutter_width = if tabular.advanced_editor.show_line_numbers {
+            let total_lines = tabular.editor_text.lines().count().max(1);
+            ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0')) 
+                * (total_lines.to_string().len() as f32 + 1.0)
+        } else {
+            0.0
+        };
+        
+        println!("DEBUG: Drawing {} cursors, gutter_width={}", tabular.extra_cursors.len(), gutter_width);
+        
         for &cpos in &tabular.extra_cursors {
-            let mut line_start = 0usize; let mut line_no = 0usize;
-            for (i, ch) in tabular.editor_text.char_indices() { if i >= cpos { break; } if ch=='\n' { line_no+=1; line_start = i+1; } }
-            let column = cpos - line_start;
-            let char_w = 8.0_f32; // heuristic
-            let x = response.rect.left() + 8.0 + (column as f32) * char_w;
-            let y_top = response.rect.top() + 4.0 + (line_no as f32) * line_height;
-            let caret_rect = egui::Rect::from_min_size(egui::pos2(x, y_top), egui::vec2(2.0, line_height));
-            let color = ui.visuals().selection.stroke.color;
-            painter.rect_filled(caret_rect, 0.0, color);        
+            let mut line_start = 0usize; 
+            let mut line_no = 0usize;
+            for (i, ch) in tabular.editor_text.char_indices() { 
+                if i >= cpos { break; } 
+                if ch == '\n' { 
+                    line_no += 1; 
+                    line_start = i + 1; 
+                } 
+            }
+            let column = cpos.saturating_sub(line_start);
+            let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
+            
+            // Position cursor properly with better offset calculation
+            let x = response.rect.left() + gutter_width + 6.0 + (column as f32) * char_w;
+            let y_top = response.rect.top() + 6.0 + (line_no as f32) * line_height;
+            
+            // Make cursor thinner and more subtle
+            let caret_rect = egui::Rect::from_min_size(egui::pos2(x, y_top), egui::vec2(1.5, line_height - 2.0));
+            let color = egui::Color32::from_rgba_unmultiplied(100, 150, 255, 180); // Semi-transparent blue
+            painter.rect_filled(caret_rect, 1.0, color);
+            
+            println!("DEBUG: Drawing cursor at pos {} -> line {}, col {} -> x={}, y={}", 
+                    cpos, line_no, column, x, y_top);
         }
     }
 

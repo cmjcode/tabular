@@ -408,6 +408,7 @@ impl ShallowForCache for Tabular {
             last_autocomplete_trigger_len: 0,
             pending_cursor_set: None,
             extra_cursors: Vec::new(),
+            last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
             last_highlight_hash: None,
             show_index_dialog: false,

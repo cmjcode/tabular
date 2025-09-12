@@ -162,6 +162,7 @@ pub struct Tabular {
     pub pending_cursor_set: Option<usize>,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)
     pub extra_cursors: Vec<usize>,
+    pub last_editor_text: String, // For detecting text changes in multi-cursor mode
     // Syntax highlighting cache (text_hash -> LayoutJob)
     pub highlight_cache: std::collections::HashMap<u64, eframe::egui::text::LayoutJob>,
     pub last_highlight_hash: Option<u64>,
@@ -265,48 +266,86 @@ impl Tabular {
 
     // Add cursor at next occurrence of selected text or word under cursor (like Cmd+D in VS Code)
     pub fn add_next_occurrence_cursor(&mut self) {
+        println!("DEBUG: Cmd+D pressed");
+        
         let text = &self.editor_text;
         let current_pos = self.cursor_position.min(text.len());
+
+        // Jika ini pertama kali (belum ada extra cursor), simpan posisi utama sekarang
+        if self.extra_cursors.is_empty() {
+            if !self.extra_cursors.contains(&current_pos) {
+                println!("DEBUG: Priming multi-cursor, menambahkan posisi awal {} ke extra_cursors", current_pos);
+                self.extra_cursors.push(current_pos);
+            }
+        }
         
         // Get the text to search for
         let search_text = if !self.selected_text.is_empty() {
             // Use selected text
+            println!("DEBUG: Using selected text: '{}'", self.selected_text);
             self.selected_text.clone()
         } else {
             // Get word under cursor
             let word_start = self.find_word_start(text, current_pos);
             let word_end = self.find_word_end(text, current_pos);
             if word_start < word_end {
-                text[word_start..word_end].to_string()
+                let word = text[word_start..word_end].to_string();
+                println!("DEBUG: Using word under cursor: '{}' (pos {} to {})", word, word_start, word_end);
+                word
             } else {
+                println!("DEBUG: No word found under cursor at position {}", current_pos);
                 return; // No word to search for
             }
         };
         
         if search_text.is_empty() {
+            println!("DEBUG: Search text is empty");
             return;
         }
         
-        // Find the next occurrence after the current cursor position
-        let search_start = if self.extra_cursors.is_empty() {
-            // First time - search after current position
-            current_pos + search_text.len()
-        } else {
-            // Find the last cursor position and search after that
-            let last_cursor = self.extra_cursors.iter().max().copied().unwrap_or(current_pos);
-            last_cursor + search_text.len()
-        };
+        // Find where to start searching from
+        // If we have extra cursors, search from after the last cursor
+        // Otherwise, search from after current position
+        // Cari dari setelah occurrence paling akhir yang sudah ada
+        let max_existing = self
+            .extra_cursors
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(current_pos);
+        let search_from = max_existing + 1;        
         
-        if let Some(next_pos) = text[search_start..].find(&search_text) {
-            let absolute_pos = search_start + next_pos;
-            self.add_cursor(absolute_pos);
-        } else {
-            // Wrap around - search from beginning
-            if let Some(first_pos) = text.find(&search_text) {
-                if first_pos != current_pos {
-                    self.add_cursor(first_pos);
+        println!("DEBUG: Searching for '{}' starting from position {} (current={}, extra_cursors={:?})", 
+                search_text, search_from, current_pos, self.extra_cursors);
+        
+        if search_from < text.len() {
+            if let Some(next_pos_rel) = text[search_from..].find(&search_text) {
+                let absolute_pos = search_from + next_pos_rel;
+                println!("DEBUG: Found next occurrence at position {}", absolute_pos);
+                if !self.extra_cursors.contains(&absolute_pos) && absolute_pos != self.cursor_position {
+                    self.extra_cursors.push(absolute_pos);
+                    self.extra_cursors.sort_unstable();
                 }
+                println!("DEBUG: Extra cursors now: {:?}", self.extra_cursors);
+                // Jangan pindahkan main cursor; biarkan user punya anchor seperti VS Code (opsional)
+                // Set selection text supaya konsisten
+                self.selected_text = search_text.clone();
+                return;
             }
+        }
+        
+        // Try from beginning (wrap around) only if we didn't find anything above
+        println!("DEBUG: No occurrence found after position {}, trying wrap-around", search_from);
+        if let Some(first_pos) = text.find(&search_text) {
+            if !self.extra_cursors.contains(&first_pos) && first_pos != self.cursor_position {
+                println!("DEBUG: Wrap-around adding position {}", first_pos);
+                self.extra_cursors.push(first_pos);
+                self.extra_cursors.sort_unstable();
+            } else {
+                println!("DEBUG: Wrap-around found position {} but already present (done)", first_pos);
+            }
+        } else {
+            println!("DEBUG: No occurrence found at all");
         }
     }
 
@@ -662,6 +701,7 @@ impl Tabular {
             spreadsheet_state: crate::models::structs::SpreadsheetState::default(),
             lapce_buffer: Some(Buffer::new("")),
             extra_cursors: Vec::new(),
+            last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
             last_highlight_hash: None,
         };
