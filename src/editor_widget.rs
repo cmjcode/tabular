@@ -63,7 +63,8 @@ pub fn show(
     state.view.viewport_h = available_full.height();
     let line_height = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
     state.view.line_height = line_height;
-    let id = ui.make_persistent_id("custom_editor_phase_a");
+    // Use a stable, shared focus id so other modules (window_egui) can correctly detect editor focus
+    let id = egui::Id::new("sql_editor");
 
     // --- Gather input BEFORE painting so edits show immediately ---
     let mut inserted_batch = String::new();
@@ -121,6 +122,8 @@ pub fn show(
             }
         }
     });
+    // Fallback: if shift is currently held but not captured in key press event (e.g., during key repeat)
+    if ui.input(|i| i.modifiers.shift) { shift = true; }
 
     // --- Text mutations ---
     if undo_cmd {
@@ -303,9 +306,22 @@ pub fn show(
                 byte_off = ls + ci + ch.len_utf8();
             }
             if col == line_len { byte_off = le; }
-            selection.clear();
-            selection.ensure_primary(byte_off);
+            if shift {
+                // Extend existing primary selection, keep anchor
+                if let Some(primary) = selection.primary_mut() {
+                    primary.head = byte_off.min(buffer.text.len());
+                } else {
+                    selection.clear();
+                    selection.ensure_primary(byte_off);
+                }
+            } else {
+                // Regular click collapses selection
+                selection.clear();
+                selection.ensure_primary(byte_off);
+            }
+            // Anchor already stored in primary.anchor; no need to persist externally.
             signals.caret_moved = true;
+            if let Some(p) = selection.primary() { log::debug!("[editor_widget] click anchor={} head={}", p.anchor, p.head); }
         }
     }
     if response.dragged() && pointer_drag_pos.is_some() {
@@ -330,7 +346,9 @@ pub fn show(
             }
             if col == line_len { byte_off = le; }
             if let Some(primary) = selection.primary_mut() {
-                primary.head = byte_off;
+                // Keep existing anchor; only update head as mouse drags.
+                primary.head = byte_off.min(buffer.text.len());
+                log::debug!("[editor_widget] drag anchor={} head={} range=({}, {})", primary.anchor, primary.head, primary.range().0, primary.range().1);
             }
         }
     }

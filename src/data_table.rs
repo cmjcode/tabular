@@ -603,6 +603,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         tabular.selected_row = Some(tr);
                         tabular.selected_cell = Some((tr, tc));
                         tabular.table_recently_clicked = true;
+                        // Transfer focus away from editor so arrow keys navigate table only
+                        ui.ctx().memory_mut(|m| {
+                            if m.has_focus(egui::Id::new("sql_editor")) {
+                                debug!("[focus] table row click: moving focus from editor to table_focus_sink");
+                                m.request_focus(egui::Id::new("table_focus_sink"));
+                            }
+                        });
                         tabular.scroll_to_selected_cell = true;
                         tabular.spreadsheet_start_cell_edit(tr, tc);
                     }
@@ -634,6 +641,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     tabular.selected_row = Some(r);
                     tabular.selected_cell = Some((r, c));
                     tabular.table_recently_clicked = true; // Mark that table was clicked
+                    ui.ctx().memory_mut(|m| {
+                        if m.has_focus(egui::Id::new("sql_editor")) {
+                            debug!("[focus] table header/cell click: moving focus from editor to table_focus_sink");
+                            m.request_focus(egui::Id::new("table_focus_sink"));
+                        }
+                    });
                 }
                 if let Some((r, c)) = start_edit_request.take() {
                     // If we're switching from one editing cell to another, commit the previous edit first
@@ -645,6 +658,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     tabular.selected_row = Some(r);
                     tabular.selected_cell = Some((r, c));
                     tabular.table_recently_clicked = true;
+                    ui.ctx().memory_mut(|m| {
+                        if m.has_focus(egui::Id::new("sql_editor")) {
+                            debug!("[focus] table cell edit start: moving focus from editor to table_focus_sink");
+                            m.request_focus(egui::Id::new("table_focus_sink"));
+                        }
+                    });
                     tabular.spreadsheet_start_cell_edit(r, c);
                 }
                 // (Cell edit text updates already applied above before changing edit target)
