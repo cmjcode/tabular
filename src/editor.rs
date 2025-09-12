@@ -866,11 +866,20 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Update tab content when editor changes (but skip autocomplete update if we're accepting via Tab)
     if response.changed() {
+        // Attempt incremental single-span rope update using previous tab content as baseline
         if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            let previous_owned = tab.content.clone();
+            let new_full_owned = tabular.editor.text.clone();
+            let applied = tabular.editor.try_single_span_update(&previous_owned, &new_full_owned);
+            if !applied { // fallback record only (rope already rebuilt inside try when applied)
+                tabular.editor.set_text(new_full_owned.clone());
+            }
             tab.content = tabular.editor.text.clone();
             tab.is_modified = true;
+        } else {
+            // No tab? still mark rope dirty via full path
+            tabular.editor.mark_text_modified();
         }
-        tabular.editor.mark_text_modified();
         
         // Apply multi-cursor editing if there are extra cursors
         if !tabular.multi_selection.carets.is_empty() {

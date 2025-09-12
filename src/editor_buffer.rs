@@ -71,4 +71,52 @@ impl EditorBuffer {
     /// Placeholder APIs for future granular editing (currently full text binding via egui String).
     pub fn len(&self) -> usize { self.text.len() }
     pub fn is_empty(&self) -> bool { self.text.is_empty() }
+
+    /// Apply a single replace (delete old_range and insert replacement) on both rope and cached text.
+    /// old_range is byte indices in current text before change.
+    pub fn apply_single_replace(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
+        // Safety clamp
+        let start = old_range.start.min(self.text.len());
+        let end = old_range.end.min(self.text.len()).max(start);
+        // Update cached text
+        self.text.replace_range(start..end, replacement);
+        // Apply to rope (naive rebuild of slice via edit API). Buffer currently lacks public granular API in this wrapper, so rebuild for now.
+        // In future we can call self.buffer.edit(&[(Interval::new(start as i64, end as i64), replacement.into())]);
+        self.buffer = Buffer::new(&self.text);
+        self.last_revision = 0; // reset revision tracking for now
+        self.dirty_to_rope = false;
+        self.dirty_to_string = false;
+    }
+
+    /// Heuristic diff between previous and new full text; if it matches a single contiguous replace,
+    /// apply via apply_single_replace and return true. Else return false (caller can fallback to set_text).
+    pub fn try_single_span_update(&mut self, previous: &str, new_full: &str) -> bool {
+        if previous == new_full { return true; }
+        // Quick bounds: find common prefix
+        let mut prefix = 0usize;
+        let prev_bytes = previous.as_bytes();
+        let new_bytes = new_full.as_bytes();
+        let min_len = prev_bytes.len().min(new_bytes.len());
+        while prefix < min_len && prev_bytes[prefix] == new_bytes[prefix] { prefix += 1; }
+        // Find common suffix (excluding prefix region)
+        let mut suffix = 0usize;
+        while suffix < (prev_bytes.len() - prefix)
+            && suffix < (new_bytes.len() - prefix)
+            && prev_bytes[prev_bytes.len() - 1 - suffix] == new_bytes[new_bytes.len() - 1 - suffix]
+        { suffix += 1; }
+        // Compute differing spans
+        let prev_mid_start = prefix;
+        let prev_mid_end = prev_bytes.len() - suffix;
+        let new_mid_start = prefix;
+        let new_mid_end = new_bytes.len() - suffix;
+        // If no change region -> done
+        if prev_mid_start == prev_mid_end && new_mid_start == new_mid_end { return true; }
+        // Extract replacement slice
+        if new_mid_start > new_mid_end || prev_mid_start > prev_mid_end { return false; }
+        if let Some(replacement) = new_full.get(new_mid_start..new_mid_end) {
+            self.apply_single_replace(prev_mid_start..prev_mid_end, replacement);
+            return true;
+        }
+        false
+    }
 }
