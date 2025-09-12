@@ -1,8 +1,6 @@
 use crate::window_egui::{Tabular, PrefTab};
 use crate::models;
 use eframe::egui;
-use eframe::egui::text::{CCursor, CCursorRange};
-use eframe::egui::text_edit::TextEditState;
 use log::debug;
 
 // Basic SQL keywords list (extend as needed)
@@ -316,6 +314,7 @@ impl ShallowForCache for Tabular {
             active_tab_index: self.active_tab_index,
             // The rest are default/empty; not used by cache getters
             editor: crate::editor_buffer::EditorBuffer::new(""),
+            multi_selection: crate::editor_selection::MultiSelection::new(),
             selected_menu: String::new(),
             items_tree: Vec::new(),
             queries_tree: Vec::new(),

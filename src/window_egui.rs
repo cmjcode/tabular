@@ -18,6 +18,8 @@ use crate::{
 
 pub struct Tabular {
     pub editor: EditorBuffer,
+    // Transitional multi-selection model (will move to lapce-core selection)
+    pub multi_selection: crate::editor_selection::MultiSelection,
     pub selected_menu: String,
     pub items_tree: Vec<models::structs::TreeNode>,
     pub queries_tree: Vec<models::structs::TreeNode>,
@@ -262,6 +264,11 @@ impl Tabular {
             self.extra_cursors.push(p);
             self.extra_cursors.sort_unstable();
         }
+        // Transitional mirror to structured selections
+        if self.multi_selection.carets.is_empty() {
+            self.multi_selection.add_collapsed(self.cursor_position.min(self.editor.text.len()));
+        }
+        self.multi_selection.add_collapsed(p);
     }
 
     pub fn clear_extra_cursors(&mut self) { self.extra_cursors.clear(); }
@@ -279,6 +286,7 @@ impl Tabular {
                 println!("DEBUG: Priming multi-cursor, menambahkan posisi awal {} ke extra_cursors", current_pos);
                 self.extra_cursors.push(current_pos);
             }
+            self.multi_selection.ensure_primary(current_pos);
         }
         
         // Get the text to search for
@@ -328,6 +336,7 @@ impl Tabular {
                     self.extra_cursors.push(absolute_pos);
                     self.extra_cursors.sort_unstable();
                 }
+                self.multi_selection.add_collapsed(absolute_pos);
                 println!("DEBUG: Extra cursors now: {:?}", self.extra_cursors);
                 // Jangan pindahkan main cursor; biarkan user punya anchor seperti VS Code (opsional)
                 // Set selection text supaya konsisten
@@ -346,6 +355,7 @@ impl Tabular {
             } else {
                 println!("DEBUG: Wrap-around found position {} but already present (done)", first_pos);
             }
+            self.multi_selection.add_collapsed(first_pos);
         } else {
             println!("DEBUG: No occurrence found at all");
         }
@@ -531,6 +541,7 @@ impl Tabular {
 
         let mut app = Self {
             editor: EditorBuffer::new(""),
+            multi_selection: crate::editor_selection::MultiSelection::new(),
             selected_menu: "Database".to_string(),
             items_tree: Vec::new(),
             queries_tree: Vec::new(),

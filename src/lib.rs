@@ -15,6 +15,7 @@ pub mod driver_sqlite;
 pub mod editor;
 pub mod editor_autocomplete;
 pub mod editor_buffer;
+pub mod editor_selection;
 pub mod export;
 pub mod models;
 pub mod modules;
