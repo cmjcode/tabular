@@ -62,3 +62,9 @@ tokio-util = { version = "0.7.16", features = ["compat"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 semver = "1.0"
 self_update = { version = "0.42", features = ["archive-tar", "archive-zip"], default-features = false }
+
+[features]
+# Placeholder feature to enable future granular rope editing integration with lapce_core::Buffer.
+# Currently the implementation still falls back to single replace & full rope rebuild.
+# Enabling this feature today does not change behavior yet, but provides a stable knob.
+granular_edit = []

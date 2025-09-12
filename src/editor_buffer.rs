@@ -20,6 +20,8 @@ pub struct EditorBuffer {
     line_starts: Vec<usize>,
     /// Monotonic revision counter we control (separate from any internal lapce buffer revs)
     pub revision: u64,
+    /// Per-line version numbers for fine-grained cache invalidation (same length as logical lines).
+    line_versions: Vec<u64>,
 }
 
 /// A simple reversible edit representation (single replace operation)
@@ -50,12 +52,19 @@ impl EditorBuffer {
             redo_stack: Vec::new(),
             line_starts,
             revision: 0,
+            line_versions: vec![0],
         }
     }
 
     /// Full recompute of line starts (fallback path; later we can do incremental adjustments).
     fn recompute_line_starts(&mut self) {
         self.line_starts = Self::compute_line_starts(&self.text);
+        let logical_line_count = self.line_count();
+        if self.line_versions.len() < logical_line_count {
+            self.line_versions.resize(logical_line_count, 0);
+        } else if self.line_versions.len() > logical_line_count {
+            self.line_versions.truncate(logical_line_count);
+        }
     }
 
     fn compute_line_starts(s: &str) -> Vec<usize> {
@@ -73,6 +82,11 @@ impl EditorBuffer {
     pub fn line_count(&self) -> usize {
         // If text ends with a newline, last start still counts as an empty trailing line.
         if self.text.ends_with('\n') { self.line_starts.len() + 1 } else { self.line_starts.len() }
+    }
+
+    /// Get per-line version (returns 0 if out of range)
+    pub fn line_version(&self, line: usize) -> u64 {
+        self.line_versions.get(line).cloned().unwrap_or(0)
     }
 
     /// Get start offset of given line index (returns text.len() if out of range).
@@ -93,9 +107,20 @@ impl EditorBuffer {
         }
     }
 
-    /// Placeholder for future granular edit path (Stage2). Currently delegates to single replace.
+    /// Granular edit API (feature-gated). When `granular_edit` is enabled this will
+    /// eventually use `lapce_core::Buffer` incremental edit capabilities; currently it
+    /// still delegates to `apply_single_replace` (full rebuild of rope) until that logic
+    /// is implemented. Keeping the function behind a feature flag allows us to evolve
+    /// its contract without breaking downstream crates.
+    #[cfg(feature = "granular_edit")]
     pub fn apply_granular_edit(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
-        // Stage2 TODO: use lapce_core::Buffer edit API instead of rebuild.
+        self.apply_single_replace(old_range, replacement);
+    }
+
+    /// When the feature is disabled we still expose a no-op wrapper for code paths compiled
+    /// without the feature; this avoids conditional call sites. (Same behavior for now.)
+    #[cfg(not(feature = "granular_edit"))]
+    pub fn apply_granular_edit(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
         self.apply_single_replace(old_range, replacement);
     }
 
@@ -129,6 +154,8 @@ impl EditorBuffer {
         self.dirty_to_string = false;
         self.dirty_to_rope = false;
         self.recompute_line_starts();
+        // Bulk bump all line versions
+        for v in &mut self.line_versions { *v = v.wrapping_add(1); }
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -167,25 +194,55 @@ impl EditorBuffer {
         // Safety clamp
         let start = old_range.start.min(self.text.len());
         let end = old_range.end.min(self.text.len()).max(start);
-        // Capture removed text for undo
+        // Capture removed text for undo & newline presence before mutation
         let removed = self.text.get(start..end).unwrap_or("").to_string();
-        // Update cached text
+        let removed_has_nl = removed.as_bytes().contains(&b'\n');
+        let replacement_has_nl = replacement.as_bytes().contains(&b'\n');
+
+        // Determine if this is a pure single-line edit (no newline creation/removal and both ends within same original line)
+        let (start_line, _start_col) = self.offset_to_line_col(start);
+        let (end_line, _end_col) = self.offset_to_line_col(end);
+        let single_line_edit = !removed_has_nl && !replacement_has_nl && start_line == end_line;
+
+        // Perform text mutation
         self.text.replace_range(start..end, replacement);
-        // Apply to rope (naive rebuild of slice via edit API). Buffer currently lacks public granular API in this wrapper, so rebuild for now.
-        // In future we can call self.buffer.edit(&[(Interval::new(start as i64, end as i64), replacement.into())]);
+
+        // For now still rebuild underlying rope fully (will switch to granular Buffer::edit later)
         self.buffer = Buffer::new(&self.text);
-        self.last_revision = 0; // reset revision tracking for now
+        self.last_revision = 0;
         self.dirty_to_rope = false;
         self.dirty_to_string = false;
-        // Record edit for undo (merge with previous if adjacent & simple? future optimization)
+
+        // Record undo information (range of newly inserted text after mutation)
         self.undo_stack.push(EditRecord {
             range: start..start + replacement.len(),
             inserted: replacement.to_string(),
-            removed,
+            removed: removed.clone(),
         });
         self.redo_stack.clear();
-        // Recompute line indices (full for now). Later optimize if replacement single-line.
-        self.recompute_line_starts();
+
+        if single_line_edit {
+            // Incremental path: adjust subsequent line starts by delta instead of full recompute
+            let delta: isize = replacement.len() as isize - (end - start) as isize;
+            if delta != 0 {
+                // Shift all following line start offsets
+                for ls in self.line_starts.iter_mut().skip(start_line + 1) {
+                    *ls = (*ls as isize + delta) as usize;
+                }
+            }
+            // Bump only this line's version; others unchanged
+            if let Some(v) = self.line_versions.get_mut(start_line) {
+                *v = v.wrapping_add(1);
+            }
+            // (Line count unchanged in single-line edit without newlines)
+        } else {
+            // Fallback: full recompute (multi-line or newline-affecting edit)
+            self.recompute_line_starts();
+            // Bump all line versions (simpler for now; could refine to only touched span lines)
+            for v in &mut self.line_versions { *v = v.wrapping_add(1); }
+        }
+
+        // Global revision always bumps
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -262,6 +319,7 @@ impl EditorBuffer {
                 }; // note swapped roles
                 self.redo_stack.push(inverse);
                 self.recompute_line_starts();
+                for v in &mut self.line_versions { *v = v.wrapping_add(1); }
                 self.revision = self.revision.wrapping_add(1);
                 return true;
             }
@@ -286,10 +344,19 @@ impl EditorBuffer {
                 };
                 self.undo_stack.push(inverse);
                 self.recompute_line_starts();
+                for v in &mut self.line_versions { *v = v.wrapping_add(1); }
                 self.revision = self.revision.wrapping_add(1);
                 return true;
             }
         }
         false
+    }
+
+    /// Notify that external bulk text changes were applied directly on self.text (e.g., multi-cursor direct mutations)
+    /// This recomputes line indices and bumps all line versions.
+    pub fn notify_bulk_text_changed(&mut self) {
+        self.recompute_line_starts();
+        for v in &mut self.line_versions { *v = v.wrapping_add(1); }
+        self.revision = self.revision.wrapping_add(1);
     }
 }

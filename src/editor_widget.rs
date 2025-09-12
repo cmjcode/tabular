@@ -180,23 +180,25 @@ pub fn show(
     if undo_cmd {
         if buffer.undo() {
             signals.text_changed = true;
-            line_cache.clear();
         }
     } else if redo_cmd {
         if buffer.redo() {
             signals.text_changed = true;
-            line_cache.clear();
         }
     } else if !inserted_batch.is_empty() {
         selection.apply_insert_text(&mut buffer.text, &inserted_batch);
+        buffer.notify_bulk_text_changed();
         signals.text_changed = true;
         signals.inserted_char = inserted_batch.chars().last();
     } else if backspace {
         selection.apply_backspace(&mut buffer.text);
+        buffer.notify_bulk_text_changed();
         signals.text_changed = true;
     }
-    if signals.text_changed {
-        line_cache.clear();
+    // No full clear; stale entries become unreachable because line_version changes.
+    // Periodic pruning to avoid unbounded growth.
+    if signals.text_changed && line_cache.len() > 10_000 {
+        line_cache.retain(|(idx, ver), _| *ver == buffer.line_version(*idx));
     }
 
     // --- Movement (primary caret only for now) ---
@@ -336,7 +338,8 @@ pub fn show(
                 ui.visuals().weak_text_color(),
             );
         }
-        let key = (idx, buffer.revision);
+        // Use per-line version for more granular caching (fallback to global revision if line_versions not updated)
+        let key = (idx, buffer.line_version(idx));
         let job = if let Some(cached) = line_cache.get(&key) {
             cached.clone()
         } else {
