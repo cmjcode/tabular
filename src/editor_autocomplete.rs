@@ -315,6 +315,8 @@ impl ShallowForCache for Tabular {
             // The rest are default/empty; not used by cache getters
             editor: crate::editor_buffer::EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
+            use_new_editor: self.use_new_editor,
+            editor_widget_state: None,
             selected_menu: String::new(),
             items_tree: Vec::new(),
             queries_tree: Vec::new(),

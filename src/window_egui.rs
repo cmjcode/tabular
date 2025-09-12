@@ -20,6 +20,9 @@ pub struct Tabular {
     pub editor: EditorBuffer,
     // Transitional multi-selection model (will move to lapce-core selection)
     pub multi_selection: crate::editor_selection::MultiSelection,
+    // Experimental custom editor toggle & state
+    pub use_new_editor: bool,
+    pub editor_widget_state: Option<crate::editor_widget::EditorWidgetState>,
     pub selected_menu: String,
     pub items_tree: Vec<models::structs::TreeNode>,
     pub queries_tree: Vec<models::structs::TreeNode>,
@@ -542,6 +545,8 @@ impl Tabular {
         let mut app = Self {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
+            use_new_editor: false, // default off; can be toggled via future settings
+            editor_widget_state: None,
             selected_menu: "Database".to_string(),
             items_tree: Vec::new(),
             queries_tree: Vec::new(),
@@ -9316,7 +9321,28 @@ impl App for Tabular {
                                 .show(&mut child_ui, |ui| {
                                     // Constrain width to avoid horizontal grow
                                     ui.set_min_width(avail_w - 4.0);
-                                    editor::render_advanced_editor(self, ui);
+                                    if self.use_new_editor {
+                                        if self.editor_widget_state.is_none() {
+                                            self.editor_widget_state = Some(crate::editor_widget::EditorWidgetState::new());
+                                        }
+                                        // Safe unwrap after init
+                                        if let Some(state) = self.editor_widget_state.as_mut() {
+                                            let signals = crate::editor_widget::show(
+                                                ui,
+                                                state,
+                                                &mut self.editor,
+                                                &mut self.multi_selection,
+                                            );
+                                            if signals.text_changed {
+                                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                                    tab.content = self.editor.text.clone();
+                                                    tab.is_modified = true;
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        editor::render_advanced_editor(self, ui);
+                                    }
                                 });
                             // Key shortcut check
                             if ui.input(|i| {
