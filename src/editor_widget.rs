@@ -34,6 +34,11 @@ pub struct EditorSignals {
     pub caret_moved: bool,
     pub text_changed: bool,
     pub inserted_char: Option<char>,
+    // Autocomplete-related metadata
+    pub primary_caret: usize,              // current primary caret head (byte index)
+    pub prefix_start: Option<usize>,       // start index of current identifier prefix (if any)
+    pub prefix_text: Option<String>,       // the current prefix text
+    pub run_query: bool,                   // user pressed Cmd/Ctrl+Enter
 }
 
 /// Phase A show function – minimal feature set.
@@ -47,13 +52,15 @@ pub fn show(
     line_cache: &mut std::collections::HashMap<(usize, u64), egui::text::LayoutJob>,
     current_revision: u64,
 ) -> EditorSignals {
-    let mut signals = EditorSignals::default();
+    let mut signals = EditorSignals { caret_moved: false, text_changed: false, inserted_char: None, primary_caret: 0, prefix_start: None, prefix_text: None, run_query: false };
     if selection.carets.is_empty() { selection.ensure_primary(0); }
 
     // --- Layout & interaction base ---
-    let available = ui.available_rect_before_wrap();
-    state.view.viewport_w = available.width();
-    state.view.viewport_h = available.height();
+    // We'll allocate a large vertical space; actual scroll viewport is provided by parent ScrollArea.
+    // Use available width, dynamic height based on content after potential edits.
+    let available_full = ui.available_rect_before_wrap();
+    state.view.viewport_w = available_full.width();
+    state.view.viewport_h = available_full.height();
     let line_height = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
     state.view.line_height = line_height;
     let id = ui.make_persistent_id("custom_editor_phase_a");
@@ -69,11 +76,17 @@ pub fn show(
     let mut undo_cmd = false;
     let mut redo_cmd = false;
 
-    // We'll create a provisional rect; height will be recomputed after potential edits.
-    // Reserve interaction space across available region for now.
-    let provisional_rect = available;
-    let response = ui.interact(provisional_rect, id, egui::Sense::click_and_drag());
-    if response.has_focus() || response.clicked() { ui.memory_mut(|m| m.request_focus(id)); }
+    // Defer painting until we know the final height; first capture input & wheel events.
+    let mut pointer_clicked_pos: Option<egui::Pos2> = None;
+    let mut pointer_drag_pos: Option<egui::Pos2> = None;
+    let mut pointer_released = false;
+    let mut scroll_delta = 0.0f32;
+    ui.input(|i| {
+        scroll_delta = i.raw_scroll_delta.y;
+        if let Some(p) = i.pointer.press_origin() { pointer_clicked_pos = Some(p); }
+        if i.pointer.any_pressed() { if let Some(p) = i.pointer.interact_pos() { pointer_drag_pos = Some(p); } }
+        if i.pointer.any_released() { pointer_released = true; }
+    });
 
     ui.input(|i| {
         for ev in &i.events {
@@ -81,8 +94,13 @@ pub fn show(
                 egui::Event::Text(t) => {
                     if !t.chars().all(|c| c < ' ' && c != '\t') { inserted_batch.push_str(t); }
                 }
-                egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
-                    inserted_batch.push('\n');
+                egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } => {
+                    if modifiers.command || modifiers.ctrl { // run query shortcut
+                        log::debug!("[editor_widget] Cmd/Ctrl+Enter detected (will run query)");
+                        signals.run_query = true;
+                    } else {
+                        inserted_batch.push('\n');
+                    }
                 }
                 egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => { backspace = true; }
                 egui::Event::Key { key: egui::Key::ArrowLeft, pressed: true, modifiers, .. } => { move_left = true; shift = shift || modifiers.shift; }
@@ -172,7 +190,15 @@ pub fn show(
     // --- Recompute size & paint ---
     let line_count = buffer.text.lines().count().max(1);
     let desired_h = line_height * line_count as f32 + line_height * 2.0;
-    let rect = egui::Rect::from_min_size(available.min, egui::vec2(available.width(), desired_h));
+    // Allocate final rect with interaction sense
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(available_full.width(), desired_h),
+        egui::Sense::click_and_drag(),
+    );
+    if response.clicked() { ui.memory_mut(|m| m.request_focus(id)); }
+    if response.hovered() && !response.has_focus() && ui.input(|i| i.pointer.primary_down()) {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
@@ -237,6 +263,81 @@ pub fn show(
         painter.rect_filled(caret_rect, 0.0, caret_color);
     }
 
+    // Populate autocomplete metadata (simple scan back from primary caret)
+    if let Some(primary) = selection.primary() {
+        let head = primary.head.min(buffer.text.len());
+        signals.primary_caret = head;
+        // Identify alphanumeric/underscore run behind caret
+        let bytes = buffer.text.as_bytes();
+        let mut start = head;
+        while start > 0 {
+            let c = bytes[start - 1] as char;
+            if c.is_alphanumeric() || c == '_' { start -= 1; } else { break; }
+        }
+        if start < head {
+            signals.prefix_start = Some(start);
+            signals.prefix_text = Some(buffer.text[start..head].to_string());
+        }
+    }
+    // --- Mouse based caret placement & selection ---
+    if (response.clicked() || pointer_clicked_pos.is_some()) && response.contains_pointer() {
+        if let Some(pos) = pointer_clicked_pos.or_else(|| ui.input(|i| i.pointer.interact_pos())) {
+            // Convert pos to line/col
+            let local_y = (pos.y - rect.top() + state.view.scroll_y - 4.0).max(0.0);
+            let line_idx = (local_y / line_height).floor() as usize;
+            let lines = build_lines(&buffer.text);
+            let line_idx = line_idx.min(lines.len().saturating_sub(1));
+            let (ls, le) = lines[line_idx];
+            let local_x = (pos.x - (rect.left() + gutter_w + 6.0) + state.view.scroll_x).max(0.0);
+            let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
+            let mut col = (local_x / char_w).round() as usize;
+            let line_str = &buffer.text[ls..le];
+            let line_len = line_str.chars().count();
+            if col > line_len { col = line_len; }
+            // Map column to byte offset
+            let mut byte_off = ls;
+            let mut ccount = 0;
+            for (ci, ch) in line_str.char_indices() {
+                if ccount == col { byte_off = ls + ci; break; }
+                ccount += 1;
+                byte_off = ls + ci + ch.len_utf8();
+            }
+            if col == line_len { byte_off = le; }
+            selection.clear();
+            selection.ensure_primary(byte_off);
+            signals.caret_moved = true;
+        }
+    }
+    if response.dragged() && pointer_drag_pos.is_some() {
+        if let Some(pos) = pointer_drag_pos {
+            let local_y = (pos.y - rect.top() + state.view.scroll_y - 4.0).max(0.0);
+            let line_idx = (local_y / line_height).floor() as usize;
+            let lines = build_lines(&buffer.text);
+            let line_idx = line_idx.min(lines.len().saturating_sub(1));
+            let (ls, le) = lines[line_idx];
+            let local_x = (pos.x - (rect.left() + gutter_w + 6.0) + state.view.scroll_x).max(0.0);
+            let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
+            let mut col = (local_x / char_w).round() as usize;
+            let line_str = &buffer.text[ls..le];
+            let line_len = line_str.chars().count();
+            if col > line_len { col = line_len; }
+            let mut byte_off = ls;
+            let mut ccount = 0;
+            for (ci, ch) in line_str.char_indices() {
+                if ccount == col { byte_off = ls + ci; break; }
+                ccount += 1;
+                byte_off = ls + ci + ch.len_utf8();
+            }
+            if col == line_len { byte_off = le; }
+            if let Some(primary) = selection.primary_mut() {
+                primary.head = byte_off;
+            }
+        }
+    }
+    // Mouse wheel scroll (positive deltas scroll down visual content, so increase scroll_y)
+    if scroll_delta.abs() > f32::EPSILON {
+        state.view.scroll_y = (state.view.scroll_y - scroll_delta).max(0.0);
+    }
     signals
 }
 

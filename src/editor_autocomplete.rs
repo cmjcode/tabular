@@ -315,7 +315,6 @@ impl ShallowForCache for Tabular {
             // The rest are default/empty; not used by cache getters
             editor: crate::editor_buffer::EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
-            use_new_editor: self.use_new_editor,
             editor_widget_state: None,
             selected_menu: String::new(),
             items_tree: Vec::new(),
@@ -669,4 +668,18 @@ pub fn trigger_manual(app: &mut Tabular) {
             app.show_autocomplete = true;
         }
     }
+}
+
+/// PUBLIC API (new editor path): Given full buffer text & primary cursor index, return (prefix_start, prefix, suggestions).
+pub fn collect_autocomplete_for_buffer(app: &Tabular, text: &str, cursor: usize) -> (usize, String, Vec<String>) {
+    let cur = cursor.min(text.len());
+    let (prefix, start_idx) = current_prefix(text, cur);
+    if prefix.is_empty() {
+        return (start_idx, prefix, Vec::new());
+    }
+    let mut owned = app.shallow_for_cache();
+    // Temporarily patch shallow clone editor text so build_suggestions sees context
+    owned.editor.set_text(text.to_string());
+    let sugg = build_suggestions(&owned, text, cur, &prefix);
+    (start_idx, prefix, sugg)
 }
