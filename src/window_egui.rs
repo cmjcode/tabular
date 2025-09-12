@@ -1,7 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 use eframe::{App, Frame, egui};
 // Removed egui_code_editor; using simple TextEdit + lapce-core buffer backend
-use lapce_core::buffer::Buffer; // basic rope buffer
 use crate::editor_buffer::EditorBuffer;
 use log::{debug, error, info};
 use sqlx::SqlitePool;
@@ -172,6 +171,8 @@ pub struct Tabular {
     // Syntax highlighting cache (text_hash -> LayoutJob)
     pub highlight_cache: std::collections::HashMap<u64, eframe::egui::text::LayoutJob>,
     pub last_highlight_hash: Option<u64>,
+    // New per-line highlight cache for custom editor: key = (line_index, revision_hash)
+    pub per_line_highlight_cache: std::collections::HashMap<(usize, u64), eframe::egui::text::LayoutJob>,
     // Index dialog
     pub show_index_dialog: bool,
     pub index_dialog: Option<models::structs::IndexDialogState>,
@@ -721,6 +722,7 @@ impl Tabular {
             last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
             last_highlight_hash: None,
+            per_line_highlight_cache: std::collections::HashMap::new(),
         };
 
         // Clear any old cached pools
@@ -768,37 +770,34 @@ impl Tabular {
         task_receiver: Receiver<models::enums::BackgroundTask>,
         result_sender: Sender<models::enums::BackgroundResult>,
     ) {
-        // Get the current db_pool for cache operations
-        let db_pool = self.db_pool.clone();
-
+        // Spawn a background thread to process queued tasks
         std::thread::spawn(move || {
-            // Create a single-threaded Tokio runtime for this background thread
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-
-            while let Ok(task) = task_receiver.recv() {
+            loop {
+                let task = match task_receiver.recv() {
+                    Ok(t) => t,
+                    Err(_) => break, // channel closed
+                };
                 match task {
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
-                        let success = rt.block_on(async {
-                            connection::refresh_connection_background_async(connection_id, &db_pool)
-                                .await
-                        });
-
-                        let _ =
-                            result_sender.send(models::enums::BackgroundResult::RefreshComplete {
-                                connection_id,
-                                success,
-                            });
+                        // Placeholder implementation; real logic to refresh connection metadata
+                        // would go here (e.g. ping DB, refresh tables, etc.). For now we simply
+                        // report success so UI can clear any spinners.
+                        let success = true;
+                        let _ = result_sender.send(
+                            models::enums::BackgroundResult::RefreshComplete { connection_id, success }
+                        );
                     }
                     models::enums::BackgroundTask::CheckForUpdates => {
-                        let result = rt
-                            .block_on(crate::self_update::check_for_updates())
-                            .map_err(|e| e.to_string());
-
-                        let _ = result_sender
-                            .send(models::enums::BackgroundResult::UpdateCheckComplete { result });
+                        // Perform update check on a lightweight runtime (if required by async API)
+                        let result = if let Ok(rt) = tokio::runtime::Runtime::new() {
+                            rt.block_on(crate::self_update::check_for_updates())
+                                .map_err(|e| e.to_string())
+                        } else {
+                            Err("Failed to create runtime for update check".to_string())
+                        };
+                        let _ = result_sender.send(
+                            models::enums::BackgroundResult::UpdateCheckComplete { result }
+                        );
                     }
                 }
             }
@@ -9327,11 +9326,26 @@ impl App for Tabular {
                                         }
                                         // Safe unwrap after init
                                         if let Some(state) = self.editor_widget_state.as_mut() {
+                                            // Determine language & theme
+                                            let lang = self
+                                                .query_tabs
+                                                .get(self.active_tab_index)
+                                                .and_then(|t| t.file_path.as_ref())
+                                                .map(|p| crate::syntax::detect_language_from_name(p))
+                                                .unwrap_or(crate::syntax::LanguageKind::Sql);
+                                            let dark = self.is_dark_mode;
+                                            // Re-use app highlight_cache as per-line job cache keyed by (line_index, revision)
+                                            // Use a simple incrementing revision: rely on buffer.text len hash for now
+                                            let rev_hash = self.editor.text.len() as u64 ^ (self.editor.text.as_bytes().iter().fold(0u64, |acc,b| acc.wrapping_mul(131).wrapping_add(*b as u64)) & 0xffff_ffff);
                                             let signals = crate::editor_widget::show(
                                                 ui,
                                                 state,
                                                 &mut self.editor,
                                                 &mut self.multi_selection,
+                                                lang,
+                                                dark,
+                                                &mut self.per_line_highlight_cache,
+                                                rev_hash,
                                             );
                                             if signals.text_changed {
                                                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {

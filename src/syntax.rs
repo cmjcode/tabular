@@ -59,6 +59,13 @@ pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
     job
 }
 
+// Public single-line highlighter (excludes trailing newline). Useful for custom widget per-line rendering.
+pub fn highlight_line(line: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    highlight_single_line(line, lang, dark, &mut job);
+    job
+}
+
 fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut LayoutJob) {
     // Handle SQL line comments first
     if matches!(lang, LanguageKind::Sql) && line.trim_start().starts_with("--") {

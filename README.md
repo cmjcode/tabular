@@ -31,6 +31,22 @@ Tabular is a lightweight, native, and efficient database client written in Rust 
 * Cross‑platform theming via egui
 * Sandboxing & macOS notarization ready
 
+### Experimental New Editor (In Progress)
+The legacy `egui` `TextEdit` driven query input is being replaced with a custom widget backed by `lapce-core` rope buffer.
+
+Current capabilities:
+* Multi‑caret editing (Cmd+D to add next occurrence planned)
+* Incremental per‑line syntax highlighting cache (SQL focus first)
+* Primitive scroll‑into‑view for caret
+* Undo / Redo (Cmd/Ctrl+Z, Shift+Cmd/Ctrl+Z or Ctrl+Y)
+* Selection highlighting & vertical multi‑cursor movement
+
+Planned next steps:
+* Autocomplete integration with rope indices
+* Efficient diff-based rope edits (avoid full rebuild)
+* Proper revision tracking & partial highlight invalidation
+* Removal of legacy editor path after feature parity
+
 ## 3. Supported Databases
 | Category    | Engines / Protocols |
 |-------------|---------------------|

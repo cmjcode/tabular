@@ -412,6 +412,7 @@ impl ShallowForCache for Tabular {
             last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
             last_highlight_hash: None,
+            per_line_highlight_cache: std::collections::HashMap::new(),
             show_index_dialog: false,
             index_dialog: None,
             table_bottom_view: models::structs::TableBottomView::Data,

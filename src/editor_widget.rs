@@ -5,7 +5,7 @@
 use eframe::egui;
 use egui::Ui;
 
-use crate::{editor_buffer::EditorBuffer, editor_selection::{MultiSelection, Caret}};
+use crate::{editor_buffer::EditorBuffer, editor_selection::MultiSelection, syntax::{LanguageKind, highlight_line}};
 
 #[derive(Default)]
 pub struct EditorViewState {
@@ -42,6 +42,10 @@ pub fn show(
     state: &mut EditorWidgetState,
     buffer: &mut EditorBuffer,
     selection: &mut MultiSelection,
+    lang: LanguageKind,
+    dark: bool,
+    line_cache: &mut std::collections::HashMap<(usize, u64), egui::text::LayoutJob>,
+    current_revision: u64,
 ) -> EditorSignals {
     let mut signals = EditorSignals::default();
     if selection.carets.is_empty() { selection.ensure_primary(0); }
@@ -62,6 +66,8 @@ pub fn show(
     let mut move_up = false;
     let mut move_down = false;
     let mut shift = false;
+    let mut undo_cmd = false;
+    let mut redo_cmd = false;
 
     // We'll create a provisional rect; height will be recomputed after potential edits.
     // Reserve interaction space across available region for now.
@@ -83,13 +89,27 @@ pub fn show(
                 egui::Event::Key { key: egui::Key::ArrowRight, pressed: true, modifiers, .. } => { move_right = true; shift = shift || modifiers.shift; }
                 egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, modifiers, .. } => { move_up = true; shift = shift || modifiers.shift; }
                 egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, modifiers, .. } => { move_down = true; shift = shift || modifiers.shift; }
+                egui::Event::Key { key: egui::Key::Z, pressed: true, modifiers, .. } => {
+                    // Cmd/Ctrl+Z -> undo ; Shift+Cmd/Ctrl+Z -> redo
+                    if modifiers.command || modifiers.ctrl { // command covers mac_cmd on macOS
+                        if modifiers.shift { redo_cmd = true; } else { undo_cmd = true; }
+                    }
+                }
+                egui::Event::Key { key: egui::Key::Y, pressed: true, modifiers, .. } => {
+                    // Ctrl+Y often redo on Windows/Linux
+                    if modifiers.command || modifiers.ctrl { redo_cmd = true; }
+                }
                 _ => {}
             }
         }
     });
 
     // --- Text mutations ---
-    if !inserted_batch.is_empty() {
+    if undo_cmd {
+        if buffer.undo() { signals.text_changed = true; line_cache.clear(); }
+    } else if redo_cmd {
+        if buffer.redo() { signals.text_changed = true; line_cache.clear(); }
+    } else if !inserted_batch.is_empty() {
         selection.apply_insert_text(&mut buffer.text, &inserted_batch);
         signals.text_changed = true;
         signals.inserted_char = inserted_batch.chars().last();
@@ -97,6 +117,7 @@ pub fn show(
         selection.apply_backspace(&mut buffer.text);
         signals.text_changed = true;
     }
+    if signals.text_changed { line_cache.clear(); }
 
     // --- Movement (primary caret only for now) ---
     if let Some(primary) = selection.primary_mut() {
@@ -179,7 +200,7 @@ pub fn show(
         );
     }
 
-    // Paint lines (raw)
+    // Paint lines (with syntax highlight)
     let mut y = text_origin.y;
     for (idx, (lstart, lend)) in lines_vec.iter().enumerate() {
         let line_str = &buffer.text[*lstart..*lend];
@@ -192,13 +213,16 @@ pub fn show(
                 ui.visuals().weak_text_color(),
             );
         }
-        painter.text(
-            egui::pos2(text_origin.x, y),
-            egui::Align2::LEFT_TOP,
-            line_str,
-            egui::TextStyle::Monospace.resolve(ui.style()),
-            ui.visuals().text_color(),
-        );
+        let key = (idx, current_revision);
+        let job = if let Some(cached) = line_cache.get(&key) { cached.clone() } else {
+            let mut lj = highlight_line(line_str, lang, dark);
+            // Set wrapping width large so we don't wrap inside line (horizontal scroll later)
+            lj.wrap.max_width = f32::INFINITY;
+            line_cache.insert(key, lj.clone());
+            lj
+        };
+        let galley = ui.fonts(|f| f.layout_job(job));
+        painter.galley(egui::pos2(text_origin.x, y), galley, ui.visuals().text_color());
         y += line_height;
     }
 
@@ -221,7 +245,7 @@ pub fn show(
 fn compute_line_starts(text: &str) -> Vec<usize> {
     let mut starts = Vec::with_capacity(128);
     starts.push(0);
-    for (i, ch) in text.char_indices() { if ch == '\n' { if i + 1 <= text.len() { starts.push(i + 1); } } }
+    for (i, ch) in text.char_indices() { if ch == '\n' { if i + 1 < text.len() { starts.push(i + 1); } } }
     starts
 }
 
@@ -252,7 +276,7 @@ fn build_lines(text: &str) -> Vec<(usize, usize)> {
 #[allow(clippy::too_many_arguments)]
 fn highlight_range(
     painter: &egui::Painter,
-    text: &str,
+    _text: &str,
     lines: &[(usize, usize)],
     start: usize,
     end: usize,
@@ -260,8 +284,8 @@ fn highlight_range(
     line_height: f32,
     char_w: f32,
     color: egui::Color32,
-    show_line_numbers: bool,
-    gutter_w: f32,
+    _show_line_numbers: bool,
+    _gutter_w: f32,
 ) {
     if start >= end { return; }
     for (idx, (ls, le)) in lines.iter().enumerate() {

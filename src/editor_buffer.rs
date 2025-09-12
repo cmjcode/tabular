@@ -12,6 +12,18 @@ pub struct EditorBuffer {
     dirty_to_rope: bool,
     /// Last known revision of the underlying buffer (for incremental features later)
     pub last_revision: u64,
+    /// Undo stack (Vec of Edit record). Most recent at end.
+    undo_stack: Vec<EditRecord>,
+    /// Redo stack.
+    redo_stack: Vec<EditRecord>,
+}
+
+/// A simple reversible edit representation (single replace operation)
+#[derive(Clone, Debug)]
+struct EditRecord {
+    range: std::ops::Range<usize>, // replaced old text range in the PREVIOUS document
+    inserted: String,              // new inserted text
+    removed: String,               // old removed text (for undo)
 }
 
 impl Default for EditorBuffer {
@@ -27,6 +39,8 @@ impl EditorBuffer {
             dirty_to_string: false,
             dirty_to_rope: false,
             last_revision: 0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -40,9 +54,17 @@ impl EditorBuffer {
 
     /// Replace whole content (fast path). Avoid for large texts; use edit ranges later.
     pub fn set_text(&mut self, new_text: String) {
+        // Treat as full replacement edit for undo (capture old full content)
+        let old = std::mem::take(&mut self.text);
+        let old_len = old.len();
+        // Push edit record (full doc replace) unless this is initial empty -> initial text
+        if !(old.is_empty() && new_text.is_empty()) {
+            self.undo_stack.push(EditRecord { range: 0..old_len, inserted: new_text.clone(), removed: old });
+            self.redo_stack.clear();
+        }
         self.text = new_text.clone();
-    self.buffer = Buffer::new(&new_text); // temporary full rebuild (no granular diff yet)
-    self.last_revision = 0;
+        self.buffer = Buffer::new(&new_text); // temporary full rebuild (no granular diff yet)
+        self.last_revision = 0;
         self.dirty_to_string = false;
         self.dirty_to_rope = false;
     }
@@ -78,6 +100,8 @@ impl EditorBuffer {
         // Safety clamp
         let start = old_range.start.min(self.text.len());
         let end = old_range.end.min(self.text.len()).max(start);
+        // Capture removed text for undo
+        let removed = self.text.get(start..end).unwrap_or("").to_string();
         // Update cached text
         self.text.replace_range(start..end, replacement);
         // Apply to rope (naive rebuild of slice via edit API). Buffer currently lacks public granular API in this wrapper, so rebuild for now.
@@ -86,6 +110,9 @@ impl EditorBuffer {
         self.last_revision = 0; // reset revision tracking for now
         self.dirty_to_rope = false;
         self.dirty_to_string = false;
+        // Record edit for undo (merge with previous if adjacent & simple? future optimization)
+        self.undo_stack.push(EditRecord { range: start..start + replacement.len(), inserted: replacement.to_string(), removed });
+        self.redo_stack.clear();
     }
 
     /// Heuristic diff between previous and new full text; if it matches a single contiguous replace,
@@ -116,6 +143,52 @@ impl EditorBuffer {
         if let Some(replacement) = new_full.get(new_mid_start..new_mid_end) {
             self.apply_single_replace(prev_mid_start..prev_mid_end, replacement);
             return true;
+        }
+        false
+    }
+}
+
+impl EditorBuffer {
+    /// Can we undo?
+    pub fn can_undo(&self) -> bool { !self.undo_stack.is_empty() }
+    /// Can we redo?
+    pub fn can_redo(&self) -> bool { !self.redo_stack.is_empty() }
+
+    /// Undo last edit (if any). Returns true if something changed.
+    pub fn undo(&mut self) -> bool {
+        if let Some(edit) = self.undo_stack.pop() {
+            // The recorded range in edit.range reflects the inserted text region after the edit.
+            let start = edit.range.start;
+            let end = start + edit.inserted.len();
+            // Replace inserted with original removed text
+            if end <= self.text.len() {
+                self.text.replace_range(start..end, &edit.removed);
+                // Rebuild rope
+                self.buffer = Buffer::new(&self.text);
+                self.last_revision = 0;
+                // Push inverse onto redo stack
+                let inverse = EditRecord { range: start..start + edit.removed.len(), inserted: edit.removed.clone(), removed: edit.inserted }; // note swapped roles
+                self.redo_stack.push(inverse);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Redo last undone edit (if any). Returns true if something changed.
+    pub fn redo(&mut self) -> bool {
+        if let Some(edit) = self.redo_stack.pop() {
+            let start = edit.range.start;
+            let end = start + edit.inserted.len();
+            if end <= self.text.len() {
+                self.text.replace_range(start..end, &edit.removed);
+                self.buffer = Buffer::new(&self.text);
+                self.last_revision = 0;
+                // Push inverse back to undo
+                let inverse = EditRecord { range: start..start + edit.removed.len(), inserted: edit.removed.clone(), removed: edit.inserted };
+                self.undo_stack.push(inverse);
+                return true;
+            }
         }
         false
     }
