@@ -486,6 +486,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Pre-compute line count (immutable borrow) before creating mutable reference for TextEdit
     let pre_line_count = if tabular.advanced_editor.show_line_numbers { tabular.editor_text.lines().count().max(1) } else { 0 };
+    // Pre-calc total_lines (used later for dynamic height) before mutable borrow by TextEdit
+    let total_lines_for_layout = tabular.editor_text.lines().count().max(1);
     let text_edit = egui::TextEdit::multiline(&mut tabular.editor_text)
         .font(egui::TextStyle::Monospace)
         .desired_rows(rows)
@@ -636,24 +638,41 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     //     })
     //     .inner;
     // Reserve gutter width if needed
+    // --- Layout & dynamic height calculation ---
+    // Masalah baris terakhir "tersembunyi" terjadi karena sebelumnya kita memakai available_rect_before_wrap()
+    // sebagai tinggi final editor lalu di-clip manual, sehingga konten yang lebih panjang tidak pernah
+    // menambah tinggi konten ScrollArea. Solusi: hitung tinggi yang dibutuhkan berdasarkan jumlah baris
+    // dan biarkan ScrollArea melakukan clipping/scroll otomatis (tidak pakai set_clip_rect sendiri).
     let gutter_width = if tabular.advanced_editor.show_line_numbers {
         let digits = (pre_line_count as f32).log10().floor() as usize + 1;
         (digits as f32) * 8.0 + 16.0 // approximate monospace char width
     } else { 0.0 };
-    let mut rect = ui.available_rect_before_wrap();
+
+    let avail_rect = ui.available_rect_before_wrap();
+    let line_height = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
+    let total_lines = total_lines_for_layout; // already computed before borrowing
+    // Tinggi minimal mengikuti rows (tinggi viewport awal), tinggi maksimal mengikuti jumlah baris.
+    // Tambahkan padding extra 3 * line_height agar baris terakhir tidak "nempel" pada panel bawah / handle.
+    let min_height = line_height * rows as f32 + 6.0;
+    let needed_height = line_height * total_lines as f32 + line_height * 3.0;
+    let desired_height = needed_height.max(min_height);
+    // Editor rect (tanpa gutter) – biarkan lebar penuh.
+    let mut editor_rect = egui::Rect::from_min_size(
+        avail_rect.min,
+        egui::vec2(avail_rect.width(), desired_height),
+    );
+
     if gutter_width > 0.0 {
         let gutter_rect = egui::Rect::from_min_max(
-            rect.min,
-            egui::pos2(rect.min.x + gutter_width, rect.max.y),
+            editor_rect.min,
+            egui::pos2(editor_rect.min.x + gutter_width, editor_rect.max.y),
         );
-        rect.min.x += gutter_width;
-        // Paint gutter after we know editor height; store for later
+        editor_rect.min.x += gutter_width;
         ui.data_mut(|d| d.insert_temp::<egui::Rect>(egui::Id::new("gutter_rect"), gutter_rect));
     }
-    let old_clip = ui.clip_rect();
-    ui.set_clip_rect(rect);
-    let response = ui.put(rect, text_edit);
-    ui.set_clip_rect(old_clip);
+
+    // Tidak lagi override clip_rect secara manual; biarkan ScrollArea mengatur viewport dan scrolling.
+    let response = ui.put(editor_rect, text_edit);
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
     if input_snapshot.key_pressed(egui::Key::Escape) {

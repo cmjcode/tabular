@@ -9255,16 +9255,19 @@ impl App for Tabular {
                     let show_bottom = has_headers || has_message || executed;
                     // Draggable splitter: when showing bottom, always reserve some min space; allow adjusting ratio
                     if show_bottom {
-                        // Enforce bounds
-                        self.table_split_ratio = self.table_split_ratio.clamp(0.1, 0.9);
+                        // Enforce bounds (allow editor to occupy almost full height if user drags)
+                        // Previously max 0.9 made a visible "batasan bawah" (bottom limit) that felt restrictive.
+                        // Increase to 0.995 so user can nearly hide result panel while still keeping a tiny handle.
+                        self.table_split_ratio = self.table_split_ratio.clamp(0.05, 0.995);
                     }
                     let editor_h = if show_bottom {
                         let mut h = avail * self.table_split_ratio;
                         if has_headers {
-                            h = h.clamp(100.0, avail - 140.0);
+                            // Old max limited editor height harshly (avail - 140). Reduce reserved space for results.
+                            h = h.clamp(100.0, (avail - 50.0).max(100.0));
                         } else {
-                            // If only message, give more space to editor
-                            h = h.clamp(140.0, avail - 100.0);
+                            // When only status/message (no table), allow almost full height.
+                            h = h.clamp(140.0, (avail - 30.0).max(140.0));
                         }
                         h
                     } else {
@@ -9333,7 +9336,7 @@ impl App for Tabular {
                             let drag_delta = resp.drag_delta().y;
                             if avail > 0.0 {
                                 self.table_split_ratio =
-                                    (self.table_split_ratio + (drag_delta / avail)).clamp(0.1, 0.9);
+                                    (self.table_split_ratio + (drag_delta / avail)).clamp(0.05, 0.995);
                             }
                             ui.memory_mut(|m| m.request_focus(handle_id));
                         }
