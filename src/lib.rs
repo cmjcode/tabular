@@ -24,6 +24,7 @@ pub mod sidebar_query;
 pub mod spreadsheet;
 pub mod window_egui;
 pub mod data_table;
+pub mod syntax; // re-enabled syntax highlighting helpers
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {

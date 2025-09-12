@@ -160,6 +160,8 @@ pub struct Tabular {
     pub autocomplete_prefix: String,
     pub last_autocomplete_trigger_len: usize,
     pub pending_cursor_set: Option<usize>,
+    // Multi-cursor support: additional caret positions (primary caret tracked separately)
+    pub extra_cursors: Vec<usize>,
     // Index dialog
     pub show_index_dialog: bool,
     pub index_dialog: Option<models::structs::IndexDialogState>,
@@ -247,6 +249,55 @@ pub enum PrefTab {
 }
 
 impl Tabular {
+    // Multi-cursor: add a new cursor position if not existing
+    pub fn add_cursor(&mut self, pos: usize) {
+        let p = pos.min(self.editor_text.len());
+        if !self.extra_cursors.contains(&p) {
+            self.extra_cursors.push(p);
+            self.extra_cursors.sort_unstable();
+        }
+    }
+
+    pub fn clear_extra_cursors(&mut self) { self.extra_cursors.clear(); }
+
+    pub fn move_all_cursors_vertical(&mut self, down: bool) {
+        // For each cursor (primary + extras) move to same column on next/prev line
+        let mut all = self.extra_cursors.clone();
+        all.push(self.cursor_position.min(self.editor_text.len()));
+        let text = &self.editor_text;
+        let mut new_positions = Vec::with_capacity(all.len());
+        for &cpos in &all {
+            // Determine current line start and column
+            let bytes = text.as_bytes();
+            let mut line_start = cpos;
+            while line_start > 0 && bytes[line_start-1] != b'\n' { line_start -= 1; }
+            let mut line_end = cpos;
+            while line_end < bytes.len() && bytes[line_end] != b'\n' { line_end += 1; }
+            let column = cpos - line_start;
+            let target_line_start = if down {
+                if line_end >= bytes.len() { // last line
+                    line_start // stay
+                } else { line_end + 1 }
+            } else {
+                if line_start == 0 { 0 } else {
+                    // find previous line start
+                    let mut idx = line_start - 2; // skip the previous newline char
+                    while idx > 0 && bytes[idx] != b'\n' { idx -= 1; }
+                    if bytes.get(idx) == Some(&b'\n') { idx + 1 } else { idx }
+                }
+            };
+            // Compute target line end
+            let mut target_end = target_line_start;
+            while target_end < bytes.len() && bytes[target_end] != b'\n' { target_end += 1; }
+            let target_len = target_end - target_line_start;
+            let new_col = column.min(target_len);
+            new_positions.push(target_line_start + new_col);
+        }
+        // First element in new_positions corresponds to extras order then primary at end
+        if let Some(primary_new) = new_positions.pop() { self.cursor_position = primary_new; }
+        self.extra_cursors = new_positions;
+        self.extra_cursors.sort_unstable();
+    }
     // End: Spreadsheet helpers
     // Ensure a shared Tokio runtime exists (lazy init) to avoid spawning many runtimes
     fn get_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
@@ -480,6 +531,7 @@ impl Tabular {
             // Spreadsheet editing state
             spreadsheet_state: crate::models::structs::SpreadsheetState::default(),
             lapce_buffer: Some(Buffer::new("")),
+            extra_cursors: Vec::new(),
         };
 
         // Clear any old cached pools

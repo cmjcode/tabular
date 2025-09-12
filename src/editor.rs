@@ -3,6 +3,7 @@ use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 // Removed egui_code_editor; using basic TextEdit and custom theme enum
 use lapce_core::buffer::Buffer;
+// syntax highlighting module temporarily disabled
 use log::debug;
 
 use crate::{
@@ -467,12 +468,31 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
     }
     // ----- Build widget after mutations -----
+    // Re-enable syntax highlighting with simpler approach
+    let lang = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.file_path.as_ref())
+        .map(|p| crate::syntax::detect_language_from_name(p))
+        .unwrap_or(crate::syntax::LanguageKind::Sql);
+    let dark = matches!(tabular.advanced_editor.theme, models::structs::EditorColorTheme::GithubDark | models::structs::EditorColorTheme::Gruvbox);
+    
+    let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+        let mut job = crate::syntax::highlight_text(text.as_str(), lang, dark);
+        job.wrap.max_width = wrap_width;
+        ui.fonts(|f| f.layout_job(job))
+    };
+
+    // Pre-compute line count (immutable borrow) before creating mutable reference for TextEdit
+    let pre_line_count = if tabular.advanced_editor.show_line_numbers { tabular.editor_text.lines().count().max(1) } else { 0 };
     let text_edit = egui::TextEdit::multiline(&mut tabular.editor_text)
         .font(egui::TextStyle::Monospace)
         .desired_rows(rows)
         .lock_focus(true)
         .desired_width(f32::INFINITY)
-        .code_editor();
+        .code_editor()
+        .id_source("sql_editor")
+        .layouter(&mut layouter);
     // (Old duplicate indentation block removed)
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
     let mut raw_tab = false;
@@ -614,7 +634,86 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     //         editor.show(ui, &mut tabular.editor_text)
     //     })
     //     .inner;
-    let response = ui.add(text_edit);
+    // Reserve gutter width if needed
+    let gutter_width = if tabular.advanced_editor.show_line_numbers {
+        let digits = (pre_line_count as f32).log10().floor() as usize + 1;
+        (digits as f32) * 8.0 + 16.0 // approximate monospace char width
+    } else { 0.0 };
+    let mut rect = ui.available_rect_before_wrap();
+    if gutter_width > 0.0 {
+        let gutter_rect = egui::Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.min.x + gutter_width, rect.max.y),
+        );
+        rect.min.x += gutter_width;
+        // Paint gutter after we know editor height; store for later
+        ui.data_mut(|d| d.insert_temp::<egui::Rect>(egui::Id::new("gutter_rect"), gutter_rect));
+    }
+    let old_clip = ui.clip_rect();
+    ui.set_clip_rect(rect);
+    let response = ui.put(rect, text_edit);
+    ui.set_clip_rect(old_clip);
+    // Multi-cursor: key handling (Alt+Shift+Down / Alt+Shift+Up) and Esc to clear
+    let input_snapshot = ui.input(|i| i.clone());
+    if input_snapshot.key_pressed(egui::Key::Escape) {
+        if !tabular.extra_cursors.is_empty() { tabular.clear_extra_cursors(); }
+    }
+    let alt = input_snapshot.modifiers.alt;
+    let shift = input_snapshot.modifiers.shift;
+    if alt && shift && input_snapshot.key_pressed(egui::Key::ArrowDown) {
+        // Add cursor one line below at same column
+        let orig_primary = tabular.cursor_position;
+        tabular.move_all_cursors_vertical(true);
+        // The previous primary position becomes an extra cursor
+        tabular.add_cursor(orig_primary);
+    } else if alt && shift && input_snapshot.key_pressed(egui::Key::ArrowUp) {
+        let orig_primary = tabular.cursor_position;
+        tabular.move_all_cursors_vertical(false);
+        tabular.add_cursor(orig_primary);
+    }
+    if tabular.advanced_editor.show_line_numbers {
+        if let Some(gutter_rect) = ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("gutter_rect"))) {
+            let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+            let total_lines = tabular.editor_text.lines().count().max(1);
+            let editor_height = response.rect.height();
+            let needed_height = line_height * total_lines as f32 + 8.0;
+            let final_rect = egui::Rect::from_min_size(
+                gutter_rect.min,
+                egui::vec2(gutter_rect.width(), editor_height.max(needed_height)),
+            );
+            let painter = ui.painter();
+            painter.rect_filled(final_rect, 0.0, ui.visuals().faint_bg_color);
+            let mut y = final_rect.top() + 4.0;
+            for (i, _) in tabular.editor_text.lines().enumerate() {
+                painter.text(
+                    egui::pos2(final_rect.right() - 6.0, y),
+                    egui::Align2::RIGHT_TOP,
+                    (i + 1).to_string(),
+                    egui::TextStyle::Monospace.resolve(ui.style()),
+                    ui.visuals().weak_text_color(),
+                );
+                y += line_height;
+                if y > final_rect.bottom() { break; }
+            }
+        }
+    }
+
+    // Paint extra cursors (after gutter so they appear above text) using approximate positioning
+    if !tabular.extra_cursors.is_empty() {
+        let painter = ui.painter();
+        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        for &cpos in &tabular.extra_cursors {
+            let mut line_start = 0usize; let mut line_no = 0usize;
+            for (i, ch) in tabular.editor_text.char_indices() { if i >= cpos { break; } if ch=='\n' { line_no+=1; line_start = i+1; } }
+            let column = cpos - line_start;
+            let char_w = 8.0_f32; // heuristic
+            let x = response.rect.left() + 8.0 + (column as f32) * char_w;
+            let y_top = response.rect.top() + 4.0 + (line_no as f32) * line_height;
+            let caret_rect = egui::Rect::from_min_size(egui::pos2(x, y_top), egui::vec2(2.0, line_height));
+            let color = ui.visuals().selection.stroke.color;
+            painter.rect_filled(caret_rect, 0.0, color);        
+        }
+    }
 
     // After show(), TextEditState should exist; apply pending cursor now
     if let Some(pos) = tabular.pending_cursor_set {

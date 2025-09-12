@@ -377,6 +377,7 @@ impl ShallowForCache for Tabular {
             autocomplete_prefix: String::new(),
             last_autocomplete_trigger_len: 0,
             pending_cursor_set: None,
+            extra_cursors: Vec::new(),
             show_index_dialog: false,
             index_dialog: None,
             table_bottom_view: models::structs::TableBottomView::Data,
