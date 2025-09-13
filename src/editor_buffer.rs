@@ -139,7 +139,8 @@ impl EditorBuffer {
     /// Safety: On any mismatch or panic risk we fallback to rebuilding from full text.
     #[cfg(feature = "granular_edit")]
     pub fn apply_granular_edit(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
-    // (No additional imports needed)
+        use lapce_core::editor::EditType;
+        use lapce_core::selection::Selection as LapceSelection;
         let start = old_range.start.min(self.text.len());
         let end = old_range.end.min(self.text.len()).max(start);
         let removed = self.text.get(start..end).unwrap_or("").to_string();
@@ -155,10 +156,10 @@ impl EditorBuffer {
         // Apply to UI text first (source of truth currently)
         self.text.replace_range(start..end, replacement);
 
-        // Attempt rope incremental edit. If it fails for any reason, rebuild.
-        // Unknown Buffer::edit signature in current lapce_core revision; fallback now.
-        // Future: integrate true incremental edit once API confirmed.
-        self.buffer = Buffer::new(&self.text);
+    // Apply incremental edit to rope using lapce_core Buffer::edit
+    let sel = LapceSelection::region(start, end);
+    let edits = std::iter::once((sel, replacement));
+    let _ = self.buffer.edit(edits, EditType::Other);
 
         // Undo bookkeeping
         self.undo_stack.push(EditRecord { range: start..start + replacement.len(), inserted: replacement.to_string(), removed: removed.clone() });
@@ -236,7 +237,17 @@ impl EditorBuffer {
         let single_line_edit = !removed_has_nl && !replacement_has_nl && start_line == end_line;
 
         self.text.replace_range(start..end, replacement);
-        self.buffer = Buffer::new(&self.text);
+        #[cfg(feature = "granular_edit")]
+        {
+            let sel = lapce_core::selection::Selection::region(start, end);
+            let _ = self
+                .buffer
+                .edit(std::iter::once((sel, replacement)), lapce_core::editor::EditType::Other);
+        }
+        #[cfg(not(feature = "granular_edit"))]
+        {
+            self.buffer = Buffer::new(&self.text);
+        }
         self.last_revision = 0;
         self.dirty_to_rope = false;
         self.dirty_to_string = false;
