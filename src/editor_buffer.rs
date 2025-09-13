@@ -56,6 +56,20 @@ impl EditorBuffer {
         }
     }
 
+    /// Get a fresh snapshot of the current rope as a String (for UI bindings or export).
+    pub fn text_snapshot(&self) -> String {
+        self.buffer.to_string()
+    }
+
+    /// Under granular_edit, treat rope as the source of truth and sync `self.text` from rope.
+    #[cfg(feature = "granular_edit")]
+    fn sync_text_from_rope(&mut self) {
+        let s = self.buffer.to_string();
+        if self.text != s {
+            self.text = s;
+        }
+    }
+
     /// Replace whole content (used by tab switching / file load)
     pub fn set_text(&mut self, new_text: String) {
         if self.text == new_text { return; }
@@ -236,16 +250,19 @@ impl EditorBuffer {
         let (end_line, _ec) = self.offset_to_line_col(end);
         let single_line_edit = !removed_has_nl && !replacement_has_nl && start_line == end_line;
 
-        self.text.replace_range(start..end, replacement);
         #[cfg(feature = "granular_edit")]
         {
+            // Apply to rope first, then sync text from rope
             let sel = lapce_core::selection::Selection::region(start, end);
             let _ = self
                 .buffer
                 .edit(std::iter::once((sel, replacement)), lapce_core::editor::EditType::Other);
+            self.sync_text_from_rope();
         }
         #[cfg(not(feature = "granular_edit"))]
         {
+            // Legacy path: mutate text first then rebuild rope
+            self.text.replace_range(start..end, replacement);
             self.buffer = Buffer::new(&self.text);
         }
         self.last_revision = 0;
