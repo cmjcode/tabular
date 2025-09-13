@@ -89,7 +89,203 @@ impl EditorBuffer {
 
     /// Mark that egui-bound text mutated externally (not used heavily now but kept for compatibility)
     pub fn mark_text_modified(&mut self) {
-        self.dirty_to_rope = true;
+        #[cfg(feature = "granular_edit")]
+        {
+            // Diff between previous rope (source of truth before UI change) and current UI text
+            let previous = self.buffer.to_string();
+            let new_full = self.text.clone();
+            if previous == new_full {
+                self.dirty_to_rope = false;
+                return;
+            }
+
+            // Compute a single-span diff (prefix/suffix) similar to try_single_span_update
+            let prev_bytes = previous.as_bytes();
+            let new_bytes = new_full.as_bytes();
+            let min_len = prev_bytes.len().min(new_bytes.len());
+            let mut prefix = 0usize;
+            while prefix < min_len && prev_bytes[prefix] == new_bytes[prefix] { prefix += 1; }
+            let mut suffix = 0usize;
+            while suffix < (prev_bytes.len().saturating_sub(prefix))
+                && suffix < (new_bytes.len().saturating_sub(prefix))
+                && prev_bytes[prev_bytes.len() - 1 - suffix] == new_bytes[new_bytes.len() - 1 - suffix]
+            { suffix += 1; }
+
+            let prev_mid_start = prefix;
+            let prev_mid_end = prev_bytes.len().saturating_sub(suffix);
+            let new_mid_start = prefix;
+            let new_mid_end = new_bytes.len().saturating_sub(suffix);
+
+            let single_span_ok = prev_mid_start <= prev_mid_end && new_mid_start <= new_mid_end;
+            let replacement = if single_span_ok && new_mid_start <= new_mid_end {
+                // If equal, this is a no-op (should have been caught by previous==new_full)
+                new_full.get(new_mid_start..new_mid_end).unwrap_or("")
+            } else {
+                ""
+            };
+
+            if single_span_ok && (prev_mid_start != prev_mid_end || new_mid_start != new_mid_end) {
+                // Apply a single replace to rope based on the OLD text coordinates
+                use lapce_core::editor::EditType;
+                use lapce_core::selection::Selection as LapceSelection;
+
+                let start = prev_mid_start;
+                let end = prev_mid_end.max(start);
+                let removed = previous.get(start..end).unwrap_or("");
+
+                // Classify edit for better undo coalescing
+                let et = if replacement == "\n" { EditType::InsertNewline }
+                else if !removed.is_empty() && replacement.is_empty() { EditType::Delete }
+                else if !replacement.is_empty() && !replacement.contains('\n') && end == start { EditType::InsertChars }
+                else { EditType::Other };
+
+                // Rope edit first
+                let sel = LapceSelection::region(start, end);
+                let (_text_before, _delta, inval) = self.buffer.edit(std::iter::once((sel, replacement)), et);
+
+                // Incremental maintenance of line_starts and versions based on PREVIOUS state
+                let removed_has_nl = removed.as_bytes().contains(&b'\n');
+                let replacement_has_nl = replacement.as_bytes().contains(&b'\n');
+                let (start_line, _sc) = self.offset_to_line_col(start);
+                let (end_line, _ec) = self.offset_to_line_col(end);
+                let single_line_edit = !removed_has_nl && !replacement_has_nl && start_line == end_line;
+
+                if single_line_edit {
+                    let delta: isize = replacement.len() as isize - (end - start) as isize;
+                    if delta != 0 {
+                        for ls in self.line_starts.iter_mut().skip(start_line + 1) {
+                            *ls = (*ls as isize + delta) as usize;
+                        }
+                    }
+                } else {
+                    let removed_nl = removed.as_bytes().iter().filter(|&&b| b == b'\n').count();
+                    let replacement_nl = replacement.as_bytes().iter().filter(|&&b| b == b'\n').count();
+                    if removed_nl == replacement_nl && removed_nl > 0 {
+                        let delta: isize = replacement.len() as isize - (end - start) as isize;
+                        let block_first_offset = self.line_starts[start_line];
+                        let mut new_starts: Vec<usize> = Vec::with_capacity(removed_nl);
+                        for (i, ch) in replacement.char_indices() {
+                            if ch == '\n' && i + 1 < replacement.len() {
+                                new_starts.push(block_first_offset + i + 1);
+                            }
+                        }
+                        if new_starts.len() == removed_nl {
+                            for (idx, val) in new_starts.iter().enumerate() {
+                                let line_idx = start_line + 1 + idx;
+                                if line_idx < self.line_starts.len() {
+                                    self.line_starts[line_idx] = *val;
+                                }
+                            }
+                            if delta != 0 {
+                                let tail_start_line = start_line + 1 + removed_nl;
+                                for ls in self.line_starts.iter_mut().skip(tail_start_line) {
+                                    *ls = (*ls as isize + delta) as usize;
+                                }
+                            }
+                        } else {
+                            self.recompute_line_starts();
+                            for v in &mut self.line_versions { *v = v.wrapping_add(1); }
+                        }
+                    } else if removed_nl == 0 && replacement_nl == 0 {
+                        let delta: isize = replacement.len() as isize - (end - start) as isize;
+                        if delta != 0 {
+                            for ls in self.line_starts.iter_mut().skip(end_line + 1) {
+                                *ls = (*ls as isize + delta) as usize;
+                            }
+                        }
+                    } else {
+                        // Newline count changed: use incremental algorithm
+                        let old_internal = removed_nl;
+                        let new_internal = replacement_nl;
+                        let delta_bytes: isize = replacement.len() as isize - (end - start) as isize;
+                        if start_line >= self.line_starts.len() {
+                            self.recompute_line_starts();
+                            for v in &mut self.line_versions { *v = v.wrapping_add(1); }
+                            self.revision = self.revision.wrapping_add(1);
+                            // Sync text from rope and finish
+                            self.sync_text_from_rope();
+                            self.dirty_to_rope = false;
+                            self.dirty_to_string = false;
+                            return;
+                        }
+                        let mut ok = true;
+                        for _ in 0..old_internal {
+                            let idx = start_line + 1;
+                            if idx < self.line_starts.len() { self.line_starts.remove(idx); } else { ok = false; break; }
+                        }
+                        if ok && new_internal > 0 {
+                            let block_first_offset = self.line_starts[start_line];
+                            let mut new_starts: Vec<usize> = Vec::with_capacity(new_internal);
+                            for (i, ch) in replacement.char_indices() {
+                                if ch == '\n' && i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); }
+                            }
+                            if new_starts.len() != new_internal { ok = false; }
+                            else {
+                                let mut insert_pos = start_line + 1;
+                                for ns in new_starts { self.line_starts.insert(insert_pos, ns); insert_pos += 1; }
+                            }
+                        }
+                        if ok {
+                            if delta_bytes != 0 {
+                                let tail_start = start_line + 1 + new_internal;
+                                for ls in self.line_starts.iter_mut().skip(tail_start) { *ls = (*ls as isize + delta_bytes) as usize; }
+                            }
+                            let line_delta = new_internal as isize - old_internal as isize;
+                            if line_delta > 0 { for i in 0..line_delta { self.line_versions.insert(start_line + 1 + i as usize, 0); } }
+                            else if line_delta < 0 { for _ in 0..(-line_delta) { if start_line + 1 < self.line_versions.len() { self.line_versions.remove(start_line + 1); } } }
+                            let logical_line_count = self.line_count();
+                            if self.line_versions.len() < logical_line_count { self.line_versions.resize(logical_line_count, 0); }
+                            else if self.line_versions.len() > logical_line_count { self.line_versions.truncate(logical_line_count); }
+                        }
+                        if !ok { self.recompute_line_starts(); for v in &mut self.line_versions { *v = v.wrapping_add(1); } }
+                    }
+                }
+
+                // Narrow version bump to inval window
+                let sline = inval.start_line;
+                let last_old = sline + inval.inval_count.saturating_sub(1);
+                let last_new = sline + inval.new_count.saturating_sub(1);
+                let end_bump = last_old.max(last_new);
+                for line in sline..=end_bump { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
+
+                // Sync UI text from rope (should equal new_full)
+                self.sync_text_from_rope();
+
+                // Bookkeeping
+                self.undo_stack.push(EditRecord { range: start..start + replacement.len(), inserted: replacement.to_string(), removed: removed.to_string() });
+                self.redo_stack.clear();
+                self.last_revision = 0;
+                self.dirty_to_rope = false;
+                self.dirty_to_string = false;
+                self.revision = self.revision.wrapping_add(1);
+                debug_assert_eq!(self.buffer.to_string(), self.text, "rope and text diverged after mark_text_modified");
+            } else {
+                // Fallback: rebuild rope from full UI text and recompute indices
+                let old = previous;
+                let new_text = new_full;
+                if old != new_text {
+                    self.buffer = Buffer::new(&new_text);
+                    self.recompute_line_starts();
+                    for v in &mut self.line_versions { *v = v.wrapping_add(1); }
+                    self.undo_stack.push(EditRecord { range: 0..old.len(), inserted: new_text.clone(), removed: old });
+                    self.redo_stack.clear();
+                    self.last_revision = 0;
+                    self.dirty_to_rope = false;
+                    self.dirty_to_string = false;
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
+            return;
+        }
+
+        #[cfg(not(feature = "granular_edit"))]
+        {
+            // Legacy: just sync rope from UI text and recompute indices
+            self.buffer = Buffer::new(&self.text);
+            self.notify_bulk_text_changed();
+            self.dirty_to_rope = false;
+            self.dirty_to_string = false;
+        }
     }
 
     /// Full recompute of line starts (fallback path; later we can do incremental adjustments).
@@ -160,20 +356,23 @@ impl EditorBuffer {
         let removed = self.text.get(start..end).unwrap_or("").to_string();
         if removed.is_empty() && replacement.is_empty() { return; }
 
-        // Capture metrics before mutation
+        // Capture metrics before mutation (based on current text)
         let removed_has_nl = removed.as_bytes().contains(&b'\n');
         let replacement_has_nl = replacement.as_bytes().contains(&b'\n');
         let (start_line, _sc) = self.offset_to_line_col(start);
         let (end_line, _ec) = self.offset_to_line_col(end);
         let single_line_edit = !removed_has_nl && !replacement_has_nl && start_line == end_line;
 
-        // Apply to UI text first (source of truth currently)
-        self.text.replace_range(start..end, replacement);
+        // Choose EditType to improve undo grouping
+        let et = if replacement == "\n" { EditType::InsertNewline }
+        else if !removed.is_empty() && replacement.is_empty() { EditType::Delete }
+        else if !replacement.is_empty() && !replacement.contains('\n') && end == start { EditType::InsertChars }
+        else { EditType::Other };
 
-    // Apply incremental edit to rope using lapce_core Buffer::edit
-    let sel = LapceSelection::region(start, end);
-    let edits = std::iter::once((sel, replacement));
-    let _ = self.buffer.edit(edits, EditType::Other);
+        // Apply edit to rope first and sync text from rope (rope is source of truth)
+        let sel = LapceSelection::region(start, end);
+        let (_text_before, _delta, inval) = self.buffer.edit(std::iter::once((sel, replacement)), et);
+        self.sync_text_from_rope();
 
         // Undo bookkeeping
         self.undo_stack.push(EditRecord { range: start..start + replacement.len(), inserted: replacement.to_string(), removed: removed.clone() });
@@ -182,11 +381,10 @@ impl EditorBuffer {
         self.dirty_to_rope = false;
         self.dirty_to_string = false;
 
-        // Incremental line/versions maintenance (mirrors logic in apply_single_replace)
+        // Incremental line starts maintenance (mirrors logic in apply_single_replace)
         if single_line_edit {
             let delta: isize = replacement.len() as isize - (end - start) as isize;
             if delta != 0 { for ls in self.line_starts.iter_mut().skip(start_line + 1) { *ls = (*ls as isize + delta) as usize; } }
-            if let Some(v) = self.line_versions.get_mut(start_line) { *v = v.wrapping_add(1); }
         } else {
             let removed_nl = removed.as_bytes().iter().filter(|&&b| b == b'\n').count();
             let replacement_nl = replacement.as_bytes().iter().filter(|&&b| b == b'\n').count();
@@ -194,16 +392,14 @@ impl EditorBuffer {
                 let delta: isize = replacement.len() as isize - (end - start) as isize;
                 let block_first_offset = self.line_starts[start_line];
                 let mut new_starts: Vec<usize> = Vec::with_capacity(removed_nl);
-                for (i, ch) in replacement.char_indices() { if ch == '\n' { if i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); } } }
+                for (i, ch) in replacement.char_indices() { if ch == '\n' && i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); } }
                 if new_starts.len() == removed_nl {
                     for (idx, val) in new_starts.iter().enumerate() { let line_idx = start_line + 1 + idx; if line_idx < self.line_starts.len() { self.line_starts[line_idx] = *val; } }
                     if delta != 0 { let tail_start_line = start_line + 1 + removed_nl; for ls in self.line_starts.iter_mut().skip(tail_start_line) { *ls = (*ls as isize + delta) as usize; } }
-                    let affected_last = start_line + removed_nl; for line in start_line..=affected_last { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
                 } else { self.recompute_line_starts(); for v in &mut self.line_versions { *v = v.wrapping_add(1); } }
             } else if removed_nl == 0 && replacement_nl == 0 {
                 let delta: isize = replacement.len() as isize - (end - start) as isize;
                 if delta != 0 { for ls in self.line_starts.iter_mut().skip(end_line + 1) { *ls = (*ls as isize + delta) as usize; } }
-                for line in start_line..=end_line { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
             } else {
                 // Newline count changed: use incremental algorithm (copied from updated apply_single_replace)
                 let old_internal = removed_nl;
@@ -226,14 +422,14 @@ impl EditorBuffer {
                     let logical_line_count = self.line_count();
                     if self.line_versions.len() < logical_line_count { self.line_versions.resize(logical_line_count, 0); }
                     else if self.line_versions.len() > logical_line_count { self.line_versions.truncate(logical_line_count); }
-                    let last_affected = start_line + new_internal;
-                    for line in start_line..=last_affected { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
                 }
                 if !ok { self.recompute_line_starts(); for v in &mut self.line_versions { *v = v.wrapping_add(1); } }
             }
         }
+        // Narrow line_versions bump to invalidated window from rope edit
+        let sline = inval.start_line; let last_old = sline + inval.inval_count.saturating_sub(1); let last_new = sline + inval.new_count.saturating_sub(1);
+        let end_bump = last_old.max(last_new); for line in sline..=end_bump { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
         self.revision = self.revision.wrapping_add(1);
-        // Debug validation (only in debug builds): ensure rope full text matches our cached text
         debug_assert_eq!(self.buffer.to_string(), self.text, "rope and text diverged after granular edit");
     }
 
@@ -252,12 +448,24 @@ impl EditorBuffer {
 
         #[cfg(feature = "granular_edit")]
         {
+            // Choose EditType for better undo coalescing
+            use lapce_core::editor::EditType;
+            let et = if replacement == "\n" { EditType::InsertNewline }
+            else if !removed.is_empty() && replacement.is_empty() { EditType::Delete }
+            else if !replacement.is_empty() && !replacement.contains('\n') && end == start { EditType::InsertChars }
+            else { EditType::Other };
             // Apply to rope first, then sync text from rope
             let sel = lapce_core::selection::Selection::region(start, end);
-            let _ = self
+            let (_text_before, _delta, inval) = self
                 .buffer
-                .edit(std::iter::once((sel, replacement)), lapce_core::editor::EditType::Other);
+                .edit(std::iter::once((sel, replacement)), et);
             self.sync_text_from_rope();
+            // Narrow line_versions bump to invalidated window
+            let start_line = inval.start_line;
+            let last_old = start_line + inval.inval_count.saturating_sub(1);
+            let last_new = start_line + inval.new_count.saturating_sub(1);
+            let end_line_to_bump = last_old.max(last_new);
+            for line in start_line..=end_line_to_bump { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
         }
         #[cfg(not(feature = "granular_edit"))]
         {
