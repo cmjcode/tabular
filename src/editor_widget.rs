@@ -55,7 +55,7 @@ pub fn show(
     _current_revision: u64, // deprecated param retained for compatibility; will use buffer.revision
 ) -> EditorSignals {
     let mut signals = EditorSignals::default();
-    if selection.carets.is_empty() {
+    if selection.to_lapce_selection().is_empty() {
         selection.ensure_primary(0);
     }
 
@@ -385,12 +385,13 @@ pub fn show(
     let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
     let lines_vec = build_lines(&buffer.text); // Could be replaced by cached indices; keep for now (Stage2 optimization)
 
-    // Selection highlighting (per caret range, merged duplicates internally by MultiSelection.ranges())
+    // Selection highlighting via lapce-core selection regions
     let sel_color = ui.visuals().selection.bg_fill;
-    for (start, end) in selection.ranges() {
-        if start == end {
-            continue;
-        }
+    let regions = selection.to_lapce_selection();
+    for r in regions.regions() {
+        let start = r.min();
+        let end = r.max();
+        if start == end { continue; }
         highlight_range(
             painter,
             &buffer.text,
@@ -441,8 +442,8 @@ pub fn show(
 
     // Draw carets (all)
     let caret_color = egui::Color32::from_rgb(120, 180, 250);
-    for caret in &selection.carets {
-        let head = caret.head.min(buffer.text.len());
+    for r in selection.to_lapce_selection().regions() {
+        let head = r.max().min(buffer.text.len());
         let (line_idx, col) = buffer.offset_to_line_col(head);
         let x = text_origin.x + (col as f32) * char_w;
         let y = text_origin.y + (line_idx as f32) * line_height;

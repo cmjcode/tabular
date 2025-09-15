@@ -776,7 +776,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
     if input_snapshot.key_pressed(egui::Key::Escape) {
-        if !tabular.multi_selection.carets.is_empty() {
+        if !tabular.multi_selection.to_lapce_selection().is_empty() {
             tabular.multi_selection.clear();
             tabular.selected_text.clear();
         }
@@ -821,7 +821,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Paint extra cursors (after gutter so they appear above text) using approximate positioning
-    if !tabular.multi_selection.carets.is_empty() {
+    if !tabular.multi_selection.to_lapce_selection().is_empty() {
         let painter = ui.painter();
         let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
 
@@ -834,12 +834,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             0.0
         };
 
-        println!(
-            "DEBUG: Drawing {} carets (multi_selection)",
-            tabular.multi_selection.carets.len()
-        );
-        for caret in &tabular.multi_selection.carets {
-            let cpos = caret.head;
+        let regions = tabular.multi_selection.to_lapce_selection();
+        println!("DEBUG: Drawing {} carets (multi_selection)", regions.len());
+        for r in regions.regions() {
+            let cpos = r.max();
             let mut line_start = 0usize;
             let mut line_no = 0usize;
             for (i, ch) in tabular.editor.text.char_indices() {
@@ -865,10 +863,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let color = egui::Color32::from_rgba_unmultiplied(100, 150, 255, 180); // Semi-transparent blue
             painter.rect_filled(caret_rect, 1.0, color);
 
-            println!(
-                "DEBUG: Drawing caret at pos {} -> line {}, col {} -> x={}, y={}",
-                cpos, line_no, column, x, y_top
-            );
+            println!("DEBUG: Drawing caret at pos {} -> line {}, col {} -> x={}, y={}", cpos, line_no, column, x, y_top);
         }
     }
 
@@ -978,7 +973,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
 
         // Apply multi-cursor editing if there are extra cursors
-        if !tabular.multi_selection.carets.is_empty() {
+        if !tabular.multi_selection.to_lapce_selection().is_empty() {
             // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
             if let Some(rng) =
                 crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
