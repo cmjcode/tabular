@@ -987,14 +987,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             .apply_insert_text(&mut tabular.editor.text, &inserted);
                         tabular.cursor_position = new_primary;
                     }
-                } else if new_primary < old_primary {
-                    if old_primary.saturating_sub(new_primary) == 1 {
+                } else if new_primary < old_primary
+                    && old_primary.saturating_sub(new_primary) == 1 {
                         tabular
                             .multi_selection
                             .apply_backspace(&mut tabular.editor.text);
                         tabular.cursor_position = new_primary;
                     }
-                }
             }
         }
 
@@ -1138,21 +1137,19 @@ pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
                 .replace_all(&tabular.editor.text, replace_text)
                 .into_owned();
         }
+    } else if tabular.advanced_editor.case_sensitive {
+        tabular.editor.text = tabular.editor.text.replace(find_text, replace_text);
     } else {
-        if tabular.advanced_editor.case_sensitive {
-            tabular.editor.text = tabular.editor.text.replace(find_text, replace_text);
-        } else {
-            let find_lower = find_text.to_lowercase();
-            let mut result = String::new();
-            let mut last_end = 0;
-            for (start, part) in tabular.editor.text.match_indices(&find_lower) {
-                result.push_str(&tabular.editor.text[last_end..start]);
-                result.push_str(replace_text);
-                last_end = start + part.len();
-            }
-            result.push_str(&tabular.editor.text[last_end..]);
-            tabular.editor.text = result;
+        let find_lower = find_text.to_lowercase();
+        let mut result = String::new();
+        let mut last_end = 0;
+        for (start, part) in tabular.editor.text.match_indices(&find_lower) {
+            result.push_str(&tabular.editor.text[last_end..start]);
+            result.push_str(replace_text);
+            last_end = start + part.len();
         }
+        result.push_str(&tabular.editor.text[last_end..]);
+        tabular.editor.text = result;
     }
 
     // Update current tab content
