@@ -164,4 +164,23 @@ impl MultiSelection {
             self.apply_simple_delete(start, len);
         }
     }
+
+    // --- Migration helpers to/from lapce_core::selection::Selection ---
+    pub fn to_lapce_selection(&self) -> lapce_core::selection::Selection {
+        let mut sel = lapce_core::selection::Selection::new();
+        for (start, end) in self.ranges() {
+            sel.add_region(lapce_core::selection::SelRegion::new(start, end, None));
+        }
+        sel
+    }
+
+    pub fn from_lapce_selection(sel: &lapce_core::selection::Selection) -> Self {
+        let mut s = Self::new();
+        for r in sel.regions() {
+            let anchor = r.min();
+            let head = r.max();
+            s.add_caret(Caret { anchor, head });
+        }
+        s
+    }
 }

@@ -74,6 +74,8 @@ pub fn show(
     let mut move_right = false;
     let mut move_up = false;
     let mut move_down = false;
+    let mut move_word_left = false;
+    let mut move_word_right = false;
     let mut shift = false;
     let mut undo_cmd = false;
     let mut redo_cmd = false;
@@ -114,7 +116,11 @@ pub fn show(
                     modifiers,
                     ..
                 } => {
-                    move_left = true;
+                    if modifiers.alt || modifiers.mac_cmd { // mac uses Option as Alt, but mac_cmd is Command; use alt primarily
+                        move_word_left = true;
+                    } else {
+                        move_left = true;
+                    }
                     shift = shift || modifiers.shift;
                 }
                 egui::Event::Key {
@@ -123,7 +129,11 @@ pub fn show(
                     modifiers,
                     ..
                 } => {
-                    move_right = true;
+                    if modifiers.alt || modifiers.mac_cmd {
+                        move_word_right = true;
+                    } else {
+                        move_right = true;
+                    }
                     shift = shift || modifiers.shift;
                 }
                 egui::Event::Key {
@@ -241,7 +251,34 @@ pub fn show(
     // --- Movement (primary caret only for now) ---
     if let Some(primary) = selection.primary_mut() {
         let prev_head = primary.head;
-        if move_left {
+        // Helper closures for word boundaries (alnum or underscore as word)
+        let word_start = |s: &str, mut pos: usize| {
+            let b = s.as_bytes();
+            pos = pos.min(b.len());
+            while pos > 0 && !s.is_char_boundary(pos) { pos -= 1; }
+            while pos > 0 {
+                let ch = b[pos - 1] as char;
+                if ch.is_alphanumeric() || ch == '_' { pos -= 1; }
+                else { break; }
+            }
+            pos
+        };
+        let word_end = |s: &str, mut pos: usize| {
+            let b = s.as_bytes();
+            pos = pos.min(b.len());
+            while pos < b.len() && !s.is_char_boundary(pos) { pos += 1; }
+            while pos < b.len() {
+                let ch = b[pos] as char;
+                if ch.is_alphanumeric() || ch == '_' { pos += 1; }
+                else { break; }
+            }
+            pos
+        };
+        if move_word_left {
+            let new_pos = word_start(&buffer.text, primary.head);
+            primary.head = new_pos;
+            if !shift { primary.anchor = primary.head; }
+        } else if move_left {
             if primary.head > 0 {
                 primary.head -= 1;
                 while primary.head > 0 && !buffer.text.is_char_boundary(primary.head) {
@@ -252,7 +289,11 @@ pub fn show(
                 primary.anchor = primary.head;
             }
         }
-        if move_right {
+        if move_word_right {
+            let new_pos = word_end(&buffer.text, primary.head);
+            primary.head = new_pos.min(buffer.text.len());
+            if !shift { primary.anchor = primary.head; }
+        } else if move_right {
             if primary.head < buffer.text.len() {
                 primary.head += 1;
                 while primary.head < buffer.text.len()
