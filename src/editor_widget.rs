@@ -249,8 +249,8 @@ pub fn show(
     }
 
     // --- Movement (primary caret only for now) ---
-    if let Some(primary) = selection.primary_mut() {
-        let prev_head = primary.head;
+    if let Some((mut anchor, mut head)) = selection.primary_range() {
+        let prev_head = head;
         // Helper closures for word boundaries (alnum or underscore as word)
         let word_start = |s: &str, mut pos: usize| {
             let b = s.as_bytes();
@@ -275,40 +275,40 @@ pub fn show(
             pos
         };
         if move_word_left {
-            let new_pos = word_start(&buffer.text, primary.head);
-            primary.head = new_pos;
-            if !shift { primary.anchor = primary.head; }
+            let new_pos = word_start(&buffer.text, head);
+            head = new_pos;
+            if !shift { anchor = head; }
         } else if move_left {
-            if primary.head > 0 {
-                primary.head -= 1;
-                while primary.head > 0 && !buffer.text.is_char_boundary(primary.head) {
-                    primary.head -= 1;
+            if head > 0 {
+                head -= 1;
+                while head > 0 && !buffer.text.is_char_boundary(head) {
+                    head -= 1;
                 }
             }
             if !shift {
-                primary.anchor = primary.head;
+                anchor = head;
             }
         }
         if move_word_right {
-            let new_pos = word_end(&buffer.text, primary.head);
-            primary.head = new_pos.min(buffer.text.len());
-            if !shift { primary.anchor = primary.head; }
+            let new_pos = word_end(&buffer.text, head);
+            head = new_pos.min(buffer.text.len());
+            if !shift { anchor = head; }
         } else if move_right {
-            if primary.head < buffer.text.len() {
-                primary.head += 1;
-                while primary.head < buffer.text.len()
-                    && !buffer.text.is_char_boundary(primary.head)
+            if head < buffer.text.len() {
+                head += 1;
+                while head < buffer.text.len()
+                    && !buffer.text.is_char_boundary(head)
                 {
-                    primary.head += 1;
+                    head += 1;
                 }
             }
             if !shift {
-                primary.anchor = primary.head;
+                anchor = head;
             }
         }
         if move_up || move_down {
             // Use cached offset translation
-            let (line_idx, col) = buffer.offset_to_line_col(primary.head);
+            let (line_idx, col) = buffer.offset_to_line_col(head);
             let target_line = if move_up {
                 line_idx.saturating_sub(1)
             } else {
@@ -323,30 +323,26 @@ pub fn show(
                 };
                 let new_col = col.min(end.saturating_sub(start));
                 let new_pos = start + new_col;
-                primary.head = new_pos.min(buffer.text.len());
-                if !shift {
-                    primary.anchor = primary.head;
-                }
+                head = new_pos.min(buffer.text.len());
+                if !shift { anchor = head; }
             } else if move_down {
                 // beyond last line
-                primary.head = buffer.text.len();
-                if !shift {
-                    primary.anchor = primary.head;
-                }
+                head = buffer.text.len();
+                if !shift { anchor = head; }
             }
         }
-        if primary.head != prev_head {
+        if head != prev_head {
             signals.caret_moved = true;
         }
+        selection.set_primary_range(anchor, head);
     }
 
-    // After any caret changes via movement or edits, make sure selection inner mirrors carets
-    selection.resync();
+    // Selection is directly backed by lapce-core; no resync needed
 
     // --- After movement, ensure visible (primitive scroll) ---
-    if let Some(primary) = selection.primary() {
+    if let Some((anchor, head)) = selection.primary_range() {
         // compute logical line/col without extra allocation
-        let (line_idx, col) = buffer.offset_to_line_col(primary.head.min(buffer.text.len()));
+        let (line_idx, col) = buffer.offset_to_line_col(head.min(buffer.text.len()));
         let char_w =
             ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
         let caret_x = (col as f32) * char_w;

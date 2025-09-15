@@ -1,41 +1,10 @@
 //! Transitional multi-selection abstraction toward full lapce-core adoption.
-//! Eventually this will be replaced by lapce_core's own selection structures.
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Caret {
-    pub anchor: usize, // selection start
-    pub head: usize,   // caret position (end)
-}
-
-impl Caret {
-    pub fn new(pos: usize) -> Self {
-        Self {
-            anchor: pos,
-            head: pos,
-        }
-    }
-    pub fn collapsed(&self) -> bool {
-        self.anchor == self.head
-    }
-    pub fn range(&self) -> (usize, usize) {
-        if self.anchor <= self.head {
-            (self.anchor, self.head)
-        } else {
-            (self.head, self.anchor)
-        }
-    }
-    pub fn set(&mut self, anchor: usize, head: usize) {
-        self.anchor = anchor;
-        self.head = head;
-    }
-}
+//! Now directly wraps `lapce_core::selection::Selection`.
 
 #[derive(Debug, Clone)]
 pub struct MultiSelection {
     /// Source of truth for multi-range selection
     inner: lapce_core::selection::Selection,
-    /// Transitional cache for UI code paths that directly access carets
-    pub carets: Vec<Caret>, // primary caret is carets[0] if non-empty
 }
 
 impl Default for MultiSelection {
@@ -46,85 +15,68 @@ impl Default for MultiSelection {
 
 impl MultiSelection {
     pub fn new() -> Self {
-        Self { inner: lapce_core::selection::Selection::new(), carets: Vec::new() }
+        Self { inner: lapce_core::selection::Selection::new() }
     }
     pub fn clear(&mut self) {
-        self.carets.clear();
         self.inner = lapce_core::selection::Selection::new();
     }
-    pub fn primary(&self) -> Option<&Caret> {
-        self.carets.get(0)
-    }
-    pub fn primary_mut(&mut self) -> Option<&mut Caret> {
-        self.carets.get_mut(0)
-    }
     pub fn ensure_primary(&mut self, pos: usize) {
-        if self.carets.is_empty() {
-            self.carets.push(Caret::new(pos));
-            self.sync_inner_from_carets();
+        if self.inner.is_empty() {
+            self.inner
+                .add_region(lapce_core::selection::SelRegion::new(pos, pos, None));
         }
-    }
-    pub fn add_caret(&mut self, caret: Caret) {
-        self.carets.push(caret);
-        self.dedup_and_sort();
-        self.sync_inner_from_carets();
     }
     pub fn add_collapsed(&mut self, pos: usize) {
-        self.add_caret(Caret::new(pos));
-    }
-    pub fn dedup_and_sort(&mut self) {
-        self.carets.sort_by_key(|c| c.range());
-        self.carets.dedup_by(|a, b| a.range() == b.range());
-        // Keep inner in order as well
-        self.sync_inner_from_carets();
+        self.inner
+            .add_region(lapce_core::selection::SelRegion::new(pos, pos, None));
     }
     pub fn collapse_all(&mut self) {
-        for c in &mut self.carets {
-            c.anchor = c.head;
+        let regs = self.inner.regions().to_vec();
+        let mut out = lapce_core::selection::Selection::new();
+        for r in regs {
+            let p = r.max();
+            out.add_region(lapce_core::selection::SelRegion::new(p, p, None));
         }
-        self.sync_inner_from_carets();
+        self.inner = out;
     }
     pub fn apply_simple_insert(&mut self, at: usize, len: usize) {
-        for c in &mut self.carets {
-            if c.head >= at {
-                c.head += len;
-            }
-            if c.anchor >= at {
-                c.anchor += len;
-            }
+        let regs = self.inner.regions().to_vec();
+        let mut out = lapce_core::selection::Selection::new();
+        for r in regs {
+            let mut a = r.min();
+            let mut h = r.max();
+            if h >= at { h += len; }
+            if a >= at { a += len; }
+            out.add_region(lapce_core::selection::SelRegion::new(a, h, None));
         }
-        self.sync_inner_from_carets();
+        self.inner = out;
     }
     pub fn apply_simple_delete(&mut self, at: usize, del_len: usize) {
         let end = at + del_len;
-        for c in &mut self.carets {
-            // If caret inside deleted span, move to start
-            if c.head >= at && c.head < end {
-                c.head = at;
-            }
-            if c.anchor >= at && c.anchor < end {
-                c.anchor = at;
-            }
-            // Shift positions after deletion
-            if c.head >= end {
-                c.head -= del_len;
-            }
-            if c.anchor >= end {
-                c.anchor -= del_len;
-            }
+        let regs = self.inner.regions().to_vec();
+        let mut out = lapce_core::selection::Selection::new();
+        for r in regs {
+            let mut a = r.min();
+            let mut h = r.max();
+            if h >= at && h < end { h = at; }
+            if a >= at && a < end { a = at; }
+            if h >= end { h -= del_len; }
+            if a >= end { a -= del_len; }
+            out.add_region(lapce_core::selection::SelRegion::new(a, h, None));
         }
-        self.sync_inner_from_carets();
+        self.inner = out;
     }
     /// Return a Vec of (anchor, head) sorted & deduped by the min position.
     pub fn ranges(&self) -> Vec<(usize, usize)> {
-        let mut v: Vec<(usize, usize)> = self.carets.iter().map(|c| c.range()).collect();
-        v.sort_unstable();
-        v.dedup();
-        v
+        self.inner
+            .regions()
+            .iter()
+            .map(|r| (r.min(), r.max()))
+            .collect()
     }
     /// Return collapsed caret positions (head) deduped & sorted.
     pub fn caret_positions(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self.carets.iter().map(|c| c.head).collect();
+        let mut v: Vec<usize> = self.inner.regions().iter().map(|r| r.max()).collect();
         v.sort_unstable();
         v.dedup();
         v
@@ -144,16 +96,11 @@ impl MultiSelection {
             }
         }
         // Update caret positions
-        for &pos in &positions {
-            self.apply_simple_insert(pos, len);
-        }
-        self.sync_inner_from_carets();
+        for &pos in &positions { self.apply_simple_insert(pos, len); }
     }
     /// Apply backspace (delete one char to the left) for each collapsed caret.
     pub fn apply_backspace(&mut self, text: &mut String) {
         let mut positions = self.caret_positions();
-        // For correctness, operate from left to right? Actually we remove left of caret, which shifts later indices.
-        // So process from left to right but adjust subsequent positions by tracking delta, simpler approach: process descending too.
         positions.sort_unstable();
         let mut performed: Vec<(usize, usize)> = Vec::new(); // (start,len)
         for &pos in positions.iter() {
@@ -181,42 +128,41 @@ impl MultiSelection {
         for (start, len) in performed.into_iter().rev() {
             self.apply_simple_delete(start, len);
         }
-        self.sync_inner_from_carets();
     }
 
     // --- Migration helpers to/from lapce_core::selection::Selection ---
     pub fn to_lapce_selection(&self) -> lapce_core::selection::Selection {
-        // Ensure inner reflects current carets before exporting
-        let mut tmp = self.clone();
-        tmp.sync_inner_from_carets();
-        tmp.inner
+        self.inner.clone()
     }
 
     pub fn from_lapce_selection(sel: &lapce_core::selection::Selection) -> Self {
-        let mut s = Self { inner: sel.clone(), carets: Vec::new() };
-        s.sync_carets_from_inner();
-        s
-    }
-
-    fn sync_inner_from_carets(&mut self) {
-        let mut sel = lapce_core::selection::Selection::new();
-        for c in &self.carets {
-            let (start, end) = c.range();
-            sel.add_region(lapce_core::selection::SelRegion::new(start, end, None));
-        }
-        self.inner = sel;
-    }
-
-    fn sync_carets_from_inner(&mut self) {
-        self.carets.clear();
-        for r in self.inner.regions() {
-            self.carets.push(Caret { anchor: r.min(), head: r.max() });
-        }
-        self.dedup_and_sort();
+        Self { inner: sel.clone() }
     }
 
     /// Call after mutating `carets` directly to keep `inner` in sync.
     pub fn resync(&mut self) {
-        self.sync_inner_from_carets();
+        // No-op: `inner` is the sole source of truth now.
+    }
+
+    /// Get the primary region's (anchor, head) as (min, max). Returns None if empty.
+    pub fn primary_range(&self) -> Option<(usize, usize)> {
+        self.inner
+            .regions()
+            .get(0)
+            .map(|r| (r.min(), r.max()))
+    }
+
+    /// Set the primary region's (anchor, head). If empty, creates it.
+    pub fn set_primary_range(&mut self, anchor: usize, head: usize) {
+        let mut regs = self.inner.regions().to_vec();
+        let newr = lapce_core::selection::SelRegion::new(anchor, head, None);
+        if regs.is_empty() {
+            regs.push(newr);
+        } else {
+            regs[0] = newr;
+        }
+        let mut out = lapce_core::selection::Selection::new();
+        for r in regs { out.add_region(r); }
+        self.inner = out;
     }
 }

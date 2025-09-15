@@ -270,12 +270,11 @@ impl Tabular {
             self.extra_cursors.sort_unstable();
         }
         // Transitional mirror to structured selections
-        if self.multi_selection.carets.is_empty() {
+    if self.multi_selection.to_lapce_selection().is_empty() {
             self.multi_selection
                 .add_collapsed(self.cursor_position.min(self.editor.text.len()));
         }
-        self.multi_selection.add_collapsed(p);
-        self.multi_selection.resync();
+    self.multi_selection.add_collapsed(p);
     }
 
     pub fn clear_extra_cursors(&mut self) {
@@ -299,7 +298,6 @@ impl Tabular {
                 self.extra_cursors.push(current_pos);
             }
             self.multi_selection.ensure_primary(current_pos);
-            self.multi_selection.resync();
         }
 
         // Get the text to search for
@@ -360,7 +358,6 @@ impl Tabular {
                     self.extra_cursors.sort_unstable();
                 }
                 self.multi_selection.add_collapsed(absolute_pos);
-                self.multi_selection.resync();
                 println!("DEBUG: Extra cursors now: {:?}", self.extra_cursors);
                 // Jangan pindahkan main cursor; biarkan user punya anchor seperti VS Code (opsional)
                 // Set selection text supaya konsisten
@@ -386,7 +383,6 @@ impl Tabular {
                 );
             }
             self.multi_selection.add_collapsed(first_pos);
-            self.multi_selection.resync();
         } else {
             println!("DEBUG: No occurrence found at all");
         }
