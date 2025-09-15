@@ -1,6 +1,5 @@
 use eframe::egui;
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
-use crate::editor_state_adapter::EditorStateAdapter;
 // syntax highlighting module temporarily disabled
 use log::debug;
 
@@ -213,14 +212,13 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
         }
     }
     // Deferred connection attempt after borrows released: perform quick creation now (blocking very briefly)
-    if let Some(conn_id) = need_connect {
-        if let Some(rt) = tabular.runtime.clone() {
+    if let Some(conn_id) = need_connect
+        && let Some(rt) = tabular.runtime.clone() {
             // This will attempt a fast creation (internal timeout ~100ms). If slow, background path inside API handles it.
             rt.block_on(async {
                 let _ = crate::connection::get_or_create_connection_pool(tabular, conn_id).await;
             });
         }
-    }
 }
 
 pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(), String> {
