@@ -998,6 +998,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Disable autocomplete for now (needs reimplementation on lapce-core)
         tabular.show_autocomplete = false;
         tabular.autocomplete_suggestions.clear();
+
+        // Ensure rope stays in sync if multi-cursor logic modified editor.text directly
+        // (the above multi-cursor branch may mutate tabular.editor.text without going through rope APIs)
+        tabular.editor.mark_text_modified();
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.content = tabular.editor.text.clone();
+            tab.is_modified = true;
+        }
     }
 
     // (Old forced replacement path removed; injection handles caret advance)

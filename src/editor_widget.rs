@@ -340,7 +340,7 @@ pub fn show(
     // Selection is directly backed by lapce-core; no resync needed
 
     // --- After movement, ensure visible (primitive scroll) ---
-    if let Some((anchor, head)) = selection.primary_range() {
+    if let Some((_anchor, head)) = selection.primary_range() {
         // compute logical line/col without extra allocation
         let (line_idx, col) = buffer.offset_to_line_col(head.min(buffer.text.len()));
         let char_w =
