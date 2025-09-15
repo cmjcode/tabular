@@ -340,6 +340,9 @@ pub fn show(
         }
     }
 
+    // After any caret changes via movement or edits, make sure selection inner mirrors carets
+    selection.resync();
+
     // --- After movement, ensure visible (primitive scroll) ---
     if let Some(primary) = selection.primary() {
         // compute logical line/col without extra allocation
