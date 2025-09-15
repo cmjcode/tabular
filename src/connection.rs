@@ -1156,6 +1156,29 @@ fn start_background_pool_creation(tabular: &mut Tabular, connection_id: i64) {
     }
 }
 
+// Public helper to ensure a background pool creation is in progress without blocking the UI.
+// If a pool already exists or a creation is pending, this is a no-op. Otherwise, it marks
+// the connection as pending and spawns a background task to create the pool.
+pub(crate) fn ensure_background_pool_creation(tabular: &mut Tabular, connection_id: i64) {
+    // If pool already available in local or shared caches, nothing to do
+    let has_pool = tabular.connection_pools.contains_key(&connection_id)
+        || tabular
+            .shared_connection_pools
+            .lock()
+            .map(|p| p.contains_key(&connection_id))
+            .unwrap_or(false);
+    if has_pool {
+        return;
+    }
+    // If pending already, nothing to do
+    if tabular.pending_connection_pools.contains(&connection_id) {
+        return;
+    }
+    // Mark pending and spawn background creation (non-blocking)
+    tabular.pending_connection_pools.insert(connection_id);
+    start_background_pool_creation(tabular, connection_id);
+}
+
 // Create connection pool for a specific connection config
 async fn create_connection_pool_for_config(
     connection: &models::structs::ConnectionConfig,

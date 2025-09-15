@@ -233,14 +233,12 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             }
         }
     }
-    // Deferred connection attempt after borrows released: perform quick creation now (blocking very briefly)
-    if let Some(conn_id) = need_connect
-        && let Some(rt) = tabular.runtime.clone() {
-            // This will attempt a fast creation (internal timeout ~100ms). If slow, background path inside API handles it.
-            rt.block_on(async {
-                let _ = crate::connection::get_or_create_connection_pool(tabular, conn_id).await;
-            });
-        }
+    // Deferred connection attempt after borrows released: trigger background creation without blocking UI
+    if let Some(conn_id) = need_connect {
+        log::debug!("Triggering background connection pool creation for {}", conn_id);
+        crate::connection::ensure_background_pool_creation(tabular, conn_id);
+        // Optionally, we can set a friendly status indicator here if needed.
+    }
 }
 
 pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(), String> {
