@@ -775,22 +775,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let response = ui.put(editor_rect, text_edit);
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
-    if input_snapshot.key_pressed(egui::Key::Escape) {
-        if !tabular.multi_selection.to_lapce_selection().is_empty() {
+    if input_snapshot.key_pressed(egui::Key::Escape)
+        && !tabular.multi_selection.to_lapce_selection().is_empty() {
             tabular.multi_selection.clear();
             tabular.selected_text.clear();
         }
-    }
     let cmd_or_ctrl = input_snapshot.modifiers.command || input_snapshot.modifiers.ctrl;
     if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
         println!("DEBUG: Cmd+D key detected!");
-        tabular.add_next_occurrence_cursor(); // already mirrors into multi_selection
+        // tabular.add_next_occurrence_cursor(); // already mirrors into multi_selection
     }
 
     // Handle multi-cursor typing - apply changes to all cursors
     // Multi-selection typing compensations handled later in response.changed() branch now.
-    if tabular.advanced_editor.show_line_numbers {
-        if let Some(gutter_rect) =
+    if tabular.advanced_editor.show_line_numbers
+        && let Some(gutter_rect) =
             ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("gutter_rect")))
         {
             let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
@@ -818,7 +817,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 }
             }
         }
-    }
 
     // Paint extra cursors (after gutter so they appear above text) using approximate positioning
     if !tabular.multi_selection.to_lapce_selection().is_empty() {
