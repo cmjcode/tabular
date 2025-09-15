@@ -186,14 +186,51 @@ pub fn show(
             signals.text_changed = true;
         }
     } else if !inserted_batch.is_empty() {
-        selection.apply_insert_text(&mut buffer.text, &inserted_batch);
-        buffer.notify_bulk_text_changed();
-        signals.text_changed = true;
-        signals.inserted_char = inserted_batch.chars().last();
+        // Use lapce-core granular edits for multi-caret uniform insert
+        let positions = selection.caret_positions();
+        if !positions.is_empty() {
+            // Apply edits from right to left to keep indices stable
+            for &pos in positions.iter().rev() {
+                buffer.apply_single_replace(pos..pos, &inserted_batch);
+            }
+            // Update caret/anchor positions based on original positions
+            let len = inserted_batch.len();
+            for &pos in &positions {
+                selection.apply_simple_insert(pos, len);
+            }
+            signals.text_changed = true;
+            signals.inserted_char = inserted_batch.chars().last();
+        }
     } else if backspace {
-        selection.apply_backspace(&mut buffer.text);
-        buffer.notify_bulk_text_changed();
-        signals.text_changed = true;
+        // Multi-caret backspace using granular edits
+        let mut positions = selection.caret_positions();
+        if !positions.is_empty() {
+            positions.sort_unstable();
+            // Compute deletions against a snapshot to find char boundaries safely
+            let snap = buffer.text.clone();
+            let mut performed: Vec<(usize, usize)> = Vec::new(); // (start,len)
+            for &pos in &positions {
+                if pos == 0 { continue; }
+                let mut real_start = pos - 1;
+                while real_start > 0 && !snap.is_char_boundary(real_start) { real_start -= 1; }
+                let mut real_end = pos;
+                while real_end < snap.len() && !snap.is_char_boundary(real_end) { real_end += 1; }
+                if real_start < real_end && real_end <= snap.len() {
+                    performed.push((real_start, real_end - real_start));
+                }
+            }
+            // Apply deletions from right to left
+            performed.sort_by_key(|(s, _)| *s);
+            for (start, len) in performed.iter().rev() {
+                let s = *start; let e = s + *len;
+                buffer.apply_single_replace(s..e, "");
+            }
+            // Update selection from last deletion to first (to handle shifts correctly)
+            for (start, len) in performed.into_iter().rev() {
+                selection.apply_simple_delete(start, len);
+            }
+            signals.text_changed = true;
+        }
     }
     // No full clear; stale entries become unreachable because line_version changes.
     // Periodic pruning to avoid unbounded growth.

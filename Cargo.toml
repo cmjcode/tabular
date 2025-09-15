@@ -68,3 +68,7 @@ self_update = { version = "0.42", features = ["archive-tar", "archive-zip"], def
 # Currently the implementation still falls back to single replace & full rope rebuild.
 # Enabling this feature today does not change behavior yet, but provides a stable knob.
 granular_edit = []
+default = ["granular_edit"]
+
+# NOTE: It's recommended to pin `lapce_core` to a specific commit for reproducible builds, e.g.:
+# lapce_core = { git = "https://github.com/lapce/lapce", package = "lapce-core", rev = "<commit-sha>" }
