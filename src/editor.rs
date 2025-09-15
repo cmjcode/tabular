@@ -121,8 +121,30 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.is_modified = false;
             tab.connection_id = None; // Clear connection as well
             tab.database_name = None; // Clear database as well
+            // Clear per-tab result state as well
+            tab.result_headers.clear();
+            tab.result_rows.clear();
+            tab.result_all_rows.clear();
+            tab.result_table_name.clear();
+            tab.is_table_browse_mode = false;
+            tab.current_page = 0;
+            // Keep default page_size as-is (don't force overwrite)
+            tab.total_rows = 0;
+            tab.base_query.clear();
+            tab.has_executed_query = false;
         }
         tabular.editor.set_text(String::new());
+        // Also clear global result state so the UI table area is reset
+        tabular.current_table_headers.clear();
+        tabular.current_table_data.clear();
+        tabular.all_table_data.clear();
+        tabular.current_table_name.clear();
+        tabular.total_rows = 0;
+        tabular.is_table_browse_mode = false;
+        tabular.current_page = 0;
+        // Keep the configured default page_size; don't override
+        tabular.current_base_query.clear();
+        tabular.current_connection_id = None;
         return;
     }
 
