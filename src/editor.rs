@@ -174,39 +174,39 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 current_tab.content = tabular.editor.text.clone();
                 current_tab.is_modified = true;
             }
-            // Persist current global result state into the tab before switching
-            current_tab.result_headers = tabular.current_table_headers.clone();
-            current_tab.result_rows = tabular.current_table_data.clone();
-            current_tab.result_all_rows = tabular.all_table_data.clone();
-            current_tab.result_table_name = tabular.current_table_name.clone();
+            // Persist current global result state into the tab before switching (swap to avoid clones)
+            std::mem::swap(&mut current_tab.result_headers, &mut tabular.current_table_headers);
+            std::mem::swap(&mut current_tab.result_rows, &mut tabular.current_table_data);
+            std::mem::swap(&mut current_tab.result_all_rows, &mut tabular.all_table_data);
+            std::mem::swap(&mut current_tab.result_table_name, &mut tabular.current_table_name);
             current_tab.is_table_browse_mode = tabular.is_table_browse_mode;
             current_tab.current_page = tabular.current_page;
             current_tab.page_size = tabular.page_size;
             current_tab.total_rows = tabular.total_rows;
-            current_tab.base_query = tabular.current_base_query.clone(); // Save base query
+            std::mem::swap(&mut current_tab.base_query, &mut tabular.current_base_query);
             debug!(
-                "💾 Saving tab {} state: base_query='{}'",
+                "💾 Saving tab {} state (swap): base_query='{}'",
                 tabular.active_tab_index, current_tab.base_query
             );
         }
 
         // Switch to new tab
         tabular.active_tab_index = tab_index;
-        if let Some(new_tab) = tabular.query_tabs.get(tab_index) {
+        if let Some(new_tab) = tabular.query_tabs.get_mut(tab_index) {
             tabular.editor.set_text(new_tab.content.clone());
-            // Restore per-tab result state into global display
-            tabular.current_table_headers = new_tab.result_headers.clone();
-            tabular.current_table_data = new_tab.result_rows.clone();
-            tabular.all_table_data = new_tab.result_all_rows.clone();
-            tabular.current_table_name = new_tab.result_table_name.clone();
+            // Restore per-tab result state into global display (swap to avoid clones)
+            std::mem::swap(&mut tabular.current_table_headers, &mut new_tab.result_headers);
+            std::mem::swap(&mut tabular.current_table_data, &mut new_tab.result_rows);
+            std::mem::swap(&mut tabular.all_table_data, &mut new_tab.result_all_rows);
+            std::mem::swap(&mut tabular.current_table_name, &mut new_tab.result_table_name);
             tabular.is_table_browse_mode = new_tab.is_table_browse_mode;
             tabular.current_page = new_tab.current_page;
             tabular.page_size = new_tab.page_size;
             tabular.total_rows = new_tab.total_rows;
-            tabular.current_base_query = new_tab.base_query.clone(); // Restore base query
+            std::mem::swap(&mut tabular.current_base_query, &mut new_tab.base_query);
             debug!(
-                "📂 Restoring tab {} state: base_query='{}', connection_id={:?}",
-                tab_index, new_tab.base_query, new_tab.connection_id
+                "📂 Restoring tab {} state (swap): base_query='{}', connection_id={:?}",
+                tab_index, tabular.current_base_query, new_tab.connection_id
             );
             // IMPORTANT: kembalikan connection id aktif sesuai tab baru
             tabular.current_connection_id = new_tab.connection_id;
