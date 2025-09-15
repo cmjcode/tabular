@@ -961,13 +961,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // only if we didn't already detect it
         let cur = tabular.cursor_position.min(tabular.editor.text.len());
         if cur > 0 && tabular.editor.text.chars().nth(cur - 1) == Some('\t') {
-            tabular.editor.text.remove(cur - 1);
+            // Remove the inserted tab via rope edit
+            let start = cur - 1;
+            tabular.editor.apply_single_replace(start..cur, "");
             tabular.cursor_position = tabular.cursor_position.saturating_sub(1);
             log::debug!("Detected tab character insertion -> triggering autocomplete accept");
             editor_autocomplete::accept_current_suggestion(tabular);
         } else if cur >= 4 && &tabular.editor.text[cur - 4..cur] == "    " {
-            tabular.editor.text.replace_range(cur - 4..cur, "");
-            tabular.cursor_position -= 4;
+            // Remove inserted 4 spaces via rope edit
+            let start = cur - 4;
+            tabular.editor.apply_single_replace(start..cur, "");
+            tabular.cursor_position = tabular.cursor_position.saturating_sub(4);
             log::debug!("Detected 4-space indentation -> triggering autocomplete accept");
             editor_autocomplete::accept_current_suggestion(tabular);
         }
@@ -1002,18 +1006,20 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             // Clean up potential inserted tab characters or spaces from editor before replacement
             // Detect diff compared to pre_text
             if tabular.editor.text.contains('\t') {
-                // Remove a lone tab right before cursor if exists
+                // Remove a lone tab right before cursor via rope edit if exists
                 let cur = tabular.cursor_position.min(tabular.editor.text.len());
                 if cur > 0 && tabular.editor.text.chars().nth(cur - 1) == Some('\t') {
-                    tabular.editor.text.remove(cur - 1);
+                    let start = cur - 1;
+                    tabular.editor.apply_single_replace(start..cur, "");
                     tabular.cursor_position = tabular.cursor_position.saturating_sub(1);
                 }
             }
             // Remove four leading spaces sequence before cursor (indent) if present
             let cur = tabular.cursor_position.min(tabular.editor.text.len());
             if cur >= 4 && &tabular.editor.text[cur - 4..cur] == "    " {
-                tabular.editor.text.replace_range(cur - 4..cur, "");
-                tabular.cursor_position -= 4;
+                let start = cur - 4;
+                tabular.editor.apply_single_replace(start..cur, "");
+                tabular.cursor_position = tabular.cursor_position.saturating_sub(4);
             }
             // Update internal egui state for cursor after Enter accept path
             let id = egui::Id::new("sql_editor");
@@ -1077,30 +1083,40 @@ pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
     let find_text = &tabular.advanced_editor.find_text;
     let replace_text = &tabular.advanced_editor.replace_text;
 
-    if tabular.advanced_editor.use_regex {
+    let new_text = if tabular.advanced_editor.use_regex {
         if let Ok(re) = regex::Regex::new(find_text) {
-            tabular.editor.text = re
-                .replace_all(&tabular.editor.text, replace_text)
-                .into_owned();
+            re.replace_all(&tabular.editor.text, replace_text).into_owned()
+        } else {
+            return;
         }
     } else if tabular.advanced_editor.case_sensitive {
-        tabular.editor.text = tabular.editor.text.replace(find_text, replace_text);
+        tabular.editor.text.replace(find_text, replace_text)
     } else {
+        // case-insensitive simple replace
+    let src = tabular.editor.text.clone();
         let find_lower = find_text.to_lowercase();
         let mut result = String::new();
-        let mut last_end = 0;
-        for (start, part) in tabular.editor.text.match_indices(&find_lower) {
-            result.push_str(&tabular.editor.text[last_end..start]);
+        let mut last = 0;
+        let src_lower = src.to_lowercase();
+        let mut i = 0;
+        while let Some(pos) = src_lower[i..].find(&find_lower) {
+            let start = i + pos;
+            result.push_str(&src[last..start]);
             result.push_str(replace_text);
-            last_end = start + part.len();
+            last = start + find_lower.len();
+            i = last;
         }
-        result.push_str(&tabular.editor.text[last_end..]);
-        tabular.editor.text = result;
-    }
+        result.push_str(&src[last..]);
+        result
+    };
 
+    // Bulk set text via buffer to keep rope in sync and record undo
+    tabular.editor.set_text(new_text.clone());
+    // Keep cursor within bounds
+    tabular.cursor_position = tabular.cursor_position.min(tabular.editor.text.len());
     // Update current tab content
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-        tab.content = tabular.editor.text.clone();
+        tab.content = new_text;
         tab.is_modified = true;
     }
 }
