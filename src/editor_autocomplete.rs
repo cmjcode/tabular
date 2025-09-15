@@ -574,8 +574,8 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         let cursor = app.cursor_position.min(app.editor.text.len());
         let (prefix, start_idx) = current_prefix(&app.editor.text, cursor);
         debug!("Current prefix: '{}', start index: {}", prefix, start_idx);
-        // If prefix empty but we still want to accept (e.g., early Tab) try to look back until whitespace
-        let (effective_start, effective_prefix_len) = if prefix.is_empty() {
+        // Determine replacement range [start .. cursor]
+        let effective_start = if prefix.is_empty() {
             // Scan backwards for contiguous identifier chars just typed
             let bytes = app.editor.text.as_bytes();
             let mut s = cursor;
@@ -587,20 +587,17 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
                     break;
                 }
             }
-            (s, cursor - s)
+            s
         } else {
-            (start_idx, prefix.len())
+            start_idx
         };
-
-        if effective_prefix_len > 0 || !prefix.is_empty() {
-            let mut new_text = String::with_capacity(app.editor.text.len() + sugg.len());
-            new_text.push_str(&app.editor.text[..effective_start]);
-            new_text.push_str(sugg);
-            new_text.push_str(&app.editor.text[cursor..]);
-            app.editor.set_text(new_text);
-            app.editor.mark_text_modified();
-            app.cursor_position = effective_start + sugg.len();
-        }
+        // Apply via rope edit API. We replace the prefix (if any) with the suggestion
+        app.editor.apply_single_replace(effective_start..cursor, sugg);
+        // Update cursor position after insertion
+        app.cursor_position = effective_start + sugg.len();
+        // Update primary selection to caret-only at new cursor
+        app.multi_selection.set_primary_range(app.cursor_position, app.cursor_position);
+    // Note: We don't have direct ui::Context here; Editor will align caret after render path.
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
     }

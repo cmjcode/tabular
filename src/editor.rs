@@ -496,10 +496,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     indented.push_str(content);
                     indented.push_str(nl);
                 }
-                tabular
-                    .editor
-                    .text
-                    .replace_range(line_start..sel_end_clamped, &indented);
+                // Apply via rope edit API for consistency
+                tabular.editor.apply_single_replace(line_start..sel_end_clamped, &indented);
                 tabular.selection_start = line_start;
                 tabular.selection_end = line_start + indented.len();
                 tabular.cursor_position = tabular.selection_end;
@@ -529,10 +527,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     outdented.push_str(nl);
                 }
                 if changed {
-                    tabular
-                        .editor
-                        .text
-                        .replace_range(line_start..sel_end_clamped, &outdented);
+                    tabular.editor.apply_single_replace(line_start..sel_end_clamped, &outdented);
                     tabular.selection_start = line_start;
                     tabular.selection_end = line_start + outdented.len();
                     tabular.cursor_position = tabular.selection_end;
@@ -556,6 +551,73 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
     }
+    // ----- Handle autocomplete key interception and pre-acceptance BEFORE building TextEdit -----
+    let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let mut raw_tab = false;
+    // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
+    let mut arrow_down_pressed = false;
+    let mut arrow_up_pressed = false;
+    ui.input(|i| {
+        for ev in &i.events {
+            if let egui::Event::Key { key: egui::Key::Tab, pressed: true, .. } = ev {
+                raw_tab = true;
+            }
+        }
+    });
+    // Defer actual accept application until after TextEdit is rendered to avoid borrow conflicts
+    let mut defer_accept_autocomplete = false;
+    if tabular.show_autocomplete {
+        ui.ctx().input_mut(|ri| {
+            // Drain & filter events: buang ArrowUp/ArrowDown pressed supaya TextEdit tidak memproses
+            let mut kept = Vec::with_capacity(ri.events.len());
+            for ev in ri.events.drain(..) {
+                match ev {
+                    egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } => {
+                        arrow_down_pressed = true;
+                    }
+                    egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } => {
+                        arrow_up_pressed = true;
+                    }
+                    // Intercept Enter pressed untuk autocomplete acceptance (supaya tidak newline)
+                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                        enter_pressed_pre = true;
+                    }
+                    // Jangan hilangkan release events agar repeat logic internal tidak stuck; hanya pressed yang kita konsumsi
+                    other @ egui::Event::Key { key: egui::Key::ArrowDown, pressed: false, .. } => {
+                        kept.push(other);
+                    }
+                    other @ egui::Event::Key { key: egui::Key::ArrowUp, pressed: false, .. } => {
+                        kept.push(other);
+                    }
+                    other => kept.push(other),
+                }
+            }
+            ri.events = kept;
+        });
+    }
+    if raw_tab {
+        tab_pressed_pre = true;
+        log::debug!("Raw Tab event captured before editor render");
+    }
+    let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
+    let accept_via_enter_pre = enter_pressed_pre && tabular.show_autocomplete;
+    if accept_via_tab_pre || accept_via_enter_pre {
+        // Remove Tab/Enter pressed events so TextEdit tidak menyisipkan tab/newline
+        ui.ctx().input_mut(|ri| {
+            let before = ri.events.len();
+            ri.events.retain(|e| {
+                !matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, .. })
+                    && !matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+            });
+            let removed = before - ri.events.len();
+            if removed > 0 {
+                log::debug!("Removed {} key event(s) (Tab/Enter) before autocomplete accept", removed);
+            }
+        });
+        // Mark acceptance to be applied after TextEdit render
+        defer_accept_autocomplete = true;
+    }
+
     // ----- Build widget after mutations -----
     // Re-enable syntax highlighting with cache
     let lang = tabular
@@ -592,140 +654,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         .code_editor()
         .id_source("sql_editor")
         .layouter(&mut layouter);
-    // (Old duplicate indentation block removed)
-    let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
-    let mut raw_tab = false;
-    // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
-    let mut arrow_down_pressed = false;
-    let mut arrow_up_pressed = false;
-    ui.input(|i| {
-        for ev in &i.events {
-            if let egui::Event::Key {
-                key: egui::Key::Tab,
-                pressed: true,
-                ..
-            } = ev
-            {
-                raw_tab = true;
-            }
-        }
-    });
-    if tabular.show_autocomplete {
-        ui.ctx().input_mut(|ri| {
-            // Drain & filter events: buang ArrowUp/ArrowDown pressed supaya TextEdit tidak memproses
-            let mut kept = Vec::with_capacity(ri.events.len());
-            for ev in ri.events.drain(..) {
-                match ev {
-                    egui::Event::Key {
-                        key: egui::Key::ArrowDown,
-                        pressed: true,
-                        ..
-                    } => {
-                        arrow_down_pressed = true;
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::ArrowUp,
-                        pressed: true,
-                        ..
-                    } => {
-                        arrow_up_pressed = true;
-                    }
-                    // Intercept Enter pressed untuk autocomplete acceptance (supaya tidak newline)
-                    egui::Event::Key {
-                        key: egui::Key::Enter,
-                        pressed: true,
-                        ..
-                    } => {
-                        enter_pressed_pre = true;
-                    }
-                    // Jangan hilangkan release events agar repeat logic internal tidak stuck; hanya pressed yang kita konsumsi
-                    other @ egui::Event::Key {
-                        key: egui::Key::ArrowDown,
-                        pressed: false,
-                        ..
-                    } => {
-                        kept.push(other);
-                    }
-                    other @ egui::Event::Key {
-                        key: egui::Key::ArrowUp,
-                        pressed: false,
-                        ..
-                    } => {
-                        kept.push(other);
-                    }
-                    other => kept.push(other),
-                }
-            }
-            ri.events = kept;
-        });
-    }
-    if raw_tab {
-        tab_pressed_pre = true;
-        log::debug!("Raw Tab event captured before editor render");
-    }
-    let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
-    let accept_via_enter_pre = enter_pressed_pre && tabular.show_autocomplete;
-    // If accepting, prepare to inject remaining characters as text events so caret advances naturally
-    if (accept_via_tab_pre || accept_via_enter_pre)
-        && let Some(sugg) = tabular
-            .autocomplete_suggestions
-            .get(tabular.selected_autocomplete_index)
-            .cloned()
-    {
-        // Remove the Tab key event itself so CodeEditor won't insert a tab char
-        ui.ctx().input_mut(|ri| {
-            let before = ri.events.len();
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::Tab,
-                        ..
-                    }
-                )
-            });
-            let removed = before - ri.events.len();
-            if removed > 0 {
-                log::debug!(
-                    "Removed {} Tab key event(s) to prevent tab insertion",
-                    removed
-                );
-            }
-        });
-        // Remove Enter key event(s) so tidak newline
-        ui.ctx().input_mut(|ri| {
-            let before = ri.events.len();
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::Enter,
-                        ..
-                    }
-                )
-            });
-            let removed = before - ri.events.len();
-            if removed > 0 {
-                log::debug!("Removed {} Enter key event(s) to prevent newline", removed);
-            }
-        });
-        let prefix_len = tabular.autocomplete_prefix.len();
-        if sugg.len() >= prefix_len {
-            let remainder = &sugg[prefix_len..];
-            if !remainder.is_empty() {
-                ui.ctx().input_mut(|ri| {
-                    ri.events.push(egui::Event::Text(remainder.to_string()));
-                });
-            }
-        }
-        tabular.show_autocomplete = false;
-        tabular.autocomplete_suggestions.clear();
-        log::debug!(
-            "Autocomplete accepted via {} by injecting remainder (suggestion '{}')",
-            if accept_via_tab_pre { "Tab" } else { "Enter" },
-            sugg
-        );
-    }
     // Add small horizontal padding so the editor doesn't get clipped on the right edge
     // let response = egui::Frame::default()
     //     // .inner_margin(egui::Margin::rightf(2.0.into()))
@@ -771,6 +699,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Tidak lagi override clip_rect secara manual; biarkan ScrollArea mengatur viewport dan scrolling.
     let response = ui.put(editor_rect, text_edit);
+    // Apply deferred autocomplete acceptance after TextEdit borrow is released
+    if defer_accept_autocomplete {
+        crate::editor_autocomplete::accept_current_suggestion(tabular);
+        let clamped = tabular.cursor_position.min(tabular.editor.text.len());
+        tabular.pending_cursor_set = Some(clamped);
+        // Keep focus on editor so Tab/Enter doesn't move focus
+        ui.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+        log::debug!(
+            "Autocomplete accepted via {} (rope edit, post-render)",
+            if accept_via_tab_pre { "Tab" } else { "Enter" }
+        );
+    }
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
     if input_snapshot.key_pressed(egui::Key::Escape)
