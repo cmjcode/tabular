@@ -561,8 +561,18 @@ pub fn show(
         );
     }
 
-    // Mouse interactions: click to place caret, drag to select
-    if response.clicked() {
+    // Mouse interactions: double-click to select word, click to place caret, drag to select
+    if response.double_clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let at = pos_to_offset(pos);
+            let (s, e) = select_word_at(&buffer.text, at);
+            let mut single = lapce_core::selection::Selection::new();
+            single.add_region(lapce_core::selection::SelRegion::new(s, e, None));
+            selection.set_from_lapce_selection(single);
+            state.mouse_drag_anchor = Some(s);
+            signals.caret_moved = true;
+        }
+    } else if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             let new_pos = pos_to_offset(pos);
             selection.set_primary_range(new_pos, new_pos);
