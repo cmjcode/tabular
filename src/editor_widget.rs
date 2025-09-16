@@ -31,6 +31,8 @@ pub struct EditorWidgetState {
     // Snippet state: list of (tab_index, (start,end)) and current index
     pub snippet_placeholders: Vec<(usize, (usize, usize))>,
     pub snippet_current: Option<usize>,
+    // Mouse drag selection anchor (text offset) if dragging
+    pub mouse_drag_anchor: Option<usize>,
 }
 
 impl EditorWidgetState {
@@ -42,6 +44,7 @@ impl EditorWidgetState {
             last_inline_find: None,
             snippet_placeholders: Vec::new(),
             snippet_current: None,
+            mouse_drag_anchor: None,
         }
     }
 }
@@ -517,6 +520,25 @@ pub fn show(
     let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
     let lines_vec = build_lines(&buffer.text); // Could be replaced by cached indices; keep for now (Stage2 optimization)
 
+    // Helper: map a screen position to closest text offset (clamped)
+    let pos_to_offset = |pos: egui::Pos2| -> usize {
+        let rel_x = pos.x - text_origin.x;
+        let rel_y = pos.y - text_origin.y;
+        // Compute target line index (clamped to valid range)
+        let mut line_idx = if rel_y <= 0.0 { 0 } else { (rel_y / line_height).floor() as usize };
+        if line_idx >= buffer.line_count() { line_idx = buffer.line_count().saturating_sub(1); }
+        let line_start = buffer.line_start(line_idx);
+        let line_end = if line_idx + 1 < buffer.line_count() {
+            buffer.line_start(line_idx + 1) - 1
+        } else {
+            buffer.text.len()
+        };
+        let line_len = line_end.saturating_sub(line_start);
+        let mut col = if char_w > 0.0 { (rel_x / char_w).round().max(0.0) as usize } else { 0 };
+        if col > line_len { col = line_len; }
+        (line_start + col).min(buffer.text.len())
+    };
+
     // Selection highlighting via lapce-core selection regions
     let sel_color = ui.visuals().selection.bg_fill;
     let regions = selection.to_lapce_selection();
@@ -539,30 +561,31 @@ pub fn show(
         );
     }
 
-    // Handle mouse click: move caret to clicked position (single-click)
+    // Mouse interactions: click to place caret, drag to select
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
-            // Translate screen pos to text grid
-            let rel_x = pos.x - text_origin.x;
-            let rel_y = pos.y - text_origin.y;
-            if rel_y >= 0.0 {
-                let line_idx = (rel_y / line_height).floor() as usize;
-                if line_idx < buffer.line_count() {
-                    // Determine column using monospaced char width
-                    let mut col = if char_w > 0.0 { (rel_x / char_w).floor().max(0.0) as usize } else { 0 };
-                    let line_start = buffer.line_start(line_idx);
-                    let line_end = if line_idx + 1 < buffer.line_count() {
-                        buffer.line_start(line_idx + 1) - 1
-                    } else {
-                        buffer.text.len()
-                    };
-                    let line_len = line_end.saturating_sub(line_start);
-                    if col > line_len { col = line_len; }
-                    let new_pos = (line_start + col).min(buffer.text.len());
-                    selection.set_primary_range(new_pos, new_pos);
-                }
-            }
+            let new_pos = pos_to_offset(pos);
+            selection.set_primary_range(new_pos, new_pos);
+            state.mouse_drag_anchor = Some(new_pos);
         }
+    }
+    if response.drag_started() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let anchor = pos_to_offset(pos);
+            state.mouse_drag_anchor = Some(anchor);
+            selection.set_primary_range(anchor, anchor);
+        }
+    }
+    if response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let head = pos_to_offset(pos);
+            let anchor = state.mouse_drag_anchor.unwrap_or(head);
+            selection.set_primary_range(anchor, head);
+            signals.caret_moved = true;
+        }
+    }
+    if response.drag_stopped() {
+        state.mouse_drag_anchor = None;
     }
 
     // Paint lines (with syntax highlight)
