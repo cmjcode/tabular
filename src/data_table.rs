@@ -1272,7 +1272,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
             conn.database.clone()
         };
 
-        // Short-circuit: if target unchanged and columns already loaded, do nothing
+        // Short-circuit: if target unchanged and relevant subview data is already loaded, do nothing
         let target = (conn_id, database.clone(), table_guess.clone());
         if !tabular.request_structure_refresh
             && tabular
@@ -1280,13 +1280,24 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                 .as_ref()
                 .map(|t| t == &target)
                 .unwrap_or(false)
-            && !tabular.structure_columns.is_empty()
         {
-            debug!(
-                "✅ Structure already loaded in-memory for {}/{} (skip reload)",
-                database, table_guess
-            );
-            return;
+            match tabular.structure_sub_view {
+                models::structs::StructureSubView::Columns if !tabular.structure_columns.is_empty() => {
+                    debug!(
+                        "✅ Structure (columns) already loaded in-memory for {}/{} (skip reload)",
+                        database, table_guess
+                    );
+                    return;
+                }
+                models::structs::StructureSubView::Indexes if !tabular.structure_indexes.is_empty() => {
+                    debug!(
+                        "✅ Structure (indexes) already loaded in-memory for {}/{} (skip reload)",
+                        database, table_guess
+                    );
+                    return;
+                }
+                _ => {}
+            }
         }
 
         // Reset current in-memory structure before (re)loading
@@ -1852,6 +1863,8 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
         let active_idx = tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
         if ui.selectable_label(active_idx, "Indexes").clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
+            // Load using cache-first; if empty, live fetch inside the loader will populate and cache
+            load_structure_info_for_current_table(tabular);
         }
     });
 }
