@@ -139,6 +139,11 @@ impl MultiSelection {
         Self { inner: sel.clone() }
     }
 
+    /// Replace current selection from a lapce-core Selection.
+    pub fn set_from_lapce_selection(&mut self, sel: lapce_core::selection::Selection) {
+        self.inner = sel;
+    }
+
     /// Call after mutating `carets` directly to keep `inner` in sync.
     pub fn resync(&mut self) {
         // No-op: `inner` is the sole source of truth now.

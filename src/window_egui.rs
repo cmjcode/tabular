@@ -342,7 +342,7 @@ impl Tabular {
         let mut app = Self {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
-            use_new_editor: false, // default off; can be toggled via future settings
+            use_new_editor: true, // default off; can be toggled via future settings
             editor_widget_state: None,
             selected_menu: "Database".to_string(),
             items_tree: Vec::new(),

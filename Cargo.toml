@@ -70,5 +70,8 @@ self_update = { version = "0.42", features = ["archive-tar", "archive-zip"], def
 granular_edit = []
 default = ["granular_edit"]
 
+# Experimental: Lapce editor port. Off by default until fully integrated.
+lapce_editor = []
+
 # NOTE: It's recommended to pin `lapce_core` to a specific commit for reproducible builds, e.g.:
 # lapce_core = { git = "https://github.com/lapce/lapce", package = "lapce-core", rev = "<commit-sha>" }

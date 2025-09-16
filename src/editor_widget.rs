@@ -25,6 +25,12 @@ pub struct EditorViewState {
 pub struct EditorWidgetState {
     pub view: EditorViewState,
     pub show_line_numbers: bool,
+    // Inline-find (ported from Lapce behavior): when active, next typed text is used to jump
+    pub inline_find: Option<InlineFindDirection>,
+    pub last_inline_find: Option<(InlineFindDirection, String)>,
+    // Snippet state: list of (tab_index, (start,end)) and current index
+    pub snippet_placeholders: Vec<(usize, (usize, usize))>,
+    pub snippet_current: Option<usize>,
 }
 
 impl EditorWidgetState {
@@ -32,8 +38,18 @@ impl EditorWidgetState {
         Self {
             view: EditorViewState::default(),
             show_line_numbers: true,
+            inline_find: None,
+            last_inline_find: None,
+            snippet_placeholders: Vec::new(),
+            snippet_current: None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineFindDirection {
+    Left,
+    Right,
 }
 
 #[derive(Default)]
@@ -79,20 +95,22 @@ pub fn show(
     let mut shift = false;
     let mut undo_cmd = false;
     let mut redo_cmd = false;
-
-    // We'll create a provisional rect; height will be recomputed after potential edits.
-    // Reserve interaction space across available region for now.
-    let provisional_rect = available;
-    let response = ui.interact(provisional_rect, id, egui::Sense::click_and_drag());
-    if response.has_focus() || response.clicked() {
-        ui.memory_mut(|m| m.request_focus(id));
-    }
+    let mut tab_pressed = false;
+    let mut shift_tab_pressed = false;
+    // Inline-find ephemeral inputs
+    let mut inline_find_pattern: Option<(InlineFindDirection, String)> = None;
+    let mut repeat_inline_find = false;
 
     ui.input(|i| {
         for ev in &i.events {
             match ev {
                 egui::Event::Text(t) => {
-                    if !t.chars().all(|c| c < ' ' && c != '\t') {
+                    // Intercept inline-find input: do not insert into buffer.
+                    if let Some(dir) = state.inline_find {
+                        if !t.is_empty() {
+                            inline_find_pattern = Some((dir, t.clone()));
+                        }
+                    } else if !t.chars().all(|c| c < ' ' && c != '\t') {
                         inserted_batch.push_str(t);
                     }
                 }
@@ -109,6 +127,33 @@ pub fn show(
                     ..
                 } => {
                     backspace = true;
+                }
+                egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } => {
+                    if modifiers.shift { shift_tab_pressed = true; } else { tab_pressed = true; }
+                }
+                // Inline-find commands: Alt+F (right), Alt+Shift+F (left), Alt+G (repeat)
+                egui::Event::Key { key: egui::Key::F, pressed: true, modifiers, .. } => {
+                    if modifiers.alt && !modifiers.shift { state.inline_find = Some(InlineFindDirection::Right); }
+                    else if modifiers.alt && modifiers.shift { state.inline_find = Some(InlineFindDirection::Left); }
+                }
+                egui::Event::Key { key: egui::Key::G, pressed: true, modifiers, .. } => {
+                    if modifiers.alt { repeat_inline_find = true; }
+                }
+                // Multi-cursor:
+                // - Alt+D -> SelectNextCurrent
+                // - Alt+Shift+D -> SelectSkipCurrent
+                // - Cmd+D (macOS) -> SelectNextCurrent
+                // - Cmd+Shift+D (macOS) -> SelectSkipCurrent
+                egui::Event::Key { key: egui::Key::D, pressed: true, modifiers, .. } => {
+                    let is_next = (modifiers.alt && !modifiers.shift)
+                        || ((modifiers.command || modifiers.mac_cmd) && !modifiers.shift);
+                    let is_skip = (modifiers.alt && modifiers.shift)
+                        || ((modifiers.command || modifiers.mac_cmd) && modifiers.shift);
+                    if is_next {
+                        select_next_current(&buffer.text, selection);
+                    } else if is_skip {
+                        select_skip_current(&buffer.text, selection);
+                    }
                 }
                 egui::Event::Key {
                     key: egui::Key::ArrowLeft,
@@ -186,6 +231,52 @@ pub fn show(
         }
     });
 
+    // Handle repeat inline-find (Alt+G)
+    if repeat_inline_find {
+        if let Some((dir, pat)) = state.last_inline_find.clone() {
+            inline_find_pattern = Some((dir, pat));
+        }
+    }
+
+    // Execute inline-find if any pattern captured; consumes inline-find mode
+    if let Some((dir, pattern)) = inline_find_pattern.take() {
+        if !pattern.is_empty() {
+            if let Some((_anchor, head)) = selection.primary_range() {
+                if let Some(new_head) = inline_find_in_line(buffer, head, dir, &pattern) {
+                    selection.set_primary_range(new_head, new_head);
+                    signals.caret_moved = true;
+                    state.last_inline_find = Some((dir, pattern.clone()));
+                }
+            }
+        }
+        // always exit inline-find mode after a key
+        state.inline_find = None;
+    }
+
+    // Snippet placeholder navigation: Tab / Shift+Tab
+    if tab_pressed || shift_tab_pressed {
+        if let Some(idx) = state.snippet_current {
+            if !state.snippet_placeholders.is_empty() {
+                let mut new_idx = idx as isize + if tab_pressed { 1 } else { -1 };
+                let last = (state.snippet_placeholders.len() - 1) as isize;
+                if new_idx < 0 { new_idx = 0; }
+                if new_idx > last { new_idx = last; }
+                state.snippet_current = Some(new_idx as usize);
+                if let Some((_, (s, e))) = state.snippet_placeholders.get(new_idx as usize) {
+                    selection.set_primary_range(*s, *e);
+                    signals.caret_moved = true;
+                }
+                // If on last placeholder and Tab, clear snippet state
+                if tab_pressed && (new_idx as usize) == last as usize {
+                    state.snippet_placeholders.clear();
+                    state.snippet_current = None;
+                }
+            } else {
+                state.snippet_current = None;
+            }
+        }
+    }
+
     // --- Text mutations ---
     if undo_cmd {
         if buffer.undo() {
@@ -248,9 +339,8 @@ pub fn show(
         line_cache.retain(|(idx, ver), _| *ver == buffer.line_version(*idx));
     }
 
-    // --- Movement (primary caret only for now) ---
-    if let Some((mut anchor, mut head)) = selection.primary_range() {
-        let prev_head = head;
+    // --- Movement: apply to all carets/selections ---
+    if move_left || move_right || move_word_left || move_word_right || move_up || move_down {
         // Helper closures for word boundaries (alnum or underscore as word)
         let word_start = |s: &str, mut pos: usize| {
             let b = s.as_bytes();
@@ -258,8 +348,7 @@ pub fn show(
             while pos > 0 && !s.is_char_boundary(pos) { pos -= 1; }
             while pos > 0 {
                 let ch = b[pos - 1] as char;
-                if ch.is_alphanumeric() || ch == '_' { pos -= 1; }
-                else { break; }
+                if ch.is_alphanumeric() || ch == '_' { pos -= 1; } else { break; }
             }
             pos
         };
@@ -269,72 +358,86 @@ pub fn show(
             while pos < b.len() && !s.is_char_boundary(pos) { pos += 1; }
             while pos < b.len() {
                 let ch = b[pos] as char;
-                if ch.is_alphanumeric() || ch == '_' { pos += 1; }
-                else { break; }
+                if ch.is_alphanumeric() || ch == '_' { pos += 1; } else { break; }
             }
             pos
         };
-        if move_word_left {
-            let new_pos = word_start(&buffer.text, head);
-            head = new_pos;
-            if !shift { anchor = head; }
-        } else if move_left {
-            if head > 0 {
-                head -= 1;
-                while head > 0 && !buffer.text.is_char_boundary(head) {
-                    head -= 1;
-                }
-            }
-            if !shift {
-                anchor = head;
-            }
-        }
-        if move_word_right {
-            let new_pos = word_end(&buffer.text, head);
-            head = new_pos.min(buffer.text.len());
-            if !shift { anchor = head; }
-        } else if move_right {
-            if head < buffer.text.len() {
-                head += 1;
-                while head < buffer.text.len()
-                    && !buffer.text.is_char_boundary(head)
-                {
-                    head += 1;
-                }
-            }
-            if !shift {
-                anchor = head;
-            }
-        }
-        if move_up || move_down {
-            // Use cached offset translation
-            let (line_idx, col) = buffer.offset_to_line_col(head);
-            let target_line = if move_up {
-                line_idx.saturating_sub(1)
-            } else {
-                line_idx + 1
-            };
-            if target_line < buffer.line_count() {
-                let start = buffer.line_start(target_line);
-                let end = if target_line + 1 < buffer.line_count() {
-                    buffer.line_start(target_line + 1) - 1
+
+        let sel0 = selection.to_lapce_selection();
+        let mut moved_any = false;
+        let mut new_sel = lapce_core::selection::Selection::new();
+        for r in sel0.regions() {
+            let mut anchor = r.min();
+            let mut head = r.max();
+            let was_range = anchor != head;
+
+            if move_word_left {
+                if was_range && !shift {
+                    // collapse to left edge
+                    head = anchor;
                 } else {
-                    buffer.text.len()
-                };
-                let new_col = col.min(end.saturating_sub(start));
-                let new_pos = start + new_col;
-                head = new_pos.min(buffer.text.len());
+                    head = word_start(&buffer.text, head);
+                }
                 if !shift { anchor = head; }
-            } else if move_down {
-                // beyond last line
-                head = buffer.text.len();
+            } else if move_left {
+                if was_range && !shift {
+                    head = anchor; // collapse to left
+                } else {
+                    if head > 0 {
+                        head -= 1;
+                        while head > 0 && !buffer.text.is_char_boundary(head) { head -= 1; }
+                    }
+                }
                 if !shift { anchor = head; }
             }
+
+            if move_word_right {
+                if was_range && !shift {
+                    head = r.max(); // collapse to right edge
+                } else {
+                    head = word_end(&buffer.text, head).min(buffer.text.len());
+                }
+                if !shift { anchor = head; }
+            } else if move_right {
+                if was_range && !shift {
+                    head = r.max(); // collapse to right
+                } else if head < buffer.text.len() {
+                    head += 1;
+                    while head < buffer.text.len() && !buffer.text.is_char_boundary(head) { head += 1; }
+                }
+                if !shift { anchor = head; }
+            }
+
+            if move_up || move_down {
+                // Use cached offset translation
+                let (line_idx, col) = buffer.offset_to_line_col(head);
+                let target_line = if move_up { line_idx.saturating_sub(1) } else { line_idx + 1 };
+                if target_line < buffer.line_count() {
+                    let start = buffer.line_start(target_line);
+                    let end = if target_line + 1 < buffer.line_count() {
+                        buffer.line_start(target_line + 1) - 1
+                    } else {
+                        buffer.text.len()
+                    };
+                    let new_col = col.min(end.saturating_sub(start));
+                    let new_pos = start + new_col;
+                    head = new_pos.min(buffer.text.len());
+                } else if move_down {
+                    // beyond last line
+                    head = buffer.text.len();
+                }
+                if !shift { anchor = head; }
+            }
+
+            if head != r.max() {
+                moved_any = true;
+            }
+            new_sel.add_region(lapce_core::selection::SelRegion::new(anchor, head, None));
         }
-        if head != prev_head {
+        if moved_any {
             signals.caret_moved = true;
         }
-        selection.set_primary_range(anchor, head);
+        selection.set_from_lapce_selection(new_sel);
     }
 
     // Selection is directly backed by lapce-core; no resync needed
@@ -365,7 +468,14 @@ pub fn show(
     // --- Recompute size & paint ---
     let line_count = buffer.line_count().max(1);
     let desired_h = line_height * line_count as f32 + line_height * 2.0;
-    let rect = egui::Rect::from_min_size(available.min, egui::vec2(available.width(), desired_h));
+    // Allocate interactive area for the editor and obtain response for mouse focus/clicks
+    let (rect, response) = ui.allocate_at_least(
+        egui::vec2(available.width(), desired_h),
+        egui::Sense::click_and_drag(),
+    );
+    if response.has_focus() || response.clicked() {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
@@ -401,6 +511,32 @@ pub fn show(
             state.show_line_numbers,
             gutter_w,
         );
+    }
+
+    // Handle mouse click: move caret to clicked position (single-click)
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            // Translate screen pos to text grid
+            let rel_x = pos.x - text_origin.x;
+            let rel_y = pos.y - text_origin.y;
+            if rel_y >= 0.0 {
+                let line_idx = (rel_y / line_height).floor() as usize;
+                if line_idx < buffer.line_count() {
+                    // Determine column using monospaced char width
+                    let mut col = if char_w > 0.0 { (rel_x / char_w).floor().max(0.0) as usize } else { 0 };
+                    let line_start = buffer.line_start(line_idx);
+                    let line_end = if line_idx + 1 < buffer.line_count() {
+                        buffer.line_start(line_idx + 1) - 1
+                    } else {
+                        buffer.text.len()
+                    };
+                    let line_len = line_end.saturating_sub(line_start);
+                    if col > line_len { col = line_len; }
+                    let new_pos = (line_start + col).min(buffer.text.len());
+                    selection.set_primary_range(new_pos, new_pos);
+                }
+            }
+        }
     }
 
     // Paint lines (with syntax highlight)
@@ -516,5 +652,210 @@ trait SaturatingSubF32 {
 impl SaturatingSubF32 for f32 {
     fn saturating_sub_f32(self, other: f32) -> f32 {
         if self > other { self - other } else { 0.0 }
+    }
+}
+
+fn inline_find_in_line(
+    buffer: &EditorBuffer,
+    head: usize,
+    dir: InlineFindDirection,
+    pattern: &str,
+) -> Option<usize> {
+    // Locate current line bounds (excluding trailing newline)
+    let (line_idx, _col) = buffer.offset_to_line_col(head.min(buffer.text.len()));
+    let start = buffer.line_start(line_idx);
+    let end_exclusive = if line_idx + 1 < buffer.line_count() {
+        buffer.line_start(line_idx + 1) - 1
+    } else {
+        buffer.text.len()
+    };
+    if start >= end_exclusive || start >= buffer.text.len() || end_exclusive > buffer.text.len() {
+        return None;
+    }
+    let line = &buffer.text[start..end_exclusive];
+
+    // Compute current index within the line
+    let idx_in_line = head.saturating_sub(start).min(line.len());
+    // Helper to move to next char boundary (strictly after current position)
+    let next_boundary = |s: &str, mut pos: usize| {
+        let b = s.as_bytes();
+        pos = pos.min(b.len());
+        if pos < b.len() {
+            pos += 1;
+            while pos < b.len() && !s.is_char_boundary(pos) { pos += 1; }
+        }
+        pos
+    };
+
+    match dir {
+        InlineFindDirection::Left => {
+            let hay = &line[..idx_in_line];
+            if let Some(pos) = hay.rfind(pattern) {
+                return Some(start + pos);
+            }
+        }
+        InlineFindDirection::Right => {
+            let start_search = next_boundary(line, idx_in_line);
+            if start_search <= line.len() {
+                let hay = &line[start_search..];
+                if let Some(rel) = hay.find(pattern) {
+                    return Some(start + start_search + rel);
+                }
+            }
+        }
+    }
+    None
+}
+
+// --- Snippet minimal support ---
+
+/// Apply a simple VS Code-style snippet into the current selection (first region),
+/// supporting ${n[:default]}, $n and $0 placeholders. Returns placeholder ranges in new text.
+pub fn apply_snippet(
+    buffer: &mut EditorBuffer,
+    selection: &mut MultiSelection,
+    snippet: &str,
+) -> Vec<(usize, (usize, usize))> {
+    // Determine target range: if selection non-empty, replace; else insert at caret.
+    let (anchor, head) = selection
+        .primary_range()
+        .map(|(a, h)| (a.min(h), a.max(h)))
+        .unwrap_or((0, 0));
+    let start = anchor;
+    let end = head;
+
+    let (expanded, placeholders) = parse_snippet(snippet);
+    buffer.apply_single_replace(start..end, &expanded);
+    // Adjust placeholder offsets by start
+    placeholders
+        .into_iter()
+        .map(|(idx, (s, e))| (idx, (start + s, start + e)))
+        .collect()
+}
+
+/// Very small snippet parser: handles $n, ${n}, ${n:default}, and $0.
+fn parse_snippet(input: &str) -> (String, Vec<(usize, (usize, usize))>) {
+    let mut out = String::with_capacity(input.len());
+    let mut placeholders: Vec<(usize, (usize, usize))> = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            // Try $0 or $n or ${...}
+            if i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                let n = (bytes[i + 1] - b'0') as usize;
+                let s = out.len();
+                let e = s; // empty placeholder text
+                placeholders.push((n, (s, e)));
+                i += 2;
+                continue;
+            } else if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                // ${...}
+                let mut j = i + 2;
+                while j < bytes.len() && bytes[j] != b'}' { j += 1; }
+                if j < bytes.len() && bytes[j] == b'}' {
+                    let inner = &input[i + 2..j];
+                    // inner like: n or n:default
+                    if let Some((n_str, default)) = inner.split_once(':') {
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            let s = out.len();
+                            out.push_str(default);
+                            let e = out.len();
+                            placeholders.push((n, (s, e)));
+                            i = j + 1;
+                            continue;
+                        }
+                    } else if inner == "0" {
+                        // final position
+                        let pos = out.len();
+                        placeholders.push((0, (pos, pos)));
+                        i = j + 1;
+                        continue;
+                    } else if let Ok(n) = inner.parse::<usize>() {
+                        let s = out.len();
+                        let e = s; // empty placeholder
+                        placeholders.push((n, (s, e)));
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        // Fallback: copy literal char
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    // Sort placeholders by index (n), keep insertion order within same n
+    placeholders.sort_by_key(|(n, _)| *n);
+    (out, placeholders)
+}
+
+// --- Multi-cursor helpers ---
+
+fn select_word_at(text: &str, pos: usize) -> (usize, usize) {
+    let b = text.as_bytes();
+    let mut s = pos.min(b.len());
+    while s > 0 && !text.is_char_boundary(s) { s -= 1; }
+    let mut e = s;
+    while e < b.len() && !text.is_char_boundary(e) { e += 1; }
+    while s > 0 {
+        let ch = b[s - 1] as char;
+        if ch.is_alphanumeric() || ch == '_' { s -= 1; } else { break; }
+    }
+    while e < b.len() {
+        let ch = b[e] as char;
+        if ch.is_alphanumeric() || ch == '_' { e += 1; } else { break; }
+    }
+    (s, e)
+}
+
+fn select_next_current(text: &str, selection: &mut MultiSelection) {
+    let mut sel = selection.to_lapce_selection();
+    // Fallback to the last region if last_inserted is not tracked
+    let base_region = sel
+        .last_inserted()
+        .cloned()
+        .or_else(|| sel.regions().last().cloned());
+    let Some(r) = base_region else { return; };
+    let (start, end) = if r.is_caret() { select_word_at(text, r.start) } else { (r.min(), r.max()) };
+    let needle = &text[start..end];
+    if needle.is_empty() { return; }
+    if r.is_caret() {
+        // First press: turn caret into selection for current word
+        let mut regions = sel.regions().to_vec();
+        if let Some(last) = regions.last_mut() {
+            *last = lapce_core::selection::SelRegion::new(start, end, None);
+        }
+        let mut new_sel = lapce_core::selection::Selection::new();
+        for rr in regions { new_sel.add_region(rr); }
+        selection.set_from_lapce_selection(new_sel);
+        return;
+    }
+    // Subsequent press: add next occurrence after the last selection
+    if let Some(pos) = text[end..].find(needle) {
+        let s = end + pos;
+        let e = s + needle.len();
+        sel.add_region(lapce_core::selection::SelRegion::new(s, e, None));
+        selection.set_from_lapce_selection(sel);
+    }
+}
+
+fn select_skip_current(text: &str, selection: &mut MultiSelection) {
+    let sel0 = selection.to_lapce_selection();
+    let mut regions = sel0.regions().to_vec();
+    let Some(cur) = regions.last().cloned() else { return; };
+    let (start, end) = if cur.is_caret() { select_word_at(text, cur.start) } else { (cur.min(), cur.max()) };
+    let needle = &text[start..end];
+    if needle.is_empty() { return; }
+
+    if let Some(pos) = text[end..].find(needle) {
+        let s = end + pos;
+        let e = s + needle.len();
+        // Replace last region with new one
+        regions.pop();
+        regions.push(lapce_core::selection::SelRegion::new(s, e, None));
+        let mut new_sel = lapce_core::selection::Selection::new();
+        for r in regions { new_sel.add_region(r); }
+        selection.set_from_lapce_selection(new_sel);
     }
 }
