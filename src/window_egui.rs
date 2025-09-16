@@ -5333,47 +5333,85 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
             }
         };
 
-        // Try to get indexed columns from cache first
-        let indexes_list = if let Some(indexes) = cache_data::get_indexed_columns_from_cache(
+        // Try to get index names from cache first (fast tree render)
+        let indexes_list = if let Some(names) = cache_data::get_index_names_from_cache(
             self,
             connection_id,
             database_name,
             table_name,
         ) {
-            if !indexes.is_empty() {
-                indexes
+            if !names.is_empty() {
+                names
             } else {
-                // Cache is empty, fallback to server query
+                // Cache empty: fallback to live fetch and seed cache with names
                 if let Some(connection) = self
                     .connections
                     .iter()
                     .find(|c| c.id == Some(connection_id))
                 {
                     let connection = connection.clone();
-                    self.fetch_index_names_for_table(
+                    let names = self.fetch_index_names_for_table(
                         connection_id,
                         &connection,
                         database_name,
                         table_name,
-                    )
+                    );
+                    if !names.is_empty() {
+                        let stubs: Vec<models::structs::IndexStructInfo> = names
+                            .iter()
+                            .map(|n| models::structs::IndexStructInfo {
+                                name: n.clone(),
+                                method: None,
+                                unique: false,
+                                columns: Vec::new(),
+                            })
+                            .collect();
+                        cache_data::save_indexes_to_cache(
+                            self,
+                            connection_id,
+                            database_name,
+                            table_name,
+                            &stubs,
+                        );
+                    }
+                    names
                 } else {
                     Vec::new()
                 }
             }
         } else {
-            // Cache doesn't have data, fallback to server query
+            // No cache table or error: fallback and seed cache
             if let Some(connection) = self
                 .connections
                 .iter()
                 .find(|c| c.id == Some(connection_id))
             {
                 let connection = connection.clone();
-                self.fetch_index_names_for_table(
+                let names = self.fetch_index_names_for_table(
                     connection_id,
                     &connection,
                     database_name,
                     table_name,
-                )
+                );
+                if !names.is_empty() {
+                    let stubs: Vec<models::structs::IndexStructInfo> = names
+                        .iter()
+                        .map(|n| models::structs::IndexStructInfo {
+                            name: n.clone(),
+                            method: None,
+                            unique: false,
+                            columns: Vec::new(),
+                        })
+                        .collect();
+                    cache_data::save_indexes_to_cache(
+                        self,
+                        connection_id,
+                        database_name,
+                        table_name,
+                        &stubs,
+                    );
+                }
+                names
             } else {
                 Vec::new()
             }

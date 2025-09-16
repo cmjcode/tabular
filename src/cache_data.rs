@@ -448,6 +448,7 @@ pub(crate) fn get_primary_keys_from_cache(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn get_indexed_columns_from_cache(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,
@@ -573,6 +574,146 @@ pub(crate) fn get_table_rows_from_cache(
                 );
                 None
             }
+        }
+    } else {
+        None
+    }
+}
+
+// Index cache: save full index metadata for a table (names, method, uniqueness, columns)
+pub(crate) fn save_indexes_to_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+    indexes: &[models::structs::IndexStructInfo],
+)
+{
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let dbn = database_name.to_string();
+        let tbn = table_name.to_string();
+        let items: Vec<models::structs::IndexStructInfo> = indexes.to_vec();
+        let fut = async move {
+            // Clear existing index cache for this table
+            let _ = sqlx::query(
+                "DELETE FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?",
+            )
+            .bind(connection_id)
+            .bind(&dbn)
+            .bind(&tbn)
+            .execute(pool_clone.as_ref())
+            .await;
+
+            // Insert each index row
+            for idx in items {
+                let cols_json = serde_json::to_string(&idx.columns).unwrap_or("[]".to_string());
+                let _ = sqlx::query(
+                    r#"INSERT OR REPLACE INTO index_cache
+                        (connection_id, database_name, table_name, index_name, method, is_unique, columns_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)"#,
+                )
+                .bind(connection_id)
+                .bind(&dbn)
+                .bind(&tbn)
+                .bind(idx.name)
+                .bind(idx.method)
+                .bind(if idx.unique { 1 } else { 0 })
+                .bind(cols_json)
+                .execute(pool_clone.as_ref())
+                .await;
+            }
+        };
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+        info!(
+            "💾 Saved {} indexes to cache for {}/{}/{}",
+            indexes.len(), connection_id, database_name, table_name
+        );
+    }
+}
+
+// Get full index metadata from cache
+pub(crate) fn get_indexes_from_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+) -> Option<Vec<models::structs::IndexStructInfo>> {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let fut = async move {
+            sqlx::query(
+                "SELECT index_name, method, is_unique, columns_json FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY index_name",
+            )
+            .bind(connection_id)
+            .bind(database_name)
+            .bind(table_name)
+            .fetch_all(pool_clone.as_ref())
+            .await
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+
+        match result {
+            Ok(rows) => {
+                use sqlx::Row;
+                let mut list = Vec::new();
+                for r in rows {
+                    let name: String = r.try_get(0).unwrap_or_default();
+                    let method: Option<String> = r.try_get(1).ok();
+                    let is_unique_i: i64 = r.try_get(2).unwrap_or(0);
+                    let cols_json: String = r.try_get(3).unwrap_or("[]".to_string());
+                    let columns: Vec<String> = serde_json::from_str(&cols_json).unwrap_or_default();
+                    list.push(models::structs::IndexStructInfo {
+                        name,
+                        method,
+                        unique: is_unique_i != 0,
+                        columns,
+                    });
+                }
+                Some(list)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    }
+}
+
+// Get only index NAMES from cache (for quick tree rendering)
+pub(crate) fn get_index_names_from_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+) -> Option<Vec<String>> {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let fut = async move {
+            sqlx::query_as::<_, (String,)>(
+                "SELECT DISTINCT index_name FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY index_name",
+            )
+            .bind(connection_id)
+            .bind(database_name)
+            .bind(table_name)
+            .fetch_all(pool_clone.as_ref())
+            .await
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+        match result {
+            Ok(rows) => Some(rows.into_iter().map(|(n,)| n).collect()),
+            Err(_) => None,
         }
     } else {
         None

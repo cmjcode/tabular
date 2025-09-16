@@ -1384,10 +1384,56 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
             }
         }
 
-        // Detailed index metadata: defer until Indexes subview is shown to avoid extra delay
+        // Detailed index metadata: only when Indexes subview is visible
         if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
-            tabular.structure_indexes =
-                fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
+            if tabular.request_structure_refresh {
+                // Force live fetch and update cache
+                let idx = fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
+                crate::cache_data::save_indexes_to_cache(
+                    tabular,
+                    conn_id,
+                    &database,
+                    &table_guess,
+                    &idx,
+                );
+                tabular.structure_indexes = idx;
+            } else {
+                // Try cache first for instant display
+                if let Some(cached) = crate::cache_data::get_indexes_from_cache(
+                    tabular,
+                    conn_id,
+                    &database,
+                    &table_guess,
+                ) {
+                    if !cached.is_empty() {
+                        tabular.structure_indexes = cached;
+                    } else {
+                        let idx = fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
+                        if !idx.is_empty() {
+                            crate::cache_data::save_indexes_to_cache(
+                                tabular,
+                                conn_id,
+                                &database,
+                                &table_guess,
+                                &idx,
+                            );
+                        }
+                        tabular.structure_indexes = idx;
+                    }
+                } else {
+                    let idx = fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
+                    if !idx.is_empty() {
+                        crate::cache_data::save_indexes_to_cache(
+                            tabular,
+                            conn_id,
+                            &database,
+                            &table_guess,
+                            &idx,
+                        );
+                    }
+                    tabular.structure_indexes = idx;
+                }
+            }
         }
 
         // Remember last loaded structure target and clear refresh request
