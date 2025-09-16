@@ -7336,7 +7336,7 @@ impl App for Tabular {
                 }
             }
 
-            // Escape to close overlays or clear table selections
+            // Escape to close overlays, cancel edits, or discard unsaved spreadsheet changes
             if i.key_pressed(egui::Key::Escape) {
                 if self.show_settings_window {
                     self.show_settings_window = false;
@@ -7346,6 +7346,28 @@ impl App for Tabular {
                     self.show_command_palette = false;
                     self.command_palette_input.clear();
                     self.command_palette_selected_index = 0;
+                } else if self.spreadsheet_state.editing_cell.is_some() {
+                    // If currently editing a cell, cancel the in-progress edit only
+                    self.spreadsheet_finish_cell_edit(false);
+                } else if !self.spreadsheet_state.pending_operations.is_empty()
+                    || self.spreadsheet_state.is_dirty
+                {
+                    // Discard all pending spreadsheet changes and refresh data
+                    debug!(
+                        "⎋ ESC: Discarding {} pending ops (is_dirty={})",
+                        self.spreadsheet_state.pending_operations.len(),
+                        self.spreadsheet_state.is_dirty
+                    );
+                    self.reset_spreadsheet_state();
+
+                    // Reload table view to revert any in-memory edits
+                    if self.is_table_browse_mode {
+                        if self.use_server_pagination && !self.current_base_query.is_empty() {
+                            self.execute_paginated_query();
+                        } else {
+                            data_table::refresh_current_table_data(self);
+                        }
+                    }
                 } else {
                     // Clear selections in table
                     self.selected_rows.clear();
