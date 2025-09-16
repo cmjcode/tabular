@@ -1,10 +1,11 @@
 use crate::{
-    connection, data_table, driver_mssql, driver_mysql, driver_postgres, driver_redis,
-    driver_sqlite, models, modules,
+    connection, driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite,
+    models, modules,
     window_egui::{self, Tabular},
 };
 use eframe::egui;
 use futures_util::TryStreamExt; // for MsSQL try_next
+use futures_util::stream::StreamExt; // for buffered concurrency
 use log::debug;
 use mongodb::{Client as MongoClient, bson::doc};
 use redis::{Client, aio::ConnectionManager};
@@ -15,6 +16,9 @@ use sqlx::{
     sqlite::SqlitePoolOptions,
 };
 use std::sync::Arc;
+
+// Limit concurrent prefetch tasks to avoid overwhelming servers and local machine
+const PREFETCH_CONCURRENCY: usize = 6;
 
 // Infer column headers from a SELECT statement when no rows are returned.
 // This is a best-effort parser handling simple SELECT lists (supports aliases, functions, qualified names).
@@ -117,255 +121,35 @@ fn clean_identifier(id: &str) -> String {
 pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseType) -> String {
     let trimmed_query = query.trim();
 
-    // Don't add LIMIT if the entire query already has LIMIT/TOP
+    // Don't add LIMIT/TOP if the entire query already has LIMIT/TOP/OFFSET/FETCH
     let upper_query = trimmed_query.to_uppercase();
-    if upper_query.contains("LIMIT") || upper_query.contains(" TOP ") {
-        return query.to_string();
+    if upper_query.contains(" LIMIT ")
+        || upper_query.contains(" OFFSET ")
+        || upper_query.contains(" FETCH ")
+        || upper_query.contains(" TOP ")
+    {
+        return trimmed_query.to_string();
     }
 
-    // Skip if it's a single utility query (but allow multi-statement with USE + SELECT)
-    if !upper_query.contains("SELECT") {
-        return query.to_string();
+    // Only operate on simple SELECT queries
+    if !upper_query.starts_with("SELECT ") {
+        return trimmed_query.to_string();
     }
 
-    // Split by semicolon to handle multiple statements
-    let statements: Vec<&str> = trimmed_query.split(';').collect();
-    let mut result_statements = Vec::new();
-
-    for statement in statements {
-        let trimmed_stmt = statement.trim();
-        if trimmed_stmt.is_empty() {
-            continue;
-        }
-
-        let upper_stmt = trimmed_stmt.to_uppercase();
-
-        // Skip utility statements (SHOW, DESCRIBE, PRAGMA, USE, etc.)
-        if upper_stmt.starts_with("SHOW ")
-            || upper_stmt.starts_with("DESCRIBE ")
-            || upper_stmt.starts_with("EXPLAIN ")
-            || upper_stmt.starts_with("PRAGMA ")
-            || upper_stmt.starts_with("USE ")
-            || upper_stmt.starts_with("SET ")
-            || upper_stmt.starts_with("CREATE ")
-            || upper_stmt.starts_with("DROP ")
-            || upper_stmt.starts_with("ALTER ")
-            || upper_stmt.starts_with("INSERT ")
-            || upper_stmt.starts_with("UPDATE ")
-            || upper_stmt.starts_with("DELETE ")
-        {
-            result_statements.push(trimmed_stmt.to_string());
-            continue;
-        }
-
-        // Only add LIMIT to SELECT statements that don't already have LIMIT/TOP
-        if upper_stmt.starts_with("SELECT")
-            && !upper_stmt.contains("LIMIT")
-            && !upper_stmt.contains(" TOP ")
-        {
-            match db_type {
-                models::enums::DatabaseType::MsSQL => {
-                    // For MsSQL, we need to add TOP after SELECT
-                    // Handle both "SELECT" and "SELECT DISTINCT" cases
-                    if upper_stmt.starts_with("SELECT DISTINCT") {
-                        let modified =
-                            trimmed_stmt.replace("SELECT DISTINCT", "SELECT DISTINCT TOP 10000");
-                        result_statements.push(modified);
-                    } else {
-                        let modified = trimmed_stmt.replace("SELECT", "SELECT TOP 10000");
-                        result_statements.push(modified);
-                    }
-                }
-                _ => {
-                    // For MySQL, PostgreSQL, SQLite - add LIMIT at the end
-                    // Use smaller limit for better performance on large tables
-                    result_statements.push(format!("{} LIMIT 10000", trimmed_stmt));
+    match db_type {
+        models::enums::DatabaseType::MsSQL => {
+            // Insert TOP 1000 after SELECT if no TOP present
+            if upper_query.starts_with("SELECT ") {
+                // Preserve casing after the SELECT keyword
+                if let Some(rest) = trimmed_query.get(6..) {
+                    return format!("SELECT TOP 1000{}", rest);
                 }
             }
-        } else {
-            result_statements.push(trimmed_stmt.to_string());
+            trimmed_query.to_string()
         }
-    }
-
-    result_statements.join(";\n")
-}
-
-pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Context) {
-    if tabular.show_connection_selector {
-        let mut open = true;
-
-        egui::Window::new("Select Connection to Execute Query")
-            .collapsible(false)
-            .resizable(true)
-            .default_width(400.0)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.add_space(5.0);
-
-                egui::ScrollArea::vertical()
-                    .show(ui, |ui| {
-                        let mut selected_connection = None;
-
-                        // sort tabular.connections by folder and name
-                        tabular.connections.sort_by(|a, b| {
-                            a.folder.cmp(&b.folder).then_with(|| a.name.cmp(&b.name))
-                        });
-
-                        for connection in &tabular.connections {
-                            let mut sfolder = connection.folder.as_deref().unwrap_or("");
-                            if sfolder.is_empty() {
-                                sfolder = "Default";
-                            }
-                            let connection_text = format!("{} / {} / {}",
-                                                          sfolder,
-                                                          match connection.connection_type {
-                                                              models::enums::DatabaseType::MySQL => "MySQL",
-                                                              models::enums::DatabaseType::MsSQL => "MsSQL",
-                                                              models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
-                                                              models::enums::DatabaseType::SQLite => "SQLite",
-                                                              models::enums::DatabaseType::Redis => "Redis",
-                                                              models::enums::DatabaseType::MongoDB => "MongoDB",
-                                                          },
-                                                          connection.name
-                            );
-
-                            // Custom button with red fill on hover
-                            let button = egui::Button::new(&connection_text);
-                            let response = ui.add_sized([ui.available_width(), 32.0], button);
-
-                            if response.hovered() {
-                                let rect = response.rect;
-                                let visuals = ui.style().visuals.clone();
-                                let fill_color = egui::Color32::RED; // Red
-                                ui.painter().rect_filled(rect, visuals.widgets.inactive.corner_radius, fill_color);
-                                // Repaint the text over the fill
-                                ui.painter().text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    &connection_text,
-                                    egui::TextStyle::Button.resolve(ui.style()),
-                                    visuals.text_color(),
-                                );
-                            }
-
-                            if response.clicked()
-                                && let Some(connection_id) = connection.id {
-                                selected_connection = Some(connection_id);
-                            }
-                            ui.add_space(7.0);
-                        }
-
-                        // Handle selection outside the loop to avoid borrowing issues
-                        if let Some(connection_id) = selected_connection {
-                            // Set active connection
-                            tabular.current_connection_id = Some(connection_id);
-
-                            // Find the selected connection to get its default database
-                            let default_database = if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(connection_id)) {
-                                let connection_name = connection.name.clone();
-                                let database = if !connection.database.is_empty() {
-                                    Some(connection.database.clone())
-                                } else {
-                                    None
-                                };
-
-                                debug!("Connection selector: Set connection '{}' and database '{}' for active tab",
-              connection_name,
-              database.as_deref().unwrap_or("None"));
-
-                                database
-                            } else {
-                                None
-                            };
-
-                            // Set connection and default database in bottom combobox for active tab
-                            tabular.set_active_tab_connection_with_database(Some(connection_id), default_database);
-
-                            if tabular.auto_execute_after_connection {
-                                // Capture the intended query to run
-                                let query = tabular.pending_query.clone();
-
-                                // Attempt to create/get the pool quickly; if not ready, show loading and queue the query
-                                let mut ready = tabular.connection_pools.contains_key(&connection_id);
-                                if !ready
-                                    && let Ok(shared) = tabular.shared_connection_pools.lock() {
-                                    ready = shared.contains_key(&connection_id);
-                                }
-                                if !ready {
-                                    // Trigger quick creation/background spawn via runtime, but don't block UI long
-                                    if let Some(rt) = tabular.runtime.clone() {
-                                        rt.block_on(async {
-                                            // This will either quickly return a pool or start background creation
-                                            let _ = crate::connection::get_or_create_connection_pool(tabular, connection_id).await;
-                                        });
-                                    }
-                                    // Re-check quick readiness
-                                    ready = tabular.connection_pools.contains_key(&connection_id)
-                                        || tabular
-                                        .shared_connection_pools
-                                        .lock()
-                                        .map(|m| m.contains_key(&connection_id))
-                                        .unwrap_or(false);
-                                }
-
-                                if ready {
-                                    // Execute immediately as pool is available now
-                                    let result = execute_query_with_connection(tabular, connection_id, query.clone());
-                                    // Apply result to current UI/tab
-                                    if let Some((headers, data)) = result {
-                                        tabular.current_table_headers = headers;
-                                        data_table::update_pagination_data(tabular, data);
-                                        if tabular.total_rows == 0 {
-                                            tabular.current_table_name = "Query executed successfully (no results)".to_string();
-                                        } else {
-                                            tabular.current_table_name = format!(
-                                                "Query Results ({} total rows, showing page {} of {})",
-                                                tabular.total_rows,
-                                                tabular.current_page + 1,
-                                                data_table::get_total_pages(tabular)
-                                            );
-                                        }
-                                    } else {
-                                        tabular.current_table_name = "Query execution failed".to_string();
-                                        tabular.current_table_headers.clear();
-                                        tabular.current_table_data.clear();
-                                        tabular.all_table_data.clear();
-                                        tabular.total_rows = 0;
-                                    }
-                                    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                                        tab.has_executed_query = true;
-                                        tab.result_headers = tabular.current_table_headers.clone();
-                                        tab.result_all_rows = tabular.all_table_data.clone();
-                                        tab.result_rows = tabular.current_table_data.clone();
-                                        tab.result_table_name = tabular.current_table_name.clone();
-                                        tab.is_table_browse_mode = tabular.is_table_browse_mode;
-                                        tab.current_page = tabular.current_page;
-                                        tab.page_size = tabular.page_size;
-                                        tab.total_rows = tabular.total_rows;
-                                    }
-                                } else {
-                                    // Not ready yet: queue the query and show loading overlay
-                                    tabular.pool_wait_in_progress = true;
-                                    tabular.pool_wait_connection_id = Some(connection_id);
-                                    tabular.pool_wait_query = query.clone();
-                                    tabular.pool_wait_started_at = Some(std::time::Instant::now());
-                                    tabular.current_table_name = "Connecting… waiting for pool".to_string();
-                                }
-                            }
-
-                            tabular.show_connection_selector = false;
-                            tabular.pending_query.clear();
-                            tabular.auto_execute_after_connection = false;
-                        }
-                    });
-            });
-
-        // Handle close button click
-        if !open {
-            tabular.show_connection_selector = false;
-            tabular.pending_query.clear();
-            tabular.auto_execute_after_connection = false;
+        _ => {
+            // MySQL/PostgreSQL/SQLite/MongoDB/Redis: append LIMIT 1000
+            format!("{} LIMIT 1000", trimmed_query)
         }
     }
 }
@@ -987,6 +771,13 @@ fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
             }
         }
     }
+}
+
+// Render a connection selector or related UI elements if needed by the caller.
+// Currently a no-op placeholder to maintain compatibility with callers in window_egui.
+// In the future, this can host quick-pick or status UI for connections.
+pub(crate) fn render_connection_selector(_tabular: &mut Tabular, _ctx: &egui::Context) {
+    // Intentionally left blank.
 }
 
 // Helper function untuk mendapatkan atau membuat connection pool dengan concurrency
@@ -1924,100 +1715,118 @@ async fn prefetch_indexes_for_all_tables(
         models::enums::DatabasePool::MySQL(_mysql_pool) => {
             let enc_user = crate::modules::url_encode(&connection.username);
             let enc_pass = crate::modules::url_encode(&connection.password);
-            for (dbn, tbn) in pairs {
-                let dsn = format!(
-                    "mysql://{}:{}@{}:{}/{}",
-                    enc_user, enc_pass, connection.host, connection.port, dbn
-                );
-                if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
-                    // Query INFORMATION_SCHEMA.STATISTICS to assemble per-index info
-                    let q = r#"SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, INDEX_TYPE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX"#;
-                    if let Ok(rows) = sqlx::query(q).bind(&dbn).bind(&tbn).fetch_all(&mut conn).await {
-                        // Assemble by index_name
-                        let mut map: std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)> = std::collections::BTreeMap::new();
-                        for r in rows {
-                            let name: String = r.try_get("INDEX_NAME").unwrap_or_default();
-                            let col: Option<String> = r.try_get("COLUMN_NAME").ok();
-                            let seq: i64 = r.try_get("SEQ_IN_INDEX").unwrap_or(0);
-                            let non_unique: i64 = r.try_get("NON_UNIQUE").unwrap_or(1);
-                            let idx_type: Option<String> = r.try_get("INDEX_TYPE").ok();
-                            let entry = map.entry(name).or_insert((None, non_unique == 0, Vec::new()));
-                            if entry.0.is_none() { entry.0 = idx_type.clone(); }
-                            if let Some(cn) = col { entry.2.push((seq, cn)); }
-                            // Update uniqueness if any row indicates unique
-                            entry.1 = non_unique == 0;
+            futures_util::stream::iter(pairs)
+                .map(|(dbn, tbn)| {
+                    let host = connection.host.clone();
+                    let port = connection.port.clone();
+                    let enc_user = enc_user.clone();
+                    let enc_pass = enc_pass.clone();
+                    async move {
+                        let dsn = format!(
+                            "mysql://{}:{}@{}:{}/{}",
+                            enc_user, enc_pass, host, port, dbn
+                        );
+                        if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
+                            let q = r#"SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, INDEX_TYPE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX"#;
+                            if let Ok(rows) = sqlx::query(q).bind(&dbn).bind(&tbn).fetch_all(&mut conn).await {
+                                let mut map: std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)> = std::collections::BTreeMap::new();
+                                for r in rows {
+                                    let name: String = r.try_get("INDEX_NAME").unwrap_or_default();
+                                    let col: Option<String> = r.try_get("COLUMN_NAME").ok();
+                                    let seq: i64 = r.try_get("SEQ_IN_INDEX").unwrap_or(0);
+                                    let non_unique: i64 = r.try_get("NON_UNIQUE").unwrap_or(1);
+                                    let idx_type: Option<String> = r.try_get("INDEX_TYPE").ok();
+                                    let entry = map.entry(name).or_insert((None, non_unique == 0, Vec::new()));
+                                    if entry.0.is_none() { entry.0 = idx_type.clone(); }
+                                    if let Some(cn) = col { entry.2.push((seq, cn)); }
+                                    entry.1 = non_unique == 0;
+                                }
+                                let mut list = Vec::new();
+                                for (name, (method, unique, mut cols)) in map {
+                                    cols.sort_by_key(|(seq, _)| *seq);
+                                    let columns: Vec<String> = cols.into_iter().map(|(_, c)| c).collect();
+                                    list.push(models::structs::IndexStructInfo { name, method, unique, columns });
+                                }
+                                save_indexes_cache_direct(cache_pool, connection_id, &dbn, &tbn, &list).await;
+                            }
                         }
-                        let mut list = Vec::new();
-                        for (name, (method, unique, mut cols)) in map {
-                            cols.sort_by_key(|(seq, _)| *seq);
-                            let columns: Vec<String> = cols.into_iter().map(|(_, c)| c).collect();
-                            list.push(models::structs::IndexStructInfo { name, method, unique, columns });
-                        }
-                        save_indexes_cache_direct(cache_pool, connection_id, &dbn, &tbn, &list).await;
                     }
-                }
-            }
+                })
+                .buffer_unordered(PREFETCH_CONCURRENCY)
+                .for_each(|_| async {})
+                .await;
             true
         }
         models::enums::DatabasePool::PostgreSQL(pg_pool) => {
-            // Current pool is bound to one DB; only prefetch for that database
             let curr_db: Option<String> = sqlx::query_scalar("SELECT current_database()")
                 .fetch_one(pg_pool.as_ref())
                 .await
                 .ok();
-            for (dbn, tbn) in pairs {
-                if let Some(ref curr) = curr_db { if curr != &dbn { continue; } }
-                // Get all indexes for this table in public schema
-                let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique
-                           FROM pg_class t
-                           JOIN pg_index i ON t.oid = i.indrelid
-                           JOIN pg_class idx ON idx.oid = i.indexrelid
-                           JOIN pg_namespace n ON n.oid = t.relnamespace
-                           WHERE t.relname = $1 AND n.nspname='public' ORDER BY idx.relname"#;
-                if let Ok(rows) = sqlx::query(q).bind(&tbn).fetch_all(pg_pool.as_ref()).await {
-                    let mut list = Vec::new();
-                    for r in rows {
-                        let name: String = r.try_get("index_name").unwrap_or_default();
-                        let def: String = r.try_get("index_def").unwrap_or_default();
-                        let unique: bool = r.try_get("is_unique").unwrap_or(false);
-                        let method = def.split(" USING ").nth(1).and_then(|rest| rest.split_whitespace().next()).map(|m| m.trim_matches('(').trim_matches(')').to_string());
-                        let columns: Vec<String> = if let Some(start) = def.rfind('(') { if let Some(end_rel) = def[start+1..].find(')') { def[start+1..start+1+end_rel].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect() } else { Vec::new() } } else { Vec::new() };
-                        list.push(models::structs::IndexStructInfo { name, method, unique, columns });
+            let filtered: Vec<(String, String)> = match curr_db {
+                Some(db) => pairs.into_iter().filter(|(d, _)| *d == db).collect(),
+                None => pairs,
+            };
+            futures_util::stream::iter(filtered)
+                .map(|(dbn, tbn)| {
+                    let pool = pg_pool.clone();
+                    async move {
+                        let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique
+                                   FROM pg_class t
+                                   JOIN pg_index i ON t.oid = i.indrelid
+                                   JOIN pg_class idx ON idx.oid = i.indexrelid
+                                   JOIN pg_namespace n ON n.oid = t.relnamespace
+                                   WHERE t.relname = $1 AND n.nspname='public' ORDER BY idx.relname"#;
+                        if let Ok(rows) = sqlx::query(q).bind(&tbn).fetch_all(pool.as_ref()).await {
+                            let mut list = Vec::new();
+                            for r in rows {
+                                let name: String = r.try_get("index_name").unwrap_or_default();
+                                let def: String = r.try_get("index_def").unwrap_or_default();
+                                let unique: bool = r.try_get("is_unique").unwrap_or(false);
+                                let method = def.split(" USING ").nth(1).and_then(|rest| rest.split_whitespace().next()).map(|m| m.trim_matches('(').trim_matches(')').to_string());
+                                let columns: Vec<String> = if let Some(start) = def.rfind('(') { if let Some(end_rel) = def[start+1..].find(')') { def[start+1..start+1+end_rel].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect() } else { Vec::new() } } else { Vec::new() };
+                                list.push(models::structs::IndexStructInfo { name, method, unique, columns });
+                            }
+                            save_indexes_cache_direct(cache_pool, connection_id, &dbn, &tbn, &list).await;
+                        }
                     }
-                    save_indexes_cache_direct(cache_pool, connection_id, &dbn, &tbn, &list).await;
-                }
-            }
+                })
+                .buffer_unordered(PREFETCH_CONCURRENCY)
+                .for_each(|_| async {})
+                .await;
             true
         }
         models::enums::DatabasePool::SQLite(sqlite_pool) => {
-            for (_dbn, tbn) in pairs {
-                // List index names
-                let q_list = format!("PRAGMA index_list(\"{}\")", tbn.replace('"', "\""));
-                if let Ok(list_rows) = sqlx::query(&q_list).fetch_all(sqlite_pool.as_ref()).await {
-                    let mut list = Vec::new();
-                    for r in list_rows {
-                        // Columns: seq, name, unique, origin, partial
-                        let name: String = r.try_get(1).unwrap_or_default();
-                        let unique_i: i64 = r.try_get(2).unwrap_or(0);
-                        let unique = unique_i != 0;
-                        // Get columns
-                        let q_cols = format!("PRAGMA index_info(\"{}\")", name.replace('"', "\""));
-                        let mut cols: Vec<(i64, String)> = Vec::new();
-                        if let Ok(col_rows) = sqlx::query(&q_cols).fetch_all(sqlite_pool.as_ref()).await {
-                            for cr in col_rows {
-                                // Columns: seqno, cid, name
-                                let seq: i64 = cr.try_get(0).unwrap_or(0);
-                                let cname: String = cr.try_get(2).unwrap_or_default();
-                                cols.push((seq, cname));
+            futures_util::stream::iter(pairs)
+                .map(|(_dbn, tbn)| {
+                    let pool = sqlite_pool.clone();
+                    async move {
+                        let q_list = format!("PRAGMA index_list(\"{}\")", tbn.replace('"', "\\\""));
+                        if let Ok(list_rows) = sqlx::query(&q_list).fetch_all(pool.as_ref()).await {
+                            let mut list = Vec::new();
+                            for r in list_rows {
+                                let name: String = r.try_get(1).unwrap_or_default();
+                                let unique_i: i64 = r.try_get(2).unwrap_or(0);
+                                let unique = unique_i != 0;
+                                let q_cols = format!("PRAGMA index_info(\"{}\")", name.replace('"', "\\\""));
+                                let mut cols: Vec<(i64, String)> = Vec::new();
+                                if let Ok(col_rows) = sqlx::query(&q_cols).fetch_all(pool.as_ref()).await {
+                                    for cr in col_rows {
+                                        let seq: i64 = cr.try_get(0).unwrap_or(0);
+                                        let cname: String = cr.try_get(2).unwrap_or_default();
+                                        cols.push((seq, cname));
+                                    }
+                                }
+                                cols.sort_by_key(|(s, _)| *s);
+                                let columns: Vec<String> = cols.into_iter().map(|(_, c)| c).collect();
+                                list.push(models::structs::IndexStructInfo { name, method: None, unique, columns });
                             }
+                            save_indexes_cache_direct(pool.as_ref(), connection_id, "main", &tbn, &list).await;
                         }
-                        cols.sort_by_key(|(s, _)| *s);
-                        let columns: Vec<String> = cols.into_iter().map(|(_, c)| c).collect();
-                        list.push(models::structs::IndexStructInfo { name, method: None, unique, columns });
                     }
-                    save_indexes_cache_direct(cache_pool, connection_id, "main", &tbn, &list).await;
-                }
-            }
+                })
+                .buffer_unordered(PREFETCH_CONCURRENCY)
+                .for_each(|_| async {})
+                .await;
             true
         }
         _ => false,
@@ -2047,115 +1856,119 @@ async fn prefetch_first_rows_for_all_tables(
 
     match pool {
         models::enums::DatabasePool::MySQL(_mysql_pool) => {
-            // Connect directly to each database to run SELECT query
             let enc_user = crate::modules::url_encode(&connection.username);
             let enc_pass = crate::modules::url_encode(&connection.password);
-            for (dbn, tbn) in rows {
-                // Build DSN for this database
-                let dsn = format!(
-                    "mysql://{}:{}@{}:{}/{}",
-                    enc_user, enc_pass, connection.host, connection.port, dbn
-                );
-                if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
-                    // Fetch up to 100 rows
-                    let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace("`", "``"));
-                    match sqlx::query(&q).fetch_all(&mut conn).await {
-                        Ok(mysql_rows) => {
-                            // Headers: if rows exist, pick from first row; else use DESCRIBE to infer
-                            let headers: Vec<String> = if let Some(r0) = mysql_rows.first() {
+            futures_util::stream::iter(rows)
+                .map(|(dbn, tbn)| {
+                    let host = connection.host.clone();
+                    let port = connection.port.clone();
+                    let enc_user = enc_user.clone();
+                    let enc_pass = enc_pass.clone();
+                    async move {
+                        let dsn = format!(
+                            "mysql://{}:{}@{}:{}/{}",
+                            enc_user, enc_pass, host, port, dbn
+                        );
+                        if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
+                            let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
+                            if let Ok(mysql_rows) = sqlx::query(&q).fetch_all(&mut conn).await {
+                                let headers: Vec<String> = if let Some(r0) = mysql_rows.first() {
+                                    r0.columns().iter().map(|c| c.name().to_string()).collect()
+                                } else {
+                                    let dq = format!("DESCRIBE `{}`", tbn.replace('`', "``"));
+                                    match sqlx::query(&dq).fetch_all(&mut conn).await {
+                                        Ok(desc_rows) => desc_rows
+                                            .iter()
+                                            .filter_map(|r| r.try_get::<String, _>(0).ok())
+                                            .collect(),
+                                        Err(_) => Vec::new(),
+                                    }
+                                };
+                                let data = crate::driver_mysql::convert_mysql_rows_to_table_data(mysql_rows);
+                                save_row_cache_direct(cache_pool, connection_id, &dbn, &tbn, &headers, &data).await;
+                            }
+                        }
+                    }
+                })
+                .buffer_unordered(PREFETCH_CONCURRENCY)
+                .for_each(|_| async {})
+                .await;
+            true
+        }
+        models::enums::DatabasePool::PostgreSQL(pg_pool) => {
+            futures_util::stream::iter(rows)
+                .map(|(dbn, tbn)| {
+                    let pool = pg_pool.clone();
+                    async move {
+                        let q = format!("SELECT * FROM \"public\".\"{}\" LIMIT 100", tbn.replace('"', "\\\""));
+                        if let Ok(pg_rows) = sqlx::query(&q).fetch_all(pool.as_ref()).await {
+                            let headers: Vec<String> = if let Some(r0) = pg_rows.first() {
                                 r0.columns().iter().map(|c| c.name().to_string()).collect()
                             } else {
-                                let dq = format!("DESCRIBE `{}`", tbn.replace("`", "``"));
-                                match sqlx::query(&dq).fetch_all(&mut conn).await {
-                                    Ok(desc_rows) => desc_rows
+                                let iq = format!(
+                                    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='{}' ORDER BY ordinal_position",
+                                    tbn.replace("'", "''")
+                                );
+                                match sqlx::query(&iq).fetch_all(pool.as_ref()).await {
+                                    Ok(infos) => infos
                                         .iter()
                                         .filter_map(|r| r.try_get::<String, _>(0).ok())
                                         .collect(),
                                     Err(_) => Vec::new(),
                                 }
                             };
-                            let data = crate::driver_mysql::convert_mysql_rows_to_table_data(mysql_rows);
+                            let data: Vec<Vec<String>> = pg_rows
+                                .iter()
+                                .map(|row| {
+                                    (0..row.len())
+                                        .map(|j| match row.try_get::<Option<String>, _>(j) {
+                                            Ok(Some(v)) => v,
+                                            Ok(None) => "NULL".to_string(),
+                                            Err(_) => {
+                                                if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(j) {
+                                                    String::from_utf8_lossy(&bytes).to_string()
+                                                } else { "".to_string() }
+                                            }
+                                        })
+                                        .collect()
+                                })
+                                .collect();
                             save_row_cache_direct(cache_pool, connection_id, &dbn, &tbn, &headers, &data).await;
                         }
-                        Err(_) => {
-                            // ignore individual table failures
-                        }
                     }
-                }
-            }
-            true
-        }
-        models::enums::DatabasePool::PostgreSQL(pg_pool) => {
-            // Only prefetch for current database; fetch_postgres_data cached only that
-            for (dbn, tbn) in rows {
-                // Schema handling: default to public if not qualified in cache
-                let q = format!("SELECT * FROM \"public\".\"{}\" LIMIT 100", tbn.replace('"', "\""));
-                match sqlx::query(&q).fetch_all(pg_pool.as_ref()).await {
-                    Ok(pg_rows) => {
-                        let headers: Vec<String> = if let Some(r0) = pg_rows.first() {
-                            r0.columns().iter().map(|c| c.name().to_string()).collect()
-                        } else {
-                            // Try to get columns via information_schema
-                            let iq = format!(
-                                "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='{}' ORDER BY ordinal_position",
-                                tbn.replace("'", "''")
-                            );
-                            match sqlx::query(&iq).fetch_all(pg_pool.as_ref()).await {
-                                Ok(infos) => infos
-                                    .iter()
-                                    .filter_map(|r| r.try_get::<String, _>(0).ok())
-                                    .collect(),
-                                Err(_) => Vec::new(),
-                            }
-                        };
-                        let data: Vec<Vec<String>> = pg_rows
-                            .iter()
-                            .map(|row| {
-                                (0..row.len())
-                                    .map(|j| match row.try_get::<Option<String>, _>(j) {
-                                        Ok(Some(v)) => v,
-                                        Ok(None) => "NULL".to_string(),
-                                        Err(_) => {
-                                            // try bytes
-                                            if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(j) {
-                                                String::from_utf8_lossy(&bytes).to_string()
-                                            } else { "".to_string() }
-                                        }
-                                    })
-                                    .collect()
-                            })
-                            .collect();
-                        save_row_cache_direct(cache_pool, connection_id, &dbn, &tbn, &headers, &data).await;
-                    }
-                    Err(_) => {}
-                }
-            }
+                })
+                .buffer_unordered(PREFETCH_CONCURRENCY)
+                .for_each(|_| async {})
+                .await;
             true
         }
         models::enums::DatabasePool::SQLite(sqlite_pool) => {
-            for (_dbn, tbn) in rows {
-                let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
-                match sqlx::query(&q).fetch_all(sqlite_pool.as_ref()).await {
-                    Ok(sqlite_rows) => {
-                        let headers: Vec<String> = if let Some(r0) = sqlite_rows.first() {
-                            r0.columns().iter().map(|c| c.name().to_string()).collect()
-                        } else {
-                            // PRAGMA table_info
-                            let iq = format!("PRAGMA table_info(\"{}\")", tbn.replace('"', "\""));
-                            match sqlx::query(&iq).fetch_all(sqlite_pool.as_ref()).await {
-                                Ok(infos) => infos
-                                    .iter()
-                                    .filter_map(|r| r.try_get::<String, _>(1).ok())
-                                    .collect(),
-                                Err(_) => Vec::new(),
-                            }
-                        };
-                        let data = crate::driver_sqlite::convert_sqlite_rows_to_table_data(sqlite_rows);
-                        save_row_cache_direct(cache_pool, connection_id, "main", &tbn, &headers, &data).await;
+            futures_util::stream::iter(rows)
+                .map(|(_dbn, tbn)| {
+                    let pool = sqlite_pool.clone();
+                    async move {
+                        let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
+                        if let Ok(sqlite_rows) = sqlx::query(&q).fetch_all(pool.as_ref()).await {
+                            let headers: Vec<String> = if let Some(r0) = sqlite_rows.first() {
+                                r0.columns().iter().map(|c| c.name().to_string()).collect()
+                            } else {
+                                let iq = format!("PRAGMA table_info(\"{}\")", tbn.replace('"', "\\\""));
+                                match sqlx::query(&iq).fetch_all(pool.as_ref()).await {
+                                    Ok(infos) => infos
+                                        .iter()
+                                        .filter_map(|r| r.try_get::<String, _>(1).ok())
+                                        .collect(),
+                                    Err(_) => Vec::new(),
+                                }
+                            };
+                            let data = crate::driver_sqlite::convert_sqlite_rows_to_table_data(sqlite_rows);
+                            save_row_cache_direct(cache_pool, connection_id, "main", &tbn, &headers, &data).await;
+                        }
                     }
-                    Err(_) => {}
-                }
-            }
+                })
+                .buffer_unordered(PREFETCH_CONCURRENCY)
+                .for_each(|_| async {})
+                .await;
             true
         }
         _ => false,
