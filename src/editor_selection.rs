@@ -153,7 +153,7 @@ impl MultiSelection {
     pub fn primary_range(&self) -> Option<(usize, usize)> {
         self.inner
             .regions()
-            .get(0)
+            .first()
             .map(|r| (r.min(), r.max()))
     }
 

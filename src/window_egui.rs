@@ -562,11 +562,7 @@ impl Tabular {
     ) {
         // Spawn a background thread to process queued tasks
         std::thread::spawn(move || {
-            loop {
-                let task = match task_receiver.recv() {
-                    Ok(t) => t,
-                    Err(_) => break, // channel closed
-                };
+            while let Ok(task) = task_receiver.recv() {
                 match task {
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
                         // Placeholder implementation; real logic to refresh connection metadata

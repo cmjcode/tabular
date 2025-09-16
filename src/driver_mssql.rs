@@ -34,6 +34,7 @@ impl MssqlConfigWrapper {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn fetch_mssql_data(
     _connection_id: i64,
     _cfg: Arc<MssqlConfigWrapper>,

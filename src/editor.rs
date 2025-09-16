@@ -1390,7 +1390,7 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
                         ui.spacing_mut().item_spacing.y = 8.0;
 
                         // Available themes with descriptions
-                        let themes = vec![
+                        let themes = [
                             (
                                 models::structs::EditorColorTheme::GithubDark,
                                 "GitHub Dark",

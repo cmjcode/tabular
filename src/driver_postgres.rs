@@ -3,6 +3,7 @@ use sqlx::{PgPool, Row, SqlitePool};
 
 use crate::{models, window_egui};
 
+#[allow(dead_code)]
 pub(crate) async fn fetch_postgres_data(
     connection_id: i64,
     pool: &PgPool,

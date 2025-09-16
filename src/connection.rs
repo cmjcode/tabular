@@ -1515,6 +1515,7 @@ pub(crate) fn cleanup_connection_pool(tabular: &mut Tabular, connection_id: i64)
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn refresh_connection_background_async(
     connection_id: i64,
     db_pool: &Option<Arc<SqlitePool>>,
@@ -1602,6 +1603,7 @@ pub(crate) async fn refresh_connection_background_async(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn create_database_pool(
     connection: &models::structs::ConnectionConfig,
 ) -> Option<models::enums::DatabasePool> {
@@ -1753,6 +1755,7 @@ pub(crate) async fn create_database_pool(
 }
 
 // Fetch and cache metadata for all databases/tables/columns per connection
+#[allow(dead_code)]
 async fn fetch_and_cache_all_data(
     connection_id: i64,
     connection: &models::structs::ConnectionConfig,

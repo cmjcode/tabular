@@ -399,6 +399,7 @@ pub(crate) fn convert_mysql_rows_to_table_data(
     table_data
 }
 
+#[allow(dead_code)]
 pub(crate) async fn fetch_mysql_data(
     connection_id: i64,
     pool: &MySqlPool,

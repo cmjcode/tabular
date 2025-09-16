@@ -30,6 +30,7 @@ fn current_prefix(text: &str, cursor: usize) -> (String, usize) {
 }
 
 /// Tokenize helper: split on non-alphanumeric/_ characters.
+#[allow(dead_code)]
 fn tokenize(s: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut cur = String::new();
@@ -48,6 +49,7 @@ fn tokenize(s: &str) -> Vec<String> {
 }
 
 /// Return active (connection_id, database_name) if available.
+#[allow(dead_code)]
 fn active_connection_and_db(app: &Tabular) -> Option<(i64, String)> {
     if let Some(tab) = app.query_tabs.get(app.active_tab_index)
         && let Some(cid) = tab.connection_id
@@ -65,6 +67,7 @@ fn active_connection_and_db(app: &Tabular) -> Option<(i64, String)> {
 }
 
 /// Extract table names appearing after first FROM (comma separated; stop at clause keywords).
+#[allow(dead_code)]
 fn extract_tables(full_text: &str) -> Vec<String> {
     // Cari token FROM (case-insensitive) sebagai token utuh, lalu kumpulkan nama tabel setelahnya
     let bytes = full_text.as_bytes();
@@ -162,12 +165,12 @@ pub fn build_suggestions(
     match context {
         SqlContext::AfterSelect => {
             // Suggest column names if we have connection context
-            if let Some(conn_id) = connection_id {
-                if let Some(columns) = get_cached_columns(app, conn_id) {
-                    for col in columns {
-                        if col.to_lowercase().starts_with(&prefix_lower) {
-                            suggestions.push(col);
-                        }
+            if let Some(conn_id) = connection_id
+                && let Some(columns) = get_cached_columns(app, conn_id)
+            {
+                for col in columns {
+                    if col.to_lowercase().starts_with(&prefix_lower) {
+                        suggestions.push(col);
                     }
                 }
             }
@@ -178,24 +181,24 @@ pub fn build_suggestions(
         }
         SqlContext::AfterFrom => {
             // Suggest table names
-            if let Some(conn_id) = connection_id {
-                if let Some(tables) = get_cached_tables(app, conn_id) {
-                    for table in tables {
-                        if table.to_lowercase().starts_with(&prefix_lower) {
-                            suggestions.push(table);
-                        }
+            if let Some(conn_id) = connection_id
+                && let Some(tables) = get_cached_tables(app, conn_id)
+            {
+                for table in tables {
+                    if table.to_lowercase().starts_with(&prefix_lower) {
+                        suggestions.push(table);
                     }
                 }
             }
         }
         SqlContext::AfterWhere => {
             // Suggest column names for WHERE conditions
-            if let Some(conn_id) = connection_id {
-                if let Some(columns) = get_cached_columns(app, conn_id) {
-                    for col in columns {
-                        if col.to_lowercase().starts_with(&prefix_lower) {
-                            suggestions.push(col);
-                        }
+            if let Some(conn_id) = connection_id
+                && let Some(columns) = get_cached_columns(app, conn_id)
+            {
+                for col in columns {
+                    if col.to_lowercase().starts_with(&prefix_lower) {
+                        suggestions.push(col);
                     }
                 }
             }
@@ -264,13 +267,9 @@ fn detect_sql_context(text: &str, cursor_pos: usize) -> SqlContext {
 
 fn get_cached_tables(app: &Tabular, connection_id: i64) -> Option<Vec<String>> {
     // Try to get from database cache
-    if let Some(databases) = app.database_cache.get(&connection_id) {
-        // For simplicity, return database names as "tables"
-        // In real implementation, we'd cache actual table names per database
-        Some(databases.clone())
-    } else {
-        None
-    }
+    app.database_cache
+        .get(&connection_id)
+        .cloned()
 }
 
 fn get_cached_columns(_app: &Tabular, _connection_id: i64) -> Option<Vec<String>> {
@@ -353,6 +352,7 @@ fn add_sql_keywords(suggestions: &mut Vec<String>, prefix_lower: &str) {
 // Removed unused TreeNodeExt trait & impl (was an accessor wrapper) to silence dead_code warning.
 
 // Provide a lightweight clone for cache access (cache functions require &mut Tabular)
+#[allow(dead_code)]
 trait ShallowForCache {
     fn shallow_for_cache(&self) -> Box<Tabular>;
 }

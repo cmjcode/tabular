@@ -72,7 +72,7 @@ impl EditorBuffer {
 
     /// Replace whole content (used by tab switching / file load)
     pub fn set_text(&mut self, new_text: String) {
-        if self.text == new_text { return; }
+    if self.text == new_text { return; }
         let old = std::mem::take(&mut self.text);
         let old_len = old.len();
         self.undo_stack.push(EditRecord { range: 0..old_len, inserted: new_text.clone(), removed: old });
@@ -275,7 +275,7 @@ impl EditorBuffer {
                     self.revision = self.revision.wrapping_add(1);
                 }
             }
-            return;
+            
         }
 
         #[cfg(not(feature = "granular_edit"))]
@@ -346,6 +346,7 @@ impl EditorBuffer {
     /// 2. Use Buffer::edit for true rope mutation (no full rebuild) if possible
     /// 3. Run the same incremental line_starts maintenance logic as `apply_single_replace`
     /// 4. Push undo record
+    ///
     /// Safety: On any mismatch or panic risk we fallback to rebuilding from full text.
     #[cfg(feature = "granular_edit")]
     pub fn apply_granular_edit(&mut self, old_range: std::ops::Range<usize>, replacement: &str) {
@@ -392,7 +393,11 @@ impl EditorBuffer {
                 let delta: isize = replacement.len() as isize - (end - start) as isize;
                 let block_first_offset = self.line_starts[start_line];
                 let mut new_starts: Vec<usize> = Vec::with_capacity(removed_nl);
-                for (i, ch) in replacement.char_indices() { if ch == '\n' && i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); } }
+                for (i, ch) in replacement.char_indices() {
+                    if ch == '\n' && i + 1 < replacement.len() {
+                        new_starts.push(block_first_offset + i + 1);
+                    }
+                }
                 if new_starts.len() == removed_nl {
                     for (idx, val) in new_starts.iter().enumerate() { let line_idx = start_line + 1 + idx; if line_idx < self.line_starts.len() { self.line_starts[line_idx] = *val; } }
                     if delta != 0 { let tail_start_line = start_line + 1 + removed_nl; for ls in self.line_starts.iter_mut().skip(tail_start_line) { *ls = (*ls as isize + delta) as usize; } }
@@ -490,7 +495,11 @@ impl EditorBuffer {
                 let delta: isize = replacement.len() as isize - (end - start) as isize;
                 let block_first_offset = self.line_starts[start_line];
                 let mut new_starts: Vec<usize> = Vec::with_capacity(removed_nl);
-                for (i, ch) in replacement.char_indices() { if ch == '\n' { if i + 1 < replacement.len() { new_starts.push(block_first_offset + i + 1); } } }
+                for (i, ch) in replacement.char_indices() {
+                    if ch == '\n' && i + 1 < replacement.len() {
+                        new_starts.push(block_first_offset + i + 1);
+                    }
+                }
                 if new_starts.len() == removed_nl {
                     for (idx, val) in new_starts.iter().enumerate() { let line_idx = start_line + 1 + idx; if line_idx < self.line_starts.len() { self.line_starts[line_idx] = *val; } }
                     if delta != 0 { let tail_start_line = start_line + 1 + removed_nl; for ls in self.line_starts.iter_mut().skip(tail_start_line) { *ls = (*ls as isize + delta) as usize; } }
@@ -523,8 +532,7 @@ impl EditorBuffer {
                 }
 
                 // 2. Compute new internal starts based on replacement (relative char_indices)
-                if ok {
-                    if new_internal > 0 {
+                if ok && new_internal > 0 {
                         let block_first_offset = self.line_starts[start_line];
                         let mut new_starts: Vec<usize> = Vec::with_capacity(new_internal);
                         for (i, ch) in replacement.char_indices() {
@@ -536,7 +544,6 @@ impl EditorBuffer {
                             let mut insert_pos = start_line + 1;
                             for ns in new_starts { self.line_starts.insert(insert_pos, ns); insert_pos += 1; }
                         }
-                    }
                 }
 
                 if ok {

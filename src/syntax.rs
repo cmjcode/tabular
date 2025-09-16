@@ -99,7 +99,7 @@ fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut L
             let mut end_idx = start_idx + 1;
             let mut found_end = false;
 
-            while let Some((idx, c)) = chars.next() {
+            for (idx, c) in chars.by_ref() {
                 end_idx = idx + c.len_utf8();
                 if c == '\'' {
                     found_end = true;

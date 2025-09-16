@@ -4,6 +4,7 @@ use sqlx::SqlitePool;
 
 use crate::{cache_data, connection, models, window_egui};
 
+#[allow(dead_code)]
 pub(crate) async fn fetch_redis_data(
     connection_id: i64,
     redis_manager: &ConnectionManager,
