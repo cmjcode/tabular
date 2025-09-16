@@ -1576,6 +1576,17 @@ pub(crate) async fn refresh_connection_background_async(
                 .execute(cache_pool_arc.as_ref())
                 .await;
 
+            // Also clear row and index caches to avoid stale data in case UI didn't do it
+            let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(cache_pool_arc.as_ref())
+                .await;
+
+            let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
+                .bind(connection_id)
+                .execute(cache_pool_arc.as_ref())
+                .await;
+
             // Create new connection pool
             match tokio::time::timeout(
                 std::time::Duration::from_secs(30), // 30 second timeout
@@ -1584,13 +1595,32 @@ pub(crate) async fn refresh_connection_background_async(
             .await
             {
                 Ok(Some(new_pool)) => {
-                    fetch_and_cache_all_data(
+                    let ok = fetch_and_cache_all_data(
                         connection_id,
                         &connection,
                         &new_pool,
                         cache_pool_arc.as_ref(),
                     )
-                    .await
+                    .await;
+                    if ok {
+                        // Prefetch index metadata for tables for instant Indexes view
+                        let _ = prefetch_indexes_for_all_tables(
+                            connection_id,
+                            &connection,
+                            &new_pool,
+                            cache_pool_arc.as_ref(),
+                        )
+                        .await;
+                        // Best-effort: prefetch first 100 rows for all tables so browsing feels instant
+                        let _ = prefetch_first_rows_for_all_tables(
+                            connection_id,
+                            &connection,
+                            &new_pool,
+                            cache_pool_arc.as_ref(),
+                        )
+                        .await;
+                    }
+                    ok
                 }
                 Ok(None) => false,
                 Err(_) => false,
@@ -1806,6 +1836,329 @@ async fn fetch_and_cache_all_data(
                 false
             }
         }
+    }
+}
+
+// Helper: upsert row_cache directly using cache pool
+async fn save_row_cache_direct(
+    cache_pool: &SqlitePool,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+    headers: &[String],
+    rows: &Vec<Vec<String>>,
+) {
+    let headers_json = serde_json::to_string(headers).unwrap_or_else(|_| "[]".to_string());
+    let rows_json = serde_json::to_string(rows).unwrap_or_else(|_| "[]".to_string());
+    let _ = sqlx::query(
+        r#"INSERT INTO row_cache (connection_id, database_name, table_name, headers_json, rows_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(connection_id, database_name, table_name)
+           DO UPDATE SET headers_json=excluded.headers_json, rows_json=excluded.rows_json, updated_at=CURRENT_TIMESTAMP"#,
+    )
+    .bind(connection_id)
+    .bind(database_name)
+    .bind(table_name)
+    .bind(headers_json)
+    .bind(rows_json)
+    .execute(cache_pool)
+    .await;
+}
+
+// Helper: save index metadata directly to index_cache
+async fn save_indexes_cache_direct(
+    cache_pool: &SqlitePool,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+    indexes: &[models::structs::IndexStructInfo],
+){
+    // Clear existing index rows for this table
+    let _ = sqlx::query(
+        "DELETE FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?",
+    )
+    .bind(connection_id)
+    .bind(database_name)
+    .bind(table_name)
+    .execute(cache_pool)
+    .await;
+
+    for idx in indexes {
+        let cols_json = serde_json::to_string(&idx.columns).unwrap_or_else(|_| "[]".to_string());
+        let _ = sqlx::query(
+            r#"INSERT OR REPLACE INTO index_cache
+                (connection_id, database_name, table_name, index_name, method, is_unique, columns_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(connection_id)
+        .bind(database_name)
+        .bind(table_name)
+        .bind(&idx.name)
+        .bind(&idx.method)
+        .bind(if idx.unique { 1 } else { 0 })
+        .bind(cols_json)
+        .execute(cache_pool)
+        .await;
+    }
+}
+
+// After metadata is cached, fetch index metadata for all tables and store in index_cache
+async fn prefetch_indexes_for_all_tables(
+    connection_id: i64,
+    connection: &models::structs::ConnectionConfig,
+    pool: &models::enums::DatabasePool,
+    cache_pool: &SqlitePool,
+) -> bool {
+    use sqlx::Row;
+    // Load distinct (db, table) pairs for tables only
+    let tables_res = sqlx::query_as::<_, (String, String)>(
+        "SELECT database_name, table_name FROM table_cache WHERE connection_id = ? AND table_type = 'table' ORDER BY database_name, table_name",
+    )
+    .bind(connection_id)
+    .fetch_all(cache_pool)
+    .await;
+
+    let pairs = match tables_res { Ok(v) => v, Err(_) => return false };
+
+    match pool {
+        models::enums::DatabasePool::MySQL(_mysql_pool) => {
+            let enc_user = crate::modules::url_encode(&connection.username);
+            let enc_pass = crate::modules::url_encode(&connection.password);
+            for (dbn, tbn) in pairs {
+                let dsn = format!(
+                    "mysql://{}:{}@{}:{}/{}",
+                    enc_user, enc_pass, connection.host, connection.port, dbn
+                );
+                if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
+                    // Query INFORMATION_SCHEMA.STATISTICS to assemble per-index info
+                    let q = r#"SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, INDEX_TYPE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX"#;
+                    if let Ok(rows) = sqlx::query(q).bind(&dbn).bind(&tbn).fetch_all(&mut conn).await {
+                        // Assemble by index_name
+                        let mut map: std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)> = std::collections::BTreeMap::new();
+                        for r in rows {
+                            let name: String = r.try_get("INDEX_NAME").unwrap_or_default();
+                            let col: Option<String> = r.try_get("COLUMN_NAME").ok();
+                            let seq: i64 = r.try_get("SEQ_IN_INDEX").unwrap_or(0);
+                            let non_unique: i64 = r.try_get("NON_UNIQUE").unwrap_or(1);
+                            let idx_type: Option<String> = r.try_get("INDEX_TYPE").ok();
+                            let entry = map.entry(name).or_insert((None, non_unique == 0, Vec::new()));
+                            if entry.0.is_none() { entry.0 = idx_type.clone(); }
+                            if let Some(cn) = col { entry.2.push((seq, cn)); }
+                            // Update uniqueness if any row indicates unique
+                            entry.1 = non_unique == 0;
+                        }
+                        let mut list = Vec::new();
+                        for (name, (method, unique, mut cols)) in map {
+                            cols.sort_by_key(|(seq, _)| *seq);
+                            let columns: Vec<String> = cols.into_iter().map(|(_, c)| c).collect();
+                            list.push(models::structs::IndexStructInfo { name, method, unique, columns });
+                        }
+                        save_indexes_cache_direct(cache_pool, connection_id, &dbn, &tbn, &list).await;
+                    }
+                }
+            }
+            true
+        }
+        models::enums::DatabasePool::PostgreSQL(pg_pool) => {
+            // Current pool is bound to one DB; only prefetch for that database
+            let curr_db: Option<String> = sqlx::query_scalar("SELECT current_database()")
+                .fetch_one(pg_pool.as_ref())
+                .await
+                .ok();
+            for (dbn, tbn) in pairs {
+                if let Some(ref curr) = curr_db { if curr != &dbn { continue; } }
+                // Get all indexes for this table in public schema
+                let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique
+                           FROM pg_class t
+                           JOIN pg_index i ON t.oid = i.indrelid
+                           JOIN pg_class idx ON idx.oid = i.indexrelid
+                           JOIN pg_namespace n ON n.oid = t.relnamespace
+                           WHERE t.relname = $1 AND n.nspname='public' ORDER BY idx.relname"#;
+                if let Ok(rows) = sqlx::query(q).bind(&tbn).fetch_all(pg_pool.as_ref()).await {
+                    let mut list = Vec::new();
+                    for r in rows {
+                        let name: String = r.try_get("index_name").unwrap_or_default();
+                        let def: String = r.try_get("index_def").unwrap_or_default();
+                        let unique: bool = r.try_get("is_unique").unwrap_or(false);
+                        let method = def.split(" USING ").nth(1).and_then(|rest| rest.split_whitespace().next()).map(|m| m.trim_matches('(').trim_matches(')').to_string());
+                        let columns: Vec<String> = if let Some(start) = def.rfind('(') { if let Some(end_rel) = def[start+1..].find(')') { def[start+1..start+1+end_rel].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect() } else { Vec::new() } } else { Vec::new() };
+                        list.push(models::structs::IndexStructInfo { name, method, unique, columns });
+                    }
+                    save_indexes_cache_direct(cache_pool, connection_id, &dbn, &tbn, &list).await;
+                }
+            }
+            true
+        }
+        models::enums::DatabasePool::SQLite(sqlite_pool) => {
+            for (_dbn, tbn) in pairs {
+                // List index names
+                let q_list = format!("PRAGMA index_list(\"{}\")", tbn.replace('"', "\""));
+                if let Ok(list_rows) = sqlx::query(&q_list).fetch_all(sqlite_pool.as_ref()).await {
+                    let mut list = Vec::new();
+                    for r in list_rows {
+                        // Columns: seq, name, unique, origin, partial
+                        let name: String = r.try_get(1).unwrap_or_default();
+                        let unique_i: i64 = r.try_get(2).unwrap_or(0);
+                        let unique = unique_i != 0;
+                        // Get columns
+                        let q_cols = format!("PRAGMA index_info(\"{}\")", name.replace('"', "\""));
+                        let mut cols: Vec<(i64, String)> = Vec::new();
+                        if let Ok(col_rows) = sqlx::query(&q_cols).fetch_all(sqlite_pool.as_ref()).await {
+                            for cr in col_rows {
+                                // Columns: seqno, cid, name
+                                let seq: i64 = cr.try_get(0).unwrap_or(0);
+                                let cname: String = cr.try_get(2).unwrap_or_default();
+                                cols.push((seq, cname));
+                            }
+                        }
+                        cols.sort_by_key(|(s, _)| *s);
+                        let columns: Vec<String> = cols.into_iter().map(|(_, c)| c).collect();
+                        list.push(models::structs::IndexStructInfo { name, method: None, unique, columns });
+                    }
+                    save_indexes_cache_direct(cache_pool, connection_id, "main", &tbn, &list).await;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+// After metadata is cached, fetch first 100 rows for all tables and store in row_cache
+async fn prefetch_first_rows_for_all_tables(
+    connection_id: i64,
+    connection: &models::structs::ConnectionConfig,
+    pool: &models::enums::DatabasePool,
+    cache_pool: &SqlitePool,
+) -> bool {
+    use sqlx::Row;
+    // Load table list from cache
+    let tables_res = sqlx::query_as::<_, (String, String)>(
+        "SELECT database_name, table_name FROM table_cache WHERE connection_id = ? AND table_type = 'table' ORDER BY database_name, table_name",
+    )
+    .bind(connection_id)
+    .fetch_all(cache_pool)
+    .await;
+
+    let rows = match tables_res {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    match pool {
+        models::enums::DatabasePool::MySQL(_mysql_pool) => {
+            // Connect directly to each database to run SELECT query
+            let enc_user = crate::modules::url_encode(&connection.username);
+            let enc_pass = crate::modules::url_encode(&connection.password);
+            for (dbn, tbn) in rows {
+                // Build DSN for this database
+                let dsn = format!(
+                    "mysql://{}:{}@{}:{}/{}",
+                    enc_user, enc_pass, connection.host, connection.port, dbn
+                );
+                if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
+                    // Fetch up to 100 rows
+                    let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace("`", "``"));
+                    match sqlx::query(&q).fetch_all(&mut conn).await {
+                        Ok(mysql_rows) => {
+                            // Headers: if rows exist, pick from first row; else use DESCRIBE to infer
+                            let headers: Vec<String> = if let Some(r0) = mysql_rows.first() {
+                                r0.columns().iter().map(|c| c.name().to_string()).collect()
+                            } else {
+                                let dq = format!("DESCRIBE `{}`", tbn.replace("`", "``"));
+                                match sqlx::query(&dq).fetch_all(&mut conn).await {
+                                    Ok(desc_rows) => desc_rows
+                                        .iter()
+                                        .filter_map(|r| r.try_get::<String, _>(0).ok())
+                                        .collect(),
+                                    Err(_) => Vec::new(),
+                                }
+                            };
+                            let data = crate::driver_mysql::convert_mysql_rows_to_table_data(mysql_rows);
+                            save_row_cache_direct(cache_pool, connection_id, &dbn, &tbn, &headers, &data).await;
+                        }
+                        Err(_) => {
+                            // ignore individual table failures
+                        }
+                    }
+                }
+            }
+            true
+        }
+        models::enums::DatabasePool::PostgreSQL(pg_pool) => {
+            // Only prefetch for current database; fetch_postgres_data cached only that
+            for (dbn, tbn) in rows {
+                // Schema handling: default to public if not qualified in cache
+                let q = format!("SELECT * FROM \"public\".\"{}\" LIMIT 100", tbn.replace('"', "\""));
+                match sqlx::query(&q).fetch_all(pg_pool.as_ref()).await {
+                    Ok(pg_rows) => {
+                        let headers: Vec<String> = if let Some(r0) = pg_rows.first() {
+                            r0.columns().iter().map(|c| c.name().to_string()).collect()
+                        } else {
+                            // Try to get columns via information_schema
+                            let iq = format!(
+                                "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='{}' ORDER BY ordinal_position",
+                                tbn.replace("'", "''")
+                            );
+                            match sqlx::query(&iq).fetch_all(pg_pool.as_ref()).await {
+                                Ok(infos) => infos
+                                    .iter()
+                                    .filter_map(|r| r.try_get::<String, _>(0).ok())
+                                    .collect(),
+                                Err(_) => Vec::new(),
+                            }
+                        };
+                        let data: Vec<Vec<String>> = pg_rows
+                            .iter()
+                            .map(|row| {
+                                (0..row.len())
+                                    .map(|j| match row.try_get::<Option<String>, _>(j) {
+                                        Ok(Some(v)) => v,
+                                        Ok(None) => "NULL".to_string(),
+                                        Err(_) => {
+                                            // try bytes
+                                            if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(j) {
+                                                String::from_utf8_lossy(&bytes).to_string()
+                                            } else { "".to_string() }
+                                        }
+                                    })
+                                    .collect()
+                            })
+                            .collect();
+                        save_row_cache_direct(cache_pool, connection_id, &dbn, &tbn, &headers, &data).await;
+                    }
+                    Err(_) => {}
+                }
+            }
+            true
+        }
+        models::enums::DatabasePool::SQLite(sqlite_pool) => {
+            for (_dbn, tbn) in rows {
+                let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
+                match sqlx::query(&q).fetch_all(sqlite_pool.as_ref()).await {
+                    Ok(sqlite_rows) => {
+                        let headers: Vec<String> = if let Some(r0) = sqlite_rows.first() {
+                            r0.columns().iter().map(|c| c.name().to_string()).collect()
+                        } else {
+                            // PRAGMA table_info
+                            let iq = format!("PRAGMA table_info(\"{}\")", tbn.replace('"', "\""));
+                            match sqlx::query(&iq).fetch_all(sqlite_pool.as_ref()).await {
+                                Ok(infos) => infos
+                                    .iter()
+                                    .filter_map(|r| r.try_get::<String, _>(1).ok())
+                                    .collect(),
+                                Err(_) => Vec::new(),
+                            }
+                        };
+                        let data = crate::driver_sqlite::convert_sqlite_rows_to_table_data(sqlite_rows);
+                        save_row_cache_direct(cache_pool, connection_id, "main", &tbn, &headers, &data).await;
+                    }
+                    Err(_) => {}
+                }
+            }
+            true
+        }
+        _ => false,
     }
 }
 

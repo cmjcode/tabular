@@ -561,14 +561,24 @@ impl Tabular {
         result_sender: Sender<models::enums::BackgroundResult>,
     ) {
         // Spawn a background thread to process queued tasks
+        // Clone cache DB pool for use inside the worker
+        let cache_pool = self.db_pool.clone();
         std::thread::spawn(move || {
             while let Ok(task) = task_receiver.recv() {
                 match task {
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
-                        // Placeholder implementation; real logic to refresh connection metadata
-                        // would go here (e.g. ping DB, refresh tables, etc.). For now we simply
-                        // report success so UI can clear any spinners.
-                        let success = true;
+                        // Perform actual refresh and cache preload on a lightweight runtime
+                        let success = if let Some(cache_pool_arc) = &cache_pool {
+                            match tokio::runtime::Runtime::new() {
+                                Ok(rt) => rt.block_on(crate::connection::refresh_connection_background_async(
+                                    connection_id,
+                                    &Some(cache_pool_arc.clone()),
+                                )),
+                                Err(_) => false,
+                            }
+                        } else {
+                            false
+                        };
                         let _ =
                             result_sender.send(models::enums::BackgroundResult::RefreshComplete {
                                 connection_id,
@@ -3223,6 +3233,17 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     .await;
 
                 let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
+                    .bind(connection_id)
+                    .execute(pool_clone.as_ref())
+                    .await;
+
+                // Also clear row and index caches to avoid stale data after refresh
+                let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
+                    .bind(connection_id)
+                    .execute(pool_clone.as_ref())
+                    .await;
+
+                let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
                     .bind(connection_id)
                     .execute(pool_clone.as_ref())
                     .await;
