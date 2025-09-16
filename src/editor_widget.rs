@@ -97,6 +97,7 @@ pub fn show(
     let mut redo_cmd = false;
     let mut tab_pressed = false;
     let mut shift_tab_pressed = false;
+    let mut esc_pressed = false;
     // Inline-find ephemeral inputs
     let mut inline_find_pattern: Option<(InlineFindDirection, String)> = None;
     let mut repeat_inline_find = false;
@@ -226,6 +227,9 @@ pub fn show(
                         redo_cmd = true;
                     }
                 }
+                egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                    esc_pressed = true;
+                }
                 _ => {}
             }
         }
@@ -275,6 +279,28 @@ pub fn show(
                 state.snippet_current = None;
             }
         }
+    }
+
+    // ESC: cancel multi-cursor and ephemeral modes
+    if esc_pressed {
+        // Reduce selection to a single primary caret at its current head position
+        if let Some((_a, h)) = selection.primary_range() {
+            selection.set_primary_range(h, h);
+        } else {
+            selection.ensure_primary(0);
+        }
+        // Clear additional regions beyond primary
+        let mut primary_only = lapce_core::selection::Selection::new();
+        if let Some((a, h)) = selection.primary_range() {
+            primary_only.add_region(lapce_core::selection::SelRegion::new(a.min(h), a.max(h), None));
+        }
+        selection.set_from_lapce_selection(primary_only);
+        // Clear inline-find and snippet modes
+        state.inline_find = None;
+        state.last_inline_find = None;
+        state.snippet_placeholders.clear();
+        state.snippet_current = None;
+        signals.caret_moved = true;
     }
 
     // --- Text mutations ---
