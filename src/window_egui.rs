@@ -19,9 +19,6 @@ pub struct Tabular {
     pub editor: EditorBuffer,
     // Transitional multi-selection model (will move to lapce-core selection)
     pub multi_selection: crate::editor_selection::MultiSelection,
-    // Experimental custom editor toggle & state
-    pub use_new_editor: bool,
-    pub editor_widget_state: Option<crate::editor_widget::EditorWidgetState>,
     pub selected_menu: String,
     pub items_tree: Vec<models::structs::TreeNode>,
     pub queries_tree: Vec<models::structs::TreeNode>,
@@ -171,9 +168,7 @@ pub struct Tabular {
     // Syntax highlighting cache (text_hash -> LayoutJob)
     pub highlight_cache: std::collections::HashMap<u64, eframe::egui::text::LayoutJob>,
     pub last_highlight_hash: Option<u64>,
-    // New per-line highlight cache for custom editor: key = (line_index, revision_hash)
-    pub per_line_highlight_cache:
-        std::collections::HashMap<(usize, u64), eframe::egui::text::LayoutJob>,
+    // New per-line highlight cache was used by the removed custom editor; no longer needed
     // Index dialog
     pub show_index_dialog: bool,
     pub index_dialog: Option<models::structs::IndexDialogState>,
@@ -342,8 +337,6 @@ impl Tabular {
         let mut app = Self {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
-            use_new_editor: true, // default off; can be toggled via future settings
-            editor_widget_state: None,
             selected_menu: "Database".to_string(),
             items_tree: Vec::new(),
             queries_tree: Vec::new(),
@@ -518,7 +511,6 @@ impl Tabular {
             last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
             last_highlight_hash: None,
-            per_line_highlight_cache: std::collections::HashMap::new(),
         };
 
         // Clear any old cached pools
@@ -9192,42 +9184,8 @@ impl App for Tabular {
                                 .show(&mut child_ui, |ui| {
                                     // Constrain width to avoid horizontal grow
                                     ui.set_min_width(avail_w - 4.0);
-                                    if self.use_new_editor {
-                                        if self.editor_widget_state.is_none() {
-                                            self.editor_widget_state = Some(crate::editor_widget::EditorWidgetState::new());
-                                        }
-                                        // Safe unwrap after init
-                                        if let Some(state) = self.editor_widget_state.as_mut() {
-                                            // Determine language & theme
-                                            let lang = self
-                                                .query_tabs
-                                                .get(self.active_tab_index)
-                                                .and_then(|t| t.file_path.as_ref())
-                                                .map(|p| crate::syntax::detect_language_from_name(p))
-                                                .unwrap_or(crate::syntax::LanguageKind::Sql);
-                                            let dark = self.is_dark_mode;
-                                            // Use internal buffer revision for line cache keying
-                                            let current_rev = self.editor.revision;
-                                            let signals = crate::editor_widget::show(
-                                                ui,
-                                                state,
-                                                &mut self.editor,
-                                                &mut self.multi_selection,
-                                                lang,
-                                                dark,
-                                                &mut self.per_line_highlight_cache,
-                                                current_rev,
-                                            );
-                                            if signals.text_changed {
-                                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                                    tab.content = self.editor.text.clone();
-                                                    tab.is_modified = true;
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        editor::render_advanced_editor(self, ui);
-                                    }
+                                    // Always render legacy editor
+                                    editor::render_advanced_editor(self, ui);
                                 });
                             // Key shortcut check
                             if ui.input(|i| {

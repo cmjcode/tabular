@@ -18,9 +18,6 @@ pub mod editor_autocomplete;
 pub mod editor_buffer;
 pub mod editor_selection;
 pub mod editor_state_adapter;
-pub mod editor_widget; // experimental custom editor
-#[cfg(feature = "lapce_editor")]
-pub mod lapce_editor; // ported Lapce editor (experimental)
 pub mod export;
 pub mod models;
 pub mod modules;
