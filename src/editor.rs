@@ -574,6 +574,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // ----- Handle autocomplete key interception and pre-acceptance BEFORE building TextEdit -----
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
     let mut raw_tab = false;
+    // VSCode-like navigation/action flags
+    let mut word_left_pressed = false;
+    let mut word_right_pressed = false;
+    let mut word_nav_shift = false;
+    let mut move_line_up = false;
+    let mut move_line_down = false;
+    let mut dup_line_up = false;
+    let mut dup_line_down = false;
     // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
     let mut arrow_down_pressed = false;
     let mut arrow_up_pressed = false;
@@ -615,6 +623,213 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             ri.events = kept;
         });
     }
+    // VSCode-like word navigation & line operations (pre-TextEdit)
+    // Helper: compute previous and next word boundaries using Unicode segmentation (UAX#29)
+    use unicode_segmentation::UnicodeSegmentation;
+    let prev_word_boundary = |s: &str, pos: usize| {
+        let pos = pos.min(s.len());
+        // Walk backward over word boundaries using unicode_words
+        // Strategy: iterate words with their byte ranges, pick the last word whose end < pos; if pos inside a word, jump to its start
+        let mut last_start = 0usize;
+        for w in s.unicode_word_indices() {
+            let (byte_idx, word) = w;
+            let start = byte_idx;
+            let end = start + word.len();
+            if pos > end {
+                last_start = start;
+                continue;
+            }
+            if pos > start && pos <= end {
+                // inside this word: jump to its start
+                return start;
+            }
+            if pos <= start {
+                break;
+            }
+        }
+        // If not inside any word, jump to start of previous word if any, else 0
+        last_start
+    };
+    let next_word_boundary = |s: &str, pos: usize| {
+        let pos = pos.min(s.len());
+        for w in s.unicode_word_indices() {
+            let (byte_idx, word) = w;
+            let start = byte_idx;
+            let end = start + word.len();
+            if pos < start {
+                // next word found; jump to its start
+                return start;
+            }
+            if pos >= start && pos < end {
+                // inside this word; jump to its end
+                return end;
+            }
+        }
+        s.len()
+    };
+    // Helper: find line start and end byte indices for a given cursor
+    let line_bounds = |s: &str, pos: usize| -> (usize, usize, usize) {
+        let bytes = s.as_bytes();
+        let mut start = pos.min(bytes.len());
+        while start > 0 && bytes[start - 1] != b'\n' { start -= 1; }
+        let mut end = pos.min(bytes.len());
+        while end < bytes.len() && bytes[end] != b'\n' { end += 1; }
+        // compute line number (slow but fine for pre-op)
+        let mut ln = 0usize; let mut idx = 0usize;
+        while idx < start { if bytes[idx] == b'\n' { ln += 1; } idx += 1; }
+        (start, end, ln)
+    };
+    // Consume relevant events and set flags
+    ui.ctx().input_mut(|ri| {
+        let mut kept = Vec::with_capacity(ri.events.len());
+        for ev in ri.events.drain(..) {
+            match ev {
+                egui::Event::Key { key: egui::Key::ArrowLeft, pressed: true, modifiers, .. } if modifiers.alt => {
+                    word_left_pressed = true;
+                    word_nav_shift = modifiers.shift;
+                }
+                egui::Event::Key { key: egui::Key::ArrowRight, pressed: true, modifiers, .. } if modifiers.alt => {
+                    word_right_pressed = true;
+                    word_nav_shift = modifiers.shift;
+                }
+                egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.shift => {
+                    move_line_up = true;
+                }
+                egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.shift => {
+                    move_line_down = true;
+                }
+                egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, modifiers, .. } if modifiers.alt && modifiers.shift => {
+                    dup_line_up = true;
+                }
+                egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, modifiers, .. } if modifiers.alt && modifiers.shift => {
+                    dup_line_down = true;
+                }
+                other => kept.push(other),
+            }
+        }
+        ri.events = kept;
+    });
+    // Apply word navigation immediately by updating egui TextEditState before widget is built
+    if word_left_pressed || word_right_pressed {
+        let id = egui::Id::new("sql_editor");
+        let rng = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id);
+        let (start, end, primary) = if let Some(r) = rng {
+            (r.start, r.end, r.primary)
+        } else {
+            let p = tabular.cursor_position.min(tabular.editor.text.len());
+            (p, p, p)
+        };
+        let anchor = if primary == end { start } else { end };
+        let cur = primary;
+        let new_pos = if word_left_pressed {
+            prev_word_boundary(&tabular.editor.text, cur)
+        } else {
+            next_word_boundary(&tabular.editor.text, cur)
+        };
+        if word_nav_shift {
+            // Extend selection from anchor to new_pos, with primary at new_pos
+            crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                ui.ctx(), id, anchor.min(new_pos), anchor.max(new_pos), new_pos,
+            );
+            tabular.selection_start = anchor.min(new_pos);
+            tabular.selection_end = anchor.max(new_pos);
+            tabular.cursor_position = new_pos;
+        } else {
+            // Collapse to new_pos
+            crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, new_pos);
+            tabular.selection_start = new_pos;
+            tabular.selection_end = new_pos;
+            tabular.cursor_position = new_pos;
+        }
+        ui.memory_mut(|m| m.request_focus(id));
+    }
+    // Apply move/duplicate line operations pre-TextEdit (so content shows updated this frame)
+    if move_line_up || move_line_down || dup_line_up || dup_line_down {
+        let id = egui::Id::new("sql_editor");
+        let text = &mut tabular.editor.text;
+        let len = text.len();
+        let rng = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id);
+        let (sel_start, sel_end) = if let Some(r) = rng { (r.start, r.end) } else { (tabular.selection_start.min(len), tabular.selection_end.min(len)) };
+        // Expand to whole lines
+    let (line_start, _, _) = line_bounds(text, sel_start);
+        let (_, mut line_end, _) = line_bounds(text, sel_end.max(sel_start));
+        if line_end < len { line_end += 1; /* include trailing \n of last line if present */ }
+        // Extract block
+        let block = text.get(line_start..line_end).unwrap_or("").to_string();
+        // Locate neighbor line bounds
+        if move_line_up || dup_line_up {
+            if line_start == 0 {
+                // Top-most; duplicate above still allowed
+                if dup_line_up {
+                    tabular.editor.apply_single_replace(line_start..line_start, &block);
+                    let new_start = line_start;
+                    let new_end = line_end + block.len();
+                    crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, new_start, new_end, new_end);
+                    tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+                }
+            } else {
+                // Find previous line start
+                let prev_start = {
+                    let bytes = text.as_bytes();
+                    let mut s = line_start - 1; // currently at '\n' or char before current line
+                    while s > 0 && bytes[s - 1] != b'\n' { s -= 1; }
+                    s
+                };
+                if move_line_up {
+                    // Remove block and insert before previous line
+                    // First remove
+                    let removed = block.clone();
+                    tabular.editor.apply_single_replace(line_start..line_end, "");
+                    // Adjust indices after removal
+                    let insert_at = prev_start;
+                    tabular.editor.apply_single_replace(insert_at..insert_at, &removed);
+                    let new_start = insert_at;
+                    let new_end = insert_at + removed.len();
+                    crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, new_start, new_end, new_end);
+                    tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+                } else if dup_line_up {
+                    let insert_at = prev_start;
+                    tabular.editor.apply_single_replace(insert_at..insert_at, &block);
+                    let new_start = insert_at;
+                    let new_end = insert_at + block.len();
+                    crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, new_start, new_end, new_end);
+                    tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+                }
+            }
+        } else if move_line_down || dup_line_down {
+            // Find next line end start position
+            let insert_after = line_end.min(text.len());
+            if move_line_down {
+                // Remove block, then insert after next line
+                let removed = block.clone();
+                tabular.editor.apply_single_replace(line_start..line_end, "");
+                // After removal, the insertion point shifts left by removed.len()
+                let mut after_next = insert_after - removed.len();
+                // Move past the next line (find its end)
+                let bytes2 = tabular.editor.text.as_bytes();
+                let mut s = after_next;
+                while s < bytes2.len() && bytes2[s] != b'\n' { s += 1; }
+                if s < bytes2.len() { s += 1; }
+                after_next = s;
+                tabular.editor.apply_single_replace(after_next..after_next, &removed);
+                let new_start = after_next;
+                let new_end = after_next + block.len();
+                crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, new_start, new_end, new_end);
+                tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+            } else if dup_line_down {
+                tabular.editor.apply_single_replace(insert_after..insert_after, &block);
+                let new_start = insert_after;
+                let new_end = insert_after + block.len();
+                crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, new_start, new_end, new_end);
+                tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+            }
+        }
+        ui.memory_mut(|m| m.request_focus(id));
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.content = tabular.editor.text.clone();
+            tab.is_modified = true;
+        }
+    }
     if raw_tab {
         tab_pressed_pre = true;
         log::debug!("Raw Tab event captured before editor render");
@@ -651,10 +866,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         models::structs::EditorColorTheme::GithubDark | models::structs::EditorColorTheme::Gruvbox
     );
 
-    // Simple layouter without cache for now (cache causes borrow issues)
+    // Simple layouter; honor Word Wrap toggle by adjusting max_width
+    let word_wrap = tabular.advanced_editor.word_wrap;
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         let mut job = crate::syntax::highlight_text(text.as_str(), lang, dark);
-        job.wrap.max_width = wrap_width;
+        job.wrap.max_width = if word_wrap { wrap_width } else { f32::INFINITY };
         ui.fonts(|f| f.layout_job(job))
     };
 
@@ -719,6 +935,22 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Tidak lagi override clip_rect secara manual; biarkan ScrollArea mengatur viewport dan scrolling.
     let response = ui.put(editor_rect, text_edit);
+    // VSCode-like: subtle current line highlight
+    if response.has_focus() {
+        let cur = tabular.cursor_position.min(tabular.editor.text.len());
+        let bytes = tabular.editor.text.as_bytes();
+        let mut line_no = 0usize; let mut i = 0usize;
+        while i < cur { if bytes[i] == b'\n' { line_no += 1; } i += 1; }
+        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        let y_top = response.rect.top() + 6.0 + (line_no as f32) * line_height;
+        let gutter_w = if tabular.advanced_editor.show_line_numbers { gutter_width } else { 0.0 };
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(response.rect.left() + gutter_w, y_top),
+            egui::pos2(response.rect.right(), y_top + line_height),
+        );
+        let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
+        ui.painter().rect_filled(rect, 0.0, col);
+    }
     // Apply deferred autocomplete acceptance after TextEdit borrow is released
     if defer_accept_autocomplete {
         crate::editor_autocomplete::accept_current_suggestion(tabular);
