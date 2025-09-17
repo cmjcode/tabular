@@ -943,8 +943,8 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                 let start_row = tabular.current_page * tabular.page_size + 1;
                 let end_row = ((tabular.current_page + 1) * tabular.page_size).min(actual_total);
                 ui.label(format!(
-                    "Showing rows {}-{} of {} total",
-                    start_row, end_row, actual_total
+                    "Showing rows {}-{}",
+                    start_row, end_row
                 ));
             } else {
                 ui.label("0 rows");
