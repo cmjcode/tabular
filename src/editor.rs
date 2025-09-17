@@ -1187,9 +1187,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
 
-        // Disable autocomplete for now (needs reimplementation on lapce-core)
-        tabular.show_autocomplete = false;
-        tabular.autocomplete_suggestions.clear();
+        // Rebuild autocomplete suggestions on text changes unless we're in the middle of accepting via Tab/Enter
+        if !accept_via_tab_pre && !accept_via_enter_pre {
+            editor_autocomplete::update_autocomplete(tabular);
+        }
 
         // Ensure rope stays in sync if multi-cursor logic modified editor.text directly
         // (the above multi-cursor branch may mutate tabular.editor.text without going through rope APIs)

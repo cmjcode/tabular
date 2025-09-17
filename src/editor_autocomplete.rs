@@ -1,3 +1,4 @@
+use crate::cache_data::get_columns_from_cache;
 use crate::models;
 use crate::window_egui::{PrefTab, Tabular};
 use eframe::egui;
@@ -161,12 +162,20 @@ pub fn build_suggestions(
 
     // Context-aware suggestions based on SQL position
     let context = detect_sql_context(_text, cursor_pos);
+    let tables = extract_tables(_text);
+    let database = if let Some((_, db)) = active_connection_and_db(app) {
+        db
+    } else {
+        String::new()
+    };
+    debug!("Detected tables in FROM clause: {:?}", tables);
 
     match context {
         SqlContext::AfterSelect => {
+
             // Suggest column names if we have connection context
             if let Some(conn_id) = connection_id
-                && let Some(columns) = get_cached_columns(app, conn_id)
+                && let Some(columns) = get_cached_columns(app, conn_id, &database, tables)
             {
                 for col in columns {
                     if col.to_lowercase().starts_with(&prefix_lower) {
@@ -194,7 +203,7 @@ pub fn build_suggestions(
         SqlContext::AfterWhere => {
             // Suggest column names for WHERE conditions
             if let Some(conn_id) = connection_id
-                && let Some(columns) = get_cached_columns(app, conn_id)
+                && let Some(columns) = get_cached_columns(app, conn_id, &database, tables)
             {
                 for col in columns {
                     if col.to_lowercase().starts_with(&prefix_lower) {
@@ -216,7 +225,7 @@ pub fn build_suggestions(
                         }
                     }
                 }
-                if let Some(columns) = get_cached_columns(app, conn_id) {
+                if let Some(columns) = get_cached_columns(app, conn_id, &database, tables) {
                     for col in columns {
                         if col.to_lowercase().starts_with(&prefix_lower) {
                             suggestions.push(col);
@@ -272,15 +281,27 @@ fn get_cached_tables(app: &Tabular, connection_id: i64) -> Option<Vec<String>> {
         .cloned()
 }
 
-fn get_cached_columns(_app: &Tabular, _connection_id: i64) -> Option<Vec<String>> {
-    // Placeholder - in real implementation we'd cache column names per table
-    Some(vec![
-        "id".to_string(),
-        "name".to_string(),
-        "email".to_string(),
-        "created_at".to_string(),
-        "updated_at".to_string(),
-    ])
+fn get_cached_columns(mut _app: &Tabular, _connection_id: i64, _database: &str, _tables: Vec<String>) -> Option<Vec<String>> {
+    // get columns for specific tables if provided
+    // For simplicity, we return a static list here; in real implementation, query cache DB
+    let mut columns = vec![];
+
+    // loop through tables
+    // Use a shallow mutable clone for cache APIs that require &mut Tabular
+    let mut shallow = _app.shallow_for_cache();
+    for table in _tables {
+        let database: Option<Vec<(String, String)>> =
+            get_columns_from_cache(&mut shallow, _connection_id, _database, &table);
+        if let Some(cols) = database {
+            for (col_name, _) in cols {
+                if !columns.contains(&col_name) {
+                    columns.push(col_name);
+                }
+            }
+        }
+    }
+    columns.sort();
+    Some(columns)
 }
 
 fn add_sql_keywords(suggestions: &mut Vec<String>, prefix_lower: &str) {
@@ -594,7 +615,8 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         app.cursor_position = effective_start + sugg.len();
         // Update primary selection to caret-only at new cursor
         app.multi_selection.set_primary_range(app.cursor_position, app.cursor_position);
-    // Note: We don't have direct ui::Context here; Editor will align caret after render path.
+        // Note: We don't have direct ui::Context here; mark a pending cursor set so the editor regains focus next frame
+        app.pending_cursor_set = Some(app.cursor_position);
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
     }
@@ -679,6 +701,15 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                 if resp.clicked() {
                                     app.selected_autocomplete_index = i;
                                     accept_current_suggestion(app);
+                                    // Immediately sync egui TextEdit caret to new position
+                                    let id = egui::Id::new("sql_editor");
+                                    crate::editor_state_adapter::EditorStateAdapter::set_single(
+                                        ui.ctx(),
+                                        id,
+                                        app.cursor_position,
+                                    );
+                                    // Immediately request focus back to the main editor widget
+                                    ui.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
                                     break;
                                 }
                             }
