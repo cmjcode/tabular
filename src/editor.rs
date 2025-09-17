@@ -725,6 +725,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             } else {
                 // No selection - let egui TextEdit handle normal Delete/Backspace
                 log::debug!("No selection detected, letting TextEdit handle {} key normally", if pressed_del { "Delete" } else { "Backspace" });
+                // Proactively request a repaint to avoid any visual lag/stale frame
+                ui.ctx().request_repaint();
             }
         }
         
@@ -775,6 +777,20 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 }
                 
                 log::debug!("Selection deleted successfully, cursor now at {} with focus maintained", start_b);
+                // Log remaining text preview
+                {
+                    let s = &tabular.editor.text;
+                    let mut end = s.len();
+                    let mut count = 0;
+                    for (i, _) in s.char_indices() {
+                        if count >= 200 { end = i; break; }
+                        count += 1;
+                    }
+                    let rem = if end < s.len() {
+                        format!("{}… (len={})", s[..end].escape_debug(), s.len())
+                    } else { s.escape_debug().to_string() };
+                    log::debug!("Remaining text after selection delete: {}", rem);
+                }
             }
             
             // If we consumed the key, request a repaint so UI reflects the change immediately
@@ -782,6 +798,252 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 ui.ctx().request_repaint();
                 // Double focus request to ensure it sticks
                 ui.memory_mut(|m| m.request_focus(id));
+            }
+        }
+    }
+    // Forward Delete (no selection): delete the next grapheme to the right of the caret
+    // On macOS laptops, this is typically triggered via Fn+Delete and should map to egui::Key::Delete
+    {
+        let id = egui::Id::new("sql_editor");
+        let del_pressed_no_sel = ui.input(|i| i.key_pressed(egui::Key::Delete));
+        if del_pressed_no_sel {
+            // Determine if there's an active selection via egui state first, otherwise via stored state
+            let mut has_selection = false;
+            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+                has_selection = rng.start != rng.end;
+            } else if tabular.selection_start != tabular.selection_end {
+                has_selection = true;
+            }
+            if !has_selection {
+                // No selection: perform forward-delete of the next grapheme cluster
+                let pos_b = tabular.cursor_position.min(tabular.editor.text.len());
+                if pos_b < tabular.editor.text.len() {
+                    use unicode_segmentation::UnicodeSegmentation;
+                    let tail = &tabular.editor.text[pos_b..];
+                    if let Some((_, first_gr)) = tail.grapheme_indices(true).next() {
+                        let end_b = pos_b + first_gr.len();
+                        let deleted_dbg = &tabular.editor.text[pos_b..end_b];
+                        log::debug!(
+                            "Forward Delete (no selection): removing '{}' at [{}..{}]",
+                            deleted_dbg.escape_debug(),
+                            pos_b,
+                            end_b
+                        );
+                        tabular.editor.apply_single_replace(pos_b..end_b, "");
+                        // Caret stays at pos_b
+                        tabular.cursor_position = pos_b;
+                        tabular.selection_start = pos_b;
+                        tabular.selection_end = pos_b;
+                        tabular.selected_text.clear();
+
+                        // Sync egui caret to collapsed at pos_b (convert byte -> char)
+                        let ci = {
+                            let s = &tabular.editor.text;
+                            let b = pos_b.min(s.len());
+                            s[..b].chars().count()
+                        };
+                        crate::editor_state_adapter::EditorStateAdapter::set_single(
+                            ui.ctx(),
+                            id,
+                            ci,
+                        );
+
+                        // Keep focus and mark modified
+                        ui.memory_mut(|m| m.request_focus(id));
+                        tabular.editor_focus_boost_frames = 6;
+                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                            tab.content = tabular.editor.text.clone();
+                            tab.is_modified = true;
+                        } else {
+                            tabular.editor.mark_text_modified();
+                        }
+
+                        // Consume the Delete key event so TextEdit doesn't also process it
+                        ui.ctx().input_mut(|ri| {
+                            let before = ri.events.len();
+                            let mut kept = Vec::with_capacity(before);
+                            let mut consumed = false;
+                            for ev in ri.events.drain(..) {
+                                if !consumed {
+                                    if let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
+                                        consumed = true;
+                                        continue;
+                                    }
+                                }
+                                kept.push(ev);
+                            }
+                            ri.events = kept;
+                            if consumed {
+                                ui.ctx().request_repaint();
+                            }
+                        });
+                        // Log remaining text preview
+                        {
+                            let s = &tabular.editor.text;
+                            let mut end = s.len();
+                            let mut count = 0;
+                            for (i, _) in s.char_indices() {
+                                if count >= 200 { end = i; break; }
+                                count += 1;
+                            }
+                            let rem = if end < s.len() {
+                                format!("{}… (len={})", s[..end].escape_debug(), s.len())
+                            } else { s.escape_debug().to_string() };
+                            log::debug!("Remaining text after forward delete: {}", rem);
+                        }
+                    }
+                } else if pos_b == tabular.editor.text.len() && pos_b > 0 {
+                    // At end-of-text: treat Delete as Backspace (delete previous grapheme to the left)
+                    use unicode_segmentation::UnicodeSegmentation;
+                    let head = &tabular.editor.text[..pos_b];
+                    // Find previous grapheme boundary by scanning the last grapheme in head
+                    if let Some((start_off, prev_gr)) = head.grapheme_indices(true).last() {
+                        let start_b = start_off;
+                        let end_b = pos_b;
+                        log::debug!(
+                            "Delete at end -> backspace: removing '{}' at [{}..{}]",
+                            prev_gr.escape_debug(),
+                            start_b,
+                            end_b
+                        );
+                        tabular.editor.apply_single_replace(start_b..end_b, "");
+                        // Move caret left to start_b
+                        tabular.cursor_position = start_b;
+                        tabular.selection_start = start_b;
+                        tabular.selection_end = start_b;
+                        tabular.selected_text.clear();
+
+                        // Sync egui caret to start_b
+                        let ci = {
+                            let s = &tabular.editor.text;
+                            let b = start_b.min(s.len());
+                            s[..b].chars().count()
+                        };
+                        crate::editor_state_adapter::EditorStateAdapter::set_single(
+                            ui.ctx(), id, ci,
+                        );
+                        ui.memory_mut(|m| m.request_focus(id));
+                        tabular.editor_focus_boost_frames = 6;
+                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                            tab.content = tabular.editor.text.clone();
+                            tab.is_modified = true;
+                        } else {
+                            tabular.editor.mark_text_modified();
+                        }
+                        // Consume the Delete event
+                        ui.ctx().input_mut(|ri| {
+                            let mut kept = Vec::with_capacity(ri.events.len());
+                            let mut consumed = false;
+                            for ev in ri.events.drain(..) {
+                                if !consumed {
+                                    if let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
+                                        consumed = true;
+                                        continue;
+                                    }
+                                }
+                                kept.push(ev);
+                            }
+                            ri.events = kept;
+                            if consumed { ui.ctx().request_repaint(); }
+                        });
+                        // Log remaining text preview
+                        {
+                            let s = &tabular.editor.text;
+                            let mut end = s.len();
+                            let mut count = 0;
+                            for (i, _) in s.char_indices() {
+                                if count >= 200 { end = i; break; }
+                                count += 1;
+                            }
+                            let rem = if end < s.len() {
+                                format!("{}… (len={})", s[..end].escape_debug(), s.len())
+                            } else { s.escape_debug().to_string() };
+                            log::debug!("Remaining text after delete-at-end/backspace: {}", rem);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Special-case: Backspace at start-of-text with no selection -> perform forward delete of next grapheme
+    // Rationale: On macOS keyboards the key labeled "Delete" maps to Backspace. When the caret is at
+    // the start (index 0), Backspace cannot delete anything to the left. Users expect repeated presses
+    // to keep deleting characters; here we treat BS at pos 0 as a forward delete.
+    {
+        let id = egui::Id::new("sql_editor");
+        let bs_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
+        if bs_pressed {
+            // Determine selection
+            let mut has_selection = false;
+            let mut caret_b = tabular.cursor_position.min(tabular.editor.text.len());
+            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+                has_selection = rng.start != rng.end;
+                // Prefer caret from egui state if available
+                let to_b = |s: &str, ci: usize| -> usize {
+                    match s.char_indices().nth(ci) { Some((b,_)) => b, None => s.len() }
+                };
+                caret_b = to_b(&tabular.editor.text, rng.primary).min(tabular.editor.text.len());
+            } else if tabular.selection_start != tabular.selection_end {
+                has_selection = true;
+            }
+            if !has_selection && caret_b == 0 && !tabular.editor.text.is_empty() {
+                use unicode_segmentation::UnicodeSegmentation;
+                // Delete the next grapheme to the right of caret
+                let tail = &tabular.editor.text[0..];
+                if let Some((_, first_gr)) = tail.grapheme_indices(true).next() {
+                    let end_b = first_gr.len();
+                    log::debug!(
+                        "Backspace at start -> forward delete: removing '{}' at [0..{}]",
+                        tabular.editor.text[0..end_b].escape_debug(),
+                        end_b
+                    );
+                    tabular.editor.apply_single_replace(0..end_b, "");
+                    tabular.cursor_position = 0;
+                    tabular.selection_start = 0;
+                    tabular.selection_end = 0;
+                    tabular.selected_text.clear();
+                    // Sync egui caret at 0
+                    crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, 0);
+                    // Focus and mark modified
+                    ui.memory_mut(|m| m.request_focus(id));
+                    tabular.editor_focus_boost_frames = 4;
+                    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                        tab.content = tabular.editor.text.clone();
+                        tab.is_modified = true;
+                    } else {
+                        tabular.editor.mark_text_modified();
+                    }
+                    // Consume the Backspace event
+                    ui.ctx().input_mut(|ri| {
+                        let mut kept = Vec::with_capacity(ri.events.len());
+                        let mut consumed = false;
+                        for ev in ri.events.drain(..) {
+                            if !consumed {
+                                if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = ev {
+                                    consumed = true;
+                                    continue;
+                                }
+                            }
+                            kept.push(ev);
+                        }
+                        ri.events = kept;
+                        if consumed { ui.ctx().request_repaint(); }
+                    });
+                    // Log remaining text preview
+                    {
+                        let s = &tabular.editor.text;
+                        let mut end = s.len();
+                        let mut count = 0;
+                        for (i, _) in s.char_indices() {
+                            if count >= 200 { end = i; break; }
+                            count += 1;
+                        }
+                        let rem = if end < s.len() {
+                            format!("{}… (len={})", s[..end].escape_debug(), s.len())
+                        } else { s.escape_debug().to_string() };
+                        log::debug!("Remaining text after backspace-at-start/forward-delete: {}", rem);
+                    }
+                }
             }
         }
     }
@@ -1018,6 +1280,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     };
     // Pre-calc total_lines (used later for dynamic height) before mutable borrow by TextEdit
     let total_lines_for_layout = tabular.editor.text.lines().count().max(1);
+    // Snapshot pre-change text and caret/selection for debug diff
+    let pre_text_for_diff = tabular.editor.text.clone();
+    let pre_state_for_diff = crate::editor_state_adapter::EditorStateAdapter::get_range(
+        ui.ctx(), egui::Id::new("sql_editor"),
+    );
+    let (pre_sel_start_b, pre_sel_end_b, pre_cursor_b_for_diff) = if let Some(r) = pre_state_for_diff {
+        let ss = to_byte_index(&tabular.editor.text, r.start);
+        let ee = to_byte_index(&tabular.editor.text, r.end);
+        let pp = to_byte_index(&tabular.editor.text, r.primary);
+        (ss, ee, pp)
+    } else {
+        let p = tabular.cursor_position.min(tabular.editor.text.len());
+        (tabular.selection_start.min(tabular.editor.text.len()), tabular.selection_end.min(tabular.editor.text.len()), p)
+    };
+
     let text_edit = egui::TextEdit::multiline(&mut tabular.editor.text)
         .font(egui::TextStyle::Monospace)
         .desired_rows(rows)
@@ -1367,26 +1644,91 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Update tab content when editor changes (but skip autocomplete update if we're accepting via Tab)
     if response.changed() {
-        // Attempt incremental single-span rope update using previous tab content as baseline
-        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-            let previous_owned = tab.content.clone();
-            let new_full_owned = tabular.editor.text.clone();
-            let applied = tabular
-                .editor
-                .try_single_span_update(&previous_owned, &new_full_owned);
-            if !applied {
-                // fallback record only (rope already rebuilt inside try when applied)
-                tabular.editor.set_text(new_full_owned.clone());
+        // DEBUG: compute simple diff between pre and post text to log inserted/deleted content
+        let post_text_for_diff = tabular.editor.text.clone();
+        let pre_s = pre_text_for_diff.as_str();
+        let post_s = post_text_for_diff.as_str();
+        let pre_b = pre_s.as_bytes();
+        let post_b = post_s.as_bytes();
+        let mut pref = 0usize;
+        let max_pref = pre_b.len().min(post_b.len());
+        while pref < max_pref && pre_b[pref] == post_b[pref] { pref += 1; }
+        let mut pre_suf = pre_b.len();
+        let mut post_suf = post_b.len();
+        while pre_suf > pref && post_suf > pref && pre_b[pre_suf - 1] == post_b[post_suf - 1] {
+            pre_suf -= 1;
+            post_suf -= 1;
+        }
+        let deleted_dbg = pre_s[pref..pre_suf].escape_debug().to_string();
+        let inserted_dbg = post_s[pref..post_suf].escape_debug().to_string();
+        let post_state_for_diff = crate::editor_state_adapter::EditorStateAdapter::get_range(
+            ui.ctx(), response.id,
+        );
+        let (post_sel_start_b, post_sel_end_b, post_cursor_b_for_diff) = if let Some(r) = post_state_for_diff {
+            let ss = to_byte_index(&tabular.editor.text, r.start);
+            let ee = to_byte_index(&tabular.editor.text, r.end);
+            let pp = to_byte_index(&tabular.editor.text, r.primary);
+            (ss, ee, pp)
+        } else {
+            let p = tabular.cursor_position.min(tabular.editor.text.len());
+            (tabular.selection_start.min(tabular.editor.text.len()), tabular.selection_end.min(tabular.editor.text.len()), p)
+        };
+        let (bs_pressed, del_pressed, left_pressed, right_pressed) = ui.input(|i| (
+            i.key_pressed(egui::Key::Backspace),
+            i.key_pressed(egui::Key::Delete),
+            i.key_pressed(egui::Key::ArrowLeft),
+            i.key_pressed(egui::Key::ArrowRight),
+        ));
+        log::debug!(
+            "Δ edit: del='{}' ins='{}' @ [{}..{}] -> [{}..{}]; keys: BS={} DEL={} ←={} →={}; cursor {}->{}; sel {}..{} -> {}..{}",
+            deleted_dbg,
+            inserted_dbg,
+            pref,
+            pre_suf,
+            pref,
+            post_suf,
+            bs_pressed,
+            del_pressed,
+            left_pressed,
+            right_pressed,
+            pre_cursor_b_for_diff,
+            post_cursor_b_for_diff,
+            pre_sel_start_b,
+            pre_sel_end_b,
+            post_sel_start_b,
+            post_sel_end_b
+        );
+        // If this was a deletion (and not an insertion), log concise remaining text
+        if !deleted_dbg.is_empty() && inserted_dbg.is_empty() {
+            let s = &tabular.editor.text;
+            let mut end = s.len();
+            let mut count = 0;
+            for (i, _) in s.char_indices() {
+                if count >= 200 { end = i; break; }
+                count += 1;
             }
-            tab.content = tabular.editor.text.clone();
+            let rem = if end < s.len() {
+                format!("{}… (len={})", s[..end].escape_debug(), s.len())
+            } else { s.escape_debug().to_string() };
+            log::debug!("Deleted chars: '{}' | Remaining text: {}", deleted_dbg, rem);
+        }
+        // Update rope text directly from current editor text to avoid any rebase/merge anomalies
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            let new_full_owned = tabular.editor.text.clone();
+            tabular.editor.set_text(new_full_owned.clone());
+            tab.content = new_full_owned;
             tab.is_modified = true;
+            log::debug!("Synced rope via set_text; incremental update disabled to prevent trailing-char resurfacing");
         } else {
             // No tab? still mark rope dirty via full path
             tabular.editor.mark_text_modified();
         }
 
-        // Apply multi-cursor editing if there are extra cursors
-        if !tabular.multi_selection.to_lapce_selection().is_empty() {
+        // Apply multi-cursor editing only when there are truly multiple cursors
+        // (avoid interfering with normal single-caret Delete/Backspace behavior)
+        {
+            let sel = tabular.multi_selection.to_lapce_selection();
+            if sel.regions().len() > 1 {
             // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
             if let Some(rng) =
                 crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
@@ -1411,6 +1753,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         tabular.cursor_position = new_primary_b;
                     }
             }
+            } else {
+                // Skip multi-cursor compensation when only a single caret is active
+                // to avoid misinterpreting normal Delete/Backspace edits.
+            }
         }
         
         // Rebuild autocomplete suggestions on text changes unless we're in the middle of accepting via Tab/Enter
@@ -1425,6 +1771,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tab.content = tabular.editor.text.clone();
             tab.is_modified = true;
         }
+
+        // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
+        ui.ctx().request_repaint();
     }
 
     // (Old forced replacement path removed; injection handles caret advance)
