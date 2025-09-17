@@ -909,11 +909,8 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
             .show(ctx, |ui| {
                 ui.label("Belum ada koneksi tersimpan. Tambahkan koneksi terlebih dahulu.");
                 ui.horizontal(|ui| {
-                    if ui.button("Tambah Koneksi").clicked() {
+                    if ui.button("Add new connection").clicked() {
                         tabular.show_add_connection = true;
-                        tabular.show_connection_selector = false;
-                    }
-                    if ui.button("Tutup").clicked() {
                         tabular.show_connection_selector = false;
                     }
                 });
