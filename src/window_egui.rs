@@ -158,6 +158,8 @@ pub struct Tabular {
     // Autocomplete state
     pub show_autocomplete: bool,
     pub autocomplete_suggestions: Vec<String>,
+    pub autocomplete_kinds: Vec<models::enums::AutocompleteKind>,
+    pub autocomplete_notes: Vec<Option<String>>, // optional description per suggestion
     pub selected_autocomplete_index: usize,
     pub autocomplete_prefix: String,
     pub last_autocomplete_trigger_len: usize,
@@ -441,6 +443,8 @@ impl Tabular {
             // Autocomplete
             show_autocomplete: false,
             autocomplete_suggestions: Vec::new(),
+            autocomplete_kinds: Vec::new(),
+            autocomplete_notes: Vec::new(),
             selected_autocomplete_index: 0,
             autocomplete_prefix: String::new(),
             last_autocomplete_trigger_len: 0,

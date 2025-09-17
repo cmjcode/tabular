@@ -76,6 +76,13 @@ pub enum DatabaseType {
     MongoDB,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutocompleteKind {
+    Table,
+    Column,
+    Syntax,
+}
+
 // Enum untuk berbagai jenis database pool - sqlx pools are already thread-safe
 #[derive(Clone)]
 pub enum DatabasePool {

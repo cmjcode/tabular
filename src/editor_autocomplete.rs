@@ -201,7 +201,14 @@ pub fn build_suggestions(
                     }
                 }
             } else {
-                debug!("AutoComplete Table : No active connection_id");
+                // Fallback: aggregate across all cached connections/databases
+                debug!("AutoComplete Table : No active connection_id, using aggregated cache across all connections");
+                let all_tables = get_all_cached_tables(app);
+                for table in all_tables {
+                    if table.to_lowercase().starts_with(&prefix_lower) {
+                        suggestions.push(table);
+                    }
+                }
             }
 
             // debug suggestions
@@ -237,6 +244,14 @@ pub fn build_suggestions(
                         if col.to_lowercase().starts_with(&prefix_lower) {
                             suggestions.push(col);
                         }
+                    }
+                }
+            } else {
+                // Fallback to all cached tables when there is no active connection
+                let all_tables = get_all_cached_tables(app);
+                for table in all_tables {
+                    if table.to_lowercase().starts_with(&prefix_lower) {
+                        suggestions.push(table);
                     }
                 }
             }
@@ -309,6 +324,23 @@ fn get_cached_tables(app: &Tabular, connection_id: i64, database: &str) -> Optio
         combined.dedup();
         Some(combined)
     }
+}
+
+/// Aggregate all cached tables across every known connection and database.
+fn get_all_cached_tables(app: &Tabular) -> Vec<String> {
+    let mut combined: Vec<String> = Vec::new();
+    for (cid, db_list) in &app.database_cache {
+        for dbn in db_list {
+            for tt in ["table", "view"] {
+                if let Some(mut list) = get_tables_from_cache(app, *cid, dbn, tt) {
+                    combined.append(&mut list);
+                }
+            }
+        }
+    }
+    combined.sort_unstable();
+    combined.dedup();
+    combined
 }
 
 fn get_cached_columns(mut _app: &Tabular, _connection_id: i64, _database: &str, _tables: Vec<String>) -> Option<Vec<String>> {
@@ -504,6 +536,8 @@ impl ShallowForCache for Tabular {
             database_cache_time: std::collections::HashMap::new(),
             show_autocomplete: false,
             autocomplete_suggestions: Vec::new(),
+            autocomplete_kinds: Vec::new(),
+            autocomplete_notes: Vec::new(),
             selected_autocomplete_index: 0,
             autocomplete_prefix: String::new(),
             last_autocomplete_trigger_len: 0,
@@ -594,6 +628,8 @@ pub fn update_autocomplete(app: &mut Tabular) {
         // hide jika kosong
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
+        app.autocomplete_kinds.clear();
+        app.autocomplete_notes.clear();
         return;
     }
 
@@ -604,7 +640,66 @@ pub fn update_autocomplete(app: &mut Tabular) {
             app.show_autocomplete = false;
         } else {
             app.show_autocomplete = true;
-            app.autocomplete_suggestions = suggestions;
+            // Group suggestions by kind: Tables, Columns, Syntax
+            let context = detect_sql_context(&app.editor.text, cursor);
+            // collect classification sets
+            let (connection_id, database) = app
+                .query_tabs
+                .get(app.active_tab_index)
+                .and_then(|tab| tab.connection_id.map(|cid| (cid, tab.database_name.clone().unwrap_or_default())))
+                .unwrap_or((0, String::new()));
+            let tables_set: std::collections::HashSet<String> = if connection_id != 0 {
+                get_cached_tables(app, connection_id, &database)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect()
+            } else {
+                get_all_cached_tables(app).into_iter().collect()
+            };
+            // Columns: gather from tables in query context
+            let cols_vec: Vec<String> = {
+                let tables_in_query = extract_tables(&app.editor.text);
+                if connection_id != 0 {
+                    if let Some(cols) = get_cached_columns(app, connection_id, &database, tables_in_query) {
+                        cols
+                    } else { Vec::new() }
+                } else { Vec::new() }
+            };
+            let cols_set: std::collections::HashSet<String> = cols_vec.into_iter().collect();
+            let syntax_set: std::collections::HashSet<String> = SQL_KEYWORDS.iter().map(|s| s.to_string()).chain(std::iter::once("*".to_string())).collect();
+
+            let mut tables: Vec<String> = Vec::new();
+            let mut columns: Vec<String> = Vec::new();
+            let mut syntax: Vec<String> = Vec::new();
+            for s in suggestions.into_iter() {
+                if tables_set.contains(&s) {
+                    tables.push(s);
+                } else if cols_set.contains(&s) {
+                    columns.push(s);
+                } else if syntax_set.contains(&s) {
+                    syntax.push(s);
+                } else {
+                    // Fallback by context
+                    match context {
+                        SqlContext::AfterFrom => tables.push(s),
+                        SqlContext::AfterSelect | SqlContext::AfterWhere => columns.push(s),
+                        SqlContext::General => syntax.push(s),
+                    }
+                }
+            }
+            tables.sort_unstable(); tables.dedup();
+            columns.sort_unstable(); columns.dedup();
+            syntax.sort_unstable(); syntax.dedup();
+            let mut ordered: Vec<String> = Vec::new();
+            let mut kinds: Vec<crate::models::enums::AutocompleteKind> = Vec::new();
+            let mut notes: Vec<Option<String>> = Vec::new();
+            for t in tables { ordered.push(t); kinds.push(crate::models::enums::AutocompleteKind::Table); notes.push(if database.is_empty() { Some("table".into()) } else { Some(format!("db: {}", database)) }); }
+            for c in columns { ordered.push(c); kinds.push(crate::models::enums::AutocompleteKind::Column); notes.push(Some("column".into())); }
+            for kw in syntax { let is_wc = kw == "*"; ordered.push(kw); kinds.push(crate::models::enums::AutocompleteKind::Syntax); notes.push(Some(if is_wc { "wildcard".into() } else { "keyword".into() })); }
+
+            app.autocomplete_suggestions = ordered;
+            app.autocomplete_kinds = kinds;
+            app.autocomplete_notes = notes;
             app.selected_autocomplete_index = 0;
         }
         app.last_autocomplete_trigger_len = prefix.len();
@@ -657,6 +752,8 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         app.editor_focus_boost_frames = app.editor_focus_boost_frames.max(6);
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
+        app.autocomplete_kinds.clear();
+        app.autocomplete_notes.clear();
     }
 }
 
@@ -749,36 +846,57 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                     egui::ScrollArea::vertical()
                         .max_height(available_list_h)
                         .show(ui, |ui| {
-                            for (i, s) in app.autocomplete_suggestions.iter().enumerate() {
-                                let selected = i == app.selected_autocomplete_index;
-                                let rich = if selected {
-                                    egui::RichText::new(s)
-                                        .background_color(ui.style().visuals.selection.bg_fill)
-                                        .color(ui.style().visuals.selection.stroke.color)
-                                } else {
-                                    egui::RichText::new(s)
-                                };
-                                // Keep rows single-line (default is no-wrap for buttons/selectables in this egui version)
-                                let resp = ui.add(egui::SelectableLabel::new(selected, rich));
-                                if selected {
-                                    selected_rect = Some(resp.rect);
-                                }
-                                if resp.clicked() {
-                                    app.selected_autocomplete_index = i;
-                                    accept_current_suggestion(app);
-                                    // Immediately sync egui TextEdit caret to new position via set_ccursor_range equivalent
-                                    let id = egui::Id::new("sql_editor");
-                                    if let Some(mut state) = eframe::egui::text_edit::TextEditState::load(ui.ctx(), id) {
-                                        use egui::text::{CCursor, CCursorRange};
-                                        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(app.cursor_position))));
-                                        state.store(ui.ctx(), id);
+                            // Clone data to avoid borrow conflicts when mutating app on click
+                            let suggestions = app.autocomplete_suggestions.clone();
+                            let kinds = app.autocomplete_kinds.clone();
+                            let notes = app.autocomplete_notes.clone();
+                            let mut last_kind: Option<crate::models::enums::AutocompleteKind> = None;
+                            for (i, s) in suggestions.iter().enumerate() {
+                                if let Some(kind) = kinds.get(i).copied() {
+                                    if last_kind != Some(kind) {
+                                        last_kind = Some(kind);
+                                        let label = match kind {
+                                            crate::models::enums::AutocompleteKind::Table => "Tables",
+                                            crate::models::enums::AutocompleteKind::Column => "Columns",
+                                            crate::models::enums::AutocompleteKind::Syntax => "Syntax",
+                                        };
+                                        ui.add(egui::Separator::default().spacing(4.0));
+                                        ui.label(egui::RichText::new(label).strong());
                                     }
-                                    // Immediately request focus back to the main editor widget
-                                    ui.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
-                                    // Ensure focus sticks for a few frames
-                                    app.editor_focus_boost_frames = app.editor_focus_boost_frames.max(6);
-                                    break;
                                 }
+                                let selected = i == app.selected_autocomplete_index;
+                                let mut rich = egui::RichText::new(s.clone());
+                                if selected {
+                                    rich = rich
+                                        .background_color(ui.style().visuals.selection.bg_fill)
+                                        .color(ui.style().visuals.selection.stroke.color);
+                                }
+                                ui.horizontal(|ui| {
+                                    // Keep rows single-line
+                                    let resp = ui.add(egui::SelectableLabel::new(selected, rich));
+                                    if let Some(note) = notes.get(i).and_then(|n| n.clone()) {
+                                        ui.add_space(6.0);
+                                        ui.label(egui::RichText::new(note).weak().small());
+                                    }
+                                    if resp.clicked() {
+                                        app.selected_autocomplete_index = i;
+                                        accept_current_suggestion(app);
+                                        // Immediately sync egui TextEdit caret to new position via set_ccursor_range equivalent
+                                        let id = egui::Id::new("sql_editor");
+                                        if let Some(mut state) = eframe::egui::text_edit::TextEditState::load(ui.ctx(), id) {
+                                            use egui::text::{CCursor, CCursorRange};
+                                            state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(app.cursor_position))));
+                                            state.store(ui.ctx(), id);
+                                        }
+                                        // Immediately request focus back to the main editor widget
+                                        ui.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                                        // Ensure focus sticks for a few frames
+                                        app.editor_focus_boost_frames = app.editor_focus_boost_frames.max(6);
+                                    }
+                                    if selected {
+                                        selected_rect = Some(resp.rect);
+                                    }
+                                });
                             }
                             // Keep selected row visible while navigating
                             if let Some(rect) = selected_rect {
@@ -799,6 +917,8 @@ pub fn trigger_manual(app: &mut Tabular) {
         app.autocomplete_suggestions.sort();
         app.selected_autocomplete_index = 0;
         app.show_autocomplete = true;
+        app.autocomplete_kinds = vec![crate::models::enums::AutocompleteKind::Syntax; app.autocomplete_suggestions.len()];
+        app.autocomplete_notes = vec![Some("keyword".to_string()); app.autocomplete_suggestions.len()];
     } else {
         // If prefix produces no suggestions, still show keywords
         if app.autocomplete_suggestions.is_empty() {
@@ -812,6 +932,8 @@ pub fn trigger_manual(app: &mut Tabular) {
                 .collect();
             if !app.autocomplete_suggestions.is_empty() {
                 app.show_autocomplete = true;
+                app.autocomplete_kinds = vec![crate::models::enums::AutocompleteKind::Syntax; app.autocomplete_suggestions.len()];
+                app.autocomplete_notes = vec![Some("keyword".to_string()); app.autocomplete_suggestions.len()];
             }
         } else {
             app.show_autocomplete = true;
