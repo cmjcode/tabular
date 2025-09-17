@@ -162,6 +162,11 @@ pub struct Tabular {
     pub autocomplete_prefix: String,
     pub last_autocomplete_trigger_len: usize,
     pub pending_cursor_set: Option<usize>,
+    // Keep editor focused for a few frames after actions like autocomplete accept
+    pub editor_focus_boost_frames: u8,
+    // Enforce caret after autocomplete for a few frames
+    pub autocomplete_expected_cursor: Option<usize>,
+    pub autocomplete_protection_frames: u8,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)
     pub extra_cursors: Vec<usize>,
     pub last_editor_text: String, // For detecting text changes in multi-cursor mode (deprecated; will derive from editor.text)
@@ -440,6 +445,9 @@ impl Tabular {
             autocomplete_prefix: String::new(),
             last_autocomplete_trigger_len: 0,
             pending_cursor_set: None,
+            editor_focus_boost_frames: 0,
+            autocomplete_expected_cursor: None,
+            autocomplete_protection_frames: 0,
             // Index dialog defaults
             show_index_dialog: false,
             index_dialog: None,

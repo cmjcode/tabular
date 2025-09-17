@@ -478,6 +478,9 @@ impl ShallowForCache for Tabular {
             autocomplete_prefix: String::new(),
             last_autocomplete_trigger_len: 0,
             pending_cursor_set: None,
+            editor_focus_boost_frames: 0,
+            autocomplete_expected_cursor: None,
+            autocomplete_protection_frames: 0,
             extra_cursors: Vec::new(),
             last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
@@ -609,14 +612,19 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         } else {
             start_idx
         };
-        // Apply via rope edit API. We replace the prefix (if any) with the suggestion
-        app.editor.apply_single_replace(effective_start..cursor, sugg);
-        // Update cursor position after insertion
-        app.cursor_position = effective_start + sugg.len();
+    // Apply via rope edit API. We replace the prefix (if any) with the suggestion
+    app.editor.apply_single_replace(effective_start..cursor, sugg);
+    // Update cursor position after insertion: caret at end of inserted suggestion
+    app.cursor_position = effective_start + sugg.len();
         // Update primary selection to caret-only at new cursor
         app.multi_selection.set_primary_range(app.cursor_position, app.cursor_position);
-        // Note: We don't have direct ui::Context here; mark a pending cursor set so the editor regains focus next frame
-        app.pending_cursor_set = Some(app.cursor_position);
+    // Note: We don't have direct ui::Context here; mark a pending cursor set so the editor regains focus next frame
+    app.pending_cursor_set = Some(app.cursor_position);
+    // Store expected caret and enforce for a few frames in render loop
+    app.autocomplete_expected_cursor = Some(app.cursor_position);
+    app.autocomplete_protection_frames = app.autocomplete_protection_frames.max(8);
+        // Keep editor focused for several frames to avoid losing focus after popup closes
+        app.editor_focus_boost_frames = app.editor_focus_boost_frames.max(6);
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
     }
@@ -701,15 +709,17 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                 if resp.clicked() {
                                     app.selected_autocomplete_index = i;
                                     accept_current_suggestion(app);
-                                    // Immediately sync egui TextEdit caret to new position
+                                    // Immediately sync egui TextEdit caret to new position via set_ccursor_range equivalent
                                     let id = egui::Id::new("sql_editor");
-                                    crate::editor_state_adapter::EditorStateAdapter::set_single(
-                                        ui.ctx(),
-                                        id,
-                                        app.cursor_position,
-                                    );
+                                    if let Some(mut state) = eframe::egui::text_edit::TextEditState::load(ui.ctx(), id) {
+                                        use egui::text::{CCursor, CCursorRange};
+                                        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(app.cursor_position))));
+                                        state.store(ui.ctx(), id);
+                                    }
                                     // Immediately request focus back to the main editor widget
                                     ui.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                                    // Ensure focus sticks for a few frames
+                                    app.editor_focus_boost_frames = app.editor_focus_boost_frames.max(6);
                                     break;
                                 }
                             }
