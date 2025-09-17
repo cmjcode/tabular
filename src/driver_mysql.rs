@@ -564,7 +564,7 @@ pub(crate) fn fetch_tables_from_mysql_connection(
                 };
 
                 let rows_res = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_secs(10),
                     sqlx::query(query)
                         .bind(database_name)
                         .fetch_all(mysql_pool.as_ref()),

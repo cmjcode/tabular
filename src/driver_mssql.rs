@@ -152,7 +152,7 @@ pub(crate) fn fetch_tables_from_mssql_connection(
         if !db_name.is_empty() { config.database(db_name.clone()); }
 
         let tcp = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             tokio::net::TcpStream::connect((host.as_str(), port)),
         )
         .await
@@ -163,7 +163,7 @@ pub(crate) fn fetch_tables_from_mssql_connection(
         };
         let _ = tcp.set_nodelay(true);
         let mut client = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             tiberius::Client::connect(config, tcp.compat_write()),
         )
         .await
@@ -186,7 +186,7 @@ pub(crate) fn fetch_tables_from_mssql_connection(
         };
 
         let mut stream = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             client.simple_query(query),
         )
         .await
@@ -249,7 +249,7 @@ pub(crate) fn fetch_objects_from_mssql_connection(
         }
 
         let tcp = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             tokio::net::TcpStream::connect((host.as_str(), port)),
         )
         .await
@@ -260,7 +260,7 @@ pub(crate) fn fetch_objects_from_mssql_connection(
         };
         let _ = tcp.set_nodelay(true);
         let mut client = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             tiberius::Client::connect(config, tcp.compat_write()),
         )
         .await
@@ -305,7 +305,7 @@ pub(crate) fn fetch_objects_from_mssql_connection(
         };
 
         let mut stream = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             client.simple_query(query),
         )
         .await
@@ -364,7 +364,7 @@ pub(crate) async fn execute_query(
     }
 
     let tcp = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(10),
         tokio::net::TcpStream::connect((cfg.host.as_str(), cfg.port)),
     )
     .await
@@ -372,7 +372,7 @@ pub(crate) async fn execute_query(
     .map_err(|e| e.to_string())?;
     tcp.set_nodelay(true).map_err(|e| e.to_string())?;
     let tls = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(10),
         tiberius::Client::connect(config, tcp.compat_write()),
     )
     .await

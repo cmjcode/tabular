@@ -13,7 +13,7 @@ pub(crate) async fn fetch_redis_data(
     // Try to get a Redis connection
     let mut conn = redis_manager.clone();
     match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(10),
         redis::cmd("PING").query_async::<String>(&mut conn),
     )
     .await
@@ -21,7 +21,7 @@ pub(crate) async fn fetch_redis_data(
         Ok(Ok(_)) => {
             // Get CONFIG GET databases to determine max database count
             let max_databases = match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(10),
                 redis::cmd("CONFIG")
                     .arg("GET")
                     .arg("databases")
@@ -53,7 +53,7 @@ pub(crate) async fn fetch_redis_data(
 
             // Get keyspace info to identify which databases actually have keys
             if let Ok(Ok(keyspace_result)) = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(10),
                 redis::cmd("INFO")
                     .arg("keyspace")
                     .query_async::<String>(&mut conn),
@@ -161,7 +161,7 @@ pub(crate) fn fetch_tables_from_redis_connection(
                         if database_name == "info" {
                             // Get Redis INFO sections (5s timeout)
                             match tokio::time::timeout(
-                                std::time::Duration::from_secs(5),
+                                std::time::Duration::from_secs(10),
                                 redis::cmd("INFO").query_async::<String>(&mut conn),
                             )
                             .await
@@ -192,14 +192,14 @@ pub(crate) fn fetch_tables_from_redis_connection(
                                 database_name.trim_start_matches("db").parse::<i32>()
                             {
                                 if let Ok(Ok(_)) = tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(10),
                                     redis::cmd("SELECT").arg(db_num).query_async::<String>(&mut conn),
                                 )
                                 .await
                                 {
                                     // Get a sample of keys (limit to first 100)
                                     match tokio::time::timeout(
-                                        std::time::Duration::from_secs(5),
+                                        std::time::Duration::from_secs(10),
                                         redis::cmd("SCAN")
                                             .arg(0)
                                             .arg("COUNT")

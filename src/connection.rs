@@ -374,7 +374,7 @@ pub(crate) fn execute_table_query_sync(
                                 }
 
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(10),
                                     sqlx::query(trimmed).fetch_all(&mut conn),
                                 )
                                 .await
@@ -406,7 +406,7 @@ pub(crate) fn execute_table_query_sync(
                                                         && let Some(table_name) = words.get(from_idx + 1) {
                                                         let describe_query = format!("DESCRIBE {}", table_name);
                                                         match tokio::time::timeout(
-                                                            std::time::Duration::from_secs(5),
+                                                            std::time::Duration::from_secs(10),
                                                             sqlx::query(&describe_query).fetch_all(&mut conn),
                                                         )
                                                         .await
@@ -423,7 +423,7 @@ pub(crate) fn execute_table_query_sync(
                                                                 // DESCRIBE failed, try LIMIT 0 as fallback
                                                                 let info_query = format!("{} LIMIT 0", trimmed);
                                                                 match tokio::time::timeout(
-                                                                    std::time::Duration::from_secs(5),
+                                                                    std::time::Duration::from_secs(10),
                                                                     sqlx::query(&info_query).fetch_all(&mut conn),
                                                                 )
                                                                 .await
@@ -500,7 +500,7 @@ pub(crate) fn execute_table_query_sync(
                             // Skip empty or comment-only statements
                             if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") { continue; }
                             match tokio::time::timeout(
-                                std::time::Duration::from_secs(5),
+                                std::time::Duration::from_secs(10),
                                 sqlx::query(trimmed).fetch_all(pg_pool.as_ref()),
                             )
                             .await
@@ -535,7 +535,7 @@ pub(crate) fn execute_table_query_sync(
                                                         clean_table
                                                     );
                                                     match tokio::time::timeout(
-                                                        std::time::Duration::from_secs(5),
+                                                        std::time::Duration::from_secs(10),
                                                         sqlx::query(&info_query).fetch_all(pg_pool.as_ref()),
                                                     )
                                                     .await
@@ -552,7 +552,7 @@ pub(crate) fn execute_table_query_sync(
                                                             // information_schema failed, try LIMIT 0 as fallback
                                                             let limit_query = format!("{} LIMIT 0", statement);
                                                             match tokio::time::timeout(
-                                                                std::time::Duration::from_secs(5),
+                                                                std::time::Duration::from_secs(10),
                                                                 sqlx::query(&limit_query).fetch_all(pg_pool.as_ref()),
                                                             )
                                                             .await
@@ -603,7 +603,7 @@ pub(crate) fn execute_table_query_sync(
                             // Skip empty or comment-only statements
                             if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") { continue; }
                             match tokio::time::timeout(
-                                std::time::Duration::from_secs(5),
+                                std::time::Duration::from_secs(10),
                                 sqlx::query(trimmed).fetch_all(sqlite_pool.as_ref()),
                             )
                             .await
@@ -629,7 +629,7 @@ pub(crate) fn execute_table_query_sync(
                                                     let clean_table = table_name.trim_matches('"').trim_matches('`').trim_matches('[').trim_matches(']');
                                                     let pragma_query = format!("PRAGMA table_info({})", clean_table);
                                                     match tokio::time::timeout(
-                                                        std::time::Duration::from_secs(5),
+                                                        std::time::Duration::from_secs(10),
                                                         sqlx::query(&pragma_query).fetch_all(sqlite_pool.as_ref()),
                                                     )
                                                     .await
@@ -648,7 +648,7 @@ pub(crate) fn execute_table_query_sync(
                                                             // PRAGMA failed, try LIMIT 0 as fallback
                                                             let limit_query = format!("{} LIMIT 0", statement);
                                                             match tokio::time::timeout(
-                                                                std::time::Duration::from_secs(5),
+                                                                std::time::Duration::from_secs(10),
                                                                 sqlx::query(&limit_query).fetch_all(sqlite_pool.as_ref()),
                                                             )
                                                             .await
@@ -698,7 +698,7 @@ pub(crate) fn execute_table_query_sync(
                                     return Some((vec!["Error".to_string()], vec![vec!["GET requires exactly one key".to_string()]]));
                                 }
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(10),
                                     connection.get::<&str, Option<String>>(parts[1]),
                                 )
                                 .await
@@ -713,7 +713,7 @@ pub(crate) fn execute_table_query_sync(
                                     return Some((vec!["Error".to_string()], vec![vec!["KEYS requires exactly one pattern".to_string()]]));
                                 }
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(10),
                                     connection.keys::<&str, Vec<String>>(parts[1]),
                                 )
                                 .await
@@ -759,7 +759,7 @@ pub(crate) fn execute_table_query_sync(
                                 cmd.arg("COUNT").arg(count);
 
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(10),
                                     cmd.query_async::<(String, Vec<String>)>(&mut connection),
                                 )
                                 .await
@@ -787,7 +787,7 @@ pub(crate) fn execute_table_query_sync(
                             "INFO" => {
                                 let section = if parts.len() > 1 { parts[1] } else { "default" };
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(10),
                                     redis::cmd("INFO").arg(section).query_async::<String>(&mut connection),
                                 )
                                 .await
@@ -806,7 +806,7 @@ pub(crate) fn execute_table_query_sync(
                             "HGETALL" => {
                                 if parts.len() != 2 { return Some((vec!["Error".to_string()], vec![vec!["HGETALL requires exactly one key".to_string()]])); }
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(10),
                                     redis::cmd("HGETALL").arg(parts[1]).query_async::<Vec<String>>(&mut connection),
                                 )
                                 .await
@@ -889,11 +889,147 @@ fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
     }
 }
 
-// Render a connection selector or related UI elements if needed by the caller.
-// Currently a no-op placeholder to maintain compatibility with callers in window_egui.
-// In the future, this can host quick-pick or status UI for connections.
-pub(crate) fn render_connection_selector(_tabular: &mut Tabular, _ctx: &egui::Context) {
-    // Intentionally left blank.
+// Render a connection selector popup when the user tries to execute a query without a connection.
+// Shows a simple modal listing available connections; selecting one assigns it to the active tab
+// and (optionally) auto-executes the pending query captured earlier.
+pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Context) {
+    if !tabular.show_connection_selector {
+        return;
+    }
+
+    // If no connections configured, show guidance with quick action
+    if tabular.connections.is_empty() {
+        egui::Window::new("No Connections Available")
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(true)
+            .show(ctx, |ui| {
+                ui.label("Belum ada koneksi tersimpan. Tambahkan koneksi terlebih dahulu.");
+                ui.horizontal(|ui| {
+                    if ui.button("Tambah Koneksi").clicked() {
+                        tabular.show_add_connection = true;
+                        tabular.show_connection_selector = false;
+                    }
+                    if ui.button("Tutup").clicked() {
+                        tabular.show_connection_selector = false;
+                    }
+                });
+            });
+        return;
+    }
+
+    // Keep a local filter text in temporary egui memory (per-session)
+    let filter_id = egui::Id::new("conn_selector_filter");
+    let mut filter_text = ctx.data(|d| d.get_temp::<String>(filter_id)).unwrap_or_default();
+
+    egui::Window::new("Pilih Koneksi")
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .collapsible(false)
+        .resizable(true)
+        .default_width(560.0)
+        .show(ctx, |ui| {
+            ui.label("Tab query ini belum terhubung. Pilih koneksi untuk melanjutkan:");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Cari:");
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut filter_text)
+                        .hint_text("ketik nama host / database / nama koneksi"),
+                );
+                if r.changed() {
+                    ui.ctx().data_mut(|d| d.insert_temp(filter_id, filter_text.clone()));
+                }
+            });
+            ui.separator();
+
+            let mut items: Vec<_> = tabular.connections.clone();
+            if !filter_text.trim().is_empty() {
+                let f = filter_text.to_lowercase();
+                items.retain(|c| {
+                    c.name.to_lowercase().contains(&f)
+                        || c.host.to_lowercase().contains(&f)
+                        || c.database.to_lowercase().contains(&f)
+                        || format!("{:?}", c.connection_type).to_lowercase().contains(&f)
+                });
+            }
+
+            egui::ScrollArea::vertical()
+                .max_height(360.0)
+                .show(ui, |ui| {
+                    for conn in items.iter() {
+                        // Build a friendly one-line summary
+                        let title = format!(
+                            "{} — {:?} @ {}:{}{}",
+                            conn.name,
+                            conn.connection_type,
+                            conn.host,
+                            conn.port,
+                            if conn.database.is_empty() {
+                                "".to_string()
+                            } else {
+                                format!(" / {}", conn.database)
+                            }
+                        );
+
+                        // Row with label and action button (double-click also connects)
+                        let mut should_connect = false;
+                        ui.horizontal(|ui| {
+                            let lresp = ui.selectable_label(false, title);
+                            if lresp.double_clicked() {
+                                should_connect = true;
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Connect").clicked() {
+                                    should_connect = true;
+                                }
+                            });
+                        });
+                        ui.separator();
+
+                        if should_connect {
+                            if let Some(id) = conn.id {
+                                // Assign connection to active tab and optionally its default database
+                                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                                    tab.connection_id = Some(id);
+                                    if (tab.database_name.is_none()
+                                        || tab.database_name.as_deref().unwrap_or("").is_empty())
+                                        && !conn.database.is_empty()
+                                    {
+                                        tab.database_name = Some(conn.database.clone());
+                                    }
+                                }
+                                // Also mirror to global current_connection_id for components that rely on it
+                                tabular.current_connection_id = Some(id);
+                                // Warm up pool in background (non-blocking)
+                                ensure_background_pool_creation(tabular, id);
+
+                                // Close the popup first to avoid re-entrancy issues
+                                tabular.show_connection_selector = false;
+
+                                // Auto execute pending query if requested
+                                if tabular.auto_execute_after_connection {
+                                    // Prefer executing through the editor path so pagination/history are handled consistently
+                                    // Note: we do NOT need to inject pending_query; editor will re-derive from selection/cursor.
+                                    // pending_query acts as a hint; we clear it afterwards.
+                                    crate::editor::execute_query(tabular);
+                                    tabular.auto_execute_after_connection = false;
+                                    tabular.pending_query.clear();
+                                }
+                            }
+                            // Exit early after selection to avoid processing remaining items this frame
+                            break;
+                        }
+                    }
+                });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Batal").clicked() {
+                    tabular.show_connection_selector = false;
+                }
+            });
+        });
 }
 
 // Helper function untuk mendapatkan atau membuat connection pool dengan concurrency
@@ -1121,9 +1257,9 @@ async fn create_connection_pool_for_config(
             let pool_result = MySqlPoolOptions::new()
                 .max_connections(10) // Reduced from 20 for better resource management
                 .min_connections(2) // Maintain some ready connections
-                .acquire_timeout(std::time::Duration::from_secs(5)) // Fail fast
-                .idle_timeout(std::time::Duration::from_secs(600)) // 10 minute idle timeout (longer)
-                .max_lifetime(std::time::Duration::from_secs(3600)) // 60 minute max lifetime (longer)
+                .acquire_timeout(std::time::Duration::from_secs(10)) // Fail fast
+                .idle_timeout(std::time::Duration::from_secs(300)) // 10 minute idle timeout (longer)
+                .max_lifetime(std::time::Duration::from_secs(600)) // 60 minute max lifetime (longer)
                 .test_before_acquire(true) // Enable connection testing for reliability
                 .after_connect(|conn, _| {
                     Box::pin(async move {
@@ -1182,7 +1318,7 @@ async fn create_connection_pool_for_config(
             let pool_result = PgPoolOptions::new()
                 .max_connections(15) // Increase max connections
                 .min_connections(1) // Start with fewer minimum connections
-                .acquire_timeout(std::time::Duration::from_secs(5)) // Fail fast
+                .acquire_timeout(std::time::Duration::from_secs(10)) // Fail fast
                 .idle_timeout(std::time::Duration::from_secs(300)) // 5 minute idle timeout
                 .max_lifetime(std::time::Duration::from_secs(1800)) // 30 minute max lifetime
                 .test_before_acquire(false) // Disable pre-test for better performance
@@ -1207,7 +1343,7 @@ async fn create_connection_pool_for_config(
             let pool_result = SqlitePoolOptions::new()
                 .max_connections(5) // SQLite doesn't need many connections
                 .min_connections(1) // Start with one connection
-                .acquire_timeout(std::time::Duration::from_secs(5)) // Fail fast
+                .acquire_timeout(std::time::Duration::from_secs(10)) // Fail fast
                 .idle_timeout(std::time::Duration::from_secs(300)) // 5 minute idle timeout
                 .max_lifetime(std::time::Duration::from_secs(1800)) // 30 minute max lifetime
                 .test_before_acquire(false) // Disable pre-test for better performance
@@ -1274,7 +1410,7 @@ async fn create_connection_pool_for_config(
                 )
             };
             debug!("Creating MongoDB client for URI: {}", uri);
-            match tokio::time::timeout(std::time::Duration::from_secs(5), MongoClient::with_uri_str(uri)).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), MongoClient::with_uri_str(uri)).await {
                 Ok(Ok(client)) => {
                     let pool = models::enums::DatabasePool::MongoDB(Arc::new(client));
                     Some(pool)
@@ -1571,7 +1707,7 @@ pub(crate) async fn create_database_pool(
             let pool_result = MySqlPoolOptions::new()
                 .max_connections(3) // Reduced from 5 to 3 - fewer but more stable connections
                 .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(5)) // Faster timeout to fail fast
+                .acquire_timeout(std::time::Duration::from_secs(10)) // Faster timeout to fail fast
                 .idle_timeout(std::time::Duration::from_secs(600)) // 10 minutes idle timeout
                 .max_lifetime(std::time::Duration::from_secs(3600)) // 1 hour max lifetime
                 .test_before_acquire(true) // Test connections before use
@@ -1625,7 +1761,7 @@ pub(crate) async fn create_database_pool(
             match PgPoolOptions::new()
                 .max_connections(3)
                 .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(5))
+                .acquire_timeout(std::time::Duration::from_secs(10))
                 .idle_timeout(std::time::Duration::from_secs(300))
                 .connect(&connection_string)
                 .await
@@ -1640,7 +1776,7 @@ pub(crate) async fn create_database_pool(
             match SqlitePoolOptions::new()
                 .max_connections(3)
                 .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(5))
+                .acquire_timeout(std::time::Duration::from_secs(10))
                 .idle_timeout(std::time::Duration::from_secs(300))
                 .connect(&connection_string)
                 .await
@@ -1693,7 +1829,7 @@ pub(crate) async fn create_database_pool(
                     enc_user, enc_pass, connection.host, connection.port
                 )
             };
-            match tokio::time::timeout(std::time::Duration::from_secs(5), MongoClient::with_uri_str(uri)).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), MongoClient::with_uri_str(uri)).await {
                 Ok(Ok(client)) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
                 _ => None,
             }

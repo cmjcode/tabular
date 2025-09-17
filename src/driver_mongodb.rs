@@ -35,7 +35,7 @@ pub async fn fetch_mongodb_data(
 ) -> bool {
     // List databases
     let dbs = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(10),
         client.list_database_names(),
     )
     .await
@@ -71,7 +71,7 @@ pub async fn fetch_mongodb_data(
     // For each database, list collections and cache as table_cache with type 'collection'
     for db_name in &dbs {
         match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             client.database(db_name).list_collection_names(),
         )
         .await
@@ -133,7 +133,7 @@ pub fn fetch_collections_from_mongodb_connection(
             connection::get_or_create_connection_pool(tabular, connection_id).await
         {
             match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(10),
                 client.database(database_name).list_collection_names(),
             )
             .await
@@ -169,7 +169,7 @@ pub fn sample_collection_documents(
                 .database(database_name)
                 .collection::<mongodb::bson::Document>(collection_name);
             match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(10),
                 coll.find(doc! {}).limit(limit),
             )
             .await
