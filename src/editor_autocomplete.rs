@@ -463,6 +463,7 @@ impl ShallowForCache for Tabular {
             connection_pools: self.connection_pools.clone(),
             pending_connection_pools: std::collections::HashSet::new(), // Empty for shallow clone
             shared_connection_pools: self.shared_connection_pools.clone(), // Share the same pools
+            pending_pool_log_last: std::collections::HashMap::new(),
             show_edit_connection: false,
             edit_connection: models::structs::ConnectionConfig::default(),
             needs_refresh: false,

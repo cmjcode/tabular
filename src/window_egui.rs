@@ -36,6 +36,8 @@ pub struct Tabular {
     pub pending_connection_pools: std::collections::HashSet<i64>,
     // Shared connection pools for background tasks
     pub shared_connection_pools: Arc<std::sync::Mutex<HashMap<i64, models::enums::DatabasePool>>>,
+    // Rate-limit log spam for pending pool creation messages
+    pub pending_pool_log_last: HashMap<i64, std::time::Instant>,
     // Context menu and edit connection fields
     pub show_edit_connection: bool,
     pub edit_connection: models::structs::ConnectionConfig,
@@ -359,6 +361,7 @@ impl Tabular {
             connection_pools: HashMap::new(), // Start with empty cache
             pending_connection_pools: std::collections::HashSet::new(), // Track pools being created
             shared_connection_pools: Arc::new(std::sync::Mutex::new(HashMap::new())), // Shared pools for background tasks
+            pending_pool_log_last: HashMap::new(),
             show_edit_connection: false,
             edit_connection: models::structs::ConnectionConfig::default(),
             needs_refresh: false,

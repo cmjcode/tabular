@@ -947,10 +947,19 @@ pub(crate) async fn get_or_create_connection_pool(
 
     // Check if we're already creating a pool for this connection to avoid duplicate work
     if tabular.pending_connection_pools.contains(&connection_id) {
-        debug!(
-            "⏳ Connection pool creation already in progress for connection {}",
-            connection_id
-        );
+        // Rate-limit log spam: only log at most once per second per connection
+        let now = std::time::Instant::now();
+        let should_log = match tabular.pending_pool_log_last.get(&connection_id) {
+            Some(last) => now.duration_since(*last) > std::time::Duration::from_secs(1),
+            None => true,
+        };
+        if should_log {
+            debug!(
+                "⏳ Connection pool creation already in progress for connection {}",
+                connection_id
+            );
+            tabular.pending_pool_log_last.insert(connection_id, now);
+        }
         return None; // Return None to indicate pool is being created
     }
 
@@ -968,6 +977,7 @@ pub(crate) async fn get_or_create_connection_pool(
             // Quick success
             tabular.connection_pools.insert(connection_id, pool.clone());
             tabular.pending_connection_pools.remove(&connection_id);
+            tabular.pending_pool_log_last.remove(&connection_id);
             debug!(
                 "✅ Quickly created connection pool for connection {}",
                 connection_id
