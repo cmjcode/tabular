@@ -680,12 +680,8 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     if !app.show_autocomplete || app.autocomplete_suggestions.is_empty() {
         return;
     }
-    let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
-    let max_visible = 8usize;
-    let visible = app.autocomplete_suggestions.len().min(max_visible);
-    let est_height = (visible as f32) * line_height + 8.0;
     let screen = ui.ctx().screen_rect();
-    // Hitung lebar ideal berdasarkan suggestion terpanjang (no-wrap) dengan batas min/max
+    // Hitung lebar ideal berdasarkan suggestion terpanjang (no-wrap) dengan batas min/max responsif
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
     let mut max_px = 0.0_f32;
     ui.ctx().fonts(|f| {
@@ -697,13 +693,37 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
         }
     });
     let padding = 32.0; // ruang kiri/kanan
-    let min_w = 140.0;
-    let max_w = 380.0;
+    let min_w = 160.0;
+    let responsive_max_w = (screen.width() * 0.55).clamp(220.0, 600.0);
     let desired_w = max_px + padding;
-    let popup_w = desired_w.clamp(min_w, max_w);
+    let popup_w = desired_w.clamp(min_w, responsive_max_w);
+
+    // Padding dalam frame popup (untuk perhitungan tinggi)
+    let frame_pad_px: f32 = 6.0; // padding atas/bawah/kiri/kanan dalam frame popup (untuk perhitungan tinggi)
+    let frame_pad_i8: i8 = 6; // versi i8 untuk egui::Margin
+    // Aturan fleksibel: tinggi_popup = suggestions.len * 10; jika > 60% layar, set ke 50% layar
+    let mut desired_popup_h = (app.autocomplete_suggestions.len() as f32) * 10.0;
+    let screen_h = screen.height();
+    if desired_popup_h > screen_h * 0.60 {
+        desired_popup_h = screen_h * 0.50;
+    }
+
+    // Ruang yang tersedia di bawah/atas caret
+    let margin = 8.0;
+    let space_below = (screen.bottom() - pos.y - margin).max(0.0);
+    let space_above = (pos.y - screen.top() - margin).max(0.0);
+    // Flip ke atas hanya jika tinggi yang diinginkan tak muat di bawah dan ruang atas lebih lega
+    let epsilon = 2.0; // toleransi kecil
+    let show_above = (space_below + epsilon) < desired_popup_h && space_above > space_below;
+    // Tinggi maksimum kontainer (frame) adalah minimum dari (desired_popup_h, space_available)
+    let max_container_h = desired_popup_h.min(if show_above { space_above } else { space_below });
+    // ScrollArea hanya untuk daftar (tanpa padding frame)
+    let available_list_h = (max_container_h - frame_pad_px * 2.0).max(0.0);
+
+    // Posisi popup (auto flip ke atas jika ruang bawah sempit)
     let mut popup_pos = pos;
-    if popup_pos.y + est_height > screen.bottom() {
-        popup_pos.y = (popup_pos.y - est_height).max(screen.top());
+    if show_above {
+        popup_pos.y = (pos.y - max_container_h).max(screen.top());
     }
     if popup_pos.x + popup_w > screen.right() {
         popup_pos.x = (screen.right() - popup_w).max(screen.left());
@@ -720,11 +740,14 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                 .fill(translucent)
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 0, 0)))
                 .corner_radius(4.0)
+                .inner_margin(egui::Margin::same(frame_pad_i8))
                 .show(ui, |ui| {
                     ui.set_min_width(popup_w);
                     ui.set_max_width(popup_w);
+                    ui.set_min_height(desired_popup_h);
+                    let mut selected_rect: Option<egui::Rect> = None;
                     egui::ScrollArea::vertical()
-                        .max_height(200.0)
+                        .max_height(available_list_h)
                         .show(ui, |ui| {
                             for (i, s) in app.autocomplete_suggestions.iter().enumerate() {
                                 let selected = i == app.selected_autocomplete_index;
@@ -735,7 +758,11 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                 } else {
                                     egui::RichText::new(s)
                                 };
-                                let resp = ui.selectable_label(selected, rich);
+                                // Keep rows single-line (default is no-wrap for buttons/selectables in this egui version)
+                                let resp = ui.add(egui::SelectableLabel::new(selected, rich));
+                                if selected {
+                                    selected_rect = Some(resp.rect);
+                                }
                                 if resp.clicked() {
                                     app.selected_autocomplete_index = i;
                                     accept_current_suggestion(app);
@@ -752,6 +779,11 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                     app.editor_focus_boost_frames = app.editor_focus_boost_frames.max(6);
                                     break;
                                 }
+                            }
+                            // Keep selected row visible while navigating
+                            if let Some(rect) = selected_rect {
+                                // Scroll just enough to bring the selected row into view
+                                ui.scroll_to_rect(rect, None);
                             }
                         });
                     // Removed deprecated style.wrap adjustments; suggestions are short so wrapping off tweak not needed.
