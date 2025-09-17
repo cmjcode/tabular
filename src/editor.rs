@@ -426,6 +426,8 @@ pub(crate) fn save_current_tab_with_name(
 }
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    log::debug!("🔥 RENDER DEBUG: Called, Text len = {}", tabular.editor.text.len());
+
     // Find & Replace panel
     if tabular.advanced_editor.show_find_replace {
         ui.horizontal(|ui| {
@@ -554,6 +556,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     // ----- Handle autocomplete key interception and pre-acceptance BEFORE building TextEdit -----
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
+    log::debug!("🔍 ENTER DEBUG: Initial enter_pressed_pre = {}, show_autocomplete = {}, autocomplete_navigated = {}", 
+        enter_pressed_pre, tabular.show_autocomplete, tabular.autocomplete_navigated);
     let mut raw_tab = false;
     // VSCode-like navigation/action flags
     let mut word_left_pressed = false;
@@ -575,21 +579,75 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     });
     // Defer actual accept application until after TextEdit is rendered to avoid borrow conflicts
     let mut defer_accept_autocomplete = false;
+    log::debug!("🔍 ENTER DEBUG: About to check autocomplete interception, show_autocomplete = {}", tabular.show_autocomplete);
     if tabular.show_autocomplete {
+        log::debug!("🔍 ENTER DEBUG: Autocomplete is showing, will intercept keys");
         ui.ctx().input_mut(|ri| {
             // Drain & filter events: buang ArrowUp/ArrowDown pressed supaya TextEdit tidak memproses
             let mut kept = Vec::with_capacity(ri.events.len());
+            let mut enter_consumed = false;
             for ev in ri.events.drain(..) {
                 match ev {
                     egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } => {
                         arrow_down_pressed = true;
+                        // user navigated popup
+                        tabular.autocomplete_navigated = true;
+                        log::debug!("🔍 ENTER DEBUG: ArrowDown pressed, set autocomplete_navigated = true");
                     }
                     egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } => {
                         arrow_up_pressed = true;
+                        // user navigated popup
+                        tabular.autocomplete_navigated = true;
+                        log::debug!("🔍 ENTER DEBUG: ArrowUp pressed, set autocomplete_navigated = true");
                     }
-                    // Intercept Enter pressed untuk autocomplete acceptance (supaya tidak newline)
-                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
-                        enter_pressed_pre = true;
+                    // Smart Enter handling: only consume if we should accept autocomplete
+                    e @ egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                        // Heuristic: accept on Enter if user navigated OR
+                        //  - there is only one suggestion OR
+                        //  - selected suggestion extends current prefix (case-insensitive)
+                        let mut should_accept = tabular.autocomplete_navigated;
+                        log::debug!("🔍 ENTER DEBUG: Enter pressed with autocomplete visible, navigated = {}", should_accept);
+                        
+                        if !should_accept {
+                            let sugg_count = tabular.autocomplete_suggestions.len();
+                            log::debug!("🔍 ENTER DEBUG: Not navigated, checking heuristics. Suggestion count = {}", sugg_count);
+                            if sugg_count == 1 {
+                                should_accept = true;
+                                log::debug!("🔍 ENTER DEBUG: Only one suggestion, should accept");
+                            } else {
+                                let prefix = tabular.autocomplete_prefix.clone();
+                                log::debug!("🔍 ENTER DEBUG: Multiple suggestions, checking prefix match. Prefix = '{}'", prefix);
+                                if let Some(sugg) = tabular
+                                    .autocomplete_suggestions
+                                    .get(tabular.selected_autocomplete_index)
+                                {
+                                    if !prefix.is_empty() {
+                                        let p = prefix.to_lowercase();
+                                        let s = sugg.to_lowercase();
+                                        if s.starts_with(&p) {
+                                            should_accept = true;
+                                            log::debug!("🔍 ENTER DEBUG: Selected suggestion '{}' starts with prefix '{}', should accept", sugg, prefix);
+                                        } else {
+                                            log::debug!("🔍 ENTER DEBUG: Selected suggestion '{}' does NOT start with prefix '{}', should NOT accept", sugg, prefix);
+                                        }
+                                    } else {
+                                        log::debug!("🔍 ENTER DEBUG: Empty prefix, should NOT accept");
+                                    }
+                                } else {
+                                    log::debug!("🔍 ENTER DEBUG: No selected suggestion, should NOT accept");
+                                }
+                            }
+                        }
+                        
+                        if should_accept {
+                            enter_pressed_pre = true; // we'll accept suggestion
+                            enter_consumed = true;
+                            log::debug!("🔍 ENTER DEBUG: ✅ CONSUMING Enter event for autocomplete accept");
+                        } else {
+                            // don't consume: let TextEdit insert newline
+                            kept.push(e);
+                            log::debug!("🔍 ENTER DEBUG: ❌ NOT consuming Enter, letting TextEdit handle newline");
+                        }
                     }
                     // Jangan hilangkan release events agar repeat logic internal tidak stuck; hanya pressed yang kita konsumsi
                     other @ egui::Event::Key { key: egui::Key::ArrowDown, pressed: false, .. } => {
@@ -602,7 +660,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 }
             }
             ri.events = kept;
+            log::debug!("🔍 ENTER DEBUG: Finished filtering events, enter_consumed = {}, kept {} events", enter_consumed, ri.events.len());
         });
+    } else {
+        log::debug!("🔍 ENTER DEBUG: Autocomplete NOT showing, no event interception");
     }
     // VSCode-like word navigation & line operations (pre-TextEdit)
     // Helper: compute previous and next word boundaries using Unicode segmentation (UAX#29)
@@ -1271,7 +1332,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         log::debug!("Raw Tab event captured before editor render");
     }
     let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
+    // Only accept via Enter if popup shown AND acceptance criteria met
     let accept_via_enter_pre = enter_pressed_pre && tabular.show_autocomplete;
+    log::debug!("🔍 ENTER DEBUG: Final acceptance flags: accept_via_tab_pre = {}, accept_via_enter_pre = {}", 
+        accept_via_tab_pre, accept_via_enter_pre);
     if accept_via_tab_pre || accept_via_enter_pre {
         // Remove Tab/Enter pressed events so TextEdit tidak menyisipkan tab/newline
         ui.ctx().input_mut(|ri| {
@@ -1386,6 +1450,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Tidak lagi override clip_rect secara manual; biarkan ScrollArea mengatur viewport dan scrolling.
     let response = ui.put(editor_rect, text_edit);
+    log::debug!("🔥 TEXTEDIT DEBUG: response.changed() = {}, has_focus() = {}, lost_focus() = {}, gained_focus() = {}", 
+        response.changed(), response.has_focus(), response.lost_focus(), response.gained_focus());
+    
     // While focus boost is active, keep focus on the editor so typing works immediately after actions
     if tabular.editor_focus_boost_frames > 0 {
         ui.memory_mut(|m| m.request_focus(response.id));
@@ -1798,8 +1865,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
         
         // Rebuild autocomplete suggestions on text changes unless we're in the middle of accepting via Tab/Enter
+        // Also skip if the change was just a newline insertion (to avoid lag after Enter)
         if !accept_via_tab_pre && !accept_via_enter_pre {
-            editor_autocomplete::update_autocomplete(tabular);
+            let just_inserted_newline = inserted_dbg == "\\n" && deleted_dbg.is_empty();
+            if !just_inserted_newline {
+                log::debug!("🔍 AUTOCOMPLETE DEBUG: Updating autocomplete after text change");
+                editor_autocomplete::update_autocomplete(tabular);
+            } else {
+                log::debug!("🔍 AUTOCOMPLETE DEBUG: Skipping autocomplete update after newline insertion");
+            }
         }
 
         // Ensure rope stays in sync if multi-cursor logic modified editor.text directly
@@ -1811,7 +1885,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
 
         // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
-        ui.ctx().request_repaint();
+        // BUT skip excessive repaints for simple newline insertions to reduce lag
+        if !(inserted_dbg == "\\n" && deleted_dbg.is_empty()) {
+            ui.ctx().request_repaint();
+        }
     }
 
     // (Old forced replacement path removed; injection handles caret advance)
@@ -1867,9 +1944,40 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             editor_autocomplete::navigate(tabular, -1);
         }
         let mut accepted = false;
+        log::debug!("🔍 ENTER DEBUG: Post-render check: input.key_pressed(Enter) = {}, accept_via_enter_pre = {}", 
+            input.key_pressed(egui::Key::Enter), accept_via_enter_pre);
         if input.key_pressed(egui::Key::Enter) && !accept_via_enter_pre {
-            editor_autocomplete::accept_current_suggestion(tabular);
-            accepted = true;
+            log::debug!("🔍 ENTER DEBUG: 🔥 POST-RENDER Enter detected and not already processed - this might be consuming extra Enter!");
+            // Apply same heuristic as pre-render
+            let mut should_accept = tabular.autocomplete_navigated;
+            if !should_accept {
+                let sugg_count = tabular.autocomplete_suggestions.len();
+                if sugg_count == 1 {
+                    should_accept = true;
+                } else {
+                    let prefix = tabular.autocomplete_prefix.clone();
+                    if let Some(sugg) = tabular
+                        .autocomplete_suggestions
+                        .get(tabular.selected_autocomplete_index)
+                    {
+                        if !prefix.is_empty() {
+                            let p = prefix.to_lowercase();
+                            let s = sugg.to_lowercase();
+                            if s.starts_with(&p) {
+                                should_accept = true;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if should_accept {
+                log::debug!("🔍 ENTER DEBUG: Post-render accepting autocomplete");
+                editor_autocomplete::accept_current_suggestion(tabular);
+                accepted = true;
+            } else {
+                log::debug!("🔍 ENTER DEBUG: Post-render NOT accepting - Enter should have passed to TextEdit for newline");
+            }
         }
         // Skip Tab acceptance here if already processed earlier
         if tab_pressed_pre && !accept_via_tab_pre {

@@ -169,6 +169,8 @@ pub struct Tabular {
     // Enforce caret after autocomplete for a few frames
     pub autocomplete_expected_cursor: Option<usize>,
     pub autocomplete_protection_frames: u8,
+    // Tracks whether user has navigated autocomplete popup (ArrowUp/Down or similar)
+    pub autocomplete_navigated: bool,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)
     pub extra_cursors: Vec<usize>,
     pub last_editor_text: String, // For detecting text changes in multi-cursor mode (deprecated; will derive from editor.text)
@@ -452,6 +454,7 @@ impl Tabular {
             editor_focus_boost_frames: 0,
             autocomplete_expected_cursor: None,
             autocomplete_protection_frames: 0,
+            autocomplete_navigated: false,
             // Index dialog defaults
             show_index_dialog: false,
             index_dialog: None,
@@ -7186,9 +7189,6 @@ impl App for Tabular {
         let mut snapshot_rows_csv: Option<String> = None;
         let mut snapshot_cols_csv: Option<String> = None;
 
-        // Check if editor has focus before entering input closure
-        let editor_has_focus = ctx.memory(|m| m.has_focus(egui::Id::new("sql_editor")));
-
         // Detect Save shortcut using consume_key so it works reliably on macOS/Windows/Linux
         let mut save_shortcut = false;
         ctx.input_mut(|i| {
@@ -7267,12 +7267,11 @@ impl App for Tabular {
             }
 
             // Handle table cell navigation with arrow keys
-            // Only allow table navigation when table was recently clicked and editor is not currently focused
+            // Only allow table navigation when table was recently clicked 
             if !self.show_command_palette
                 && !self.show_theme_selector
                 && self.selected_cell.is_some()
                 && self.table_recently_clicked
-                && !editor_has_focus
             {
                 let mut cell_changed = false;
                 if let Some((row, col)) = self.selected_cell {
@@ -7328,8 +7327,9 @@ impl App for Tabular {
                 } else if i.key_pressed(egui::Key::ArrowUp) {
                     editor::navigate_command_palette(self, -1);
                 }
-                // Enter to execute selected command
-                else if i.key_pressed(egui::Key::Enter) {
+                // Enter to execute selected command (only when command palette is visible)
+                else if i.key_pressed(egui::Key::Enter) && self.show_command_palette {
+                    log::debug!("🔥 GLOBAL DEBUG: Command palette Enter consumed");
                     editor::execute_selected_command(self);
                 }
             }
@@ -7342,8 +7342,8 @@ impl App for Tabular {
                 } else if i.key_pressed(egui::Key::ArrowUp) {
                     editor::navigate_theme_selector(self, -1);
                 }
-                // Enter to select theme
-                else if i.key_pressed(egui::Key::Enter) {
+                // Enter to select theme (only when theme selector is visible)
+                else if i.key_pressed(egui::Key::Enter) && self.show_theme_selector {
                     editor::select_current_theme(self);
                 }
             }
@@ -8612,6 +8612,7 @@ impl App for Tabular {
                                     // Always render legacy editor
                                     editor::render_advanced_editor(self, ui);
                                 });
+                            
                             // Key shortcut check
                             if ui.input(|i| {
                                 (i.modifiers.ctrl || i.modifiers.mac_cmd)

@@ -27,7 +27,10 @@ fn current_prefix(text: &str, cursor: usize) -> (String, usize) {
             break;
         }
     }
-    (text[start..cursor.min(text.len())].to_string(), start)
+    let prefix = text[start..cursor.min(text.len())].to_string();
+    log::debug!("🔍 AUTOCOMPLETE DEBUG: current_prefix('{}', {}) -> ('{}', {})", 
+        text.chars().take(50).collect::<String>(), cursor, prefix, start);
+    (prefix, start)
 }
 
 /// Tokenize helper: split on non-alphanumeric/_ characters.
@@ -545,6 +548,7 @@ impl ShallowForCache for Tabular {
             editor_focus_boost_frames: 0,
             autocomplete_expected_cursor: None,
             autocomplete_protection_frames: 0,
+            autocomplete_navigated: false,
             extra_cursors: Vec::new(),
             last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
@@ -622,23 +626,30 @@ impl ShallowForCache for Tabular {
 pub fn update_autocomplete(app: &mut Tabular) {
     let cursor = app.cursor_position.min(app.editor.text.len());
     let (prefix, start_idx) = current_prefix(&app.editor.text, cursor);
+    log::debug!("🔍 AUTOCOMPLETE DEBUG: update_autocomplete called with cursor={}, prefix='{}'", cursor, prefix);
     app.autocomplete_prefix = prefix.clone();
 
     if prefix.is_empty() {
         // hide jika kosong
+        log::debug!("🔍 AUTOCOMPLETE DEBUG: Empty prefix, hiding autocomplete");
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
         app.autocomplete_kinds.clear();
         app.autocomplete_notes.clear();
+        app.autocomplete_navigated = false; // reset navigation when popup hides
         return;
     }
 
     // Only rebuild if prefix length changed or previously hidden
     if app.last_autocomplete_trigger_len != prefix.len() || !app.show_autocomplete {
+        log::debug!("🔍 AUTOCOMPLETE DEBUG: Rebuilding suggestions for prefix='{}' (len changed from {} to {})", 
+            prefix, app.last_autocomplete_trigger_len, prefix.len());
         let suggestions = build_suggestions(app, &app.editor.text, cursor, &prefix);
         if suggestions.is_empty() {
+            log::debug!("🔍 AUTOCOMPLETE DEBUG: No suggestions found, hiding autocomplete");
             app.show_autocomplete = false;
         } else {
+            log::debug!("🔍 AUTOCOMPLETE DEBUG: Found {} suggestions, showing autocomplete", suggestions.len());
             app.show_autocomplete = true;
             // Group suggestions by kind: Tables, Columns, Syntax
             let context = detect_sql_context(&app.editor.text, cursor);
@@ -701,8 +712,11 @@ pub fn update_autocomplete(app: &mut Tabular) {
             app.autocomplete_kinds = kinds;
             app.autocomplete_notes = notes;
             app.selected_autocomplete_index = 0;
+            app.autocomplete_navigated = false; // reset on fresh suggestions
         }
         app.last_autocomplete_trigger_len = prefix.len();
+    } else {
+        log::debug!("🔍 AUTOCOMPLETE DEBUG: No rebuild needed, prefix length unchanged");
     }
     // Store start index in last_autocomplete_trigger_len encoded (optional) - keeping simple
     let _ = start_idx; // could be used later for replacement
