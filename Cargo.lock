@@ -6149,7 +6149,7 @@ dependencies = [
 
 [[package]]
 name = "tabular"
-version = "0.4.12"
+version = "0.4.13"
 dependencies = [
  "bson 3.0.0",
  "chrono",
