@@ -7362,6 +7362,8 @@ impl App for Tabular {
 
                     // Reload table view to revert any in-memory edits
                     if self.is_table_browse_mode {
+                        // Ensure we stay in table browse mode so double-click editing works
+                        self.is_table_browse_mode = true;
                         if self.use_server_pagination && !self.current_base_query.is_empty() {
                             self.execute_paginated_query();
                         } else {
