@@ -1,4 +1,4 @@
-use crate::cache_data::get_columns_from_cache;
+use crate::cache_data::{get_columns_from_cache, get_tables_from_cache};
 use crate::models;
 use crate::window_egui::{PrefTab, Tabular};
 use eframe::egui;
@@ -168,8 +168,6 @@ pub fn build_suggestions(
     } else {
         String::new()
     };
-    debug!("Detected tables in FROM clause: {:?}", tables);
-
     match context {
         SqlContext::AfterSelect => {
 
@@ -191,14 +189,23 @@ pub fn build_suggestions(
         SqlContext::AfterFrom => {
             // Suggest table names
             if let Some(conn_id) = connection_id
-                && let Some(tables) = get_cached_tables(app, conn_id)
             {
+                debug!(
+                    "AutoComplete Table : Getting cached tables for connection_id: {} (db='{}')",
+                    conn_id, database
+                );
+                let Some(tables) = get_cached_tables(app, conn_id, &database) else { return suggestions; };
                 for table in tables {
                     if table.to_lowercase().starts_with(&prefix_lower) {
                         suggestions.push(table);
                     }
                 }
+            } else {
+                debug!("AutoComplete Table : No active connection_id");
             }
+
+            // debug suggestions
+            debug!("AutoComplete Table : Suggestions after FROM: {:?}", suggestions);
         }
         SqlContext::AfterWhere => {
             // Suggest column names for WHERE conditions
@@ -218,7 +225,7 @@ pub fn build_suggestions(
 
             // Add table and column names as secondary suggestions
             if let Some(conn_id) = connection_id {
-                if let Some(tables) = get_cached_tables(app, conn_id) {
+                if let Some(tables) = get_cached_tables(app, conn_id, &database) {
                     for table in tables {
                         if table.to_lowercase().starts_with(&prefix_lower) {
                             suggestions.push(table);
@@ -267,6 +274,7 @@ fn detect_sql_context(text: &str, cursor_pos: usize) -> SqlContext {
             "SELECT" => return SqlContext::AfterSelect,
             "FROM" | "JOIN" | "INNER" | "LEFT" | "RIGHT" => return SqlContext::AfterFrom,
             "WHERE" | "AND" | "OR" | "HAVING" => return SqlContext::AfterWhere,
+            "BY" => return SqlContext::AfterWhere,
             _ => continue,
         }
     }
@@ -274,11 +282,33 @@ fn detect_sql_context(text: &str, cursor_pos: usize) -> SqlContext {
     SqlContext::General
 }
 
-fn get_cached_tables(app: &Tabular, connection_id: i64) -> Option<Vec<String>> {
-    // Try to get from database cache
-    app.database_cache
-        .get(&connection_id)
-        .cloned()
+fn get_cached_tables(app: &Tabular, connection_id: i64, database: &str) -> Option<Vec<String>> {
+    // Prefer active database if provided; otherwise, aggregate across all cached databases
+    let db_list: Vec<String> = if database.is_empty() {
+        app.database_cache
+            .get(&connection_id)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        vec![database.to_string()]
+    };
+
+    let mut combined: Vec<String> = Vec::new();
+    for dbn in db_list {
+        for tt in ["table", "view"] {
+            if let Some(mut list) = get_tables_from_cache(app, connection_id, &dbn, tt) {
+                combined.append(&mut list);
+            }
+        }
+    }
+
+    if combined.is_empty() {
+        None
+    } else {
+        combined.sort_unstable();
+        combined.dedup();
+        Some(combined)
+    }
 }
 
 fn get_cached_columns(mut _app: &Tabular, _connection_id: i64, _database: &str, _tables: Vec<String>) -> Option<Vec<String>> {
