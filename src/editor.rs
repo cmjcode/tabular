@@ -55,16 +55,25 @@ pub(crate) fn create_new_tab(
 
     tab_id
 }
-
+ 
+// Convenience: create a new query tab and pre-assign a connection
 pub(crate) fn create_new_tab_with_connection(
     tabular: &mut window_egui::Tabular,
     title: String,
     content: String,
     connection_id: Option<i64>,
 ) -> usize {
-    create_new_tab_with_connection_and_database(tabular, title, content, connection_id, None)
+    let tab_id = create_new_tab(tabular, title, content);
+    if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        active_tab.connection_id = connection_id;
+        // Keep global current_connection_id in sync with the newly created tab
+        tabular.current_connection_id = connection_id;
+        // New tabs have no database selected by default here; leave as-is
+    }
+    tab_id
 }
 
+// Convenience: create a new query tab and pre-assign connection + database context
 pub(crate) fn create_new_tab_with_connection_and_database(
     tabular: &mut window_egui::Tabular,
     title: String,
@@ -72,46 +81,16 @@ pub(crate) fn create_new_tab_with_connection_and_database(
     connection_id: Option<i64>,
     database_name: Option<String>,
 ) -> usize {
-    let tab_id = tabular.next_tab_id;
-    tabular.next_tab_id += 1;
-
-    let new_tab = models::structs::QueryTab {
-        title,
-        content: content.clone(),
-        file_path: None,
-        is_saved: false,
-        is_modified: false,
-        connection_id,
-        database_name,
-        has_executed_query: false, // New tab hasn't executed any query yet
-        result_headers: Vec::new(),
-        result_rows: Vec::new(),
-        result_all_rows: Vec::new(),
-        result_table_name: String::new(),
-        is_table_browse_mode: false,
-        current_page: 0,
-        page_size: 100, // default page size aligns with global default
-        total_rows: 0,
-        base_query: String::new(), // Empty base query initially
-    };
-
-    tabular.query_tabs.push(new_tab);
-    let new_index = tabular.query_tabs.len() - 1;
-    tabular.active_tab_index = new_index;
-
-    // Update editor with new tab content
-    tabular.editor.set_text(content.clone());
-    // Clear global result state for a clean start on this new tab
-    tabular.current_table_headers.clear();
-    tabular.current_table_data.clear();
-    tabular.all_table_data.clear();
-    tabular.current_table_name.clear();
-    tabular.total_rows = 0;
-    tabular.is_table_browse_mode = false;
-
+    let tab_id = create_new_tab(tabular, title, content);
+    if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        active_tab.connection_id = connection_id;
+        active_tab.database_name = database_name.clone();
+        // Sync global state with the tab's assigned connection
+        tabular.current_connection_id = connection_id;
+    }
     tab_id
 }
-
+ 
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     if tabular.query_tabs.len() <= 1 {
         // Don't close the last tab, just clear it
@@ -681,6 +660,131 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             None => s.len(),
         }
     };
+    // Pre-handle Delete/Backspace when a selection exists: remove the whole selection (not just one char)
+    // This ensures expected behavior “press Delete removes all selected text”.
+    {
+        let id = egui::Id::new("sql_editor");
+        let mut do_delete_selection = false;
+        let mut del_key_consumed = false;
+        let mut has_selection = false;
+        
+        // Check for key presses first
+        let (pressed_bs, pressed_del) = ui.input(|i| {
+            (i.key_pressed(egui::Key::Backspace), i.key_pressed(egui::Key::Delete))
+        });
+        
+        if pressed_bs || pressed_del {
+            // Method 1: Check egui state selection (char indices)
+            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+                if rng.start != rng.end {
+                    has_selection = true;
+                    log::debug!("Selection detected via egui state: {} to {}", rng.start, rng.end);
+                }
+            }
+            
+            // Method 2: Fallback to stored selection state (byte indices)  
+            if !has_selection && tabular.selection_start != tabular.selection_end {
+                has_selection = true;
+                log::debug!("Selection detected via stored state: {} to {}", tabular.selection_start, tabular.selection_end);
+            }
+            
+            // Method 3: Check if there's selected text
+            if !has_selection && !tabular.selected_text.is_empty() {
+                has_selection = true;
+                log::debug!("Selection detected via selected_text: '{}'", tabular.selected_text);
+            }
+            
+            // Only intercept and handle deletion if there's actually a selection
+            // If no selection, let egui TextEdit handle normal Delete/Backspace behavior
+            if has_selection {
+                do_delete_selection = true;
+                del_key_consumed = true;
+                log::debug!("Will delete selection on {} key", if pressed_del { "Delete" } else { "Backspace" });
+                
+                // Remove the key event so TextEdit doesn't do additional mutation
+                ui.ctx().input_mut(|ri| {
+                    ri.events.retain(|e| {
+                        !matches!(
+                            e,
+                            egui::Event::Key {
+                                key: egui::Key::Backspace,
+                                pressed: true,
+                                ..
+                            }
+                        ) &&
+                        !matches!(
+                            e,
+                            egui::Event::Key {
+                                key: egui::Key::Delete,
+                                pressed: true,
+                                ..
+                            }
+                        )
+                    });
+                });
+            } else {
+                // No selection - let egui TextEdit handle normal Delete/Backspace
+                log::debug!("No selection detected, letting TextEdit handle {} key normally", if pressed_del { "Delete" } else { "Backspace" });
+            }
+        }
+        
+        if do_delete_selection {
+            let mut start_b = 0;
+            let mut end_b = 0;
+            
+            // Try to get selection range from egui state first
+            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+                if rng.start != rng.end {
+                    start_b = to_byte_index(&tabular.editor.text, rng.start);
+                    end_b = to_byte_index(&tabular.editor.text, rng.end);
+                }
+            }
+            
+            // Fallback to stored selection
+            if start_b == end_b {
+                start_b = tabular.selection_start;
+                end_b = tabular.selection_end;
+            }
+            
+            if start_b < end_b && end_b <= tabular.editor.text.len() {
+                let selected_text = &tabular.editor.text[start_b..end_b];
+                log::debug!("Deleting selection from {} to {}: '{}'", start_b, end_b, selected_text);
+                
+                tabular.editor.apply_single_replace(start_b..end_b, "");
+                tabular.cursor_position = start_b;
+                tabular.selection_start = start_b;
+                tabular.selection_end = start_b;
+                tabular.selected_text.clear();
+                
+                // Sync egui caret to collapsed at start
+                let ci = to_char_index(&tabular.editor.text, start_b);
+                crate::editor_state_adapter::EditorStateAdapter::set_single(
+                    ui.ctx(), id, ci,
+                );
+                
+                // CRITICAL: Ensure editor maintains focus and cursor stays active for immediate typing
+                ui.memory_mut(|m| m.request_focus(id));
+                
+                // Set focus boost to keep editor focused for several frames
+                tabular.editor_focus_boost_frames = 10;
+                
+                // Mark tab as modified
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.content = tabular.editor.text.clone();
+                    tab.is_modified = true;
+                }
+                
+                log::debug!("Selection deleted successfully, cursor now at {} with focus maintained", start_b);
+            }
+            
+            // If we consumed the key, request a repaint so UI reflects the change immediately
+            if del_key_consumed {
+                ui.ctx().request_repaint();
+                // Double focus request to ensure it sticks
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+        }
+    }
     // Helper: find line start and end byte indices for a given cursor
     let line_bounds = |s: &str, pos: usize| -> (usize, usize, usize) {
         let bytes = s.as_bytes();
@@ -970,6 +1074,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // While focus boost is active, keep focus on the editor so typing works immediately after actions
     if tabular.editor_focus_boost_frames > 0 {
         ui.memory_mut(|m| m.request_focus(response.id));
+        log::debug!("Focus boost active: {} frames remaining", tabular.editor_focus_boost_frames);
     }
     // VSCode-like: subtle current line highlight
     if response.has_focus() {
@@ -1307,7 +1412,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     }
             }
         }
-
+        
         // Rebuild autocomplete suggestions on text changes unless we're in the middle of accepting via Tab/Enter
         if !accept_via_tab_pre && !accept_via_enter_pre {
             editor_autocomplete::update_autocomplete(tabular);
