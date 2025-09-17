@@ -899,11 +899,13 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
 
     // If no connections configured, show guidance with quick action
     if tabular.connections.is_empty() {
+        let mut open = tabular.show_connection_selector;
         egui::Window::new("No Connections Available")
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .collapsible(false)
             .resizable(false)
             .title_bar(true)
+            .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Belum ada koneksi tersimpan. Tambahkan koneksi terlebih dahulu.");
                 ui.horizontal(|ui| {
@@ -916,6 +918,10 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                     }
                 });
             });
+        // Close when X is clicked
+        if !open {
+            tabular.show_connection_selector = false;
+        }
         return;
     }
 
@@ -923,19 +929,19 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
     let filter_id = egui::Id::new("conn_selector_filter");
     let mut filter_text = ctx.data(|d| d.get_temp::<String>(filter_id)).unwrap_or_default();
 
-    egui::Window::new("Pilih Koneksi")
+    let mut open = tabular.show_connection_selector;
+    egui::Window::new("Connection Selector")
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
         .resizable(true)
-        .default_width(560.0)
+        .default_width(420.0)
+        .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Tab query ini belum terhubung. Pilih koneksi untuk melanjutkan:");
-            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label("Cari:");
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut filter_text)
-                        .hint_text("ketik nama host / database / nama koneksi"),
+                        .hint_text("type host / database / connection name...")
+                        .desired_width(f32::INFINITY),
                 );
                 if r.changed() {
                     ui.ctx().data_mut(|d| d.insert_temp(filter_id, filter_text.clone()));
@@ -972,19 +978,12 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                             }
                         );
 
-                        // Row with label and action button (double-click also connects)
+                        // Row: make the connection name itself the button (single click)
                         let mut should_connect = false;
-                        ui.horizontal(|ui| {
-                            let lresp = ui.selectable_label(false, title);
-                            if lresp.double_clicked() {
-                                should_connect = true;
-                            }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("Connect").clicked() {
-                                    should_connect = true;
-                                }
-                            });
-                        });
+                        let lresp = ui.selectable_label(false, title);
+                        if lresp.clicked() || lresp.double_clicked() {
+                            should_connect = true;
+                        }
                         ui.separator();
 
                         if should_connect {
@@ -1023,13 +1022,11 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                     }
                 });
 
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.button("Batal").clicked() {
-                    tabular.show_connection_selector = false;
-                }
-            });
         });
+    // Close when X is clicked
+    if !open {
+        tabular.show_connection_selector = false;
+    }
 }
 
 // Helper function untuk mendapatkan atau membuat connection pool dengan concurrency
