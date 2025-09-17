@@ -671,9 +671,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
             let cols_vec: Vec<String> = {
                 let tables_in_query = extract_tables(&app.editor.text);
                 if connection_id != 0 {
-                    if let Some(cols) = get_cached_columns(app, connection_id, &database, tables_in_query) {
-                        cols
-                    } else { Vec::new() }
+                    get_cached_columns(app, connection_id, &database, tables_in_query).unwrap_or_default()
                 } else { Vec::new() }
             };
             let cols_set: std::collections::HashSet<String> = cols_vec.into_iter().collect();
@@ -866,8 +864,8 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                             let notes = app.autocomplete_notes.clone();
                             let mut last_kind: Option<crate::models::enums::AutocompleteKind> = None;
                             for (i, s) in suggestions.iter().enumerate() {
-                                if let Some(kind) = kinds.get(i).copied() {
-                                    if last_kind != Some(kind) {
+                                if let Some(kind) = kinds.get(i).copied()
+                                    && last_kind != Some(kind) {
                                         last_kind = Some(kind);
                                         let label = match kind {
                                             crate::models::enums::AutocompleteKind::Table => "Tables",
@@ -877,7 +875,6 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                         ui.add(egui::Separator::default().spacing(4.0));
                                         ui.label(egui::RichText::new(label).strong());
                                     }
-                                }
                                 let selected = i == app.selected_autocomplete_index;
                                 let mut rich = egui::RichText::new(s.clone());
                                 if selected {
@@ -887,7 +884,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                 }
                                 ui.horizontal(|ui| {
                                     // Keep rows single-line
-                                    let resp = ui.add(egui::SelectableLabel::new(selected, rich));
+                                    let resp = ui.selectable_label(selected, rich);
                                     if let Some(note) = notes.get(i).and_then(|n| n.clone()) {
                                         ui.add_space(6.0);
                                         ui.label(egui::RichText::new(note).weak().small());

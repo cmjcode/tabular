@@ -17,6 +17,9 @@ use sqlx::{
 };
 use std::sync::Arc;
 
+// Type alias for complex index map structure
+type IndexMap = std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)>;
+
 // Limit concurrent prefetch tasks to avoid overwhelming servers and local machine
 const PREFETCH_CONCURRENCY: usize = 6;
 
@@ -1799,7 +1802,7 @@ async fn prefetch_indexes_for_all_tables(
                         if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
                             let q = r#"SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, INDEX_TYPE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX"#;
                             if let Ok(rows) = sqlx::query(q).bind(&dbn).bind(&tbn).fetch_all(&mut conn).await {
-                                let mut map: std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)> = std::collections::BTreeMap::new();
+                                let mut map: IndexMap = IndexMap::new();
                                 for r in rows {
                                     let name: String = r.try_get("INDEX_NAME").unwrap_or_default();
                                     let col: Option<String> = r.try_get("COLUMN_NAME").ok();

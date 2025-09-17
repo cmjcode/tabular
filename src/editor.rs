@@ -426,7 +426,6 @@ pub(crate) fn save_current_tab_with_name(
 }
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    log::debug!("🔥 RENDER DEBUG: Called, Text len = {}", tabular.editor.text.len());
 
     // Find & Replace panel
     if tabular.advanced_editor.show_find_replace {
@@ -556,8 +555,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     // ----- Handle autocomplete key interception and pre-acceptance BEFORE building TextEdit -----
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
-    log::debug!("🔍 ENTER DEBUG: Initial enter_pressed_pre = {}, show_autocomplete = {}, autocomplete_navigated = {}", 
-        enter_pressed_pre, tabular.show_autocomplete, tabular.autocomplete_navigated);
     let mut raw_tab = false;
     // VSCode-like navigation/action flags
     let mut word_left_pressed = false;
@@ -579,9 +576,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     });
     // Defer actual accept application until after TextEdit is rendered to avoid borrow conflicts
     let mut defer_accept_autocomplete = false;
-    log::debug!("🔍 ENTER DEBUG: About to check autocomplete interception, show_autocomplete = {}", tabular.show_autocomplete);
     if tabular.show_autocomplete {
-        log::debug!("🔍 ENTER DEBUG: Autocomplete is showing, will intercept keys");
         ui.ctx().input_mut(|ri| {
             // Drain & filter events: buang ArrowUp/ArrowDown pressed supaya TextEdit tidak memproses
             let mut kept = Vec::with_capacity(ri.events.len());
@@ -592,13 +587,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         arrow_down_pressed = true;
                         // user navigated popup
                         tabular.autocomplete_navigated = true;
-                        log::debug!("🔍 ENTER DEBUG: ArrowDown pressed, set autocomplete_navigated = true");
                     }
                     egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } => {
                         arrow_up_pressed = true;
                         // user navigated popup
                         tabular.autocomplete_navigated = true;
-                        log::debug!("🔍 ENTER DEBUG: ArrowUp pressed, set autocomplete_navigated = true");
                     }
                     // Smart Enter handling: only consume if we should accept autocomplete
                     e @ egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
@@ -606,47 +599,32 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         //  - there is only one suggestion OR
                         //  - selected suggestion extends current prefix (case-insensitive)
                         let mut should_accept = tabular.autocomplete_navigated;
-                        log::debug!("🔍 ENTER DEBUG: Enter pressed with autocomplete visible, navigated = {}", should_accept);
                         
                         if !should_accept {
                             let sugg_count = tabular.autocomplete_suggestions.len();
-                            log::debug!("🔍 ENTER DEBUG: Not navigated, checking heuristics. Suggestion count = {}", sugg_count);
                             if sugg_count == 1 {
                                 should_accept = true;
-                                log::debug!("🔍 ENTER DEBUG: Only one suggestion, should accept");
                             } else {
                                 let prefix = tabular.autocomplete_prefix.clone();
-                                log::debug!("🔍 ENTER DEBUG: Multiple suggestions, checking prefix match. Prefix = '{}'", prefix);
                                 if let Some(sugg) = tabular
                                     .autocomplete_suggestions
                                     .get(tabular.selected_autocomplete_index)
-                                {
-                                    if !prefix.is_empty() {
+                                    && !prefix.is_empty() {
                                         let p = prefix.to_lowercase();
                                         let s = sugg.to_lowercase();
                                         if s.starts_with(&p) {
                                             should_accept = true;
-                                            log::debug!("🔍 ENTER DEBUG: Selected suggestion '{}' starts with prefix '{}', should accept", sugg, prefix);
-                                        } else {
-                                            log::debug!("🔍 ENTER DEBUG: Selected suggestion '{}' does NOT start with prefix '{}', should NOT accept", sugg, prefix);
                                         }
-                                    } else {
-                                        log::debug!("🔍 ENTER DEBUG: Empty prefix, should NOT accept");
                                     }
-                                } else {
-                                    log::debug!("🔍 ENTER DEBUG: No selected suggestion, should NOT accept");
-                                }
                             }
                         }
                         
                         if should_accept {
                             enter_pressed_pre = true; // we'll accept suggestion
                             enter_consumed = true;
-                            log::debug!("🔍 ENTER DEBUG: ✅ CONSUMING Enter event for autocomplete accept");
                         } else {
                             // don't consume: let TextEdit insert newline
                             kept.push(e);
-                            log::debug!("🔍 ENTER DEBUG: ❌ NOT consuming Enter, letting TextEdit handle newline");
                         }
                     }
                     // Jangan hilangkan release events agar repeat logic internal tidak stuck; hanya pressed yang kita konsumsi
@@ -660,10 +638,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 }
             }
             ri.events = kept;
-            log::debug!("🔍 ENTER DEBUG: Finished filtering events, enter_consumed = {}, kept {} events", enter_consumed, ri.events.len());
         });
-    } else {
-        log::debug!("🔍 ENTER DEBUG: Autocomplete NOT showing, no event interception");
     }
     // VSCode-like word navigation & line operations (pre-TextEdit)
     // Helper: compute previous and next word boundaries using Unicode segmentation (UAX#29)
@@ -736,12 +711,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         
         if pressed_bs || pressed_del {
             // Method 1: Check egui state selection (char indices)
-            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
-                if rng.start != rng.end {
+            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                && rng.start != rng.end {
                     has_selection = true;
                     log::debug!("Selection detected via egui state: {} to {}", rng.start, rng.end);
                 }
-            }
+            
             
             // Method 2: Fallback to stored selection state (byte indices)  
             if !has_selection && tabular.selection_start != tabular.selection_end {
@@ -796,12 +771,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let mut end_b = 0;
             
             // Try to get selection range from egui state first
-            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
-                if rng.start != rng.end {
+            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                && rng.start != rng.end {
                     start_b = to_byte_index(&tabular.editor.text, rng.start);
                     end_b = to_byte_index(&tabular.editor.text, rng.end);
                 }
-            }
+            
             
             // Fallback to stored selection
             if start_b == end_b {
@@ -842,10 +817,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 {
                     let s = &tabular.editor.text;
                     let mut end = s.len();
-                    let mut count = 0;
-                    for (i, _) in s.char_indices() {
+                    for (count, (i, _)) in s.char_indices().enumerate() {
                         if count >= 200 { end = i; break; }
-                        count += 1;
                     }
                     let rem = if end < s.len() {
                         format!("{}… (len={})", s[..end].escape_debug(), s.len())
@@ -879,12 +852,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 ui.ctx().input_mut(|ri| {
                     let mut kept = Vec::with_capacity(ri.events.len());
                     for ev in ri.events.drain(..) {
-                        if !consumed_bs_empty {
-                            if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = ev {
+                        if !consumed_bs_empty
+                            && let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = ev {
                                 consumed_bs_empty = true;
                                 continue;
                             }
-                        }
                         kept.push(ev);
                     }
                     ri.events = kept;
@@ -959,12 +931,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             let before = ri.events.len();
                             let mut kept = Vec::with_capacity(before);
                             for ev in ri.events.drain(..) {
-                                if !consumed_delete_event {
-                                    if let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
+                                if !consumed_delete_event
+                                    && let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
                                         consumed_delete_event = true;
                                         continue;
                                     }
-                                }
                                 kept.push(ev);
                             }
                             ri.events = kept;
@@ -976,10 +947,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         {
                             let s = &tabular.editor.text;
                             let mut end = s.len();
-                            let mut count = 0;
-                            for (i, _) in s.char_indices() {
+                            for (count, (i, _)) in s.char_indices().enumerate() {
                                 if count >= 200 { end = i; break; }
-                                count += 1;
                             }
                             let rem = if end < s.len() {
                                 format!("{}… (len={})", s[..end].escape_debug(), s.len())
@@ -992,7 +961,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     use unicode_segmentation::UnicodeSegmentation;
                     let head = &tabular.editor.text[..pos_b];
                     // Find previous grapheme boundary by scanning the last grapheme in head
-                    if let Some((start_off, prev_gr)) = head.grapheme_indices(true).last() {
+                    if let Some((start_off, prev_gr)) = head.grapheme_indices(true).next_back() {
                         let start_b = start_off;
                         let end_b = pos_b;
                         log::debug!(
@@ -1030,12 +999,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         ui.ctx().input_mut(|ri| {
                             let mut kept = Vec::with_capacity(ri.events.len());
                             for ev in ri.events.drain(..) {
-                                if !consumed_delete_event {
-                                    if let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
+                                if !consumed_delete_event
+                                    && let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
                                         consumed_delete_event = true;
                                         continue;
                                     }
-                                }
                                 kept.push(ev);
                             }
                             ri.events = kept;
@@ -1047,10 +1015,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         {
                             let s = &tabular.editor.text;
                             let mut end = s.len();
-                            let mut count = 0;
-                            for (i, _) in s.char_indices() {
+                            for (count, (i, _)) in s.char_indices().enumerate() {
                                 if count >= 200 { end = i; break; }
-                                count += 1;
                             }
                             let rem = if end < s.len() {
                                 format!("{}… (len={})", s[..end].escape_debug(), s.len())
@@ -1062,10 +1028,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
     }
-    // Special-case: Backspace at start-of-text with no selection -> perform forward delete of next grapheme
-    // Rationale: On macOS keyboards the key labeled "Delete" maps to Backspace. When the caret is at
-    // the start (index 0), Backspace cannot delete anything to the left. Users expect repeated presses
-    // to keep deleting characters; here we treat BS at pos 0 as a forward delete.
+    // Note: Removed the confusing "Backspace at start -> forward delete" behavior
+    // Now Backspace at start of text does nothing (standard behavior)
+    // If users want to delete forward, they should use the Delete key (Fn+Delete on Mac)
+    
+    // [DISABLED] Special-case: Backspace at start-of-text with no selection -> perform forward delete of next grapheme
+    // This entire block has been commented out because it was confusing - backspace at start should do nothing
+    /*
     {
         let id = egui::Id::new("sql_editor");
         let bs_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
@@ -1083,69 +1052,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             } else if tabular.selection_start != tabular.selection_end {
                 has_selection = true;
             }
-            if !has_selection && caret_b == 0 && !tabular.editor.text.is_empty() {
-                use unicode_segmentation::UnicodeSegmentation;
-                // Delete the next grapheme to the right of caret
-                let tail = &tabular.editor.text[0..];
-                if let Some((_, first_gr)) = tail.grapheme_indices(true).next() {
-                    let end_b = first_gr.len();
-                    log::debug!(
-                        "Backspace at start -> forward delete: removing '{}' at [0..{}]",
-                        tabular.editor.text[0..end_b].escape_debug(),
-                        end_b
-                    );
-                    tabular.editor.apply_single_replace(0..end_b, "");
-                    tabular.cursor_position = 0;
-                    tabular.selection_start = 0;
-                    tabular.selection_end = 0;
-                    tabular.selected_text.clear();
-                    // Sync egui caret at 0
-                    crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, 0);
-                    // Focus and mark modified
-                    ui.memory_mut(|m| m.request_focus(id));
-                    tabular.editor_focus_boost_frames = 4;
-                    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                        tab.content = tabular.editor.text.clone();
-                        tab.is_modified = true;
-                    } else {
-                        tabular.editor.mark_text_modified();
-                    }
-                    // Consume the Backspace event
-                    let mut consumed_backspace_event = false;
-                    ui.ctx().input_mut(|ri| {
-                        let mut kept = Vec::with_capacity(ri.events.len());
-                        for ev in ri.events.drain(..) {
-                            if !consumed_backspace_event {
-                                if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = ev {
-                                    consumed_backspace_event = true;
-                                    continue;
-                                }
-                            }
-                            kept.push(ev);
-                        }
-                        ri.events = kept;
-                    });
-                    if consumed_backspace_event {
-                        ui.ctx().request_repaint();
-                    }
-                    // Log remaining text preview
-                    {
-                        let s = &tabular.editor.text;
-                        let mut end = s.len();
-                        let mut count = 0;
-                        for (i, _) in s.char_indices() {
-                            if count >= 200 { end = i; break; }
-                            count += 1;
-                        }
-                        let rem = if end < s.len() {
-                            format!("{}… (len={})", s[..end].escape_debug(), s.len())
-                        } else { s.escape_debug().to_string() };
-                        log::debug!("Remaining text after backspace-at-start/forward-delete: {}", rem);
-                    }
-                }
-            }
+            // The confusing forward delete behavior was here
         }
     }
+    */
+
     // Helper: find line start and end byte indices for a given cursor
     let line_bounds = |s: &str, pos: usize| -> (usize, usize, usize) {
         let bytes = s.as_bytes();
@@ -1334,8 +1245,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
     // Only accept via Enter if popup shown AND acceptance criteria met
     let accept_via_enter_pre = enter_pressed_pre && tabular.show_autocomplete;
-    log::debug!("🔍 ENTER DEBUG: Final acceptance flags: accept_via_tab_pre = {}, accept_via_enter_pre = {}", 
-        accept_via_tab_pre, accept_via_enter_pre);
     if accept_via_tab_pre || accept_via_enter_pre {
         // Remove Tab/Enter pressed events so TextEdit tidak menyisipkan tab/newline
         ui.ctx().input_mut(|ri| {
@@ -1450,8 +1359,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Tidak lagi override clip_rect secara manual; biarkan ScrollArea mengatur viewport dan scrolling.
     let response = ui.put(editor_rect, text_edit);
-    log::debug!("🔥 TEXTEDIT DEBUG: response.changed() = {}, has_focus() = {}, lost_focus() = {}, gained_focus() = {}", 
-        response.changed(), response.has_focus(), response.lost_focus(), response.gained_focus());
     
     // While focus boost is active, keep focus on the editor so typing works immediately after actions
     if tabular.editor_focus_boost_frames > 0 {
@@ -1596,17 +1503,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         state.store(ui.ctx(), id);
         // Verify and re-assert if needed in the same frame
         let mut reapplied = false;
-        if let Some(s2) = TextEditState::load(ui.ctx(), id) {
-            if let Some(rng) = s2.cursor.char_range() {
-                if rng.primary.index != ci {
-                    let mut s3 = s2;
-                    s3.cursor
-                        .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
-                    s3.store(ui.ctx(), id);
-                    reapplied = true;
-                }
+        if let Some(s2) = TextEditState::load(ui.ctx(), id)
+            && let Some(rng) = s2.cursor.char_range()
+            && rng.primary.index != ci {
+                let mut s3 = s2;
+                s3.cursor
+                    .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
+                s3.store(ui.ctx(), id);
+                reapplied = true;
             }
-        }
         tabular.cursor_position = clamped;
         tabular.pending_cursor_set = None;
         // Enforce for a few frames to fight any late overrides
@@ -1807,10 +1712,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         if !deleted_dbg.is_empty() && inserted_dbg.is_empty() {
             let s = &tabular.editor.text;
             let mut end = s.len();
-            let mut count = 0;
-            for (i, _) in s.char_indices() {
+            for (count, (i, _)) in s.char_indices().enumerate() {
                 if count >= 200 { end = i; break; }
-                count += 1;
             }
             let rem = if end < s.len() {
                 format!("{}… (len={})", s[..end].escape_debug(), s.len())
@@ -1944,10 +1847,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             editor_autocomplete::navigate(tabular, -1);
         }
         let mut accepted = false;
-        log::debug!("🔍 ENTER DEBUG: Post-render check: input.key_pressed(Enter) = {}, accept_via_enter_pre = {}", 
-            input.key_pressed(egui::Key::Enter), accept_via_enter_pre);
         if input.key_pressed(egui::Key::Enter) && !accept_via_enter_pre {
-            log::debug!("🔍 ENTER DEBUG: 🔥 POST-RENDER Enter detected and not already processed - this might be consuming extra Enter!");
             // Apply same heuristic as pre-render
             let mut should_accept = tabular.autocomplete_navigated;
             if !should_accept {
@@ -1959,24 +1859,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     if let Some(sugg) = tabular
                         .autocomplete_suggestions
                         .get(tabular.selected_autocomplete_index)
-                    {
-                        if !prefix.is_empty() {
+                        && !prefix.is_empty() {
                             let p = prefix.to_lowercase();
                             let s = sugg.to_lowercase();
                             if s.starts_with(&p) {
                                 should_accept = true;
                             }
                         }
-                    }
                 }
             }
             
             if should_accept {
-                log::debug!("🔍 ENTER DEBUG: Post-render accepting autocomplete");
                 editor_autocomplete::accept_current_suggestion(tabular);
                 accepted = true;
-            } else {
-                log::debug!("🔍 ENTER DEBUG: Post-render NOT accepting - Enter should have passed to TextEdit for newline");
             }
         }
         // Skip Tab acceptance here if already processed earlier
