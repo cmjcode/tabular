@@ -151,20 +151,26 @@ pub(crate) fn fetch_tables_from_mssql_connection(
         config.trust_cert();
         if !db_name.is_empty() { config.database(db_name.clone()); }
 
-        let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await {
-            Ok(t) => t,
-            Err(e) => {
-                log::debug!("MsSQL connect error for table fetch: {}", e);
-                return None;
-            }
+        let tcp = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::TcpStream::connect((host.as_str(), port)),
+        )
+        .await
+        {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => { log::debug!("MsSQL connect error for table fetch: {}", e); return None; }
+            Err(_) => { log::debug!("MsSQL connect timeout for table fetch"); return None; }
         };
         let _ = tcp.set_nodelay(true);
-        let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await {
-            Ok(c) => c,
-            Err(e) => {
-                log::debug!("MsSQL client connect error: {}", e);
-                return None;
-            }
+        let mut client = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tiberius::Client::connect(config, tcp.compat_write()),
+        )
+        .await
+        {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => { log::debug!("MsSQL client connect error: {}", e); return None; }
+            Err(_) => { log::debug!("MsSQL client connect timeout"); return None; }
         };
 
         // Choose query based on type (include schema for views)
@@ -179,9 +185,15 @@ pub(crate) fn fetch_tables_from_mssql_connection(
             }
         };
 
-        let mut stream = match client.simple_query(query).await {
-            Ok(s) => s,
-            Err(e) => { log::debug!("MsSQL list query error: {}", e); return None; }
+        let mut stream = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.simple_query(query),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => { log::debug!("MsSQL list query error: {}", e); return None; }
+            Err(_) => { log::debug!("MsSQL list query timeout"); return None; }
         };
 
         let mut items = Vec::new();
@@ -236,20 +248,26 @@ pub(crate) fn fetch_objects_from_mssql_connection(
             config.database(db_name.clone());
         }
 
-        let tcp = match tokio::net::TcpStream::connect((host.as_str(), port)).await {
-            Ok(t) => t,
-            Err(e) => {
-                log::debug!("MsSQL connect error for object fetch: {}", e);
-                return None;
-            }
+        let tcp = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::TcpStream::connect((host.as_str(), port)),
+        )
+        .await
+        {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => { log::debug!("MsSQL connect error for object fetch: {}", e); return None; }
+            Err(_) => { log::debug!("MsSQL connect timeout for object fetch"); return None; }
         };
         let _ = tcp.set_nodelay(true);
-        let mut client = match tiberius::Client::connect(config, tcp.compat_write()).await {
-            Ok(c) => c,
-            Err(e) => {
-                log::debug!("MsSQL client connect error: {}", e);
-                return None;
-            }
+        let mut client = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tiberius::Client::connect(config, tcp.compat_write()),
+        )
+        .await
+        {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => { log::debug!("MsSQL client connect error: {}", e); return None; }
+            Err(_) => { log::debug!("MsSQL client connect timeout"); return None; }
         };
 
         let query = match object_type {
@@ -286,12 +304,15 @@ pub(crate) fn fetch_objects_from_mssql_connection(
             }
         };
 
-        let mut stream = match client.simple_query(query).await {
-            Ok(s) => s,
-            Err(e) => {
-                log::debug!("MsSQL object list query error: {}", e);
-                return None;
-            }
+        let mut stream = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.simple_query(query),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => { log::debug!("MsSQL object list query error: {}", e); return None; }
+            Err(_) => { log::debug!("MsSQL object list query timeout"); return None; }
         };
 
         let mut items = Vec::new();
@@ -342,13 +363,21 @@ pub(crate) async fn execute_query(
         config.database(cfg.database.clone());
     }
 
-    let tcp = tokio::net::TcpStream::connect((cfg.host.as_str(), cfg.port))
-        .await
-        .map_err(|e| e.to_string())?;
+    let tcp = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::TcpStream::connect((cfg.host.as_str(), cfg.port)),
+    )
+    .await
+    .map_err(|_| "connect timeout".to_string())?
+    .map_err(|e| e.to_string())?;
     tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-    let tls = tiberius::Client::connect(config, tcp.compat_write())
-        .await
-        .map_err(|e| e.to_string())?;
+    let tls = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tiberius::Client::connect(config, tcp.compat_write()),
+    )
+    .await
+    .map_err(|_| "handshake timeout".to_string())?
+    .map_err(|e| e.to_string())?;
     run_query(tls, query).await
 }
 

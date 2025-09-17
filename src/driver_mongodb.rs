@@ -34,7 +34,14 @@ pub async fn fetch_mongodb_data(
     cache_pool: &sqlx::SqlitePool,
 ) -> bool {
     // List databases
-    let dbs = match client.list_database_names().await {
+    let dbs = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.list_database_names(),
+    )
+    .await
+    .map_err(|_| mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")))
+    .and_then(|r| r)
+    {
         Ok(v) => v,
         Err(e) => {
             debug!("Failed to list MongoDB databases: {}", e);
@@ -63,7 +70,14 @@ pub async fn fetch_mongodb_data(
 
     // For each database, list collections and cache as table_cache with type 'collection'
     for db_name in &dbs {
-        match client.database(db_name).list_collection_names().await {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.database(db_name).list_collection_names(),
+        )
+        .await
+        .map_err(|_| mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")))
+        .and_then(|r| r)
+        {
             Ok(cols) => {
                 // Save collections as table_cache entries
                 let _ = sqlx::query(
@@ -118,7 +132,14 @@ pub fn fetch_collections_from_mongodb_connection(
         if let Some(models::enums::DatabasePool::MongoDB(client)) =
             connection::get_or_create_connection_pool(tabular, connection_id).await
         {
-            match client.database(database_name).list_collection_names().await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.database(database_name).list_collection_names(),
+            )
+            .await
+            .map_err(|_| mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")))
+            .and_then(|r| r)
+            {
                 Ok(cols) => Some(cols),
                 Err(e) => {
                     debug!("MongoDB list_collection_names error: {}", e);
@@ -147,7 +168,14 @@ pub fn sample_collection_documents(
             let coll = client
                 .database(database_name)
                 .collection::<mongodb::bson::Document>(collection_name);
-            match coll.find(doc! {}).limit(limit).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                coll.find(doc! {}).limit(limit),
+            )
+            .await
+            .map_err(|_| mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")))
+            .and_then(|r| r)
+            {
                 Ok(mut cursor) => {
                     let mut rows = Vec::new();
                     while let Some(item) = cursor.try_next().await.unwrap_or(None) {

@@ -327,8 +327,13 @@ pub(crate) fn execute_table_query_sync(
                                     continue;
                                 }
 
-                                match sqlx::query(trimmed).fetch_all(&mut conn).await {
-                                    Ok(rows) => {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    sqlx::query(trimmed).fetch_all(&mut conn),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(rows)) => {
                                         // Log query execution time and row count for performance monitoring
                                         debug!("✅ Query executed successfully: {} rows returned", rows.len());
 
@@ -354,8 +359,13 @@ pub(crate) fn execute_table_query_sync(
                                                     if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
                                                         && let Some(table_name) = words.get(from_idx + 1) {
                                                         let describe_query = format!("DESCRIBE {}", table_name);
-                                                        match sqlx::query(&describe_query).fetch_all(&mut conn).await {
-                                                            Ok(desc_rows) => {
+                                                        match tokio::time::timeout(
+                                                            std::time::Duration::from_secs(5),
+                                                            sqlx::query(&describe_query).fetch_all(&mut conn),
+                                                        )
+                                                        .await
+                                                        {
+                                                            Ok(Ok(desc_rows)) => {
                                                                 if !desc_rows.is_empty() {
                                                                     // For DESCRIBE, the first column contains field names
                                                                     final_headers = desc_rows.iter().map(|row| {
@@ -363,11 +373,16 @@ pub(crate) fn execute_table_query_sync(
                                                                     }).collect();
                                                                 }
                                                             }
-                                                            Err(_) => {
+                                                            _ => {
                                                                 // DESCRIBE failed, try LIMIT 0 as fallback
                                                                 let info_query = format!("{} LIMIT 0", trimmed);
-                                                                match sqlx::query(&info_query).fetch_all(&mut conn).await {
-                                                                    Ok(info_rows) => {
+                                                                match tokio::time::timeout(
+                                                                    std::time::Duration::from_secs(5),
+                                                                    sqlx::query(&info_query).fetch_all(&mut conn),
+                                                                )
+                                                                .await
+                                                                {
+                                                                    Ok(Ok(info_rows)) => {
                                                                         if !info_rows.is_empty() {
                                                                             final_headers = info_rows[0]
                                                                                 .columns()
@@ -376,7 +391,7 @@ pub(crate) fn execute_table_query_sync(
                                                                                 .collect();
                                                                         }
                                                                     }
-                                                                    Err(_) => {
+                                                                    _ => {
                                                                         // Both methods failed
                                                                         final_headers = Vec::new();
                                                                     }
@@ -392,8 +407,8 @@ pub(crate) fn execute_table_query_sync(
                                             }
                                         }
                                     }
-                                    Err(e) => {
-                                        error_message = e.to_string();
+                                    _ => {
+                                        error_message = "Query timed out or failed".to_string();
                                         execution_success = false;
                                         break;
                                     }
@@ -438,8 +453,13 @@ pub(crate) fn execute_table_query_sync(
                             let trimmed = statement.trim();
                             // Skip empty or comment-only statements
                             if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") { continue; }
-                            match sqlx::query(trimmed).fetch_all(pg_pool.as_ref()).await {
-                                Ok(rows) => {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                sqlx::query(trimmed).fetch_all(pg_pool.as_ref()),
+                            )
+                            .await
+                            {
+                                Ok(Ok(rows)) => {
                                     if i == statements.len() - 1 {
                                         // For the last statement, try to get headers even if no rows
                                         if !rows.is_empty() {
@@ -468,8 +488,13 @@ pub(crate) fn execute_table_query_sync(
                                                         "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position",
                                                         clean_table
                                                     );
-                                                    match sqlx::query(&info_query).fetch_all(pg_pool.as_ref()).await {
-                                                        Ok(info_rows) => {
+                                                    match tokio::time::timeout(
+                                                        std::time::Duration::from_secs(5),
+                                                        sqlx::query(&info_query).fetch_all(pg_pool.as_ref()),
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(Ok(info_rows)) => {
                                                             final_headers = info_rows.iter().map(|row| {
                                                                 match row.try_get::<String, _>(0) {
                                                                     Ok(col_name) => col_name,
@@ -477,16 +502,21 @@ pub(crate) fn execute_table_query_sync(
                                                                 }
                                                             }).collect();
                                                         }
-                                                        Err(_) => {
+                                                        _ => {
                                                             // information_schema failed, try LIMIT 0 as fallback
                                                             let limit_query = format!("{} LIMIT 0", statement);
-                                                            match sqlx::query(&limit_query).fetch_all(pg_pool.as_ref()).await {
-                                                                Ok(limit_rows) => {
+                                                            match tokio::time::timeout(
+                                                                std::time::Duration::from_secs(5),
+                                                                sqlx::query(&limit_query).fetch_all(pg_pool.as_ref()),
+                                                            )
+                                                            .await
+                                                            {
+                                                                Ok(Ok(limit_rows)) => {
                                                                     if !limit_rows.is_empty() {
                                                                         final_headers = limit_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
                                                                     }
                                                                 }
-                                                                Err(_) => {
+                                                                _ => {
                                                                     if final_headers.is_empty() { final_headers = infer_select_headers(statement); }
                                                                     if final_headers.is_empty() { final_headers = Vec::new(); }
                                                                 }
@@ -502,8 +532,8 @@ pub(crate) fn execute_table_query_sync(
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    return Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]]));
+                                _ => {
+                                    return Some((vec!["Error".to_string()], vec![vec!["Query timed out or failed".to_string()]]));
                                 }
                             }
                         }
@@ -526,8 +556,13 @@ pub(crate) fn execute_table_query_sync(
                             let trimmed = statement.trim();
                             // Skip empty or comment-only statements
                             if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") { continue; }
-                            match sqlx::query(trimmed).fetch_all(sqlite_pool.as_ref()).await {
-                                Ok(rows) => {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                sqlx::query(trimmed).fetch_all(sqlite_pool.as_ref()),
+                            )
+                            .await
+                            {
+                                Ok(Ok(rows)) => {
                                     if i == statements.len() - 1 {
                                         // For the last statement, try to get headers even if no rows
                                         if !rows.is_empty() {
@@ -547,8 +582,13 @@ pub(crate) fn execute_table_query_sync(
                                                     && let Some(table_name) = words.get(from_idx + 1) {
                                                     let clean_table = table_name.trim_matches('"').trim_matches('`').trim_matches('[').trim_matches(']');
                                                     let pragma_query = format!("PRAGMA table_info({})", clean_table);
-                                                    match sqlx::query(&pragma_query).fetch_all(sqlite_pool.as_ref()).await {
-                                                        Ok(pragma_rows) => {
+                                                    match tokio::time::timeout(
+                                                        std::time::Duration::from_secs(5),
+                                                        sqlx::query(&pragma_query).fetch_all(sqlite_pool.as_ref()),
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(Ok(pragma_rows)) => {
                                                             final_headers = pragma_rows.iter().map(|row| {
                                                                 // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
                                                                 // We want the name column (index 1)
@@ -558,16 +598,21 @@ pub(crate) fn execute_table_query_sync(
                                                                 }
                                                             }).collect();
                                                         }
-                                                        Err(_) => {
+                                                        _ => {
                                                             // PRAGMA failed, try LIMIT 0 as fallback
                                                             let limit_query = format!("{} LIMIT 0", statement);
-                                                            match sqlx::query(&limit_query).fetch_all(sqlite_pool.as_ref()).await {
-                                                                Ok(limit_rows) => {
+                                                            match tokio::time::timeout(
+                                                                std::time::Duration::from_secs(5),
+                                                                sqlx::query(&limit_query).fetch_all(sqlite_pool.as_ref()),
+                                                            )
+                                                            .await
+                                                            {
+                                                                Ok(Ok(limit_rows)) => {
                                                                     if !limit_rows.is_empty() {
                                                                         final_headers = limit_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
                                                                     }
                                                                 }
-                                                                Err(_) => {
+                                                                _ => {
                                                                     // Both methods failed
                                                                     final_headers = Vec::new();
                                                                 }
@@ -583,8 +628,8 @@ pub(crate) fn execute_table_query_sync(
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    return Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]]));
+                                _ => {
+                                    return Some((vec!["Error".to_string()], vec![vec!["Query timed out or failed".to_string()]]));
                                 }
                             }
                         }
@@ -606,22 +651,32 @@ pub(crate) fn execute_table_query_sync(
                                 if parts.len() != 2 {
                                     return Some((vec!["Error".to_string()], vec![vec!["GET requires exactly one key".to_string()]]));
                                 }
-                                match connection.get::<&str, Option<String>>(parts[1]).await {
-                                    Ok(Some(value)) => Some((vec!["Key".to_string(), "Value".to_string()], vec![vec![parts[1].to_string(), value]])),
-                                    Ok(None) => Some((vec!["Key".to_string(), "Value".to_string()], vec![vec![parts[1].to_string(), "NULL".to_string()]])),
-                                    Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis GET error: {}", e)]])),
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    connection.get::<&str, Option<String>>(parts[1]),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(Some(value))) => Some((vec!["Key".to_string(), "Value".to_string()], vec![vec![parts[1].to_string(), value]])),
+                                    Ok(Ok(None)) => Some((vec!["Key".to_string(), "Value".to_string()], vec![vec![parts[1].to_string(), "NULL".to_string()]])),
+                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis GET timed out or failed".to_string()]])),
                                 }
                             }
                             "KEYS" => {
                                 if parts.len() != 2 {
                                     return Some((vec!["Error".to_string()], vec![vec!["KEYS requires exactly one pattern".to_string()]]));
                                 }
-                                match connection.keys::<&str, Vec<String>>(parts[1]).await {
-                                    Ok(keys) => {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    connection.keys::<&str, Vec<String>>(parts[1]),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(keys)) => {
                                         let table_data: Vec<Vec<String>> = keys.into_iter().map(|k| vec![k]).collect();
                                         Some((vec!["Key".to_string()], table_data))
                                     }
-                                    Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis KEYS error: {}", e)]])),
+                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis KEYS timed out or failed".to_string()]])),
                                 }
                             }
                             "SCAN" => {
@@ -657,8 +712,13 @@ pub(crate) fn execute_table_query_sync(
                                 if match_pattern != "*" { cmd.arg("MATCH").arg(match_pattern); }
                                 cmd.arg("COUNT").arg(count);
 
-                                match cmd.query_async::<(String, Vec<String>)>(&mut connection).await {
-                                    Ok((next_cursor, keys)) => {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    cmd.query_async::<(String, Vec<String>)>(&mut connection),
+                                )
+                                .await
+                                {
+                                    Ok(Ok((next_cursor, keys))) => {
                                         let mut table_data = Vec::new();
                                         if keys.is_empty() {
                                             table_data.push(vec!["Info".to_string(), format!("No keys found matching pattern: {}", match_pattern)]);
@@ -675,13 +735,18 @@ pub(crate) fn execute_table_query_sync(
                                         }
                                         Some((vec!["Type".to_string(), "Value".to_string()], table_data))
                                     }
-                                    Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis SCAN error: {}", e)]])),
+                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis SCAN timed out or failed".to_string()]])),
                                 }
                             }
                             "INFO" => {
                                 let section = if parts.len() > 1 { parts[1] } else { "default" };
-                                match redis::cmd("INFO").arg(section).query_async::<String>(&mut connection).await {
-                                    Ok(info_result) => {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    redis::cmd("INFO").arg(section).query_async::<String>(&mut connection),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(info_result)) => {
                                         let mut table_data = Vec::new();
                                         for line in info_result.lines() {
                                             if line.trim().is_empty() || line.starts_with('#') { continue; }
@@ -689,19 +754,24 @@ pub(crate) fn execute_table_query_sync(
                                         }
                                         Some((vec!["Property".to_string(), "Value".to_string()], table_data))
                                     }
-                                    Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis INFO error: {}", e)]])),
+                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis INFO timed out or failed".to_string()]])),
                                 }
                             }
                             "HGETALL" => {
                                 if parts.len() != 2 { return Some((vec!["Error".to_string()], vec![vec!["HGETALL requires exactly one key".to_string()]])); }
-                                match redis::cmd("HGETALL").arg(parts[1]).query_async::<Vec<String>>(&mut connection).await {
-                                    Ok(hash_data) => {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    redis::cmd("HGETALL").arg(parts[1]).query_async::<Vec<String>>(&mut connection),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(hash_data)) => {
                                         let mut table_data = Vec::new();
                                         for chunk in hash_data.chunks(2) { if chunk.len() == 2 { table_data.push(vec![chunk[0].clone(), chunk[1].clone()]); } }
                                         if table_data.is_empty() { table_data.push(vec!["No data".to_string(), "Hash is empty or key does not exist".to_string()]); }
                                         Some((vec!["Field".to_string(), "Value".to_string()], table_data))
                                     }
-                                    Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Redis HGETALL error: {}", e)]])),
+                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis HGETALL timed out or failed".to_string()]])),
                                 }
                             }
                             _ => Some((vec!["Error".to_string()], vec![vec![format!("Unsupported Redis command: {}", parts[0])]])),
@@ -995,7 +1065,7 @@ async fn create_connection_pool_for_config(
             let pool_result = MySqlPoolOptions::new()
                 .max_connections(10) // Reduced from 20 for better resource management
                 .min_connections(2) // Maintain some ready connections
-                .acquire_timeout(std::time::Duration::from_secs(30)) // Reduced timeout to fail faster
+                .acquire_timeout(std::time::Duration::from_secs(5)) // Fail fast
                 .idle_timeout(std::time::Duration::from_secs(600)) // 10 minute idle timeout (longer)
                 .max_lifetime(std::time::Duration::from_secs(3600)) // 60 minute max lifetime (longer)
                 .test_before_acquire(true) // Enable connection testing for reliability
@@ -1056,7 +1126,7 @@ async fn create_connection_pool_for_config(
             let pool_result = PgPoolOptions::new()
                 .max_connections(15) // Increase max connections
                 .min_connections(1) // Start with fewer minimum connections
-                .acquire_timeout(std::time::Duration::from_secs(60)) // Longer timeout
+                .acquire_timeout(std::time::Duration::from_secs(5)) // Fail fast
                 .idle_timeout(std::time::Duration::from_secs(300)) // 5 minute idle timeout
                 .max_lifetime(std::time::Duration::from_secs(1800)) // 30 minute max lifetime
                 .test_before_acquire(false) // Disable pre-test for better performance
@@ -1081,7 +1151,7 @@ async fn create_connection_pool_for_config(
             let pool_result = SqlitePoolOptions::new()
                 .max_connections(5) // SQLite doesn't need many connections
                 .min_connections(1) // Start with one connection
-                .acquire_timeout(std::time::Duration::from_secs(60)) // Longer timeout
+                .acquire_timeout(std::time::Duration::from_secs(5)) // Fail fast
                 .idle_timeout(std::time::Duration::from_secs(300)) // 5 minute idle timeout
                 .max_lifetime(std::time::Duration::from_secs(1800)) // 30 minute max lifetime
                 .test_before_acquire(false) // Disable pre-test for better performance
@@ -1148,13 +1218,13 @@ async fn create_connection_pool_for_config(
                 )
             };
             debug!("Creating MongoDB client for URI: {}", uri);
-            match MongoClient::with_uri_str(uri).await {
-                Ok(client) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), MongoClient::with_uri_str(uri)).await {
+                Ok(Ok(client)) => {
                     let pool = models::enums::DatabasePool::MongoDB(Arc::new(client));
                     Some(pool)
                 }
-                Err(e) => {
-                    debug!("Failed to create MongoDB client: {}", e);
+                _ => {
+                    debug!("Failed to create MongoDB client (timeout or error)");
                     None
                 }
             }
@@ -1445,7 +1515,7 @@ pub(crate) async fn create_database_pool(
             let pool_result = MySqlPoolOptions::new()
                 .max_connections(3) // Reduced from 5 to 3 - fewer but more stable connections
                 .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(30)) // Faster timeout to fail fast
+                .acquire_timeout(std::time::Duration::from_secs(5)) // Faster timeout to fail fast
                 .idle_timeout(std::time::Duration::from_secs(600)) // 10 minutes idle timeout
                 .max_lifetime(std::time::Duration::from_secs(3600)) // 1 hour max lifetime
                 .test_before_acquire(true) // Test connections before use
@@ -1499,7 +1569,7 @@ pub(crate) async fn create_database_pool(
             match PgPoolOptions::new()
                 .max_connections(3)
                 .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(10))
+                .acquire_timeout(std::time::Duration::from_secs(5))
                 .idle_timeout(std::time::Duration::from_secs(300))
                 .connect(&connection_string)
                 .await
@@ -1514,7 +1584,7 @@ pub(crate) async fn create_database_pool(
             match SqlitePoolOptions::new()
                 .max_connections(3)
                 .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(10))
+                .acquire_timeout(std::time::Duration::from_secs(5))
                 .idle_timeout(std::time::Duration::from_secs(300))
                 .connect(&connection_string)
                 .await
@@ -1567,9 +1637,9 @@ pub(crate) async fn create_database_pool(
                     enc_user, enc_pass, connection.host, connection.port
                 )
             };
-            match MongoClient::with_uri_str(uri).await {
-                Ok(client) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
-                Err(_e) => None,
+            match tokio::time::timeout(std::time::Duration::from_secs(5), MongoClient::with_uri_str(uri)).await {
+                Ok(Ok(client)) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
+                _ => None,
             }
         }
     }

@@ -10,9 +10,13 @@ pub(crate) async fn fetch_postgres_data(
     cache_pool: &SqlitePool,
 ) -> bool {
     // 1) Cache database names
-    let db_rows = match sqlx::query("SELECT datname FROM pg_database WHERE datistemplate = false")
-        .fetch_all(pool)
-        .await
+    let db_rows = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sqlx::query("SELECT datname FROM pg_database WHERE datistemplate = false").fetch_all(pool),
+    )
+    .await
+    .map_err(|_| sqlx::Error::PoolTimedOut)
+    .and_then(|r| r)
     {
         Ok(r) => r,
         Err(_) => return false,
@@ -29,16 +33,23 @@ pub(crate) async fn fetch_postgres_data(
     }
 
     // 2) Cache tables/views for the CURRENT database only
-    let current_db: Option<String> = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pool)
-        .await
-        .ok();
+    let current_db: Option<String> = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sqlx::query_scalar("SELECT current_database()").fetch_one(pool),
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok());
 
     if let Some(db_name) = current_db {
         // Tables (public)
-        if let Ok(table_rows) = sqlx::query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")
-                     .fetch_all(pool)
-                     .await
+        if let Ok(table_rows) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sqlx::query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'").fetch_all(pool),
+        )
+        .await
+        .map_err(|_| sqlx::Error::PoolTimedOut)
+        .and_then(|r| r)
               {
                      for table_row in table_rows {
                             if let Ok(table_name) = table_row.try_get::<String, _>(0) {
@@ -51,10 +62,15 @@ pub(crate) async fn fetch_postgres_data(
                                           .await;
 
                                    // Columns
-                                   if let Ok(col_rows) = sqlx::query("SELECT column_name, data_type, ordinal_position FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position")
-                                          .bind(&table_name)
-                                          .fetch_all(pool)
-                                          .await
+                    if let Ok(col_rows) = tokio::time::timeout(
+                         std::time::Duration::from_secs(5),
+                         sqlx::query("SELECT column_name, data_type, ordinal_position FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position")
+                        .bind(&table_name)
+                        .fetch_all(pool),
+                    )
+                    .await
+                    .map_err(|_| sqlx::Error::PoolTimedOut)
+                    .and_then(|r| r)
                                    {
                                           for col_row in col_rows {
                                                  if let (Ok(col_name), Ok(col_type), Ok(ordinal_pos)) = (
@@ -79,11 +95,14 @@ pub(crate) async fn fetch_postgres_data(
               }
 
         // Views (public)
-        if let Ok(view_rows) = sqlx::query(
-            "SELECT table_name FROM information_schema.views WHERE table_schema = 'public'",
+        if let Ok(view_rows) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sqlx::query("SELECT table_name FROM information_schema.views WHERE table_schema = 'public'")
+                .fetch_all(pool),
         )
-        .fetch_all(pool)
         .await
+        .map_err(|_| sqlx::Error::PoolTimedOut)
+        .and_then(|r| r)
         {
             for view_row in view_rows {
                 if let Ok(view_name) = view_row.try_get::<String, _>(0) {
@@ -146,9 +165,9 @@ pub(crate) fn fetch_tables_from_postgres_connection(
                      conn.username, conn.password, conn.host, conn.port, db
               );
 
-              let pool = match PgPoolOptions::new()
+        let pool = match PgPoolOptions::new()
                      .max_connections(1)
-                     .acquire_timeout(std::time::Duration::from_secs(15))
+            .acquire_timeout(std::time::Duration::from_secs(5))
                      .connect(&conn_str)
                      .await
               {
@@ -162,7 +181,14 @@ pub(crate) fn fetch_tables_from_postgres_connection(
                      _ => return None,
               };
 
-              match sqlx::query_as::<_, (String,)>(sql).fetch_all(&pool).await {
+        match tokio::time::timeout(
+              std::time::Duration::from_secs(5),
+              sqlx::query_as::<_, (String,)>(sql).fetch_all(&pool),
+        )
+        .await
+        .map_err(|_| sqlx::Error::PoolTimedOut)
+        .and_then(|r| r)
+        {
                      Ok(rows) => Some(rows.into_iter().map(|(n,)| n).collect()),
                      Err(_) => None,
               }

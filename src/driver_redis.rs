@@ -12,39 +12,53 @@ pub(crate) async fn fetch_redis_data(
 ) -> bool {
     // Try to get a Redis connection
     let mut conn = redis_manager.clone();
-    match redis::cmd("PING").query_async::<String>(&mut conn).await {
-        Ok(_) => {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        redis::cmd("PING").query_async::<String>(&mut conn),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
             // Get CONFIG GET databases to determine max database count
-            let max_databases = if let Ok(config_result) = redis::cmd("CONFIG")
-                .arg("GET")
-                .arg("databases")
-                .query_async::<Vec<String>>(&mut conn)
-                .await
+            let max_databases = match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                redis::cmd("CONFIG")
+                    .arg("GET")
+                    .arg("databases")
+                    .query_async::<Vec<String>>(&mut conn),
+            )
+            .await
             {
-                if config_result.len() >= 2 {
-                    config_result[1].parse::<i32>().unwrap_or(16)
-                } else {
-                    16 // Default Redis databases count
+                Ok(Ok(config_result)) => {
+                    if config_result.len() >= 2 {
+                        config_result[1].parse::<i32>().unwrap_or(16)
+                    } else {
+                        16
+                    }
                 }
-            } else {
-                16 // Default fallback
+                _ => 16,
             };
 
             // Cache all potential databases (db0 to db15 by default)
             for db_num in 0..max_databases {
                 let db_name = format!("db{}", db_num);
-                let _ = sqlx::query("INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)")
-                     .bind(connection_id)
-                     .bind(&db_name)
-                     .execute(cache_pool)
-                     .await;
+                let _ = sqlx::query(
+                    "INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)",
+                )
+                .bind(connection_id)
+                .bind(&db_name)
+                .execute(cache_pool)
+                .await;
             }
 
             // Get keyspace info to identify which databases actually have keys
-            if let Ok(keyspace_result) = redis::cmd("INFO")
-                .arg("keyspace")
-                .query_async::<String>(&mut conn)
-                .await
+            if let Ok(Ok(keyspace_result)) = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                redis::cmd("INFO")
+                    .arg("keyspace")
+                    .query_async::<String>(&mut conn),
+            )
+            .await
             {
                 for line in keyspace_result.lines() {
                     if line.starts_with("db")
@@ -52,19 +66,19 @@ pub(crate) async fn fetch_redis_data(
                     {
                         // Mark this database as having keys by adding a special marker
                         let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
-                                   .bind(connection_id)
-                                   .bind(db_part)
-                                   .bind("_has_keys")
-                                   .bind("redis_marker")
-                                   .execute(cache_pool)
-                                   .await;
+                            .bind(connection_id)
+                            .bind(db_part)
+                            .bind("_has_keys")
+                            .bind("redis_marker")
+                            .execute(cache_pool)
+                            .await;
                     }
                 }
             }
 
             true
         }
-        Err(_e) => false,
+        _ => false,
     }
 }
 
@@ -145,9 +159,14 @@ pub(crate) fn fetch_tables_from_redis_connection(
                     "info_section" => {
                         // Return the info sections we cached
                         if database_name == "info" {
-                            // Get Redis INFO sections
-                            match redis::cmd("INFO").query_async::<String>(&mut conn).await {
-                                Ok(info_result) => {
+                            // Get Redis INFO sections (5s timeout)
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                redis::cmd("INFO").query_async::<String>(&mut conn),
+                            )
+                            .await
+                            {
+                                Ok(Ok(info_result)) => {
                                     let sections: Vec<String> = info_result
                                         .lines()
                                         .filter(|line| line.starts_with('#') && !line.is_empty())
@@ -156,8 +175,8 @@ pub(crate) fn fetch_tables_from_redis_connection(
                                         .collect();
                                     Some(sections)
                                 }
-                                Err(e) => {
-                                    debug!("Error getting Redis INFO: {}", e);
+                                _ => {
+                                    debug!("Error or timeout getting Redis INFO");
                                     None
                                 }
                             }
@@ -172,23 +191,26 @@ pub(crate) fn fetch_tables_from_redis_connection(
                             if let Ok(db_num) =
                                 database_name.trim_start_matches("db").parse::<i32>()
                             {
-                                if (redis::cmd("SELECT")
-                                    .arg(db_num)
-                                    .query_async::<String>(&mut conn)
-                                    .await)
-                                    .is_ok()
+                                if let Ok(Ok(_)) = tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    redis::cmd("SELECT").arg(db_num).query_async::<String>(&mut conn),
+                                )
+                                .await
                                 {
                                     // Get a sample of keys (limit to first 100)
-                                    match redis::cmd("SCAN")
-                                        .arg(0)
-                                        .arg("COUNT")
-                                        .arg(100)
-                                        .query_async::<Vec<String>>(&mut conn)
-                                        .await
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(5),
+                                        redis::cmd("SCAN")
+                                            .arg(0)
+                                            .arg("COUNT")
+                                            .arg(100)
+                                            .query_async::<Vec<String>>(&mut conn),
+                                    )
+                                    .await
                                     {
-                                        Ok(keys) => Some(keys),
-                                        Err(e) => {
-                                            debug!("Error scanning Redis keys: {}", e);
+                                        Ok(Ok(keys)) => Some(keys),
+                                        _ => {
+                                            debug!("Error or timeout scanning Redis keys");
                                             Some(vec!["keys".to_string()]) // Return generic "keys" entry
                                         }
                                     }

@@ -563,10 +563,15 @@ pub(crate) fn fetch_tables_from_mysql_connection(
                     _ => { debug!("Unsupported table type: {}", table_type); return None; }
                 };
 
-                let rows_res = sqlx::query(query)
-                    .bind(database_name)
-                    .fetch_all(mysql_pool.as_ref())
-                    .await;
+                let rows_res = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    sqlx::query(query)
+                        .bind(database_name)
+                        .fetch_all(mysql_pool.as_ref()),
+                )
+                .await
+                .map_err(|_| sqlx::Error::PoolTimedOut) // map timeout into an error-like value
+                .and_then(|r| r);
 
                 match rows_res {
                     Ok(rows) => {
