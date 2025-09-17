@@ -725,7 +725,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             } else {
                 // No selection - let egui TextEdit handle normal Delete/Backspace
                 log::debug!("No selection detected, letting TextEdit handle {} key normally", if pressed_del { "Delete" } else { "Backspace" });
-                // Proactively request a repaint to avoid any visual lag/stale frame
+                // Proactively request a repaint to avoid any visual lag/stale frame (outside locks)
                 ui.ctx().request_repaint();
             }
         }
@@ -801,6 +801,40 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
     }
+    // Special guard: Backspace on completely empty text -> consume and do nothing (avoid odd widget churn)
+    {
+        let id = egui::Id::new("sql_editor");
+        let bs_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
+        if bs_pressed && tabular.editor.text.is_empty() {
+            // Ensure there's no selection
+            let selection_exists = if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+                rng.start != rng.end
+            } else {
+                tabular.selection_start != tabular.selection_end
+            };
+            if !selection_exists {
+                // Consume the Backspace key event and request a repaint outside the lock
+                let mut consumed_bs_empty = false;
+                ui.ctx().input_mut(|ri| {
+                    let mut kept = Vec::with_capacity(ri.events.len());
+                    for ev in ri.events.drain(..) {
+                        if !consumed_bs_empty {
+                            if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = ev {
+                                consumed_bs_empty = true;
+                                continue;
+                            }
+                        }
+                        kept.push(ev);
+                    }
+                    ri.events = kept;
+                });
+                if consumed_bs_empty {
+                    log::debug!("Consumed Backspace on empty text (no-op)");
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
+    }
     // Forward Delete (no selection): delete the next grapheme to the right of the caret
     // On macOS laptops, this is typically triggered via Fn+Delete and should map to egui::Key::Delete
     {
@@ -859,24 +893,24 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         }
 
                         // Consume the Delete key event so TextEdit doesn't also process it
+                        let mut consumed_delete_event = false;
                         ui.ctx().input_mut(|ri| {
                             let before = ri.events.len();
                             let mut kept = Vec::with_capacity(before);
-                            let mut consumed = false;
                             for ev in ri.events.drain(..) {
-                                if !consumed {
+                                if !consumed_delete_event {
                                     if let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
-                                        consumed = true;
+                                        consumed_delete_event = true;
                                         continue;
                                     }
                                 }
                                 kept.push(ev);
                             }
                             ri.events = kept;
-                            if consumed {
-                                ui.ctx().request_repaint();
-                            }
                         });
+                        if consumed_delete_event {
+                            ui.ctx().request_repaint();
+                        }
                         // Log remaining text preview
                         {
                             let s = &tabular.editor.text;
@@ -931,21 +965,23 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             tabular.editor.mark_text_modified();
                         }
                         // Consume the Delete event
+                        let mut consumed_delete_event = false;
                         ui.ctx().input_mut(|ri| {
                             let mut kept = Vec::with_capacity(ri.events.len());
-                            let mut consumed = false;
                             for ev in ri.events.drain(..) {
-                                if !consumed {
+                                if !consumed_delete_event {
                                     if let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
-                                        consumed = true;
+                                        consumed_delete_event = true;
                                         continue;
                                     }
                                 }
                                 kept.push(ev);
                             }
                             ri.events = kept;
-                            if consumed { ui.ctx().request_repaint(); }
                         });
+                        if consumed_delete_event {
+                            ui.ctx().request_repaint();
+                        }
                         // Log remaining text preview
                         {
                             let s = &tabular.editor.text;
@@ -1014,21 +1050,23 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         tabular.editor.mark_text_modified();
                     }
                     // Consume the Backspace event
+                    let mut consumed_backspace_event = false;
                     ui.ctx().input_mut(|ri| {
                         let mut kept = Vec::with_capacity(ri.events.len());
-                        let mut consumed = false;
                         for ev in ri.events.drain(..) {
-                            if !consumed {
+                            if !consumed_backspace_event {
                                 if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = ev {
-                                    consumed = true;
+                                    consumed_backspace_event = true;
                                     continue;
                                 }
                             }
                             kept.push(ev);
                         }
                         ri.events = kept;
-                        if consumed { ui.ctx().request_repaint(); }
                     });
+                    if consumed_backspace_event {
+                        ui.ctx().request_repaint();
+                    }
                     // Log remaining text preview
                     {
                         let s = &tabular.editor.text;

@@ -450,6 +450,7 @@ impl EditorBuffer {
         let (start_line, _sc) = self.offset_to_line_col(start);
         let (end_line, _ec) = self.offset_to_line_col(end);
         let single_line_edit = !removed_has_nl && !replacement_has_nl && start_line == end_line;
+        
 
         #[cfg(feature = "granular_edit")]
         {
@@ -470,7 +471,7 @@ impl EditorBuffer {
             let last_old = start_line + inval.inval_count.saturating_sub(1);
             let last_new = start_line + inval.new_count.saturating_sub(1);
             let end_line_to_bump = last_old.max(last_new);
-            for line in start_line..=end_line_to_bump { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
+            for line in start_line..= end_line_to_bump { if let Some(v) = self.line_versions.get_mut(line) { *v = v.wrapping_add(1); } }
         }
         #[cfg(not(feature = "granular_edit"))]
         {
