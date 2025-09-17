@@ -200,13 +200,54 @@ pub(crate) fn execute_query_with_connection(
             }
         }
 
-        // Add auto LIMIT 1000 if no LIMIT is present in SELECT queries
-        let original_query = final_query.clone();
-        final_query = add_auto_limit_if_needed(&final_query, &connection.connection_type);
+        // Server pagination fallback: if batch contains a SELECT without LIMIT/TOP/OFFSET/FETCH,
+        // rewrite to paginated query and set pagination state (handles cases like "USE db; SELECT ...").
+        {
+            let upper = final_query.to_uppercase();
+            let has_pagination_clause = upper.contains(" LIMIT")
+                || upper.contains(" OFFSET")
+                || upper.contains(" FETCH ")
+                || upper.contains(" TOP ")
+                || upper.contains("TOP(");
+            let has_select_stmt = upper.split(';').any(|s| s.trim_start().starts_with("SELECT"));
 
-        if original_query != final_query {
-            debug!("Auto LIMIT applied. Original: {}", original_query);
-            debug!("Modified: {}", final_query);
+            if has_select_stmt && !has_pagination_clause {
+                match connection.connection_type {
+                    models::enums::DatabaseType::MySQL
+                    | models::enums::DatabaseType::PostgreSQL
+                    | models::enums::DatabaseType::SQLite => {
+                        // Prepare base query and paginated query
+                        let base = final_query.trim().trim_end_matches(';').to_string();
+                        // Force-enable server pagination flags on UI state
+                        tabular.use_server_pagination = true;
+                        tabular.current_base_query = base.clone();
+                        tabular.current_page = 0;
+                        tabular.actual_total_rows = Some(10_000);
+                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                            tab.base_query = base.clone();
+                            tab.current_page = tabular.current_page;
+                            tab.page_size = tabular.page_size;
+                        }
+                        let offset = tabular.current_page * tabular.page_size;
+                        final_query = format!("{} LIMIT {} OFFSET {}", base, tabular.page_size, offset);
+                        debug!(
+                            "🛑 Auto server-pagination (connection layer) applied. Rewritten query: {}",
+                            final_query
+                        );
+                    }
+                    _ => {
+                        // Non-SQL engines (Mongo/Redis/MsSQL handled elsewhere); do nothing here
+                    }
+                }
+            } else {
+                // Add auto LIMIT if still plain SELECT without clauses and not handled by pagination
+                let original_query = final_query.clone();
+                final_query = add_auto_limit_if_needed(&final_query, &connection.connection_type);
+                if original_query != final_query {
+                    debug!("Auto LIMIT applied. Original: {}", original_query);
+                    debug!("Modified: {}", final_query);
+                }
+            }
         }
 
         execute_table_query_sync(tabular, connection_id, &connection, &final_query)

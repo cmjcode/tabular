@@ -2433,6 +2433,61 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
         debug!("Connection ID: {}", connection_id);
         debug!("Query: {}", query);
 
+        // Auto-enable server-side pagination when the query does not specify LIMIT/TOP/OFFSET/FETCH
+        // This prevents fetching huge result sets and uses paginated execution instead.
+        {
+            let upper = query.to_uppercase();
+            // Broader detection: consider LIMIT/OFFSET/FETCH/TOP patterns without requiring trailing spaces
+            let has_pagination_clause = upper.contains(" LIMIT")
+                || upper.contains(" OFFSET")
+                || upper.contains(" FETCH ")
+                || upper.contains(" TOP ")
+                || upper.contains("TOP(");
+
+            // Heuristic: auto-paginate when there's at least one SELECT statement in the batch (e.g., "USE ...; SELECT ...")
+            let is_select_like = upper
+                .split(';')
+                .any(|stmt| stmt.trim_start().starts_with("SELECT"));
+            // Avoid auto-paginating for DML/DDL-only batches
+            let is_mutating = upper.contains("INSERT ")
+                || upper.contains("UPDATE ")
+                || upper.contains("DELETE ")
+                || upper.contains("MERGE ")
+                || upper.contains("CREATE ")
+                || upper.contains("ALTER ")
+                || upper.contains("DROP ")
+                || upper.contains("TRUNCATE ")
+                || upper.contains("GRANT ")
+                || upper.contains("REVOKE ")
+                || upper.contains("EXEC ")
+                || upper.contains("CALL ");
+
+            if is_select_like && !has_pagination_clause && !is_mutating {
+                // Prepare base query (trim trailing semicolon to avoid issues when appending LIMIT/OFFSET)
+                let base_query = query.trim().trim_end_matches(';').to_string();
+
+                // Force-enable server pagination for this execution as requested
+                tabular.use_server_pagination = true;
+
+                // Initialize server pagination state
+                tabular.current_base_query = base_query.clone();
+                tabular.current_page = 0;
+                tabular.actual_total_rows = Some(10_000); // default total pages assumption
+
+                // Persist base query into the active tab for consistent pagination behavior
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.base_query = base_query;
+                    tab.current_page = tabular.current_page;
+                    tab.page_size = tabular.page_size;
+                }
+
+                // Execute first page and exit normal path
+                debug!("🚀 Auto server-pagination enabled (no LIMIT/TOP found). Executing first page...");
+                tabular.execute_paginated_query();
+                return;
+            }
+        }
+
         let result =
             connection::execute_query_with_connection(tabular, connection_id, query.clone());
 

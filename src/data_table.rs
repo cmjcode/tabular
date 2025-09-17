@@ -1215,12 +1215,35 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
 
     debug!("🔍 Applying SQL filter: {}", sql_query);
 
-    // Apply auto-limit to the filtered query
+    // If the filtered query doesn't specify pagination, enable server-side pagination automatically
+    let upper = sql_query.to_uppercase();
+    let has_pagination_clause = upper.contains(" LIMIT ")
+        || upper.contains(" OFFSET ")
+        || upper.contains(" FETCH ")
+        || upper.contains(" TOP ");
+    if !has_pagination_clause {
+        // Use server pagination: set base query and execute first page only
+        let base_query = sql_query.trim().trim_end_matches(';').to_string();
+        tabular.use_server_pagination = true; // force server pagination for filtered browse
+        tabular.current_base_query = base_query.clone();
+        tabular.current_page = 0;
+        tabular.actual_total_rows = Some(10_000); // assume total rows for paging (default 10k)
+        // Persist into active tab for consistent paging
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.base_query = base_query;
+            tab.current_page = tabular.current_page;
+            tab.page_size = tabular.page_size;
+        }
+        debug!("🚀 Auto server pagination (filter): executing first page only");
+        tabular.execute_paginated_query();
+        return;
+    }
+
+    // Otherwise, fallback to client-side execution with auto LIMIT
     let final_query =
         crate::connection::add_auto_limit_if_needed(&sql_query, &connection.connection_type);
     debug!("🚀 Final query with auto-limit: {}", final_query);
 
-    // Execute the filtered query
     if let Some((headers, data)) =
         connection::execute_query_with_connection(tabular, connection_id, final_query)
     {
@@ -1228,9 +1251,8 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
         tabular.current_table_data = data.clone();
         tabular.all_table_data = data;
         tabular.total_rows = tabular.all_table_data.len();
-        tabular.current_page = 0; // Reset to first page
+        tabular.current_page = 0;
         update_current_page_data(tabular);
-
         debug!(
             "✅ Filter applied successfully, {} rows returned",
             tabular.total_rows
