@@ -125,24 +125,26 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
     let trimmed_query = query.trim();
 
     // Don't add LIMIT/TOP if the entire query already has LIMIT/TOP/OFFSET/FETCH
+    // Detect regardless of whitespace/newlines
     let upper_query = trimmed_query.to_uppercase();
-    if upper_query.contains(" LIMIT ")
-        || upper_query.contains(" OFFSET ")
+    if upper_query.contains("LIMIT")
+        || upper_query.contains("OFFSET")
         || upper_query.contains(" FETCH ")
         || upper_query.contains(" TOP ")
+        || upper_query.contains("TOP(")
     {
         return trimmed_query.to_string();
     }
 
     // Only operate on simple SELECT queries
-    if !upper_query.starts_with("SELECT ") {
+    if !upper_query.starts_with("SELECT") {
         return trimmed_query.to_string();
     }
 
     match db_type {
         models::enums::DatabaseType::MsSQL => {
             // Insert TOP 1000 after SELECT if no TOP present
-            if upper_query.starts_with("SELECT ") {
+            if upper_query.starts_with("SELECT") {
                 // Preserve casing after the SELECT keyword
                 if let Some(rest) = trimmed_query.get(6..) {
                     return format!("SELECT TOP 1000{}", rest);
@@ -204,8 +206,8 @@ pub(crate) fn execute_query_with_connection(
         // rewrite to paginated query and set pagination state (handles cases like "USE db; SELECT ...").
         {
             let upper = final_query.to_uppercase();
-            let has_pagination_clause = upper.contains(" LIMIT")
-                || upper.contains(" OFFSET")
+            let has_pagination_clause = upper.contains("LIMIT")
+                || upper.contains("OFFSET")
                 || upper.contains(" FETCH ")
                 || upper.contains(" TOP ")
                 || upper.contains("TOP(");

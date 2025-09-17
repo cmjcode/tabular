@@ -2438,8 +2438,8 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
         {
             let upper = query.to_uppercase();
             // Broader detection: consider LIMIT/OFFSET/FETCH/TOP patterns without requiring trailing spaces
-            let has_pagination_clause = upper.contains(" LIMIT")
-                || upper.contains(" OFFSET")
+            let has_pagination_clause = upper.contains("LIMIT")
+                || upper.contains("OFFSET")
                 || upper.contains(" FETCH ")
                 || upper.contains(" TOP ")
                 || upper.contains("TOP(");
