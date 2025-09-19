@@ -1,0 +1,41 @@
+# Tabular Software License
+
+This project is dual-licensed under:
+
+1. **GNU Affero General Public License v3 (AGPL-3.0)**
+   You may use, copy, modify, and distribute this software under the terms of the AGPL-3.0.
+   A copy of the full license is available in the file `LICENSE-AGPL` or at:
+   https://www.gnu.org/licenses/agpl-3.0.html
+
+   Key points:
+   - Free for personal, educational, research, and community use.
+   - Any modifications or derivative works that you distribute or host
+     (e.g., SaaS/web service) must also be licensed under the AGPL-3.0
+     and made available in source code form.
+
+2. **Commercial License**
+   If you wish to use this software for commercial purposes **without**
+   being bound by the requirements of AGPL-3.0 (for example, if you
+   want to keep your derivative works proprietary, or integrate this
+   software into a closed-source product), you must purchase a
+   commercial license from:
+
+   PT. Vneu Teknologi Indonesia
+   nunung.pamungkas@vneu.co.id
+
+   Commercial license holders receive:
+   - The right to use this software in proprietary/commercial projects.
+   - Exemption from the copyleft obligations of AGPL-3.0.
+   - Optional access to professional support and SLA (if applicable).
+
+---
+
+## Which license should I choose?
+
+- **I am a student, hobbyist, or researcher →** Use AGPL-3.0 for free.  
+- **I am building open source software →** Use AGPL-3.0 for free.  
+- **I am a company and I want to use this software in a closed-source or commercial product →** Contact us to obtain a commercial license.  
+
+---
+
+© 2025 Vneu Teknologi Indonesia. All rights reserved.
