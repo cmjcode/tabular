@@ -580,7 +580,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().input_mut(|ri| {
             // Drain & filter events: buang ArrowUp/ArrowDown pressed supaya TextEdit tidak memproses
             let mut kept = Vec::with_capacity(ri.events.len());
-            let mut enter_consumed = false;
+            let mut _enter_consumed = false; // renamed to silence unused warning
             for ev in ri.events.drain(..) {
                 match ev {
                     egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } => {
@@ -621,7 +621,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         
                         if should_accept {
                             enter_pressed_pre = true; // we'll accept suggestion
-                            enter_consumed = true;
+                            _enter_consumed = true;
                         } else {
                             // don't consume: let TextEdit insert newline
                             kept.push(e);

@@ -80,7 +80,7 @@ mod ts {
             // If parser.language not set (because creation failed earlier), attempt again.
             if guard.tree.is_none() && guard.last_hash == 0 {
                 // best-effort re-init
-                if let Ok(mut fresh) = TsSqlParser::new() {
+                if let Ok(fresh) = TsSqlParser::new() {
                     *guard = fresh;
                 }
             }
@@ -91,12 +91,98 @@ mod ts {
     }
 }
 
-/// Attempt parse (side effect) and return None so legacy colorizer runs.
+/// Attempt tree-sitter based highlight. If it fails or yields nothing, return None
+/// so the legacy heuristic highlighter can run as fallback.
 #[allow(unused_variables)]
-pub fn try_tree_sitter_sql_highlight(text: &str, _dark: bool) -> Option<LayoutJob> {
+pub fn try_tree_sitter_sql_highlight(text: &str, dark: bool) -> Option<LayoutJob> {
     #[cfg(feature = "tree_sitter_sql")]
-    { let _ = ts::parse_sql(text); }
-    None
+    {
+        use tree_sitter::{Node, TreeCursor};
+        use eframe::egui::{TextFormat};
+        use crate::syntax_ts::{keyword_color, string_color, comment_color, number_color, punctuation_color, normal_color};
+
+        // Parse (side effect warms incremental tree); we also need the actual tree.
+        let sexpr = ts::parse_sql(text)?; // returns root sexpr currently; we re-fetch parser tree via parse again
+        // Re-parse to access the tree via OnceCell. (Refactor later to return tree reference.)
+        // Acquire parser again to read its tree.
+        // Re-run a fresh parser (non-incremental) for highlight only (keeps logic simple for now)
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(tree_sitter_sql::language()).is_err() { return None; }
+        let tree = parser.parse(text, None)?;
+        let root = tree.root_node();
+
+        // Collect spans (start_byte, end_byte, type_index)
+        #[derive(Clone, Copy)]
+        struct Span { s: usize, e: usize, kind: SpanKind }
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum SpanKind { Keyword, String, Comment, Number, Punctuation, Ident, Other }
+
+        let mut spans: Vec<Span> = Vec::with_capacity(256);
+
+        fn classify(node: Node, text: &str) -> Option<SpanKind> {
+            let kind = node.kind();
+            match kind {
+                // Strings & comments
+                "string" | "quoted_text" => Some(SpanKind::String),
+                "comment" => Some(SpanKind::Comment),
+                // Numbers (integer / numeric literal kinds depend on grammar version)
+                "number" | "numeric_literal" => Some(SpanKind::Number),
+                // punctuation tokens are usually individual symbols; we skip letting them fallback to char loop
+                // Keywords: tree-sitter-sql marks many tokens simply as their text (e.g. select, from, where)
+                _ => {
+                    let txt = &text[node.start_byte()..node.end_byte()];
+                    let up = txt.to_ascii_uppercase();
+                    if SQL_KEYWORDS.binary_search(&up.as_str()).is_ok() { return Some(SpanKind::Keyword); }
+                    // simple identifier detection
+                    if kind == "identifier" { return Some(SpanKind::Ident); }
+                    None
+                }
+            }
+        }
+
+        // Depth-first traversal; skip large subtrees once classified (e.g., string, comment)
+        let cursor: TreeCursor = root.walk();
+        let mut stack: Vec<Node> = vec![root];
+        while let Some(node) = stack.pop() {
+            if node.child_count() == 0 { // leaf
+                if let Some(k) = classify(node, text) {
+                    spans.push(Span { s: node.start_byte(), e: node.end_byte(), kind: k });
+                }
+            } else if let Some(k) = classify(node, text) {
+                // treat whole composite node (like comment) as one span
+                spans.push(Span { s: node.start_byte(), e: node.end_byte(), kind: k });
+                continue; // don't descend
+            } else {
+                // push children
+                for i in (0..node.child_count()).rev() { if let Some(ch) = node.child(i) { stack.push(ch); } }
+            }
+        }
+
+        if spans.is_empty() { return None; }
+        spans.sort_by_key(|s| s.s);
+
+        let mut job = LayoutJob::default();
+        let mut idx = 0; // current byte index
+        for span in spans {
+            if span.s > idx { // intermediate plain text
+                let slice = &text[idx..span.s];
+                job.append(slice, 0.0, TextFormat { color: normal_color(dark), ..Default::default() });
+            }
+            let slice = &text[span.s..span.e];
+            let color = match span.kind {
+                SpanKind::Keyword => keyword_color(dark),
+                SpanKind::String => string_color(dark),
+                SpanKind::Comment => comment_color(dark),
+                SpanKind::Number => number_color(dark),
+                SpanKind::Punctuation => punctuation_color(dark),
+                SpanKind::Ident | SpanKind::Other => normal_color(dark),
+            };
+            job.append(slice, 0.0, TextFormat { color, ..Default::default() });
+            idx = span.e;
+        }
+        if idx < text.len() { job.append(&text[idx..], 0.0, TextFormat { color: normal_color(dark), ..Default::default() }); }
+        Some(job)
+    }
 }
 
 // ---------------- Legacy heuristic highlighter (ported from syntax.rs) ----------------
@@ -128,7 +214,7 @@ pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
     if matches!(lang, LanguageKind::Sql) {
         #[cfg(feature = "tree_sitter_sql")]
         {
-            if let Some(ts_job) = try_tree_sitter_sql_highlight(text, dark) { if !ts_job.text.is_empty() { return ts_job; } }
+            if let Some(ts_job) = try_tree_sitter_sql_highlight(text, dark) && !ts_job.text.is_empty() { return ts_job; }
         }
     }
     let mut job = LayoutJob::default();
