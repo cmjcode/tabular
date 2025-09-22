@@ -1924,13 +1924,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Update suggestions saat kursor bergerak kiri/kanan (tanpa perubahan teks)
     let moved_lr = input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowRight);
     if moved_lr && !accept_via_tab_pre && !accept_via_enter_pre {
-        let in_table_nav_mode = tabular.table_recently_clicked && tabular.selected_cell.is_some();
-        if tabular.suppress_editor_arrow_once || in_table_nav_mode {
-            log::trace!("Skipping autocomplete update (suppressed: {}, table_mode: {})", tabular.suppress_editor_arrow_once, in_table_nav_mode);
+        if should_suppress_autocomplete_on_arrow(tabular) {
+            log::trace!(
+                "Skipping autocomplete update (suppress_once={}, table_clicked={}, has_cell={})",
+                tabular.suppress_editor_arrow_once,
+                tabular.table_recently_clicked,
+                tabular.selected_cell.is_some()
+            );
         } else {
             editor_autocomplete::update_autocomplete(tabular);
         }
-        // Always reset suppression flag after one frame
+        // Always reset suppression flag after one frame (even if we updated)
         tabular.suppress_editor_arrow_once = false;
     }
 
@@ -2009,6 +2013,16 @@ pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
         tab.content = new_text;
         tab.is_modified = true;
     }
+}
+
+/// Returns true if an arrow-left/right movement in the editor this frame should NOT
+/// trigger an autocomplete refresh. Conditions:
+/// 1. A one-shot suppression flag set by table navigation (`suppress_editor_arrow_once`).
+/// 2. The user is currently navigating a table (cell selected + table_recently_clicked).
+#[inline]
+fn should_suppress_autocomplete_on_arrow(tabular: &window_egui::Tabular) -> bool {
+    (tabular.suppress_editor_arrow_once)
+        || (tabular.table_recently_clicked && tabular.selected_cell.is_some())
 }
 
 pub(crate) fn find_next(tabular: &mut window_egui::Tabular) {

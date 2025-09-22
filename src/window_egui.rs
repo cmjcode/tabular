@@ -139,6 +139,8 @@ pub struct Tabular {
     pub column_widths: Vec<f32>, // Store individual column widths
     pub min_column_width: f32,
     // One-frame suppression flag to prevent editor autocomplete reacting to arrow keys consumed by table navigation
+    /// One-frame flag set by table arrow navigation to suppress editor autocomplete
+    /// reacting to the same left/right arrow key event.
     pub suppress_editor_arrow_once: bool,
     // Gear menu and about dialog
     pub show_about_dialog: bool,

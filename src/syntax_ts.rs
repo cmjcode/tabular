@@ -1,3 +1,29 @@
+//! Unified syntax highlighting module.
+//!
+//! This module blends a tree-sitter powered SQL highlighter with the legacy
+//! heuristic highlighter. The flow in `highlight_text` is:
+//! 1. Detect language (currently only simple SQL detection by file/connection context).
+//! 2. Attempt a tree-sitter parse + span classification (fast-fail guarded).
+//! 3. If tree-sitter fails or yields empty output, fall back to legacy rules.
+//!
+//! Design notes:
+//! - We pin tree-sitter crates to 0.19 to stay compatible with `tree-sitter-sql 0.0.2`.
+//! - A single parser instance is stored in a `OnceCell<Mutex<...>>` to avoid unsafe statics.
+//! - Highlight output is an `egui::text::LayoutJob` built in one pass without allocations per span type.
+//! - Future improvements could reuse the last incremental `Tree` for very large buffers; current
+//!   workloads are small enough that a fresh parse is acceptable.
+//! - Legacy fallback stays for (a) non-SQL content, (b) parse errors, or (c) feature expansion later.
+//!
+//! Safety / Concurrency:
+//! - Parser access is serialized via `Mutex` because tree-sitter's Rust parser object is not `Sync`.
+//! - Short critical sections keep UI responsive.
+//!
+//! Performance:
+//! - Current parse cost for typical query sizes (< 5 KB) is negligible; micro-optimizations deferred.
+//! - Fallback path avoids regex; it performs linear scans for comments / strings and keyword checks.
+//!
+//! See also: `editor.rs` for integration, where `highlight_text` is invoked when building the editor layout.
+
 //! Unified syntax & parsing module.
 //!
 //! This file now contains both:
@@ -97,7 +123,7 @@ mod ts {
 pub fn try_tree_sitter_sql_highlight(text: &str, dark: bool) -> Option<LayoutJob> {
     #[cfg(feature = "tree_sitter_sql")]
     {
-        use tree_sitter::{Node, TreeCursor};
+    use tree_sitter::Node;
         use eframe::egui::{TextFormat};
         use crate::syntax_ts::{keyword_color, string_color, comment_color, number_color, punctuation_color, normal_color};
 
@@ -140,8 +166,7 @@ pub fn try_tree_sitter_sql_highlight(text: &str, dark: bool) -> Option<LayoutJob
             }
         }
 
-        // Depth-first traversal; skip large subtrees once classified (e.g., string, comment)
-        let cursor: TreeCursor = root.walk();
+    // Depth-first traversal; skip large subtrees once classified (e.g., string, comment)
         let mut stack: Vec<Node> = vec![root];
         while let Some(node) = stack.pop() {
             if node.child_count() == 0 { // leaf
@@ -180,8 +205,8 @@ pub fn try_tree_sitter_sql_highlight(text: &str, dark: bool) -> Option<LayoutJob
             job.append(slice, 0.0, TextFormat { color, ..Default::default() });
             idx = span.e;
         }
-        if idx < text.len() { job.append(&text[idx..], 0.0, TextFormat { color: normal_color(dark), ..Default::default() }); }
-        Some(job)
+    if idx < text.len() { job.append(&text[idx..], 0.0, TextFormat { color: normal_color(dark), ..Default::default() }); }
+    Some(job)
     }
 }
 
