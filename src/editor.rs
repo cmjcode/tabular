@@ -1268,8 +1268,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         .query_tabs
         .get(tabular.active_tab_index)
         .and_then(|t| t.file_path.as_ref())
-        .map(|p| crate::syntax::detect_language_from_name(p))
-        .unwrap_or(crate::syntax::LanguageKind::Sql);
+        .map(|p| crate::syntax_ts::detect_language_from_name(p))
+        .unwrap_or(crate::syntax_ts::LanguageKind::Sql);
     let dark = matches!(
         tabular.advanced_editor.theme,
         models::structs::EditorColorTheme::GithubDark | models::structs::EditorColorTheme::Gruvbox
@@ -1278,7 +1278,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Simple layouter; honor Word Wrap toggle by adjusting max_width
     let word_wrap = tabular.advanced_editor.word_wrap;
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
-        let mut job = crate::syntax::highlight_text(text.as_str(), lang, dark);
+    let mut job = crate::syntax_ts::highlight_text(text.as_str(), lang, dark);
         job.wrap.max_width = if word_wrap { wrap_width } else { f32::INFINITY };
         ui.fonts(|f| f.layout_job(job))
     };

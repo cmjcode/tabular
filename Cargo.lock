@@ -3195,7 +3195,7 @@ dependencies = [
  "strum_macros 0.27.2",
  "thiserror 1.0.69",
  "tracing 0.2.0",
- "tree-sitter",
+ "tree-sitter 0.22.6",
 ]
 
 [[package]]
@@ -6151,6 +6151,7 @@ dependencies = [
 name = "tabular"
 version = "0.4.13"
 dependencies = [
+ "anyhow",
  "bson 3.0.0",
  "chrono",
  "colorful",
@@ -6167,6 +6168,7 @@ dependencies = [
  "lapce-core",
  "log",
  "mongodb",
+ "once_cell",
  "redis",
  "regex",
  "reqwest",
@@ -6180,6 +6182,8 @@ dependencies = [
  "tiberius",
  "tokio",
  "tokio-util",
+ "tree-sitter 0.19.5",
+ "tree-sitter-sql",
  "unicode-segmentation",
  "xlsxwriter",
 ]
@@ -6612,12 +6616,32 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
+version = "0.19.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad726ec26496bf4c083fff0f43d4eb3a2ad1bba305323af5ff91383c0b6ecac0"
+dependencies = [
+ "cc",
+ "regex",
+]
+
+[[package]]
+name = "tree-sitter"
 version = "0.22.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df7cc499ceadd4dcdf7ec6d4cbc34ece92c3fa07821e287aedecd4416c516dca"
 dependencies = [
  "cc",
  "regex",
+]
+
+[[package]]
+name = "tree-sitter-sql"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04e4fb372576528153a04f47ff3ca2d2b535b756ec1890c42ddd5713a66cc82e"
+dependencies = [
+ "cc",
+ "tree-sitter 0.19.5",
 ]
 
 [[package]]

@@ -64,15 +64,27 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 semver = "1.0"
 self_update = { version = "0.42", features = ["archive-tar", "archive-zip"], default-features = false }
 
+# --- Optional experimental syntax parsing (Tree-sitter) ---
+# Kept optional & behind a feature so default build size & compile time unaffected.
+tree-sitter = { version = "0.19", optional = true }
+# SQL grammar crate (0.0.2) targets tree-sitter 0.19 API; align core version to avoid duplicate crate versions.
+tree-sitter-sql = { version = "0.0.2", optional = true }
+anyhow = { version = "1", optional = true }
+once_cell = { version = "1", optional = true }
+
 [features]
 # Placeholder feature to enable future granular rope editing integration with lapce_core::Buffer.
 # Currently the implementation still falls back to single replace & full rope rebuild.
 # Enabling this feature today does not change behavior yet, but provides a stable knob.
 granular_edit = []
-default = ["granular_edit"]
+default = ["granular_edit", "tree_sitter_sql"]
 
 # Experimental: Lapce editor port. Off by default until fully integrated.
 lapce_editor = []
+
+# Enable experimental tree-sitter SQL highlighting / structural parsing.
+# Activate with: `cargo run --features tree_sitter_sql` (nama feature memakai underscore)
+tree_sitter_sql = ["tree-sitter", "tree-sitter-sql", "anyhow", "once_cell"]
 
 # NOTE: It's recommended to pin `lapce_core` to a specific commit for reproducible builds, e.g.:
 # lapce_core = { git = "https://github.com/lapce/lapce", package = "lapce-core", rev = "<commit-sha>" }

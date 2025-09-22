@@ -1,5 +1,11 @@
 //! Simple on-the-fly syntax highlighting (SQL / Redis / Mongo keywords)
 use eframe::egui::{Color32, TextFormat, text::LayoutJob};
+// Optional tree-sitter integration (SQL only for now). When feature `tree_sitter_sql` is enabled
+// we will attempt to produce a highlight LayoutJob via `syntax_ts::try_tree_sitter_sql_highlight`.
+// If it returns None (feature off or failure) we fall back to legacy heuristic highlighter below.
+// `syntax_ts` module is compiled only if feature `tree_sitter_sql` enabled.
+// We call its public helper via function wrapper (see bottom) so here we don't
+// directly import the module (avoids unused import / missing module errors).
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -58,15 +64,22 @@ pub fn highlight_text_cached(
 
 // Simple highlighting that processes the entire text at once
 pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
-    let mut job = LayoutJob::default();
-
-    for line in text.lines() {
-        if !job.text.is_empty() {
-            job.append("\n", 0.0, TextFormat::default());
+    // Attempt tree-sitter for SQL first (only whole-text path for now)
+    if matches!(lang, LanguageKind::Sql) {
+        #[cfg(feature = "tree_sitter_sql")]
+        {
+            if let Some(ts_job) = crate::syntax_ts::try_tree_sitter_sql_highlight(text, dark) {
+                if !ts_job.text.is_empty() { return ts_job; }
+            }
         }
-        highlight_single_line(line, lang, dark, &mut job);
     }
 
+    // Legacy fallback: line-by-line heuristic
+    let mut job = LayoutJob::default();
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 { job.append("\n", 0.0, TextFormat::default()); }
+        highlight_single_line(line, lang, dark, &mut job);
+    }
     job
 }
 

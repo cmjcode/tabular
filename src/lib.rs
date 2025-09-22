@@ -26,7 +26,8 @@ pub mod sidebar_database;
 pub mod sidebar_history;
 pub mod sidebar_query;
 pub mod spreadsheet;
-pub mod syntax;
+// Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
+pub mod syntax_ts;
 pub mod window_egui; // re-enabled syntax highlighting helpers
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
