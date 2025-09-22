@@ -1922,11 +1922,16 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Update suggestions saat kursor bergerak kiri/kanan (tanpa perubahan teks)
-    let moved_lr =
-        input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowRight);
+    let moved_lr = input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowRight);
     if moved_lr && !accept_via_tab_pre && !accept_via_enter_pre {
-        // cursor_position sudah diperbarui via response.cursor_range; cukup panggil update
-        editor_autocomplete::update_autocomplete(tabular);
+        let in_table_nav_mode = tabular.table_recently_clicked && tabular.selected_cell.is_some();
+        if tabular.suppress_editor_arrow_once || in_table_nav_mode {
+            log::trace!("Skipping autocomplete update (suppressed: {}, table_mode: {})", tabular.suppress_editor_arrow_once, in_table_nav_mode);
+        } else {
+            editor_autocomplete::update_autocomplete(tabular);
+        }
+        // Always reset suppression flag after one frame
+        tabular.suppress_editor_arrow_once = false;
     }
 
     // Render autocomplete popup positioned under cursor

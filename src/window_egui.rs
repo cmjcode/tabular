@@ -138,6 +138,8 @@ pub struct Tabular {
     // Column width management for resizable columns
     pub column_widths: Vec<f32>, // Store individual column widths
     pub min_column_width: f32,
+    // One-frame suppression flag to prevent editor autocomplete reacting to arrow keys consumed by table navigation
+    pub suppress_editor_arrow_once: bool,
     // Gear menu and about dialog
     pub show_about_dialog: bool,
     // Preferences persistence
@@ -529,6 +531,7 @@ impl Tabular {
             last_editor_text: String::new(),
             highlight_cache: std::collections::HashMap::new(),
             last_highlight_hash: None,
+            suppress_editor_arrow_once: false,
         };
 
         // Clear any old cached pools
@@ -7277,6 +7280,7 @@ impl App for Tabular {
                 && self.table_recently_clicked
             {
                 let mut cell_changed = false;
+                let mut consumed_arrow = false; // track if we handled an arrow key so we can suppress editor reaction
                 if let Some((row, col)) = self.selected_cell {
                     let max_rows = self.current_table_data.len();
 
@@ -7289,12 +7293,14 @@ impl App for Tabular {
                             cell_changed = true;
                             self.scroll_to_selected_cell = true;
                             log::debug!("➡️ Arrow Right: Moving to ({}, {})", row, col + 1);
+                            consumed_arrow = true;
                         }
                     } else if i.key_pressed(egui::Key::ArrowLeft) && col > 0 {
                         self.selected_cell = Some((row, col - 1));
                         cell_changed = true;
                         self.scroll_to_selected_cell = true;
                         log::debug!("⬅️ Arrow Left: Moving to ({}, {})", row, col - 1);
+                        consumed_arrow = true;
                     } else if i.key_pressed(egui::Key::ArrowDown) && row + 1 < max_rows {
                         // Check if the target row has enough columns
                         if let Some(target_row) = self.current_table_data.get(row + 1) {
@@ -7303,6 +7309,7 @@ impl App for Tabular {
                             cell_changed = true;
                             self.scroll_to_selected_cell = true;
                             log::debug!("⬇️ Arrow Down: Moving to ({}, {})", row + 1, target_col);
+                            consumed_arrow = true;
                         }
                     } else if i.key_pressed(egui::Key::ArrowUp) && row > 0 {
                         // Check if the target row has enough columns
@@ -7312,6 +7319,7 @@ impl App for Tabular {
                             cell_changed = true;
                             self.scroll_to_selected_cell = true;
                             log::debug!("⬆️ Arrow Up: Moving to ({}, {})", row - 1, target_col);
+                            consumed_arrow = true;
                         }
                     }
 
@@ -7320,6 +7328,7 @@ impl App for Tabular {
                         self.selected_row = Some(new_row);
                     }
                 }
+                if consumed_arrow { self.suppress_editor_arrow_once = true; }
             }
 
             // Handle command palette navigation
