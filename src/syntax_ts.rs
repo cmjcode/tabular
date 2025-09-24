@@ -305,6 +305,6 @@ fn punctuation_color(dark: bool) -> Color32 { if dark { Color32::from_rgb(180, 1
 fn normal_color(dark: bool) -> Color32 { if dark { Color32::from_rgb(210, 210, 210) } else { Color32::from_rgb(30, 30, 30) } }
 
 // Static keyword tables
-static SQL_KEYWORDS: &[&str] = &["ALL","ALTER","AND","AS","ASC","BY","CASE","CREATE","DELETE","DESC","DISTINCT","DROP","ELSE","END","EXISTS","FROM","GROUP","HAVING","IF","IN","INDEX","INNER","INSERT","INTO","IS","JOIN","LEFT","LIMIT","NOT","NULL","ON","OR","ORDER","OUTER","RIGHT","SELECT","SET","TABLE","THEN","UNION","UPDATE","VALUES","WHEN","WHERE"];
+static SQL_KEYWORDS: &[&str] = &["ALL","ALTER","AND","AS","ASC","BY","CASE","CREATE","DELETE","DESC","DISTINCT","DROP","ELSE","END","EXISTS","FROM","GROUP","HAVING","IF", "FORCE", "EXPLAIN","INDEX","INNER","INSERT","INTO","IS","JOIN","LEFT","LIMIT","NOT","NULL","ON","OR","ORDER","OUTER","RIGHT","SELECT","SET","TABLE","THEN","UNION","UPDATE","VALUES","WHEN","WHERE", "."];
 static REDIS_CMDS: &[&str] = &["DEL","EXISTS","GET","HGETALL","INCR","LRANGE","RPUSH","SADD","SET","SMEMBERS","ZADD","ZRANGE"];
 static MONGO_CMDS: &[&str] = &["AGGREGATE","COUNT","DELETE","DISTINCT","FIND","INSERT","UPDATE"];

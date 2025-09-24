@@ -74,7 +74,7 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                         )
                         .size(14.0),
                     );
-                    ui.label("Credit : Jayuda");
+                    ui.label("Credit : Pamungkas Jayuda (https://github.com/Jayuda), Mualip Suhal (https://github.com/msuhal),  Davin Adesta Putra (https://github.com/Davin-adesta), Mohamad Ardiansah Pratama (https://github.com/ardiansyah20007) ");
                     ui.add_space(10.0);
 
                     // Update check button
