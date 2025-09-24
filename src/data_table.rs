@@ -1322,9 +1322,11 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
             }
         }
 
-        // Reset current in-memory structure before (re)loading
+    // Reset current in-memory structure before (re)loading
         tabular.structure_columns.clear();
         tabular.structure_indexes.clear();
+    tabular.structure_selected_row = None;
+    tabular.structure_selected_cell = None;
 
         // Branch: if user explicitly requested refresh, force live fetch and update cache
         if tabular.request_structure_refresh {
@@ -1784,11 +1786,40 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                             for (i,val) in values.iter().enumerate() {
                                 let w = widths[i];
                                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
-                                if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}
+                                // Alternating row bg
+                                if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}    
+                                // Selection highlight (row / cell)
+                                let is_row_selected = tabular.structure_selected_row == Some(idx);
+                                let is_cell_selected = tabular.structure_selected_cell == Some((idx, i));
+                                if is_row_selected {
+                                    let sel = if dark { egui::Color32::from_rgba_unmultiplied(100,150,255,30) } else { egui::Color32::from_rgba_unmultiplied(200,220,255,80) };
+                                    ui.painter().rect_filled(rect, 0.0, sel);
+                                }
+                                if is_cell_selected {
+                                    let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 0));
+                                    ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
+                                }
                                 ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
                                 let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                                 ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
+                                if resp.clicked() {
+                                    tabular.structure_selected_row = Some(idx);
+                                    tabular.structure_selected_cell = Some((idx, i));
+                                }
                                 resp.context_menu(|ui| {
+                                    // Copy helpers
+                                    if ui.button("📋 Copy Cell Value").clicked() {
+                                        ui.ctx().copy_text(val.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button("📄 Copy Row as CSV").clicked() {
+                                        let csv_row = values.iter().map(|v| {
+                                            if v.contains(',') || v.contains('"') || v.contains('\n') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v.clone() }
+                                        }).collect::<Vec<_>>().join(",");
+                                        ui.ctx().copy_text(csv_row);
+                                        ui.close();
+                                    }
+                                    ui.separator();
                                     if ui.button("➕ Add Index").clicked() { if !tabular.adding_index { start_inline_add_index(tabular); } ui.close(); }
                                     if ui.button("🔄 Refresh").clicked() { tabular.request_structure_refresh = true; load_structure_info_for_current_table(tabular); ui.close(); }
                                     if ui.button("❌ Drop Index").clicked() {
@@ -1981,12 +2012,39 @@ pub(crate) fn render_structure_columns_editor(
                         let w = widths[i];
                         // All cells clickable for context menu
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
-                        if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}
+                        if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}    
+                        // Selection highlight
+                        let is_row_selected = tabular.structure_selected_row == Some(idx);
+                        let is_cell_selected = tabular.structure_selected_cell == Some((idx, i));
+                        if is_row_selected {
+                            let sel = if dark { egui::Color32::from_rgba_unmultiplied(100,150,255,30) } else { egui::Color32::from_rgba_unmultiplied(200,220,255,80) };
+                            ui.painter().rect_filled(rect, 0.0, sel);
+                        }
+                        if is_cell_selected {
+                            let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 0));
+                            ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
+                        }
                         ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
                         let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                         ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
+                        if resp.clicked() {
+                            tabular.structure_selected_row = Some(idx);
+                            tabular.structure_selected_cell = Some((idx, i));
+                        }
                         // Context menu on every cell
                         resp.context_menu(|ui| {
+                            if ui.button("📋 Copy Cell Value").clicked() {
+                                ui.ctx().copy_text(val.clone());
+                                ui.close();
+                            }
+                            if ui.button("📄 Copy Row as CSV").clicked() {
+                                let csv_row = values.iter().map(|v| {
+                                    if v.contains(',') || v.contains('"') || v.contains('\n') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v.clone() }
+                                }).collect::<Vec<_>>().join(",");
+                                ui.ctx().copy_text(csv_row);
+                                ui.close();
+                            }
+                            ui.separator();
                             if ui.button("🔄 Refresh").clicked() { tabular.request_structure_refresh = true; load_structure_info_for_current_table(tabular); ui.close(); }
                             if ui.button("➕ Add Column").clicked() {
                                 if !tabular.adding_column {

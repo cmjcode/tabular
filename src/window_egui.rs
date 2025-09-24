@@ -192,6 +192,9 @@ pub struct Tabular {
     // Cached structure info for current table
     pub structure_columns: Vec<models::structs::ColumnStructInfo>,
     pub structure_indexes: Vec<models::structs::IndexStructInfo>,
+    // Selection for Structure views (independent from Data grid selection)
+    pub structure_selected_row: Option<usize>,
+    pub structure_selected_cell: Option<(usize, usize)>,
     // Pending drop index confirmation
     pub pending_drop_index_name: Option<String>,
     pub pending_drop_index_stmt: Option<String>,
@@ -468,6 +471,8 @@ impl Tabular {
             table_bottom_view: models::structs::TableBottomView::default(),
             structure_columns: Vec::new(),
             structure_indexes: Vec::new(),
+            structure_selected_row: None,
+            structure_selected_cell: None,
             pending_drop_index_name: None,
             pending_drop_index_stmt: None,
             pending_drop_column_name: None,
