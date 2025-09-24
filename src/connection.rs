@@ -309,7 +309,6 @@ pub(crate) fn execute_table_query_sync(
                             attempts += 1;
                             let mut execution_success = true;
                             let mut error_message = String::new();
-
                             // Open a dedicated connection; we'll reconnect on USE to switch DB
                             let encoded_username = modules::url_encode(&connection.username);
                             let encoded_password = modules::url_encode(&connection.password);
@@ -325,6 +324,13 @@ pub(crate) fn execute_table_query_sync(
                                     if attempts >= max_attempts { break; } else { continue; }
                                 }
                             };
+                            // Align dedicated connection session settings with pool settings
+                            let _ = sqlx::query("SET SESSION wait_timeout = 600").execute(&mut conn).await;
+                            let _ = sqlx::query("SET SESSION interactive_timeout = 600").execute(&mut conn).await;
+                            let _ = sqlx::query("SET SESSION net_read_timeout = 120").execute(&mut conn).await;
+                            let _ = sqlx::query("SET SESSION net_write_timeout = 120").execute(&mut conn).await;
+                            let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824").execute(&mut conn).await; // 1GB
+                            let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'").execute(&mut conn).await;
 
                             for (i, statement) in statements.iter().enumerate() {
                                 let trimmed = statement.trim();
@@ -361,6 +367,14 @@ pub(crate) fn execute_table_query_sync(
                                             match MySqlConnection::connect(&new_dsn).await {
                                                 Ok(new_conn) => {
                                                     debug!("🔄 Switched MySQL database by reconnecting to '{}'.", db_name);
+                                                    let mut new_conn = new_conn;
+                                                    // Re-apply session settings on reconnected session
+                                                    let _ = sqlx::query("SET SESSION wait_timeout = 600").execute(&mut new_conn).await;
+                                                    let _ = sqlx::query("SET SESSION interactive_timeout = 600").execute(&mut new_conn).await;
+                                                    let _ = sqlx::query("SET SESSION net_read_timeout = 120").execute(&mut new_conn).await;
+                                                    let _ = sqlx::query("SET SESSION net_write_timeout = 120").execute(&mut new_conn).await;
+                                                    let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824").execute(&mut new_conn).await;
+                                                    let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'").execute(&mut new_conn).await;
                                                     conn = new_conn;
                                                 }
                                                 Err(e) => {
@@ -373,8 +387,9 @@ pub(crate) fn execute_table_query_sync(
                                     continue;
                                 }
 
+                                // Extend timeout to 60s to avoid premature timeouts for heavy queries
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(10),
+                                    std::time::Duration::from_secs(60),
                                     sqlx::query(trimmed).fetch_all(&mut conn),
                                 )
                                 .await
@@ -406,7 +421,7 @@ pub(crate) fn execute_table_query_sync(
                                                         && let Some(table_name) = words.get(from_idx + 1) {
                                                         let describe_query = format!("DESCRIBE {}", table_name);
                                                         match tokio::time::timeout(
-                                                            std::time::Duration::from_secs(10),
+                                                            std::time::Duration::from_secs(30),
                                                             sqlx::query(&describe_query).fetch_all(&mut conn),
                                                         )
                                                         .await
@@ -423,7 +438,7 @@ pub(crate) fn execute_table_query_sync(
                                                                 // DESCRIBE failed, try LIMIT 0 as fallback
                                                                 let info_query = format!("{} LIMIT 0", trimmed);
                                                                 match tokio::time::timeout(
-                                                                    std::time::Duration::from_secs(10),
+                                                                    std::time::Duration::from_secs(30),
                                                                     sqlx::query(&info_query).fetch_all(&mut conn),
                                                                 )
                                                                 .await
@@ -453,8 +468,13 @@ pub(crate) fn execute_table_query_sync(
                                             }
                                         }
                                     }
-                                    _ => {
-                                        error_message = "Query timed out or failed".to_string();
+                                    Ok(Err(e)) => {
+                                        error_message = e.to_string();
+                                        execution_success = false;
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        error_message = "Query timeout after 60s".to_string();
                                         execution_success = false;
                                         break;
                                     }
@@ -465,7 +485,7 @@ pub(crate) fn execute_table_query_sync(
                                 return Some((final_headers, final_data));
                             } else {
                                 debug!("MySQL query failed on attempt {}: {}", attempts, error_message);
-                                if (error_message.contains("timed out") || error_message.contains("pool")) && attempts < max_attempts {
+                                if (error_message.contains("timeout") || error_message.contains("pool")) && attempts < max_attempts {
                                     tabular.connection_pools.remove(&connection_id);
                                     continue;
                                 }
