@@ -1783,6 +1783,8 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                 if ix.columns.is_empty() { String::new() } else { ix.columns.join(",") },
                                 String::new(), // actions placeholder
                             ];
+                            // Defer selected cell border so it paints last (above neighbors)
+                            let mut selected_cell_rect: Option<egui::Rect> = None;
                             for (i,val) in values.iter().enumerate() {
                                 let w = widths[i];
                                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
@@ -1795,16 +1797,16 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                     let sel = if dark { egui::Color32::from_rgba_unmultiplied(100,150,255,30) } else { egui::Color32::from_rgba_unmultiplied(200,220,255,80) };
                                     ui.painter().rect_filled(rect, 0.0, sel);
                                 }
-                                if is_cell_selected {
-                                    let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 0));
-                                    ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
-                                }
+                                // Base grid stroke first, so the selected outline can be drawn last
                                 ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
+                                if is_cell_selected { selected_cell_rect = Some(rect); }
                                 let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                                 ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                                 if resp.clicked() {
                                     tabular.structure_selected_row = Some(idx);
                                     tabular.structure_selected_cell = Some((idx, i));
+                                    // use same focus flag so global arrow handling prefers tables/structure over editor
+                                    tabular.table_recently_clicked = true;
                                 }
                                 resp.context_menu(|ui| {
                                     // Copy helpers
@@ -1848,6 +1850,11 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                         ui.close();
                                     }
                                 });
+                            }
+                            // Paint selected cell border last to ensure right edge stays visible
+                            if let Some(rect) = selected_cell_rect {
+                                let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 0));
+                                ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
                             }
                         });
                     }
@@ -2008,6 +2015,8 @@ pub(crate) fn render_structure_columns_editor(
                         col.default_value.clone().unwrap_or_default(),
                         col.extra.clone().unwrap_or_default(),
                     ];
+                    // Defer selected cell border so it paints last for this row
+                    let mut selected_cell_rect: Option<egui::Rect> = None;
                     for (i,val) in values.iter().enumerate() {
                         let w = widths[i];
                         // All cells clickable for context menu
@@ -2020,16 +2029,16 @@ pub(crate) fn render_structure_columns_editor(
                             let sel = if dark { egui::Color32::from_rgba_unmultiplied(100,150,255,30) } else { egui::Color32::from_rgba_unmultiplied(200,220,255,80) };
                             ui.painter().rect_filled(rect, 0.0, sel);
                         }
-                        if is_cell_selected {
-                            let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 0));
-                            ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
-                        }
+                        // Base grid stroke first
                         ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
+                        // Defer selected outline to avoid being overdrawn by neighbor cells
+                        if is_cell_selected { selected_cell_rect = Some(rect); }
                         let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                         ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                         if resp.clicked() {
                             tabular.structure_selected_row = Some(idx);
                             tabular.structure_selected_cell = Some((idx, i));
+                            tabular.table_recently_clicked = true;
                         }
                         // Context menu on every cell
                         resp.context_menu(|ui| {
@@ -2090,6 +2099,11 @@ pub(crate) fn render_structure_columns_editor(
                                 ui.close();
                             }
                         });
+                    }
+                    // Draw the selected cell outline last (on top)
+                    if let Some(rect) = selected_cell_rect {
+                        let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 0));
+                        ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
                     }
                 });
             }

@@ -7430,6 +7430,62 @@ impl App for Tabular {
                 if consumed_arrow { self.suppress_editor_arrow_once = true; }
             }
 
+            // Handle Structure (Columns/Indexes) cell navigation with arrow keys
+            if !self.show_command_palette
+                && !self.show_theme_selector
+                && self.table_bottom_view == models::structs::TableBottomView::Structure
+                && self.structure_selected_cell.is_some()
+            {
+                let mut cell_changed = false;
+                let mut consumed_arrow = false;
+                if let Some((row, col)) = self.structure_selected_cell {
+                    // Determine grid dimensions for current Structure subview
+                    let (max_rows, max_cols) = match self.structure_sub_view {
+                        models::structs::StructureSubView::Columns => {
+                            let cols = if self.structure_col_widths.is_empty() { 6 } else { self.structure_col_widths.len() };
+                            (self.structure_columns.len(), cols)
+                        }
+                        models::structs::StructureSubView::Indexes => {
+                            let cols = if self.structure_idx_col_widths.is_empty() { 6 } else { self.structure_idx_col_widths.len() };
+                            (self.structure_indexes.len(), cols)
+                        }
+                    };
+
+                    if i.key_pressed(egui::Key::ArrowRight) {
+                        if col + 1 < max_cols { 
+                            self.structure_selected_cell = Some((row, col + 1));
+                            cell_changed = true; consumed_arrow = true;
+                            log::debug!("➡️ Arrow Right (Structure): Moving to ({}, {})", row, col + 1);
+                        }
+                    } else if i.key_pressed(egui::Key::ArrowLeft) {
+                        if col > 0 {
+                            self.structure_selected_cell = Some((row, col - 1));
+                            cell_changed = true; consumed_arrow = true;
+                            log::debug!("⬅️ Arrow Left (Structure): Moving to ({}, {})", row, col - 1);
+                        }
+                    } else if i.key_pressed(egui::Key::ArrowDown) {
+                        if row + 1 < max_rows {
+                            let target_col = col.min(max_cols.saturating_sub(1));
+                            self.structure_selected_cell = Some((row + 1, target_col));
+                            cell_changed = true; consumed_arrow = true;
+                            log::debug!("⬇️ Arrow Down (Structure): Moving to ({}, {})", row + 1, target_col);
+                        }
+                    } else if i.key_pressed(egui::Key::ArrowUp) {
+                        if row > 0 {
+                            let target_col = col.min(max_cols.saturating_sub(1));
+                            self.structure_selected_cell = Some((row - 1, target_col));
+                            cell_changed = true; consumed_arrow = true;
+                            log::debug!("⬆️ Arrow Up (Structure): Moving to ({}, {})", row - 1, target_col);
+                        }
+                    }
+
+                    if cell_changed {
+                        if let Some((r, _)) = self.structure_selected_cell { self.structure_selected_row = Some(r); }
+                    }
+                }
+                if consumed_arrow { self.suppress_editor_arrow_once = true; }
+            }
+
             // Handle command palette navigation
             if self.show_command_palette {
                 // Arrow key navigation
