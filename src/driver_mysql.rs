@@ -664,6 +664,25 @@ pub(crate) fn load_mysql_structure(
     metrics_user_active_folder.is_loaded = false;
     dba_children.push(metrics_user_active_folder);
 
+    // Replication Status (MySQL)
+    let mut repl_status_folder = models::structs::TreeNode::new(
+        "Replication Status".to_string(),
+        models::enums::NodeType::ReplicationStatusFolder,
+    );
+    repl_status_folder.connection_id = Some(connection_id);
+    repl_status_folder.is_loaded = false;
+    dba_children.push(repl_status_folder);
+
+    // Master Status (MySQL)
+    let mut master_status_folder = models::structs::TreeNode::new(
+        "Master Status".to_string(),
+        models::enums::NodeType::MasterStatusFolder,
+    );
+    master_status_folder.connection_id = Some(connection_id);
+    master_status_folder.is_loaded = false;
+    dba_children.push(master_status_folder);
+
+
     dba_folder.children = dba_children;
 
     main_children.push(databases_folder);

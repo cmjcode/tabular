@@ -80,6 +80,8 @@ pub struct QueryTab {
     pub page_size: usize,
     pub total_rows: usize,
     pub base_query: String, // Store the base query (without LIMIT/OFFSET) for pagination
+    // DBA quick view special post-processing mode (Replication Status, Master Status, etc.)
+    pub dba_special_mode: Option<models::enums::DBASpecialMode>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

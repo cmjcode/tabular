@@ -302,6 +302,16 @@ pub(crate) fn execute_table_query_sync(
 
                         let mut final_headers = Vec::new();
                         let mut final_data = Vec::new();
+                        // Determine special DBA mode from active tab (no SQL comment markers)
+                        let (replication_status_mode, master_status_mode) = {
+                            if let Some(active_tab) = tabular.query_tabs.get(tabular.active_tab_index) {
+                                match active_tab.dba_special_mode {
+                                    Some(models::enums::DBASpecialMode::ReplicationStatus) => (true, false),
+                                    Some(models::enums::DBASpecialMode::MasterStatus) => (false, true),
+                                    _ => (false, false)
+                                }
+                            } else { (false,false) }
+                        };
 
                         let mut attempts = 0;
                         let max_attempts = 3;
@@ -388,12 +398,11 @@ pub(crate) fn execute_table_query_sync(
                                 }
 
                                 // Extend timeout to 60s to avoid premature timeouts for heavy queries
-                                match tokio::time::timeout(
+                                let query_result = tokio::time::timeout(
                                     std::time::Duration::from_secs(60),
-                                    sqlx::query(trimmed).fetch_all(&mut conn),
-                                )
-                                .await
-                                {
+                                    sqlx::query(trimmed).fetch_all(&mut conn)
+                                ).await;
+                                match query_result {
                                     Ok(Ok(rows)) => {
                                         // Log query execution time and row count for performance monitoring
                                         debug!("✅ Query executed successfully: {} rows returned", rows.len());
@@ -407,6 +416,56 @@ pub(crate) fn execute_table_query_sync(
                                                     .map(|c| c.name().to_string())
                                                     .collect();
                                                 final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
+                                                // Post-processing for replication/master status views
+                                                if replication_status_mode || master_status_mode {
+                                                    // Detect version / engine
+                                                    let version_str = match sqlx::query("SELECT VERSION() AS v").fetch_one(&mut conn).await {
+                                                        Ok(vrow) => vrow.try_get::<String,_>("v").unwrap_or_default(),
+                                                        Err(_) => String::new(),
+                                                    };
+                                                    let is_mariadb = version_str.to_lowercase().contains("mariadb");
+                                                    // Fallback: if replication status empty, try legacy SHOW SLAVE STATUS
+                                                    if replication_status_mode && final_data.is_empty() {
+                                                        if let Ok(fallback_rows) = sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await {
+                                                            if !fallback_rows.is_empty() {
+                                                                final_headers = fallback_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
+                                                                final_data = driver_mysql::convert_mysql_rows_to_table_data(fallback_rows);
+                                                            }
+                                                        }
+                                                    }
+                                                    // Build summary metrics (simple overlay table)
+                                                    if !final_headers.is_empty() && !final_data.is_empty() {
+                                                        let header_index = |name: &str| final_headers.iter().position(|h| h.eq_ignore_ascii_case(name));
+                                                        let mut summary: Vec<(String,String)> = Vec::new();
+                                                        if replication_status_mode {
+                                                            let first = &final_data[0];
+                                                            if let Some(idx) = header_index("Replica_IO_Running").or_else(|| header_index("Slave_IO_Running")) { summary.push(("IO Thread".into(), first[idx].clone())); }
+                                                            if let Some(idx) = header_index("Replica_SQL_Running").or_else(|| header_index("Slave_SQL_Running")) { summary.push(("SQL Thread".into(), first[idx].clone())); }
+                                                            if let Some(idx) = header_index("Seconds_Behind_Source").or_else(|| header_index("Seconds_Behind_Master")) { summary.push(("Seconds Behind".into(), first[idx].clone())); }
+                                                            if let Some(idx) = header_index("Channel_Name") { summary.push(("Channel".into(), first[idx].clone())); }
+                                                            if let Some(idx) = header_index("Retrieved_Gtid_Set") { summary.push(("Retrieved GTID".into(), first[idx].clone())); }
+                                                            if let Some(idx) = header_index("Executed_Gtid_Set") { summary.push(("Executed GTID".into(), first[idx].clone())); }
+                                                        }
+                                                        if master_status_mode {
+                                                            let first = &final_data[0];
+                                                            if let Some(idx) = header_index("File") { summary.push(("Binary Log File".into(), first[idx].clone())); }
+                                                            if let Some(idx) = header_index("Position") { summary.push(("Position".into(), first[idx].clone())); }
+                                                            if let Some(idx) = header_index("Binlog_Do_DB") { summary.push(("Binlog Do DB".into(), first[idx].clone())); }
+                                                            if let Some(idx) = header_index("Binlog_Ignore_DB") { summary.push(("Binlog Ignore DB".into(), first[idx].clone())); }
+                                                        }
+                                                        if !summary.is_empty() {
+                                                            let mut summary_table: Vec<Vec<String>> = summary
+                                                                .into_iter()
+                                                                .map(|(metric, value)| vec![metric, value])
+                                                                .collect();
+                                                            summary_table.push(vec!["Server Version".into(), version_str.clone()]);
+                                                            summary_table.push(vec!["Engine".into(), if is_mariadb { "MariaDB".into() } else { "MySQL".into() }]);
+                                                            // Replace headers/data with summary view (keep original raw query accessible by re-running manually)
+                                                            final_headers = vec!["Metric".into(), "Value".into()];
+                                                            final_data = summary_table;
+                                                        }
+                                                    }
+                                                }
                                             } else {
                                                 // Zero rows: try to infer headers from SELECT list first
                                                 if trimmed.to_uppercase().starts_with("SELECT") {

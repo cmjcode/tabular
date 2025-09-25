@@ -29,6 +29,9 @@ pub enum NodeType {
     ProcessesFolder,
     StatusFolder,
     MetricsUserActiveFolder,
+    // MySQL specific DBA quick views
+    ReplicationStatusFolder,
+    MasterStatusFolder,
     View,
     StoredProcedure,
     UserFunction,
@@ -47,6 +50,13 @@ pub enum NodeType {
     IndexesFolder,
     PrimaryKeysFolder,
     Index,
+}
+
+// Special DBA quick view context (used to apply post-processing without embedding markers in SQL)
+#[derive(Clone, PartialEq, Debug)]
+pub enum DBASpecialMode {
+    ReplicationStatus,
+    MasterStatus,
 }
 
 #[derive(Debug, Clone)]

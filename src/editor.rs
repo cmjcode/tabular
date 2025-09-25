@@ -37,6 +37,7 @@ pub(crate) fn create_new_tab(
         page_size: 100, // default page size aligns with global default
         total_rows: 0,
         base_query: String::new(), // Empty base query initially
+        dba_special_mode: None,
     };
 
     tabular.query_tabs.push(new_tab);
@@ -113,6 +114,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.total_rows = 0;
             tab.base_query.clear();
             tab.has_executed_query = false;
+            tab.dba_special_mode = None;
         }
         tabular.editor.set_text(String::new());
         // Also clear global result state so the UI table area is reset
@@ -169,6 +171,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 "💾 Saving tab {} state (swap): base_query='{}'",
                 tabular.active_tab_index, current_tab.base_query
             );
+            // dba_special_mode already resides on current_tab; no action required here
         }
 
         // Switch to new tab
@@ -191,6 +194,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             );
             // IMPORTANT: kembalikan connection id aktif sesuai tab baru
             tabular.current_connection_id = new_tab.connection_id;
+            // dba_special_mode automatically follows with new_tab
 
             // Auto-connect restoration: jika tab memiliki connection_id dan pool belum siap, trigger creation
             if let Some(conn_id) = new_tab.connection_id {

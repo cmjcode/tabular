@@ -704,6 +704,9 @@ impl Tabular {
                 &mut self.editor,
                 index,
                 &self.refreshing_connections,
+                &self.connection_pools,
+                &self.pending_connection_pools,
+                &self.shared_connection_pools,
                 is_search_mode,
             );
             if let Some(expansion_req) = expansion_request {
@@ -742,24 +745,33 @@ impl Tabular {
                     .find(|c| c.id == Some(conn_id))
                     .cloned()
                 {
-                    if let Some((tab_title, query_content)) =
-                        self.build_dba_query(&conn, &node_type)
-                    {
+                    if let Some((tab_title, query_content, special_mode)) = self.build_dba_query(&conn, &node_type) {
+                        // Create tab first so active_tab_index refers to the new tab before we set special mode
                         editor::create_new_tab_with_connection(
                             self,
                             tab_title.clone(),
                             query_content.clone(),
                             Some(conn_id),
                         );
+                        // Now attach special mode to that newly created active tab
+                        if let Some(mode) = special_mode {
+                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                active_tab.dba_special_mode = Some(mode);
+                            }
+                        }
                         self.current_connection_id = Some(conn_id);
-                        if let Some((headers, data)) =
-                            connection::execute_query_with_connection(self, conn_id, query_content)
-                        {
+                        // Ensure (or kick off) connection pool before executing; fall back to direct exec if still pending
+                        if let Some(rt) = self.runtime.clone() {
+                            rt.block_on(async {
+                                let _ = crate::connection::get_or_create_connection_pool(self, conn_id).await;
+                            });
+                        }
+                        if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, query_content) {
                             self.current_table_headers = headers;
                             self.current_table_data = data.clone();
                             self.all_table_data = data;
                             self.current_table_name = tab_title;
-                            self.is_table_browse_mode = false; // Disable filter for manual queries
+                            self.is_table_browse_mode = false;
                             self.total_rows = self.all_table_data.len();
                             self.current_page = 0;
                         }
@@ -1917,6 +1929,9 @@ impl Tabular {
         editor: &mut crate::editor_buffer::EditorBuffer,
         node_index: usize,
         refreshing_connections: &std::collections::HashSet<i64>,
+        connection_pools: &std::collections::HashMap<i64, models::enums::DatabasePool>,
+        pending_connection_pools: &std::collections::HashSet<i64>,
+        shared_connection_pools: &Arc<std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>>,
         is_search_mode: bool,
     ) -> models::structs::RenderTreeNodeResult {
         let has_children = !node.children.is_empty();
@@ -2047,6 +2062,8 @@ impl Tabular {
                     models::enums::NodeType::PrivilegesFolder => "🔒",
                     models::enums::NodeType::ProcessesFolder => "⚡",
                     models::enums::NodeType::StatusFolder => "📊",
+                    models::enums::NodeType::ReplicationStatusFolder => "🔁",
+                    models::enums::NodeType::MasterStatusFolder => "⭐",
                     models::enums::NodeType::MetricsUserActiveFolder => "👨‍💼",
                     models::enums::NodeType::View => "👁",
                     models::enums::NodeType::StoredProcedure => "⚙️",
@@ -2064,30 +2081,50 @@ impl Tabular {
                     models::enums::NodeType::MsSQLFolder => "🧰",
                 };
 
-                let label_text = if icon.is_empty() {
-                    // For connection nodes, add loading indicator if refreshing
-                    if node.node_type == models::enums::NodeType::Connection {
-                        if let Some(conn_id) = node.connection_id {
-                            if refreshing_connections.contains(&conn_id) {
-                                format!("{} 🔄", node.name) // Add refresh spinner
-                            } else {
-                                node.name.clone()
-                            }
+                // Build status info for Connection nodes (used below)
+                let (status_color, status_text) = if node.node_type == models::enums::NodeType::Connection {
+                    if let Some(conn_id) = node.connection_id {
+                        // Determine connected/connecting/disconnected
+                        let mut has_shared = false;
+                        if let Ok(shared) = shared_connection_pools.lock() {
+                            has_shared = shared.contains_key(&conn_id);
+                        }
+                        if connection_pools.contains_key(&conn_id) || has_shared {
+                            (egui::Color32::from_rgb(46, 204, 113), "Connected") // green
+                        } else if pending_connection_pools.contains(&conn_id) {
+                            (egui::Color32::from_rgb(241, 196, 15), "Connecting") // yellow
                         } else {
-                            node.name.clone()
+                            (egui::Color32::from_rgb(231, 76, 60), "Disconnected") // red
                         }
                     } else {
-                        node.name.clone()
+                        (egui::Color32::from_rgb(231, 76, 60), "Disconnected")
                     }
+                } else { (ui.visuals().text_color(), "") };
+
+                let mut response = if node.node_type == models::enums::NodeType::Connection {
+                    // Draw colored status dot then a button for the connection name
+                    ui.colored_label(status_color, egui::RichText::new("●").strong());
+                    let mut name_text = node.name.clone();
+                    if let Some(conn_id) = node.connection_id {
+                        if refreshing_connections.contains(&conn_id) {
+                            name_text.push_str(" 🔄");
+                        }
+                    }
+                    ui.button(name_text)
                 } else {
-                    format!("{} {}", icon, node.name)
-                };
-                let response = if node.node_type == models::enums::NodeType::Connection {
-                    // Use button for connections to make them more clickable
-                    ui.button(&label_text)
-                } else {
+                    // Non-connection nodes: keep icon + name label
+                    let label_text = if icon.is_empty() {
+                        node.name.clone()
+                    } else {
+                        format!("{} {}", icon, node.name)
+                    };
                     ui.label(label_text)
                 };
+
+                // Tooltip for connection status
+                if node.node_type == models::enums::NodeType::Connection && !status_text.is_empty() {
+                    response = response.on_hover_text(format!("Status: {}", status_text));
+                }
 
                 // New: Allow clicking the label to also expand/collapse for expandable nodes
                 if response.clicked() {
@@ -2109,6 +2146,8 @@ impl Tabular {
                                 | models::enums::NodeType::PrivilegesFolder
                                 | models::enums::NodeType::ProcessesFolder
                                 | models::enums::NodeType::StatusFolder
+                                | models::enums::NodeType::ReplicationStatusFolder
+                                | models::enums::NodeType::MasterStatusFolder
                                 | models::enums::NodeType::MetricsUserActiveFolder
                                 | models::enums::NodeType::ColumnsFolder
                                 | models::enums::NodeType::IndexesFolder
@@ -2429,6 +2468,9 @@ impl Tabular {
                             editor,
                             child_index,
                             refreshing_connections,
+                            connection_pools,
+                            pending_connection_pools,
+                            shared_connection_pools,
                             is_search_mode,
                         );
                         if let Some(child_expansion) = child_expansion_request {
@@ -2486,6 +2528,9 @@ impl Tabular {
                                 editor,
                                 child_index,
                                 refreshing_connections,
+                                connection_pools,
+                                pending_connection_pools,
+                                shared_connection_pools,
                                 is_search_mode,
                             );
 
@@ -2600,6 +2645,8 @@ impl Tabular {
                         models::enums::NodeType::PrivilegesFolder => "🔒",
                         models::enums::NodeType::ProcessesFolder => "⚡",
                         models::enums::NodeType::StatusFolder => "📊",
+                        models::enums::NodeType::ReplicationStatusFolder => "🔁",
+                        models::enums::NodeType::MasterStatusFolder => "⭐",
                         models::enums::NodeType::View => "👁",
                         models::enums::NodeType::StoredProcedure => "⚙️",
                         models::enums::NodeType::UserFunction => "🔧",
@@ -2641,6 +2688,8 @@ impl Tabular {
                     | models::enums::NodeType::PrivilegesFolder
                     | models::enums::NodeType::ProcessesFolder
                     | models::enums::NodeType::StatusFolder
+                    | models::enums::NodeType::ReplicationStatusFolder
+                    | models::enums::NodeType::MasterStatusFolder
                     | models::enums::NodeType::MetricsUserActiveFolder => {
                         if let Some(conn_id) = node.connection_id {
                             dba_click_request = Some((conn_id, node.node_type.clone()));
@@ -2843,7 +2892,7 @@ impl Tabular {
         &self,
         connection: &models::structs::ConnectionConfig,
         node_type: &models::enums::NodeType,
-    ) -> Option<(String, String)> {
+    ) -> Option<(String, String, Option<models::enums::DBASpecialMode>)> {
         use models::enums::{DatabaseType, NodeType};
         match connection.connection_type {
             DatabaseType::MySQL => {
@@ -2851,24 +2900,39 @@ impl Tabular {
                     NodeType::UsersFolder => Some((
                         format!("DBA: MySQL Users - {}", connection.name),
                         "SELECT Host, User, plugin, account_locked, password_expired, password_last_changed \
-FROM mysql.user ORDER BY User, Host;".to_string()
+FROM mysql.user ORDER BY User, Host;".to_string(),
+                        None
                     )),
                     NodeType::PrivilegesFolder => Some((
                         format!("DBA: MySQL Privileges - {}", connection.name),
                         "SELECT GRANTEE, PRIVILEGE_TYPE, IS_GRANTABLE FROM INFORMATION_SCHEMA.USER_PRIVILEGES \
-ORDER BY GRANTEE, PRIVILEGE_TYPE;".to_string()
+ORDER BY GRANTEE, PRIVILEGE_TYPE;".to_string(),
+                        None
                     )),
                     NodeType::ProcessesFolder => Some((
                         format!("DBA: MySQL Processlist - {}", connection.name),
-                        "SHOW FULL PROCESSLIST;".to_string()
+                        "SHOW FULL PROCESSLIST;".to_string(),
+                        None
                     )),
                     NodeType::StatusFolder => Some((
                         format!("DBA: MySQL Global Status - {}", connection.name),
-                        "SHOW GLOBAL STATUS;".to_string()
+                        "SHOW GLOBAL STATUS;".to_string(),
+                        None
+                    )),
+                    NodeType::ReplicationStatusFolder => Some((
+                        format!("DBA: MySQL Replication Status - {}", connection.name),
+                        "SHOW REPLICA STATUS;".to_string(),
+                        Some(models::enums::DBASpecialMode::ReplicationStatus)
+                    )),
+                    NodeType::MasterStatusFolder => Some((
+                        format!("DBA: MySQL Master Status - {}", connection.name),
+                        "SHOW MASTER STATUS;".to_string(),
+                        Some(models::enums::DBASpecialMode::MasterStatus)
                     )),
                     NodeType::MetricsUserActiveFolder => Some((
                         format!("DBA: MySQL User Active - {}", connection.name),
-                        "SELECT USER, COUNT(*) AS session_count FROM information_schema.PROCESSLIST GROUP BY USER ORDER BY session_count DESC;".to_string()
+                        "SELECT USER, COUNT(*) AS session_count FROM information_schema.PROCESSLIST GROUP BY USER ORDER BY session_count DESC;".to_string(),
+                        None
                     )),
                     _ => None,
                 }
@@ -2877,24 +2941,29 @@ ORDER BY GRANTEE, PRIVILEGE_TYPE;".to_string()
                 match node_type {
                     NodeType::UsersFolder => Some((
                         format!("DBA: PostgreSQL Users - {}", connection.name),
-                        "SELECT usename AS user, usesysid, usecreatedb, usesuper FROM pg_user ORDER BY usename;".to_string()
+                        "SELECT usename AS user, usesysid, usecreatedb, usesuper FROM pg_user ORDER BY usename;".to_string(),
+                        None
                     )),
                     NodeType::PrivilegesFolder => Some((
                         format!("DBA: PostgreSQL Privileges - {}", connection.name),
                         "SELECT grantee, table_catalog, table_schema, table_name, privilege_type \
-FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_name;".to_string()
+FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_name;".to_string(),
+                        None
                     )),
                     NodeType::ProcessesFolder => Some((
                         format!("DBA: PostgreSQL Activity - {}", connection.name),
-                        "SELECT pid, usename, application_name, client_addr, state, query_start, query FROM pg_stat_activity ORDER BY query_start DESC NULLS LAST;".to_string()
+                        "SELECT pid, usename, application_name, client_addr, state, query_start, query FROM pg_stat_activity ORDER BY query_start DESC NULLS LAST;".to_string(),
+                        None
                     )),
                     NodeType::StatusFolder => Some((
                         format!("DBA: PostgreSQL Settings - {}", connection.name),
-                        "SELECT name, setting FROM pg_settings ORDER BY name;".to_string()
+                        "SELECT name, setting FROM pg_settings ORDER BY name;".to_string(),
+                        None
                     )),
                     NodeType::MetricsUserActiveFolder => Some((
                         format!("DBA: PostgreSQL User Active - {}", connection.name),
-                        "SELECT usename AS user, COUNT(*) AS session_count FROM pg_stat_activity GROUP BY usename ORDER BY session_count DESC;".to_string()
+                        "SELECT usename AS user, COUNT(*) AS session_count FROM pg_stat_activity GROUP BY usename ORDER BY session_count DESC;".to_string(),
+                        None
                     )),
                     _ => None,
                 }
@@ -2904,27 +2973,32 @@ FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_n
                     NodeType::UsersFolder => Some((
                         format!("DBA: MsSQL Principals - {}", connection.name),
                         "SELECT name, type_desc, create_date, modify_date FROM sys.server_principals \
-WHERE type IN ('S','U','G') AND name NOT LIKE '##MS_%' ORDER BY name;".to_string()
+WHERE type IN ('S','U','G') AND name NOT LIKE '##MS_%' ORDER BY name;".to_string(),
+                        None
                     )),
                     NodeType::PrivilegesFolder => Some((
                         format!("DBA: MsSQL Server Permissions - {}", connection.name),
                         "SELECT dp.name AS principal_name, sp.permission_name, sp.state_desc \
 FROM sys.server_permissions sp \
 JOIN sys.server_principals dp ON sp.grantee_principal_id = dp.principal_id \
-ORDER BY dp.name, sp.permission_name;".to_string()
+ORDER BY dp.name, sp.permission_name;".to_string(),
+                        None
                     )),
                     NodeType::ProcessesFolder => Some((
                         format!("DBA: MsSQL Sessions - {}", connection.name),
                         "SELECT session_id, login_name, host_name, status, program_name, cpu_time, memory_usage \
-FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
+FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
+                        None
                     )),
                     NodeType::StatusFolder => Some((
                         format!("DBA: MsSQL Performance Counters - {}", connection.name),
-                        "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;".to_string()
+                        "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;".to_string(),
+                        None
                     )),
                     NodeType::MetricsUserActiveFolder => Some((
                         format!("DBA: MsSQL User Active - {}", connection.name),
-                        "SELECT login_name AS [user], COUNT(*) AS session_count FROM sys.dm_exec_sessions GROUP BY login_name ORDER BY session_count DESC;".to_string()
+                        "SELECT login_name AS [user], COUNT(*) AS session_count FROM sys.dm_exec_sessions GROUP BY login_name ORDER BY session_count DESC;".to_string(),
+                        None
                     )),
                     _ => None,
                 }
@@ -3530,6 +3604,24 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string()
                     metrics_user_active_folder.connection_id = Some(connection_id);
                     metrics_user_active_folder.is_loaded = false;
                     dba_children.push(metrics_user_active_folder);
+
+                    // Replication Status
+                    let mut repl_status_folder = models::structs::TreeNode::new(
+                        "Replication Status".to_string(),
+                        models::enums::NodeType::ReplicationStatusFolder,
+                    );
+                    repl_status_folder.connection_id = Some(connection_id);
+                    repl_status_folder.is_loaded = false;
+                    dba_children.push(repl_status_folder);
+
+                    // Master Status
+                    let mut master_status_folder = models::structs::TreeNode::new(
+                        "Master Status".to_string(),
+                        models::enums::NodeType::MasterStatusFolder,
+                    );
+                    master_status_folder.connection_id = Some(connection_id);
+                    master_status_folder.is_loaded = false;
+                    dba_children.push(master_status_folder);
 
                     dba_folder.children = dba_children;
 

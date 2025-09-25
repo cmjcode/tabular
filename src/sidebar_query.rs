@@ -355,6 +355,7 @@ pub(crate) fn open_query_file(
         page_size: 0,
         total_rows: 0,
         base_query: String::new(), // Empty base query for file queries
+        dba_special_mode: None,
     };
 
     tabular.query_tabs.push(new_tab);
