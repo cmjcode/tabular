@@ -1327,6 +1327,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
         tabular.structure_indexes.clear();
     tabular.structure_selected_row = None;
     tabular.structure_selected_cell = None;
+    tabular.structure_sel_anchor = None;
 
         // Branch: if user explicitly requested refresh, force live fetch and update cache
         if tabular.request_structure_refresh {
@@ -1783,16 +1784,17 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                 if ix.columns.is_empty() { String::new() } else { ix.columns.join(",") },
                                 String::new(), // actions placeholder
                             ];
-                            // Defer selected cell border so it paints last (above neighbors)
+                            // Defer selected cell border, and draw multi-selection overlay per cell
                             let mut selected_cell_rect: Option<egui::Rect> = None;
                             for (i,val) in values.iter().enumerate() {
                                 let w = widths[i];
-                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click_and_drag());
                                 // Alternating row bg
                                 if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}    
                                 // Selection highlight (row / cell)
                                 let is_row_selected = tabular.structure_selected_row == Some(idx);
                                 let is_cell_selected = tabular.structure_selected_cell == Some((idx, i));
+                                if let (Some(a), Some(b)) = (tabular.structure_sel_anchor, tabular.structure_selected_cell) { let (ar, ac) = a; let (br, bc) = b; let rmin=ar.min(br); let rmax=ar.max(br); let cmin=ac.min(bc); let cmax=ac.max(bc); if idx>=rmin && idx<=rmax && i>=cmin && i<=cmax { let sel = if dark { egui::Color32::from_rgba_unmultiplied(255,80,20,28) } else { egui::Color32::from_rgba_unmultiplied(255,120,40,60) }; ui.painter().rect_filled(rect,0.0,sel);} }
                                 if is_row_selected {
                                     let sel = if dark { egui::Color32::from_rgba_unmultiplied(100,150,255,30) } else { egui::Color32::from_rgba_unmultiplied(200,220,255,80) };
                                     ui.painter().rect_filled(rect, 0.0, sel);
@@ -1803,15 +1805,42 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                 let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                                 ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                                 if resp.clicked() {
+                                    let shift = ui.input(|i| i.modifiers.shift);
                                     tabular.structure_selected_row = Some(idx);
                                     tabular.structure_selected_cell = Some((idx, i));
+                                    if !shift || tabular.structure_sel_anchor.is_none() { tabular.structure_sel_anchor = Some((idx, i)); }
                                     // use same focus flag so global arrow handling prefers tables/structure over editor
                                     tabular.table_recently_clicked = true;
                                 }
+                                if resp.drag_started() {
+                                    tabular.structure_dragging = true;
+                                    if tabular.structure_sel_anchor.is_none() { tabular.structure_sel_anchor = Some((idx, i)); }
+                                    tabular.structure_selected_row = Some(idx);
+                                    tabular.structure_selected_cell = Some((idx, i));
+                                }
+                                if tabular.structure_dragging && ui.input(|inp| inp.pointer.primary_down()) && resp.hovered() {
+                                    tabular.structure_selected_row = Some(idx);
+                                    tabular.structure_selected_cell = Some((idx, i));
+                                }
+                                if tabular.structure_dragging && !ui.input(|inp| inp.pointer.primary_down()) { tabular.structure_dragging = false; }
                                 resp.context_menu(|ui| {
                                     // Copy helpers
                                     if ui.button("📋 Copy Cell Value").clicked() {
                                         ui.ctx().copy_text(val.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button("📄 Copy Selection as CSV").clicked() {
+                                        if let (Some(a), Some(b)) = (tabular.structure_sel_anchor, tabular.structure_selected_cell) {
+                                            let (ar, ac) = a; let (br, bc) = b; let rmin=ar.min(br); let rmax=ar.max(br); let cmin=ac.min(bc); let cmax=ac.max(bc);
+                                            let mut out = String::new();
+                                            for r in rmin..=rmax { if let Some(row) = tabular.structure_indexes.get(r) {
+                                                let rowvals = [ (r+1).to_string(), row.name.clone(), row.method.clone().unwrap_or_default(), if row.unique {"YES".to_string()} else {"NO".to_string()}, if row.columns.is_empty(){String::new()} else {row.columns.join(",")}, String::new() ];
+                                                let mut fields: Vec<String> = Vec::new();
+                                                for c in cmin..=cmax { let v = rowvals.get(c).cloned().unwrap_or_default(); let q = if v.contains(',')||v.contains('"')||v.contains('\n'){ format!("\"{}\"", v.replace('"',"\"\"")) } else { v }; fields.push(q); }
+                                                out.push_str(&fields.join(",")); out.push('\n'); }
+                                            }
+                                            if !out.is_empty() { ui.ctx().copy_text(out); }
+                                        }
                                         ui.close();
                                     }
                                     if ui.button("📄 Copy Row as CSV").clicked() {
@@ -1919,12 +1948,14 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
         let active_cols = tabular.structure_sub_view == models::structs::StructureSubView::Columns;
         if ui.selectable_label(active_cols, "Columns").clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Columns;
+            tabular.structure_sel_anchor = None; tabular.structure_selected_cell = None; tabular.structure_selected_row = None;
         }
         let active_idx = tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
         if ui.selectable_label(active_idx, "Indexes").clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
             // Load using cache-first; if empty, live fetch inside the loader will populate and cache
             load_structure_info_for_current_table(tabular);
+            tabular.structure_sel_anchor = None; tabular.structure_selected_cell = None; tabular.structure_selected_row = None;
         }
     });
 }
@@ -2020,11 +2051,21 @@ pub(crate) fn render_structure_columns_editor(
                     for (i,val) in values.iter().enumerate() {
                         let w = widths[i];
                         // All cells clickable for context menu
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click_and_drag());
                         if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}    
                         // Selection highlight
                         let is_row_selected = tabular.structure_selected_row == Some(idx);
                         let is_cell_selected = tabular.structure_selected_cell == Some((idx, i));
+                        // Multi-selection block highlight (Structure)
+                        if let (Some(a), Some(b)) = (tabular.structure_sel_anchor, tabular.structure_selected_cell) {
+                            let (ar, ac) = a; let (br, bc) = b;
+                            let rmin = ar.min(br); let rmax = ar.max(br);
+                            let cmin = ac.min(bc); let cmax = ac.max(bc);
+                            if idx >= rmin && idx <= rmax && i >= cmin && i <= cmax {
+                                let sel = if dark { egui::Color32::from_rgba_unmultiplied(255,80,20,28) } else { egui::Color32::from_rgba_unmultiplied(255,120,40,60) };
+                                ui.painter().rect_filled(rect, 0.0, sel);
+                            }
+                        }
                         if is_row_selected {
                             let sel = if dark { egui::Color32::from_rgba_unmultiplied(100,150,255,30) } else { egui::Color32::from_rgba_unmultiplied(200,220,255,80) };
                             ui.painter().rect_filled(rect, 0.0, sel);
@@ -2036,14 +2077,61 @@ pub(crate) fn render_structure_columns_editor(
                         let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                         ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
                         if resp.clicked() {
+                            let shift = ui.input(|i| i.modifiers.shift);
                             tabular.structure_selected_row = Some(idx);
                             tabular.structure_selected_cell = Some((idx, i));
+                            if !shift || tabular.structure_sel_anchor.is_none() { tabular.structure_sel_anchor = Some((idx, i)); }
                             tabular.table_recently_clicked = true;
                         }
+                        // Drag-to-select: when user drags over cells, extend the selection to current cell
+                        if resp.drag_started() {
+                            tabular.structure_dragging = true;
+                            if tabular.structure_sel_anchor.is_none() { tabular.structure_sel_anchor = Some((idx, i)); }
+                            tabular.structure_selected_row = Some(idx);
+                            tabular.structure_selected_cell = Some((idx, i));
+                        }
+                        // While dragging, update selection when hovering over any cell
+                        if tabular.structure_dragging && ui.input(|inp| inp.pointer.primary_down()) && resp.hovered() {
+                            tabular.structure_selected_row = Some(idx);
+                            tabular.structure_selected_cell = Some((idx, i));
+                        }
+                        // End drag when primary is released anywhere
+                        if tabular.structure_dragging && !ui.input(|inp| inp.pointer.primary_down()) { tabular.structure_dragging = false; }
                         // Context menu on every cell
                         resp.context_menu(|ui| {
                             if ui.button("📋 Copy Cell Value").clicked() {
                                 ui.ctx().copy_text(val.clone());
+                                ui.close();
+                            }
+                            if ui.button("📄 Copy Selection as CSV").clicked() {
+                                if let (Some(a), Some(b)) = (tabular.structure_sel_anchor, tabular.structure_selected_cell) {
+                                    let (ar, ac) = a; let (br, bc) = b;
+                                    let rmin = ar.min(br); let rmax = ar.max(br);
+                                    let cmin = ac.min(bc); let cmax = ac.max(bc);
+                                    let mut out = String::new();
+                                    for r in rmin..=rmax {
+                                        // rebuild row values from current row (values corresponds to idx row)
+                                        // we need from tabular.structure_columns for other rows
+                                        if let Some(row) = tabular.structure_columns.get(r) {
+                                            let rowvals = [
+                                                (r+1).to_string(),
+                                                row.name.clone(),
+                                                row.data_type.clone(),
+                                                row.nullable.map(|b| if b {"YES"} else {"NO"}).unwrap_or("?").to_string(),
+                                                row.default_value.clone().unwrap_or_default(),
+                                                row.extra.clone().unwrap_or_default(),
+                                            ];
+                                            let mut fields: Vec<String> = Vec::new();
+                                            for c in cmin..=cmax {
+                                                let v = rowvals.get(c).cloned().unwrap_or_default();
+                                                let quoted = if v.contains(',') || v.contains('"') || v.contains('\n') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v };
+                                                fields.push(quoted);
+                                            }
+                                            out.push_str(&fields.join(",")); out.push('\n');
+                                        }
+                                    }
+                                    if !out.is_empty() { ui.ctx().copy_text(out); }
+                                }
                                 ui.close();
                             }
                             if ui.button("📄 Copy Row as CSV").clicked() {

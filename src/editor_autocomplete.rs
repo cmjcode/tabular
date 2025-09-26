@@ -561,6 +561,8 @@ impl ShallowForCache for Tabular {
             structure_indexes: Vec::new(),
             structure_selected_row: None,
             structure_selected_cell: None,
+            structure_sel_anchor: None,
+            structure_dragging: false,
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,

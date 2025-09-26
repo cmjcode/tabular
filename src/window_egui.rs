@@ -195,6 +195,10 @@ pub struct Tabular {
     // Selection for Structure views (independent from Data grid selection)
     pub structure_selected_row: Option<usize>,
     pub structure_selected_cell: Option<(usize, usize)>,
+    // Anchor cell for multi-cell selection in Structure views (with shift-click or drag)
+    pub structure_sel_anchor: Option<(usize, usize)>,
+    // True while user is dragging mouse to select a multi-cell rectangle in Structure
+    pub structure_dragging: bool,
     // Pending drop index confirmation
     pub pending_drop_index_name: Option<String>,
     pub pending_drop_index_stmt: Option<String>,
@@ -473,6 +477,8 @@ impl Tabular {
             structure_indexes: Vec::new(),
             structure_selected_row: None,
             structure_selected_cell: None,
+            structure_sel_anchor: None,
+            structure_dragging: false,
             pending_drop_index_name: None,
             pending_drop_index_stmt: None,
             pending_drop_column_name: None,
@@ -7291,8 +7297,9 @@ impl App for Tabular {
         let mut copy_mode: u8 = 0; // 1=cell 2=rows 3=cols
         let mut snapshot_cell: Option<(usize, usize)> = None;
         let mut snapshot_value: Option<String> = None; // only for cell
-        let mut snapshot_rows_csv: Option<String> = None;
-        let mut snapshot_cols_csv: Option<String> = None;
+    let mut snapshot_rows_csv: Option<String> = None;
+    let mut snapshot_cols_csv: Option<String> = None;
+    let mut snapshot_structure_csv: Option<String> = None; // for Structure multi-cell selection
 
         // Detect Save shortcut using consume_key so it works reliably on macOS/Windows/Linux
         let mut save_shortcut = false;
@@ -7311,7 +7318,146 @@ impl App for Tabular {
             let key_combo =
                 (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
             if copy_event || key_combo {
-                if let Some((r, c)) = self.selected_cell {
+                // First, handle Structure view selections (Columns/Indexes)
+                if self.table_bottom_view == models::structs::TableBottomView::Structure {
+                    // Multi-cell block selection in Structure
+                    if let (Some((ar, ac)), Some((br, bc))) =
+                        (self.structure_sel_anchor, self.structure_selected_cell)
+                    {
+                        // Determine bounds
+                        let rmin = ar.min(br);
+                        let rmax = ar.max(br);
+                        let cmin = ac.min(bc);
+                        let cmax = ac.max(bc);
+                        // Build CSV using the same column order as in Structure UIs
+                        let mut out = String::new();
+                        match self.structure_sub_view {
+                            models::structs::StructureSubView::Columns => {
+                                for r in rmin..=rmax {
+                                    if let Some(row) = self.structure_columns.get(r) {
+                                        let rowvals = [
+                                            (r + 1).to_string(),
+                                            row.name.clone(),
+                                            row.data_type.clone(),
+                                            row
+                                                .nullable
+                                                .map(|b| if b { "YES" } else { "NO" })
+                                                .unwrap_or("?")
+                                                .to_string(),
+                                            row.default_value.clone().unwrap_or_default(),
+                                            row.extra.clone().unwrap_or_default(),
+                                        ];
+                                        let mut fields: Vec<String> = Vec::new();
+                                        for c in cmin..=cmax {
+                                            let v = rowvals.get(c).cloned().unwrap_or_default();
+                                            let quoted = if v.contains(',')
+                                                || v.contains('"')
+                                                || v.contains('\n')
+                                            {
+                                                format!("\"{}\"", v.replace('"', "\"\""))
+                                            } else {
+                                                v
+                                            };
+                                            fields.push(quoted);
+                                        }
+                                        out.push_str(&fields.join(","));
+                                        out.push('\n');
+                                    }
+                                }
+                            }
+                            models::structs::StructureSubView::Indexes => {
+                                for r in rmin..=rmax {
+                                    if let Some(row) = self.structure_indexes.get(r) {
+                                        let rowvals = [
+                                            (r + 1).to_string(),
+                                            row.name.clone(),
+                                            row.method.clone().unwrap_or_default(),
+                                            if row.unique { "YES".to_string() } else { "NO".to_string() },
+                                            if row.columns.is_empty() {
+                                                String::new()
+                                            } else {
+                                                row.columns.join(",")
+                                            },
+                                            String::new(), // actions placeholder
+                                        ];
+                                        let mut fields: Vec<String> = Vec::new();
+                                        for c in cmin..=cmax {
+                                            let v = rowvals.get(c).cloned().unwrap_or_default();
+                                            let quoted = if v.contains(',')
+                                                || v.contains('"')
+                                                || v.contains('\n')
+                                            {
+                                                format!("\"{}\"", v.replace('"', "\"\""))
+                                            } else {
+                                                v
+                                            };
+                                            fields.push(quoted);
+                                        }
+                                        out.push_str(&fields.join(","));
+                                        out.push('\n');
+                                    }
+                                }
+                            }
+                        }
+                        if !out.is_empty() {
+                            snapshot_structure_csv = Some(out);
+                            copy_mode = 4; // Structure block
+                            do_copy = true;
+                        } else {
+                            debug!("⚠️ Structure copy: selection produced empty CSV");
+                        }
+                    }
+                    // If no block selection, but a single Structure cell is focused, copy its value
+                    else if let Some((r, c)) = self.structure_selected_cell {
+                        let val = match self.structure_sub_view {
+                            models::structs::StructureSubView::Columns => {
+                                if let Some(row) = self.structure_columns.get(r) {
+                                    let rowvals = [
+                                        (r + 1).to_string(),
+                                        row.name.clone(),
+                                        row.data_type.clone(),
+                                        row
+                                            .nullable
+                                            .map(|b| if b { "YES" } else { "NO" })
+                                            .unwrap_or("?")
+                                            .to_string(),
+                                        row.default_value.clone().unwrap_or_default(),
+                                        row.extra.clone().unwrap_or_default(),
+                                    ];
+                                    rowvals.get(c).cloned().unwrap_or_default()
+                                } else {
+                                    String::new()
+                                }
+                            }
+                            models::structs::StructureSubView::Indexes => {
+                                if let Some(row) = self.structure_indexes.get(r) {
+                                    let rowvals = [
+                                        (r + 1).to_string(),
+                                        row.name.clone(),
+                                        row.method.clone().unwrap_or_default(),
+                                        if row.unique { "YES".to_string() } else { "NO".to_string() },
+                                        if row.columns.is_empty() {
+                                            String::new()
+                                        } else {
+                                            row.columns.join(",")
+                                        },
+                                        String::new(),
+                                    ];
+                                    rowvals.get(c).cloned().unwrap_or_default()
+                                } else {
+                                    String::new()
+                                }
+                            }
+                        };
+                        snapshot_cell = Some((r, c));
+                        snapshot_value = Some(val);
+                        copy_mode = 1; // reuse cell copy
+                        do_copy = true;
+                    }
+                    // else: no Structure selection; fall through to Data table copy logic
+                }
+                // Data table copy logic
+                else if let Some((r, c)) = self.selected_cell {
                     if let Some(row_vec) = self.current_table_data.get(r)
                         && c < row_vec.len()
                     {
@@ -7439,6 +7585,7 @@ impl App for Tabular {
                 let mut cell_changed = false;
                 let mut consumed_arrow = false;
                 if let Some((row, col)) = self.structure_selected_cell {
+                    let shift = i.modifiers.shift;
                     // Determine grid dimensions for current Structure subview
                     let (max_rows, max_cols) = match self.structure_sub_view {
                         models::structs::StructureSubView::Columns => {
@@ -7450,7 +7597,10 @@ impl App for Tabular {
                             (self.structure_indexes.len(), cols)
                         }
                     };
-
+                    // If extending selection with Shift, latch anchor at the starting cell
+                    if shift && self.structure_sel_anchor.is_none() {
+                        self.structure_sel_anchor = Some((row, col));
+                    }
                     if i.key_pressed(egui::Key::ArrowRight) {
                         if col + 1 < max_cols { 
                             self.structure_selected_cell = Some((row, col + 1));
@@ -7480,6 +7630,8 @@ impl App for Tabular {
                     }
 
                     if cell_changed {
+                        // On non-Shift navigation, collapse selection (clear anchor)
+                        if !shift { self.structure_sel_anchor = None; }
                         if let Some((r, _)) = self.structure_selected_cell { self.structure_selected_row = Some(r); }
                     }
                 }
@@ -7588,6 +7740,20 @@ impl App for Tabular {
                             self.selected_columns.len(),
                             csv.len()
                         );
+                    }
+                }
+                4 => {
+                    if let Some(csv) = snapshot_structure_csv {
+                        ctx.copy_text(csv.clone());
+                        // We don't track a separate list for Structure selection counts here, so log bounds if known
+                        if let (Some(a), Some(b)) = (self.structure_sel_anchor, self.structure_selected_cell) {
+                            let (ar, ac) = a; let (br, bc) = b;
+                            let rows = ar.abs_diff(br) + 1;
+                            let cols = ac.abs_diff(bc) + 1;
+                            debug!("📋 Copied Structure block {}×{} ({} chars)", rows, cols, csv.len());
+                        } else {
+                            debug!("📋 Copied Structure CSV ({} chars)", csv.len());
+                        }
                     }
                 }
                 _ => {}
