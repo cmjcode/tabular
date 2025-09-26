@@ -435,6 +435,19 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     ui.painter().rect_filled(rect, 0.0, overlay);
                                                 }
                                             }
+                                            // Multi-cell block overlay (between anchor and current selected cell)
+                                            if let (Some((ar, ac)), Some((br, bc))) = (tabular.table_sel_anchor, tabular.selected_cell) {
+                                                let rmin = ar.min(br); let rmax = ar.max(br);
+                                                let cmin = ac.min(bc); let cmax = ac.max(bc);
+                                                if row_index >= rmin && row_index <= rmax && col_index >= cmin && col_index <= cmax {
+                                                    let sel_color = if ui.visuals().dark_mode {
+                                                        egui::Color32::from_rgba_unmultiplied(255, 120, 40, 36)
+                                                    } else {
+                                                        egui::Color32::from_rgba_unmultiplied(255, 140, 60, 70)
+                                                    };
+                                                    ui.painter().rect_filled(rect, 0.0, sel_color);
+                                                }
+                                            }
                                             let border_color = if ui.visuals().dark_mode {
                                                 egui::Color32::from_gray(60)
                                             } else {
@@ -505,7 +518,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             };
                                             let cell_response = ui.allocate_response(
                                                 rect.size(),
-                                                egui::Sense::click(),
+                                                egui::Sense::click_and_drag(),
                                             );
                                             if tabular.is_table_browse_mode
                                                 && cell_response.double_clicked()
@@ -513,15 +526,38 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 // queue edit start to avoid mutable borrow inside iteration
                                                 start_edit_request = Some((row_index, col_index));
                                             } else if cell_response.clicked() {
-                                                cell_sel_requests.push((row_index, col_index));
+                                                let shift = ui.input(|i| i.modifiers.shift);
+                                                if shift {
+                                                    if tabular.table_sel_anchor.is_none() {
+                                                        tabular.table_sel_anchor = Some(
+                                                            tabular.selected_cell.unwrap_or((row_index, col_index)),
+                                                        );
+                                                    }
+                                                    tabular.selected_cell = Some((row_index, col_index));
+                                                } else {
+                                                    cell_sel_requests.push((row_index, col_index));
+                                                    tabular.table_sel_anchor = None;
+                                                }
                                             }
-                                            let hover_response = if cell.chars().count() > max_chars
-                                                || !cell.is_empty()
-                                            {
-                                                cell_response.on_hover_text(cell)
-                                            } else {
-                                                cell_response
-                                            };
+                                            // Attach hover text without moving away the response we keep using
+                                            let mut cell_resp = cell_response;
+                                            if cell.chars().count() > max_chars || !cell.is_empty() {
+                                                cell_resp = cell_resp.on_hover_text(cell);
+                                            }
+                                            // Drag-to-select lifecycle
+                                            if cell_resp.drag_started() {
+                                                if tabular.table_sel_anchor.is_none() {
+                                                    tabular.table_sel_anchor = Some((row_index, col_index));
+                                                }
+                                                tabular.selected_cell = Some((row_index, col_index));
+                                                tabular.table_dragging = true;
+                                            }
+                                            if tabular.table_dragging && ui.input(|i| i.pointer.primary_down()) && cell_resp.hovered() {
+                                                tabular.selected_cell = Some((row_index, col_index));
+                                            }
+                                            if tabular.table_dragging && !ui.input(|i| i.pointer.primary_down()) {
+                                                tabular.table_dragging = false;
+                                            }
                                             // Check if this cell is being edited
                                             let is_editing_this_cell =
                                                 tabular.spreadsheet_state.editing_cell
@@ -578,7 +614,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     },
                                                 );
                                             }
-                                            hover_response.context_menu(|ui| {
+                                            cell_resp.context_menu(|ui| {
                                                 ui.set_min_width(150.0);
                                                 ui.vertical(|ui| {
                                                     if ui.button("🔄 Refresh Data").clicked() {
@@ -595,6 +631,16 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     ui.separator();
                                                     if ui.button("📋 Copy Cell Value").clicked() {
                                                         ui.ctx().copy_text(cell.clone());
+                                                        ui.close();
+                                                    }
+                                                    if tabular.table_sel_anchor.is_some() && tabular.selected_cell.is_some()
+                                                        && ui.button("📄 Copy Selection as CSV").clicked()
+                                                    {
+                                                        if let (Some(a), Some(b)) = (tabular.table_sel_anchor, tabular.selected_cell) {
+                                                            if let Some(csv) = copy_selected_block_as_csv(tabular, a, b) {
+                                                                ui.ctx().copy_text(csv);
+                                                            }
+                                                        }
                                                         ui.close();
                                                     }
                                                     if !tabular.selected_rows.is_empty()
@@ -692,6 +738,16 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         ui.vertical(|ui| {
                             if ui.button("🔄 Refresh Data").clicked() {
                                 refresh_request_data = true;
+                                ui.close();
+                            }
+                            if tabular.table_sel_anchor.is_some() && tabular.selected_cell.is_some()
+                                && ui.button("📋 Copy Selection as CSV").clicked()
+                            {
+                                if let (Some(a), Some(b)) = (tabular.table_sel_anchor, tabular.selected_cell) {
+                                    if let Some(csv) = copy_selected_block_as_csv(tabular, a, b) {
+                                        ui.ctx().copy_text(csv);
+                                    }
+                                }
                                 ui.close();
                             }
                             if ui.button("📄 Export to CSV").clicked() {
@@ -835,10 +891,14 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             }
             for (col_idx, modifiers) in col_sel_requests {
                 handle_column_click(tabular, col_idx, modifiers);
+                tabular.table_sel_anchor = None;
+                tabular.table_dragging = false;
             }
             if let Some((r, c)) = cell_sel_requests.last().copied() {
                 tabular.selected_row = Some(r);
                 tabular.selected_cell = Some((r, c));
+                tabular.table_sel_anchor = None;
+                tabular.table_dragging = false;
                 tabular.table_recently_clicked = true; // Mark that table was clicked
             }
             if let Some((r, c)) = start_edit_request.take() {
@@ -846,6 +906,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 if tabular.spreadsheet_state.editing_cell.is_some()
                     && tabular.spreadsheet_state.editing_cell != Some((r, c))
                 {
+                tabular.scroll_to_selected_cell = true;
                     tabular.spreadsheet_finish_cell_edit(true);
                 }
                 tabular.selected_row = Some(r);
@@ -2889,6 +2950,9 @@ pub(crate) fn clear_table_selection(tabular: &mut window_egui::Tabular) {
     tabular.selected_columns.clear();
     tabular.last_clicked_row = None;
     tabular.last_clicked_column = None;
+    // Also clear multi-cell block state for Data grid
+    tabular.table_sel_anchor = None;
+    tabular.table_dragging = false;
 }
 
 pub(crate) fn handle_row_click(
@@ -3026,6 +3090,46 @@ pub(crate) fn copy_selected_columns_as_csv(tabular: &mut window_egui::Tabular) -
         lines.push(cols.join(","));
     }
     Some(lines.join("\n"))
+}
+
+/// Build CSV for a rectangular block selection in the Data grid (inclusive bounds).
+/// Returns None if the selection is invalid or outside the current page.
+pub(crate) fn copy_selected_block_as_csv(
+    tabular: &mut window_egui::Tabular,
+    a: (usize, usize),
+    b: (usize, usize),
+) -> Option<String> {
+    let (ar, ac) = a;
+    let (br, bc) = b;
+    let rmin = ar.min(br);
+    let rmax = ar.max(br);
+    let cmin = ac.min(bc);
+    let cmax = ac.max(bc);
+    if rmax >= tabular.current_table_data.len() {
+        return None;
+    }
+    if tabular.current_table_data.is_empty() {
+        return None;
+    }
+    let mut lines: Vec<String> = Vec::new();
+    for r in rmin..=rmax {
+        if let Some(row) = tabular.current_table_data.get(r) {
+            let mut cols: Vec<String> = Vec::new();
+            for c in cmin..=cmax {
+                if let Some(val) = row.get(c) {
+                    if val.contains(',') || val.contains('"') || val.contains('\n') {
+                        cols.push(format!("\"{}\"", val.replace('"', "\"\"")));
+                    } else {
+                        cols.push(val.clone());
+                    }
+                } else {
+                    cols.push(String::new());
+                }
+            }
+            lines.push(cols.join(","));
+        }
+    }
+    if lines.is_empty() { None } else { Some(lines.join("\n")) }
 }
 
 // Pagination methods

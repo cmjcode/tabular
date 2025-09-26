@@ -133,6 +133,10 @@ pub struct Tabular {
     pub last_clicked_column: Option<usize>,
     // Track if table was recently clicked for focus management
     pub table_recently_clicked: bool,
+    // Anchor cell for multi-cell selection in Data table (with shift-click/arrow or drag)
+    pub table_sel_anchor: Option<(usize, usize)>,
+    // True while user is dragging to select a multi-cell rectangle in Data table
+    pub table_dragging: bool,
     // Scroll to selected cell flag
     pub scroll_to_selected_cell: bool,
     // Column width management for resizable columns
@@ -445,6 +449,8 @@ impl Tabular {
             last_clicked_row: None,
             last_clicked_column: None,
             table_recently_clicked: false,
+            table_sel_anchor: None,
+            table_dragging: false,
             scroll_to_selected_cell: false,
             // Column width management
             column_widths: Vec::new(),
@@ -7457,7 +7463,19 @@ impl App for Tabular {
                     // else: no Structure selection; fall through to Data table copy logic
                 }
                 // Data table copy logic
-                else if let Some((r, c)) = self.selected_cell {
+                // Priority: block selection (multi-cell) -> selected rows -> selected columns -> single cell
+                else if let (Some(a), Some(b)) = (self.table_sel_anchor, self.selected_cell) {
+                    if let Some(csv) = crate::data_table::copy_selected_block_as_csv(self, a, b) {
+                        snapshot_rows_csv = None; // ensure we don't confuse modes
+                        snapshot_cols_csv = None;
+                        // Reuse copy_mode 2? Better: new mode
+                        snapshot_value = None;
+                        copy_mode = 5; // Data table block
+                        // Temporarily stash in snapshot_structure_csv to avoid adding a new var; we'll handle in copy execution
+                        snapshot_structure_csv = Some(csv);
+                        do_copy = true;
+                    }
+                } else if let Some((r, c)) = self.selected_cell {
                     if let Some(row_vec) = self.current_table_data.get(r)
                         && c < row_vec.len()
                     {
@@ -7528,6 +7546,10 @@ impl App for Tabular {
                 let mut consumed_arrow = false; // track if we handled an arrow key so we can suppress editor reaction
                 if let Some((row, col)) = self.selected_cell {
                     let max_rows = self.current_table_data.len();
+                    let shift = i.modifiers.shift;
+                    if shift && self.table_sel_anchor.is_none() {
+                        self.table_sel_anchor = Some((row, col));
+                    }
 
                     if i.key_pressed(egui::Key::ArrowRight) {
                         // Check the current row's column count for bounds
@@ -7571,6 +7593,7 @@ impl App for Tabular {
                     // Update selected_row when cell changes
                     if cell_changed && let Some((new_row, _)) = self.selected_cell {
                         self.selected_row = Some(new_row);
+                        if !shift { self.table_sel_anchor = None; }
                     }
                 }
                 if consumed_arrow { self.suppress_editor_arrow_once = true; }
@@ -7707,6 +7730,8 @@ impl App for Tabular {
                     self.selected_columns.clear();
                     self.selected_row = None;
                     self.selected_cell = None;
+                    self.table_sel_anchor = None;
+                    self.table_dragging = false;
                     self.last_clicked_row = None;
                     self.last_clicked_column = None;
                 }
@@ -7753,6 +7778,19 @@ impl App for Tabular {
                             debug!("📋 Copied Structure block {}×{} ({} chars)", rows, cols, csv.len());
                         } else {
                             debug!("📋 Copied Structure CSV ({} chars)", csv.len());
+                        }
+                    }
+                }
+                5 => {
+                    if let Some(csv) = snapshot_structure_csv.clone() {
+                        ctx.copy_text(csv.clone());
+                        if let (Some(a), Some(b)) = (self.table_sel_anchor, self.selected_cell) {
+                            let (ar, ac) = a; let (br, bc) = b;
+                            let rows = ar.abs_diff(br) + 1;
+                            let cols = ac.abs_diff(bc) + 1;
+                            debug!("📋 Copied Data block {}×{} ({} chars)", rows, cols, csv.len());
+                        } else {
+                            debug!("📋 Copied Data block CSV ({} chars)", csv.len());
                         }
                     }
                 }
