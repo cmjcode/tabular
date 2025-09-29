@@ -7662,14 +7662,12 @@ impl App for Tabular {
                             cell_changed = true; consumed_arrow = true;
                             log::debug!("⬇️ Arrow Down (Structure): Moving to ({}, {})", row + 1, target_col);
                         }
-                    } else if i.key_pressed(egui::Key::ArrowUp) {
-                        if row > 0 {
+                    } else if i.key_pressed(egui::Key::ArrowUp) && row > 0 {
                             let target_col = col.min(max_cols.saturating_sub(1));
                             self.structure_selected_cell = Some((row - 1, target_col));
                             cell_changed = true; consumed_arrow = true;
                             log::debug!("⬆️ Arrow Up (Structure): Moving to ({}, {})", row - 1, target_col);
                         }
-                    }
 
                     if cell_changed {
                         // On non-Shift navigation, collapse selection (clear anchor)
