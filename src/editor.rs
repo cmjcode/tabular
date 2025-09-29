@@ -797,6 +797,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 tabular.selection_start = start_b;
                 tabular.selection_end = start_b;
                 tabular.selected_text.clear();
+                // Mark for hard selection clear enforcement next frame
+                tabular.selection_force_clear = true;
                 
                 // Sync egui caret to collapsed at start
                 let ci = to_char_index(&tabular.editor.text, start_b);
@@ -1642,6 +1644,26 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         } else {
             tabular.selected_text.clear();
         }
+    }
+
+    // Enforce selection collapse visually if requested by a previous destructive action
+    if tabular.selection_force_clear {
+        let id = response.id;
+        let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
+        // Convert byte index to char index for egui state
+        let to_char_index = |s: &str, byte_idx: usize| -> usize {
+            let b = byte_idx.min(s.len());
+            s[..b].chars().count()
+        };
+        let ci = to_char_index(&tabular.editor.text, caret_b);
+        crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
+        tabular.selection_start = caret_b;
+        tabular.selection_end = caret_b;
+        tabular.selected_text.clear();
+        tabular.selection_force_clear = false;
+        // keep focus and repaint to reflect collapse immediately
+        ui.memory_mut(|m| m.request_focus(id));
+        ui.ctx().request_repaint();
     }
 
     // Reset table focus flag when editor is interacted with

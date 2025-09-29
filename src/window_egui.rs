@@ -196,6 +196,8 @@ pub struct Tabular {
     pub autocomplete_protection_frames: u8,
     // Tracks whether user has navigated autocomplete popup (ArrowUp/Down or similar)
     pub autocomplete_navigated: bool,
+    // Ensure selection is cleared on the next frame after a destructive action (e.g., Delete)
+    pub selection_force_clear: bool,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)
     pub extra_cursors: Vec<usize>,
     pub last_editor_text: String, // For detecting text changes in multi-cursor mode (deprecated; will derive from editor.text)
@@ -490,6 +492,7 @@ impl Tabular {
             autocomplete_expected_cursor: None,
             autocomplete_protection_frames: 0,
             autocomplete_navigated: false,
+            selection_force_clear: false,
             // Index dialog defaults
             show_index_dialog: false,
             index_dialog: None,

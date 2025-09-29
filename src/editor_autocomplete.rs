@@ -623,6 +623,7 @@ impl ShallowForCache for Tabular {
             pool_wait_started_at: None,
             spreadsheet_state: models::structs::SpreadsheetState::default(),
             suppress_editor_arrow_once: false,
+            selection_force_clear: false,
         })
     }
 }
