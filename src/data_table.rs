@@ -636,11 +636,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     if tabular.table_sel_anchor.is_some() && tabular.selected_cell.is_some()
                                                         && ui.button("📄 Copy Selection as CSV").clicked()
                                                     {
-                                                        if let (Some(a), Some(b)) = (tabular.table_sel_anchor, tabular.selected_cell) {
-                                                            if let Some(csv) = copy_selected_block_as_csv(tabular, a, b) {
+                                                        if let (Some(a), Some(b)) = (tabular.table_sel_anchor, tabular.selected_cell)
+                                                            && let Some(csv) = copy_selected_block_as_csv(tabular, a, b) {
                                                                 ui.ctx().copy_text(csv);
                                                             }
-                                                        }
                                                         ui.close();
                                                     }
                                                     if !tabular.selected_rows.is_empty()
@@ -743,11 +742,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             if tabular.table_sel_anchor.is_some() && tabular.selected_cell.is_some()
                                 && ui.button("📋 Copy Selection as CSV").clicked()
                             {
-                                if let (Some(a), Some(b)) = (tabular.table_sel_anchor, tabular.selected_cell) {
-                                    if let Some(csv) = copy_selected_block_as_csv(tabular, a, b) {
+                                if let (Some(a), Some(b)) = (tabular.table_sel_anchor, tabular.selected_cell)
+                                    && let Some(csv) = copy_selected_block_as_csv(tabular, a, b) {
                                         ui.ctx().copy_text(csv);
                                     }
-                                }
                                 ui.close();
                             }
                             if ui.button("📄 Export to CSV").clicked() {

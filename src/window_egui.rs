@@ -15,6 +15,21 @@ use crate::{
 };
 use crate::{data_table, driver_mssql};
 
+// Grouped parameters for render_tree_node_with_table_expansion to keep call sites tidy
+struct RenderTreeNodeParams<'a> {
+    node_index: usize,
+    refreshing_connections: &'a std::collections::HashSet<i64>,
+    connection_pools:
+        &'a std::collections::HashMap<i64, models::enums::DatabasePool>,
+    pending_connection_pools: &'a std::collections::HashSet<i64>,
+    shared_connection_pools: &'a Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<i64, models::enums::DatabasePool>,
+        >,
+    >,
+    is_search_mode: bool,
+}
+
 pub struct Tabular {
     pub editor: EditorBuffer,
     // Transitional multi-selection model (will move to lapce-core selection)
@@ -714,12 +729,14 @@ impl Tabular {
                 ui,
                 node,
                 &mut self.editor,
-                index,
-                &self.refreshing_connections,
-                &self.connection_pools,
-                &self.pending_connection_pools,
-                &self.shared_connection_pools,
-                is_search_mode,
+                RenderTreeNodeParams {
+                    node_index: index,
+                    refreshing_connections: &self.refreshing_connections,
+                    connection_pools: &self.connection_pools,
+                    pending_connection_pools: &self.pending_connection_pools,
+                    shared_connection_pools: &self.shared_connection_pools,
+                    is_search_mode,
+                },
             );
             if let Some(expansion_req) = expansion_request {
                 expansion_requests.push(expansion_req);
@@ -766,11 +783,10 @@ impl Tabular {
                             Some(conn_id),
                         );
                         // Now attach special mode to that newly created active tab
-                        if let Some(mode) = special_mode {
-                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        if let Some(mode) = special_mode
+                            && let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                 active_tab.dba_special_mode = Some(mode);
                             }
-                        }
                         self.current_connection_id = Some(conn_id);
                         // Ensure (or kick off) connection pool before executing; fall back to direct exec if still pending
                         if let Some(rt) = self.runtime.clone() {
@@ -1935,16 +1951,12 @@ impl Tabular {
         results
     }
 
+
     fn render_tree_node_with_table_expansion(
         ui: &mut egui::Ui,
         node: &mut models::structs::TreeNode,
         editor: &mut crate::editor_buffer::EditorBuffer,
-        node_index: usize,
-        refreshing_connections: &std::collections::HashSet<i64>,
-        connection_pools: &std::collections::HashMap<i64, models::enums::DatabasePool>,
-        pending_connection_pools: &std::collections::HashSet<i64>,
-        shared_connection_pools: &Arc<std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>>,
-        is_search_mode: bool,
+        params: RenderTreeNodeParams,
     ) -> models::structs::RenderTreeNodeResult {
         let has_children = !node.children.is_empty();
         let mut expansion_request = None;
@@ -1973,9 +1985,13 @@ impl Tabular {
             // Use more unique ID including connection_id for connections
             let unique_id = match node.node_type {
                 models::enums::NodeType::Connection => {
-                    format!("conn_{}_{}", node_index, node.connection_id.unwrap_or(0))
+                    format!(
+                        "conn_{}_{}",
+                        params.node_index,
+                        node.connection_id.unwrap_or(0)
+                    )
                 }
-                _ => format!("node_{}_{:?}", node_index, node.node_type),
+                _ => format!("node_{}_{:?}", params.node_index, node.node_type),
             };
             let id = egui::Id::new(&unique_id);
             ui.horizontal(|ui| {
@@ -2003,7 +2019,7 @@ impl Tabular {
                     if (node.node_type == models::enums::NodeType::Table
                         || node.node_type == models::enums::NodeType::View)
                         && node.is_expanded
-                        && ((!node.is_loaded) || is_search_mode)
+                        && ((!node.is_loaded) || params.is_search_mode)
                         && let Some(conn_id) = node.connection_id
                     {
                         // Use stored raw table_name if present; otherwise sanitize display name (strip emojis / annotations)
@@ -2011,7 +2027,7 @@ impl Tabular {
                             .table_name
                             .clone()
                             .unwrap_or_else(|| Self::sanitize_display_table_name(&node.name));
-                        table_expansion = Some((node_index, conn_id, raw_name));
+                        table_expansion = Some((params.node_index, conn_id, raw_name));
                     }
 
                     // If this is a folder node and not loaded, request folder content expansion
@@ -2098,12 +2114,12 @@ impl Tabular {
                     if let Some(conn_id) = node.connection_id {
                         // Determine connected/connecting/disconnected
                         let mut has_shared = false;
-                        if let Ok(shared) = shared_connection_pools.lock() {
+                        if let Ok(shared) = params.shared_connection_pools.lock() {
                             has_shared = shared.contains_key(&conn_id);
                         }
-                        if connection_pools.contains_key(&conn_id) || has_shared {
+                        if params.connection_pools.contains_key(&conn_id) || has_shared {
                             (egui::Color32::from_rgb(46, 204, 113), "Connected") // green
-                        } else if pending_connection_pools.contains(&conn_id) {
+                        } else if params.pending_connection_pools.contains(&conn_id) {
                             (egui::Color32::from_rgb(241, 196, 15), "Connecting") // yellow
                         } else {
                             (egui::Color32::from_rgb(231, 76, 60), "Disconnected") // red
@@ -2117,11 +2133,10 @@ impl Tabular {
                     // Draw colored status dot then a button for the connection name
                     ui.colored_label(status_color, egui::RichText::new("●").strong());
                     let mut name_text = node.name.clone();
-                    if let Some(conn_id) = node.connection_id {
-                        if refreshing_connections.contains(&conn_id) {
+                    if let Some(conn_id) = node.connection_id
+                        && params.refreshing_connections.contains(&conn_id) {
                             name_text.push_str(" 🔄");
                         }
-                    }
                     ui.button(name_text)
                 } else {
                     // Non-connection nodes: keep icon + name label
@@ -2478,12 +2493,14 @@ impl Tabular {
                             ui,
                             child,
                             editor,
-                            child_index,
-                            refreshing_connections,
-                            connection_pools,
-                            pending_connection_pools,
-                            shared_connection_pools,
-                            is_search_mode,
+                            RenderTreeNodeParams {
+                                node_index: child_index,
+                                refreshing_connections: params.refreshing_connections,
+                                connection_pools: params.connection_pools,
+                                pending_connection_pools: params.pending_connection_pools,
+                                shared_connection_pools: params.shared_connection_pools,
+                                is_search_mode: params.is_search_mode,
+                            },
                         );
                         if let Some(child_expansion) = child_expansion_request {
                             expansion_request = Some(child_expansion);
@@ -2538,12 +2555,14 @@ impl Tabular {
                                 ui,
                                 child,
                                 editor,
-                                child_index,
-                                refreshing_connections,
-                                connection_pools,
-                                pending_connection_pools,
-                                shared_connection_pools,
-                                is_search_mode,
+                                RenderTreeNodeParams {
+                                    node_index: child_index,
+                                    refreshing_connections: params.refreshing_connections,
+                                    connection_pools: params.connection_pools,
+                                    pending_connection_pools: params.pending_connection_pools,
+                                    shared_connection_pools: params.shared_connection_pools,
+                                    is_search_mode: params.is_search_mode,
+                                },
                             );
 
                             // Handle child expansion requests - propagate to parent

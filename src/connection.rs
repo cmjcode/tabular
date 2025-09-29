@@ -425,14 +425,13 @@ pub(crate) fn execute_table_query_sync(
                                                     };
                                                     let is_mariadb = version_str.to_lowercase().contains("mariadb");
                                                     // Fallback: if replication status empty, try legacy SHOW SLAVE STATUS
-                                                    if replication_status_mode && final_data.is_empty() {
-                                                        if let Ok(fallback_rows) = sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await {
-                                                            if !fallback_rows.is_empty() {
+                                                    if replication_status_mode && final_data.is_empty()
+                                                        && let Ok(fallback_rows) = sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await
+                                                            && !fallback_rows.is_empty() {
                                                                 final_headers = fallback_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
                                                                 final_data = driver_mysql::convert_mysql_rows_to_table_data(fallback_rows);
                                                             }
-                                                        }
-                                                    }
+                                                            
                                                     // Build summary metrics (simple overlay table)
                                                     if !final_headers.is_empty() && !final_data.is_empty() {
                                                         let header_index = |name: &str| final_headers.iter().position(|h| h.eq_ignore_ascii_case(name));
