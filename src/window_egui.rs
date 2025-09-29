@@ -2371,6 +2371,14 @@ impl Tabular {
                             ui.close();
                         }
                         ui.separator();
+                        if ui.button("🗑️ DROP TABLE").clicked() {
+                            let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
+                            // Use IF EXISTS for broad DB compatibility (MySQL, PostgreSQL, SQLite, SQL Server 2016+)
+                            editor.set_text(format!("DROP TABLE IF EXISTS {};", actual_table_name));
+                            editor.mark_text_modified();
+                            ui.close();
+                        }
+                        ui.separator();
                         if ui.button("➕ Add Index (New Tab)").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 let actual_table_name =
