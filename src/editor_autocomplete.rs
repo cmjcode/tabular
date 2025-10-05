@@ -630,6 +630,13 @@ impl ShallowForCache for Tabular {
             context_menu_just_opened: false,
             context_menu_pos: egui::Pos2::ZERO,
             newly_created_rows: std::collections::HashSet::new(),
+            // Query AST debug fields (unused in shallow clone)
+            show_query_ast_debug: false,
+            last_compiled_sql: None,
+            last_compiled_headers: Vec::new(),
+            last_debug_plan: None,
+            last_cache_hits: 0,
+            last_cache_misses: 0,
         })
     }
 }

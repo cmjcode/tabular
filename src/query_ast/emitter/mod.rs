@@ -11,6 +11,7 @@ pub fn emit_sql(plan: &LogicalQueryPlan, db_type: &DatabaseType) -> Result<Strin
 #[derive(Debug, Default, Clone)]
 struct FlatSelect {
     table: Option<String>,
+    subquery: Option<(String,String)>, // (sql, alias)
     projection: Vec<Expr>,
     predicates: Vec<Expr>,
     sort: Vec<SortItem>,
@@ -24,9 +25,9 @@ struct FlatSelect {
 
 fn flatten_plan(plan: &LogicalQueryPlan) -> FlatSelect {
     fn rec(node: &LogicalQueryPlan, acc: &mut FlatSelect) {
-        use super::logical::JoinKind;
         match node {
             LogicalQueryPlan::TableScan { table } => { acc.table = Some(table.clone()); }
+            LogicalQueryPlan::SubqueryScan { sql, alias } => { acc.subquery = Some((sql.clone(), alias.clone())); }
             LogicalQueryPlan::Projection { exprs, input } => { acc.projection = exprs.clone(); rec(input, acc); }
             LogicalQueryPlan::Distinct { input } => { acc.distinct = true; rec(input, acc); }
             LogicalQueryPlan::Filter { predicate, input } => { acc.predicates.push(predicate.clone()); rec(input, acc); }
@@ -53,8 +54,8 @@ struct FlatEmitter { dialect: DatabaseType }
 impl FlatEmitter {
     fn emit(&mut self, flat: &FlatSelect) -> Result<String, QueryAstError> {
         let proj_sql = if flat.projection.is_empty() { "*".to_string() } else { flat.projection.iter().map(|e| self.emit_expr(e)).collect::<Result<Vec<_>,_>>()?.join(", ") };
-        let table = flat.table.clone().unwrap_or_else(|| "DUAL".to_string());
-        let mut sql = if flat.distinct { format!("SELECT DISTINCT {} FROM {}", proj_sql, self.quote_table(&table)) } else { format!("SELECT {} FROM {}", proj_sql, self.quote_table(&table)) };
+        let from_clause = if let Some((sub_sql, alias)) = &flat.subquery { format!("({}) {}", sub_sql, self.quote_table(alias)) } else { self.quote_table(&flat.table.clone().unwrap_or_else(|| "DUAL".to_string())) };
+        let mut sql = if flat.distinct { format!("SELECT DISTINCT {} FROM {}", proj_sql, from_clause) } else { format!("SELECT {} FROM {}", proj_sql, from_clause) };
         if let Some((kind, right_table, on)) = &flat.join {
             let join_kw = match kind { super::logical::JoinKind::Inner => "INNER JOIN", super::logical::JoinKind::Left => "LEFT JOIN", super::logical::JoinKind::Right => "RIGHT JOIN", super::logical::JoinKind::Full => "FULL JOIN" };
             sql.push_str(&format!(" {} {}", join_kw, self.quote_table(right_table)));
@@ -125,6 +126,7 @@ impl FlatEmitter {
                 s.push_str(" END");
                 s
             }
+            Expr::Subquery(sql) => format!("({})", sql),
         })
     }
 

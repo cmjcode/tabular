@@ -17,6 +17,7 @@ pub enum Expr {
     Like { expr: Box<Expr>, pattern: Box<Expr>, negated: bool },
     InList { expr: Box<Expr>, list: Vec<Expr>, negated: bool },
     Case { operand: Option<Box<Expr>>, when_then: Vec<(Expr, Expr)>, else_expr: Option<Box<Expr>> },
+    Subquery(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +34,7 @@ pub enum LogicalQueryPlan {
     Join { left: Box<LogicalQueryPlan>, right: Box<LogicalQueryPlan>, on: Option<Expr>, kind: JoinKind },
     Having { predicate: Expr, input: Box<LogicalQueryPlan> },
     TableScan { table: String },
+    SubqueryScan { sql: String, alias: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +42,7 @@ pub enum JoinKind { Inner, Left, Right, Full }
 
 impl LogicalQueryPlan {
     pub fn table_scan(name: impl Into<String>) -> Self { Self::TableScan { table: name.into() } }
+    pub fn subquery_scan(sql: impl Into<String>, alias: impl Into<String>) -> Self { Self::SubqueryScan { sql: sql.into(), alias: alias.into() } }
 }
 
 impl Expr {

@@ -1,4 +1,4 @@
-use super::{ast::*, logical::{LogicalQueryPlan, Expr, SortItem, JoinKind}, errors::QueryAstError};
+use super::{logical::{LogicalQueryPlan, Expr, SortItem, JoinKind}, errors::QueryAstError};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use sqlparser::ast as sq;
@@ -8,31 +8,41 @@ pub fn parse_single_select_to_plan(sql: &str) -> Result<LogicalQueryPlan, QueryA
     let ast = Parser::parse_sql(&dialect, sql).map_err(|e| QueryAstError::Parse(e.to_string()))?;
     if ast.len() != 1 { return Err(QueryAstError::Unsupported("multi-statement")); }
     match &ast[0] {
-        sq::Statement::Query(q) => convert_query(q),
+        sq::Statement::Query(q) => convert_query(q, sql),
         _ => Err(QueryAstError::Unsupported("not a SELECT")),
     }
 }
 
-fn convert_query(q: &sq::Query) -> Result<LogicalQueryPlan, QueryAstError> {
+fn convert_query(q: &sq::Query, raw_sql: &str) -> Result<LogicalQueryPlan, QueryAstError> {
     let body = &q.body;
     match body.as_ref() {
-        sq::SetExpr::Select(sel) => convert_select(sel, q),
+        sq::SetExpr::Select(sel) => convert_select(sel, q, raw_sql),
         _ => Err(QueryAstError::Unsupported("unsupported set expr")),
     }
 }
 
-fn convert_select(sel: &sq::Select, q: &sq::Query) -> Result<LogicalQueryPlan, QueryAstError> {
+fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<LogicalQueryPlan, QueryAstError> {
     if sel.from.is_empty() { return Err(QueryAstError::Unsupported("missing FROM")); }
 
     // FROM + JOIN chain
     let base = match &sel.from[0].relation {
         sq::TableFactor::Table { name, .. } => LogicalQueryPlan::table_scan(name.to_string()),
-        // Subqueries in FROM not yet fully supported; fallback
+        sq::TableFactor::Derived { subquery, alias, .. } => {
+            let al = alias.as_ref().map(|a| a.name.to_string()).unwrap_or_else(|| "subq".into());
+            LogicalQueryPlan::subquery_scan(subquery.to_string(), al)
+        }
         _ => return Err(QueryAstError::Unsupported("complex table ref")),
     };
     let mut plan = base;
     for join in &sel.from[0].joins {
-        let right = match &join.relation { sq::TableFactor::Table { name, .. } => LogicalQueryPlan::table_scan(name.to_string()), _ => return Err(QueryAstError::Unsupported("complex join rel")), };
+        let right = match &join.relation {
+            sq::TableFactor::Table { name, .. } => LogicalQueryPlan::table_scan(name.to_string()),
+            sq::TableFactor::Derived { subquery, alias, .. } => {
+                let al = alias.as_ref().map(|a| a.name.to_string()).unwrap_or_else(|| "subq".into());
+                LogicalQueryPlan::subquery_scan(subquery.to_string(), al)
+            }
+            _ => return Err(QueryAstError::Unsupported("complex join rel")),
+        };
         let kind = match join.join_operator { sq::JoinOperator::Inner(_) => JoinKind::Inner, sq::JoinOperator::LeftOuter(_) => JoinKind::Left, sq::JoinOperator::RightOuter(_) => JoinKind::Right, sq::JoinOperator::FullOuter(_) => JoinKind::Full, _ => JoinKind::Inner };
         let on_expr = match &join.join_operator { sq::JoinOperator::Inner(cond) | sq::JoinOperator::LeftOuter(cond) | sq::JoinOperator::RightOuter(cond) | sq::JoinOperator::FullOuter(cond) => match cond { sq::JoinConstraint::On(e) => Some(convert_expr(e)), _ => None }, _ => None };
         plan = LogicalQueryPlan::Join { left: Box::new(plan), right: Box::new(right), on: on_expr, kind };
@@ -41,13 +51,46 @@ fn convert_select(sel: &sq::Select, q: &sq::Query) -> Result<LogicalQueryPlan, Q
     // WHERE
     if let Some(pred) = &sel.selection { plan = LogicalQueryPlan::Filter { predicate: convert_expr(pred), input: Box::new(plan) }; }
 
-    // GROUP BY
+    // GROUP BY (primary attempt via AST)
     use sqlparser::ast::GroupByExpr;
+    let mut group_added = false;
     if let GroupByExpr::Expressions(_mod, list) = &sel.group_by {
         if !list.is_empty() {
             let mut gexprs = Vec::new();
-            for item in list { gexprs.push(Expr::Raw(item.to_string())); }
+            for item in list {
+                let s = item.to_string();
+                // Heuristic: simple identifier / dotted path -> Column; otherwise Raw
+                if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c=='.') && s.contains(|c: char| c.is_ascii_alphabetic()) {
+                    gexprs.push(Expr::Column(s));
+                } else {
+                    gexprs.push(Expr::Raw(s));
+                }
+            }
             plan = LogicalQueryPlan::Group { group_exprs: gexprs, input: Box::new(plan) };
+            group_added = true;
+        }
+    }
+    // Fallback heuristic: if parser gave us no group node but raw SQL contains GROUP BY
+    if !group_added {
+        let lower = raw_sql.to_ascii_lowercase();
+        if let Some(gpos) = lower.find("group by ") {
+            // slice after 'group by '
+            let start = gpos + "group by ".len();
+            // find earliest of having/order/limit/end
+            let tail = &lower[start..];
+            let mut end_rel = tail.len();
+            for kw in [" having ", " order by ", " limit ", ";"] {
+                if let Some(idx) = tail.find(kw) { if idx < end_rel { end_rel = idx; } }
+            }
+            let original_slice = &raw_sql[start..start+end_rel];
+            let candidates: Vec<Expr> = original_slice.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| Expr::Raw(s.to_string()))
+                .collect();
+            if !candidates.is_empty() {
+                plan = LogicalQueryPlan::Group { group_exprs: candidates, input: Box::new(plan) };
+            }
         }
     }
 
@@ -98,6 +141,7 @@ fn extract_limit_offset(q: &sq::Query) -> Result<(Option<u64>, Option<u64>), Que
 
 fn convert_expr(e: &sq::Expr) -> Expr {
     match e {
+    sq::Expr::Subquery(sub) => Expr::Subquery(sub.to_string()),
         sq::Expr::Identifier(id) => Expr::Column(id.to_string()),
         sq::Expr::CompoundIdentifier(parts) => Expr::Column(parts.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(".")),
         sq::Expr::Value(sq::Value::Number(n, _)) => Expr::Number(n.clone()),

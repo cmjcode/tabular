@@ -298,6 +298,13 @@ pub struct Tabular {
     pub context_menu_pos: egui::Pos2,
     // Track newly created/duplicated rows for highlighting
     pub newly_created_rows: std::collections::HashSet<usize>,
+    // --- Query AST Debug Panel (feature gated at runtime; safe if feature off) ---
+    pub show_query_ast_debug: bool,
+    pub last_compiled_sql: Option<String>,
+    pub last_compiled_headers: Vec<String>,
+    pub last_debug_plan: Option<String>,
+    pub last_cache_hits: u64,
+    pub last_cache_misses: u64,
 }
 
 // Preference tabs enumeration
@@ -693,6 +700,13 @@ impl Tabular {
             context_menu_just_opened: false,
             context_menu_pos: egui::Pos2::ZERO,
             newly_created_rows: std::collections::HashSet::new(),
+            // Query AST debug defaults
+            show_query_ast_debug: false,
+            last_compiled_sql: None,
+            last_compiled_headers: Vec::new(),
+            last_debug_plan: None,
+            last_cache_hits: 0,
+            last_cache_misses: 0,
         };
 
         // Clear any old cached pools
@@ -7305,6 +7319,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
 
 impl App for Tabular {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // Keyboard shortcut to toggle Query AST debug panel (Phase F)
+        #[cfg(feature = "query_ast")]
+        if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
+            self.show_query_ast_debug = !self.show_query_ast_debug;
+        }
         // Periodic cleanup of stuck connection pools to prevent infinite loops
         if self.pending_connection_pools.len() > 10 {
             // If we have too many pending connections, force cleanup
@@ -7528,6 +7547,39 @@ impl App for Tabular {
         if self.request_theme_selector {
             self.request_theme_selector = false;
             self.show_theme_selector = true;
+        }
+
+        // --- Query AST Debug floating window (Phase F) ---
+        #[cfg(feature = "query_ast")]
+        if self.show_query_ast_debug {
+            egui::Window::new("Query AST Debug")
+                .open(&mut self.show_query_ast_debug)
+                .resizable(true)
+                .default_size(egui::vec2(520.0, 320.0))
+                .show(ctx, |ui| {
+                    ui.label("Press F9 to toggle this panel.");
+                    if ui.button("Refresh Stats").clicked() {
+                        let (h,m) = crate::query_ast::cache_stats();
+                        self.last_cache_hits = h; self.last_cache_misses = m;
+                        if let Some(sql) = &self.last_compiled_sql {
+                            if let Some(active_tab) = self.query_tabs.get(self.active_tab_index) {
+                                if let Some(conn_id) = active_tab.connection_id {
+                                    if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
+                                        if let Ok(plan_txt) = crate::query_ast::debug_plan(sql, &conn.connection_type) { self.last_debug_plan = Some(plan_txt); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Cache: hits={} misses={} hit_rate={:.1}%", self.last_cache_hits, self.last_cache_misses, if self.last_cache_hits + self.last_cache_misses > 0 { (self.last_cache_hits as f64 *100.0)/(self.last_cache_hits + self.last_cache_misses) as f64 } else { 0.0 }));
+                    });
+                    if let Some(sql) = &self.last_compiled_sql { ui.collapsing("Last Emitted SQL", |ui| { ui.code(sql); }); }
+                    if !self.last_compiled_headers.is_empty() { ui.collapsing("Last Inferred Headers", |ui| { ui.label(self.last_compiled_headers.join(", ")); }); }
+                    if let Some(plan) = &self.last_debug_plan { ui.collapsing("Logical Plan", |ui| { ui.code(plan); }); }
+                    if self.last_compiled_sql.is_none() { ui.label("(Run a SELECT query to populate data)"); }
+                });
         }
 
         // Handle keyboard shortcuts (collect copy intent inside closure, execute after)
@@ -9265,7 +9317,6 @@ impl App for Tabular {
                 // Render context menu for row operations
                 if self.show_row_context_menu {
                     let mut close_menu = false;
-                    let mut menu_hovered = false;
                     
                     let area_response = egui::Area::new(egui::Id::new("row_context_menu"))
                         .order(egui::Order::Foreground)
@@ -9289,7 +9340,7 @@ impl App for Tabular {
                             frame_response.response.hovered()
                         });
                     
-                    menu_hovered = area_response.inner;
+                    let hovered_menu = area_response.inner;
                     
                     // Close context menu when clicking elsewhere or pressing Escape
                     if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -9309,7 +9360,7 @@ impl App for Tabular {
                     // Close context menu when clicking anywhere outside the menu
                     // Skip the first frame after opening to avoid immediate closure from the right-click event
                     if !self.context_menu_just_opened {
-                        if ui.ctx().input(|i| i.pointer.any_click()) && !menu_hovered {
+                        if ui.ctx().input(|i| i.pointer.any_click()) && !hovered_menu {
                             self.show_row_context_menu = false;
                             self.context_menu_row = None;
                             self.context_menu_pos = egui::Pos2::ZERO;

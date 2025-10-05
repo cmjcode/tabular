@@ -302,7 +302,14 @@ pub(crate) fn execute_table_query_sync(
                         let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
                             let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
                             match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
-                                Ok((new_sql, hdrs)) => { if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs); } vec![new_sql] },
+                                Ok((new_sql, hdrs)) => { 
+                                    if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs.clone()); }
+                                    // Store debug info for UI panel
+                                    tabular.last_compiled_sql = Some(new_sql.clone());
+                                    tabular.last_compiled_headers = hdrs.clone();
+                                    if let Ok(plan_txt) = crate::query_ast::debug_plan(statements[0], &connection.connection_type) { tabular.last_debug_plan = Some(plan_txt); }
+                                    let (h,m) = crate::query_ast::cache_stats(); tabular.last_cache_hits = h; tabular.last_cache_misses = m;
+                                    vec![new_sql] },
                                 Err(_e) => statements.iter().map(|s| s.to_string()).collect(),
                             }
                         } else { statements.iter().map(|s| s.to_string()).collect() };
@@ -590,7 +597,13 @@ pub(crate) fn execute_table_query_sync(
                         let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
                             let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
                             match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
-                                Ok((new_sql, hdrs)) => { if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs); } vec![new_sql] },
+                                Ok((new_sql, hdrs)) => { 
+                                    if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs.clone()); }
+                                    tabular.last_compiled_sql = Some(new_sql.clone());
+                                    tabular.last_compiled_headers = hdrs.clone();
+                                    if let Ok(plan_txt) = crate::query_ast::debug_plan(statements[0], &connection.connection_type) { tabular.last_debug_plan = Some(plan_txt); }
+                                    let (h,m) = crate::query_ast::cache_stats(); tabular.last_cache_hits = h; tabular.last_cache_misses = m;
+                                    vec![new_sql] },
                                 Err(_)=> statements.iter().map(|s| s.to_string()).collect(),
                             }
                         } else { statements.iter().map(|s| s.to_string()).collect() };
