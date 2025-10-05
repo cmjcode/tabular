@@ -305,6 +305,9 @@ pub struct Tabular {
     pub last_debug_plan: Option<String>,
     pub last_cache_hits: u64,
     pub last_cache_misses: u64,
+    pub last_plan_hash: Option<u64>,
+    pub last_plan_cache_key: Option<String>,
+    pub last_ctes: Option<Vec<String>>, // names of remaining CTEs after rewrites
 }
 
 // Preference tabs enumeration
@@ -707,6 +710,9 @@ impl Tabular {
             last_debug_plan: None,
             last_cache_hits: 0,
             last_cache_misses: 0,
+            last_plan_hash: None,
+            last_plan_cache_key: None,
+            last_ctes: None,
         };
 
         // Clear any old cached pools
@@ -7557,6 +7563,8 @@ impl App for Tabular {
                 .resizable(true)
                 .default_size(egui::vec2(520.0, 320.0))
                 .show(ctx, |ui| {
+                    // Attempt to capture latest plan hash/cache key from thread-local store (pop once per frame)
+                    if let Some((h,key,ctes)) = crate::query_ast::take_last_debug() { self.last_plan_hash = Some(h); self.last_plan_cache_key = Some(key); self.last_ctes = ctes; }
                     ui.label("Press F9 to toggle this panel.");
                     if ui.button("Refresh Stats").clicked() {
                         let (h,m) = crate::query_ast::cache_stats();
@@ -7566,6 +7574,7 @@ impl App for Tabular {
                                 if let Some(conn_id) = active_tab.connection_id {
                                     if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
                                         if let Ok(plan_txt) = crate::query_ast::debug_plan(sql, &conn.connection_type) { self.last_debug_plan = Some(plan_txt); }
+                                        if let Ok((nodes,depth,subs_total,subs_corr,wins)) = crate::query_ast::plan_metrics(sql) { ui.label(format!("Plan: nodes={} depth={} subqueries={} (corr={}) windows={}", nodes, depth, subs_total, subs_corr, wins)); }
                                     }
                                 }
                             }
@@ -7575,6 +7584,11 @@ impl App for Tabular {
                     ui.horizontal(|ui| {
                         ui.label(format!("Cache: hits={} misses={} hit_rate={:.1}%", self.last_cache_hits, self.last_cache_misses, if self.last_cache_hits + self.last_cache_misses > 0 { (self.last_cache_hits as f64 *100.0)/(self.last_cache_hits + self.last_cache_misses) as f64 } else { 0.0 }));
                     });
+                    let rules = crate::query_ast::last_rewrite_rules();
+                    if !rules.is_empty() { ui.collapsing("Rewrite Rules Applied", |ui| { ui.label(rules.join(", ")); }); }
+                    if let Some(h) = self.last_plan_hash { ui.label(format!("Plan Hash: {:x}", h)); }
+                    if let Some(k) = &self.last_plan_cache_key { ui.collapsing("Cache Key", |ui| { ui.code(k); }); }
+                    if let Some(ctes) = &self.last_ctes { if !ctes.is_empty() { ui.collapsing("Remaining CTEs", |ui| { ui.label(ctes.join(", ")); }); } }
                     if let Some(sql) = &self.last_compiled_sql { ui.collapsing("Last Emitted SQL", |ui| { ui.code(sql); }); }
                     if !self.last_compiled_headers.is_empty() { ui.collapsing("Last Inferred Headers", |ui| { ui.label(self.last_compiled_headers.join(", ")); }); }
                     if let Some(plan) = &self.last_debug_plan { ui.collapsing("Logical Plan", |ui| { ui.code(plan); }); }

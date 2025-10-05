@@ -1,10 +1,11 @@
-use super::{logical::{LogicalQueryPlan, Expr, SortItem, JoinKind}, errors::QueryAstError};
+use super::{logical::{LogicalQueryPlan, Expr, SortItem, JoinKind, SetOpKind}, errors::QueryAstError};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use sqlparser::ast as sq;
+use std::collections::HashSet;
 
 pub fn parse_single_select_to_plan(sql: &str) -> Result<LogicalQueryPlan, QueryAstError> {
-    let dialect = GenericDialect {}; // Later choose based on DatabaseType
+    let dialect = GenericDialect {};
     let ast = Parser::parse_sql(&dialect, sql).map_err(|e| QueryAstError::Parse(e.to_string()))?;
     if ast.len() != 1 { return Err(QueryAstError::Unsupported("multi-statement")); }
     match &ast[0] {
@@ -14,10 +15,26 @@ pub fn parse_single_select_to_plan(sql: &str) -> Result<LogicalQueryPlan, QueryA
 }
 
 fn convert_query(q: &sq::Query, raw_sql: &str) -> Result<LogicalQueryPlan, QueryAstError> {
-    let body = &q.body;
-    match body.as_ref() {
-        sq::SetExpr::Select(sel) => convert_select(sel, q, raw_sql),
-        _ => Err(QueryAstError::Unsupported("unsupported set expr")),
+    let mut plan = convert_set_expr(&q.body, q, raw_sql)?;
+    if let Some(with) = &q.with { if !with.cte_tables.is_empty() { let mut ctes = Vec::new(); for c in &with.cte_tables { ctes.push((c.alias.name.value.clone(), c.query.to_string())); } plan = LogicalQueryPlan::With { ctes, input: Box::new(plan) }; } }
+    Ok(plan)
+}
+
+fn convert_set_expr(se: &sq::SetExpr, outer_q: &sq::Query, raw_sql: &str) -> Result<LogicalQueryPlan, QueryAstError> {
+    match se {
+        sq::SetExpr::Select(sel) => convert_select(sel, outer_q, raw_sql),
+        // Newer sqlparser versions expose set ops via SetOperation { op, left, right, set_quantifier, .. }
+        sq::SetExpr::SetOperation { op, left, right, set_quantifier, .. } => {
+            let left_plan = convert_set_expr(left, outer_q, raw_sql)?;
+            let right_plan = convert_set_expr(right, outer_q, raw_sql)?;
+            use sq::SetOperator; let op_kind = match op { SetOperator::Union => {
+                if matches!(set_quantifier, sq::SetQuantifier::All) { SetOpKind::UnionAll } else { SetOpKind::Union }
+            }, _ => return Err(QueryAstError::Unsupported("only UNION supported")) };
+            Ok(LogicalQueryPlan::SetOp { left: Box::new(left_plan), right: Box::new(right_plan), op: op_kind })
+        }
+        // Some variants (Query) wrap another Query (e.g. parentheses); unwrap recursively
+        sq::SetExpr::Query(q2) => convert_set_expr(&q2.body, q2, raw_sql),
+        _ => Err(QueryAstError::Unsupported("unsupported set expr variant"))
     }
 }
 
@@ -26,7 +43,11 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
 
     // FROM + JOIN chain
     let base = match &sel.from[0].relation {
-        sq::TableFactor::Table { name, .. } => LogicalQueryPlan::table_scan(name.to_string()),
+        sq::TableFactor::Table { name, alias, .. } => {
+            let mut scan = LogicalQueryPlan::table_scan(name.to_string());
+            if let LogicalQueryPlan::TableScan { alias: a, .. } = &mut scan { if let Some(a2)=alias { *a = Some(a2.name.value.clone()); } }
+            scan
+        }
         sq::TableFactor::Derived { subquery, alias, .. } => {
             let al = alias.as_ref().map(|a| a.name.to_string()).unwrap_or_else(|| "subq".into());
             LogicalQueryPlan::subquery_scan(subquery.to_string(), al)
@@ -36,7 +57,11 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
     let mut plan = base;
     for join in &sel.from[0].joins {
         let right = match &join.relation {
-            sq::TableFactor::Table { name, .. } => LogicalQueryPlan::table_scan(name.to_string()),
+            sq::TableFactor::Table { name, alias, .. } => {
+                let mut scan = LogicalQueryPlan::table_scan(name.to_string());
+                if let LogicalQueryPlan::TableScan { alias: a, .. } = &mut scan { if let Some(a2)=alias { *a = Some(a2.name.value.clone()); } }
+                scan
+            }
             sq::TableFactor::Derived { subquery, alias, .. } => {
                 let al = alias.as_ref().map(|a| a.name.to_string()).unwrap_or_else(|| "subq".into());
                 LogicalQueryPlan::subquery_scan(subquery.to_string(), al)
@@ -130,6 +155,10 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
     let (limit, offset) = extract_limit_offset(q)?;
     if let Some(l) = limit { plan = LogicalQueryPlan::Limit { limit: l, offset: offset.unwrap_or(0), input: Box::new(plan) }; }
 
+    // Final accurate correlation marking: traverse expressions finding subquery columns referencing outer aliases.
+    let mut outer_aliases = HashSet::new();
+    collect_table_aliases(&plan, &mut outer_aliases);
+    mark_correlated(&mut plan, &outer_aliases);
     Ok(plan)
 }
 
@@ -141,7 +170,7 @@ fn extract_limit_offset(q: &sq::Query) -> Result<(Option<u64>, Option<u64>), Que
 
 fn convert_expr(e: &sq::Expr) -> Expr {
     match e {
-    sq::Expr::Subquery(sub) => Expr::Subquery(sub.to_string()),
+    sq::Expr::Subquery(sub) => Expr::Subquery { sql: sub.to_string(), correlated: false },
         sq::Expr::Identifier(id) => Expr::Column(id.to_string()),
         sq::Expr::CompoundIdentifier(parts) => Expr::Column(parts.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(".")),
         sq::Expr::Value(sq::Value::Number(n, _)) => Expr::Number(n.clone()),
@@ -166,6 +195,12 @@ fn convert_expr(e: &sq::Expr) -> Expr {
                 }
                 other => { return Expr::Raw(other.to_string()); }
             }
+            if let Some(over) = &func.over { // proper window spec
+                let partition_by = over.partition_by.iter().map(convert_expr).collect::<Vec<_>>();
+                let order_by = over.order_by.iter().map(|obe| (convert_expr(&obe.expr), obe.asc.unwrap_or(true))).collect::<Vec<_>>();
+                let frame = over.window_frame.as_ref().map(|wf| wf.to_string());
+                return Expr::WindowFunc { name, args: out_args, partition_by, order_by, frame };
+            }
             Expr::FuncCall { name, args: out_args }
         }
         sq::Expr::IsNull(inner) => Expr::IsNull { expr: Box::new(convert_expr(inner)), negated: false },
@@ -189,5 +224,28 @@ fn convert_expr(e: &sq::Expr) -> Expr {
         }
         sq::Expr::Nested(inner) => Expr::Raw(inner.to_string()),
         _ => Expr::Raw(e.to_string()),
+    }
+}
+
+fn collect_table_aliases(plan: &LogicalQueryPlan, out: &mut HashSet<String>) {
+    match plan {
+        LogicalQueryPlan::TableScan { table, alias } => {
+            if let Some(a)=alias { out.insert(a.to_ascii_lowercase()); }
+            else { out.insert(table.split('.').last().unwrap_or(table).to_ascii_lowercase()); }
+        }
+        LogicalQueryPlan::SubqueryScan { alias, .. } => { out.insert(alias.to_ascii_lowercase()); }
+        LogicalQueryPlan::Projection { input, .. } | LogicalQueryPlan::Filter { input, .. } | LogicalQueryPlan::Sort { input, .. } | LogicalQueryPlan::Limit { input, .. } | LogicalQueryPlan::Distinct { input } | LogicalQueryPlan::Group { input, .. } | LogicalQueryPlan::Having { input, .. } | LogicalQueryPlan::With { input, .. } => collect_table_aliases(input, out),
+        LogicalQueryPlan::Join { left, right, .. } | LogicalQueryPlan::SetOp { left, right, .. } => { collect_table_aliases(left, out); collect_table_aliases(right, out); }
+    }
+}
+
+fn mark_correlated(plan: &mut LogicalQueryPlan, outer: &HashSet<String>) {
+    match plan {
+        LogicalQueryPlan::SubqueryScan { sql, correlated, .. } => {
+            if !*correlated { let lower = sql.to_ascii_lowercase(); if outer.iter().any(|a| lower.contains(&format!("{}.", a))) { *correlated = true; } }
+        }
+        LogicalQueryPlan::Projection { input, .. } | LogicalQueryPlan::Filter { input, .. } | LogicalQueryPlan::Sort { input, .. } | LogicalQueryPlan::Limit { input, .. } | LogicalQueryPlan::Distinct { input } | LogicalQueryPlan::Group { input, .. } | LogicalQueryPlan::Having { input, .. } | LogicalQueryPlan::With { input, .. } => mark_correlated(input, outer),
+        LogicalQueryPlan::Join { left, right, .. } | LogicalQueryPlan::SetOp { left, right, .. } => { mark_correlated(left, outer); mark_correlated(right, outer); }
+        LogicalQueryPlan::TableScan { .. } => {}
     }
 }

@@ -13,7 +13,7 @@ pub struct PlanEntry {
 const MAX_ENTRIES: usize = 128;
 // Phase A-F upgrades (CTE inlining, canonical fingerprint based cache key semantics)
 // Bump cache version to invalidate previous entries whose emitted SQL could differ
-const CACHE_VERSION: u8 = 2; // bump when plan representation / emitter semantics change
+const CACHE_VERSION: u8 = 3; // bump: added TableScan alias + rule engine + correlation
 
 #[derive(Default)]
 pub struct PlanCache { inner: Mutex<(HashMap<String, PlanEntry>, VecDeque<String>)>, hits: std::sync::atomic::AtomicU64, misses: std::sync::atomic::AtomicU64 }

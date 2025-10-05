@@ -2,7 +2,26 @@ use crate::models::enums::DatabaseType;
 use super::{logical::{LogicalQueryPlan, Expr, SortItem}, errors::QueryAstError};
 
 pub fn emit_sql(plan: &LogicalQueryPlan, db_type: &DatabaseType) -> Result<String, QueryAstError> {
-    // Flatten plan first to avoid nested invalid sub-select patterns.
+    // If top-level is With and still has CTEs, emit a proper WITH clause wrapping emitted SELECT.
+    if let LogicalQueryPlan::With { ctes, input } = plan {
+        if !ctes.is_empty() {
+            let mut parts = Vec::new();
+            for (name, sql) in ctes {
+                // Ensure subquery body does not end with semicolon
+                let body = sql.trim().trim_end_matches(';');
+                parts.push(format!("{} AS ({})", name, body));
+            }
+            let rendered_inner = emit_sql(input, db_type)?; // recursive (will flatten below)
+            return Ok(format!("WITH {} {}", parts.join(", "), rendered_inner));
+        }
+    }
+    // If top-level is a SetOp, emit recursively (each side may itself contain WITH already handled above)
+    if let LogicalQueryPlan::SetOp { left, right, op } = plan {
+        let left_sql = emit_sql(left, db_type)?;
+        let right_sql = emit_sql(right, db_type)?;
+        let op_str = match op { super::logical::SetOpKind::Union => "UNION", super::logical::SetOpKind::UnionAll => "UNION ALL" };
+        return Ok(format!("({}) {} ({})", left_sql, op_str, right_sql));
+    }
     let flat = flatten_plan(plan);
     let mut emitter = FlatEmitter { dialect: db_type.clone() };
     emitter.emit(&flat)
@@ -26,8 +45,8 @@ struct FlatSelect {
 fn flatten_plan(plan: &LogicalQueryPlan) -> FlatSelect {
     fn rec(node: &LogicalQueryPlan, acc: &mut FlatSelect) {
         match node {
-            LogicalQueryPlan::TableScan { table } => { acc.table = Some(table.clone()); }
-            LogicalQueryPlan::SubqueryScan { sql, alias } => { acc.subquery = Some((sql.clone(), alias.clone())); }
+            LogicalQueryPlan::TableScan { table, alias } => { acc.table = Some(match alias { Some(a) => format!("{} {}", table, a), None => table.clone() }); }
+            LogicalQueryPlan::SubqueryScan { sql, alias, .. } => { acc.subquery = Some((sql.clone(), alias.clone())); }
             LogicalQueryPlan::Projection { exprs, input } => { acc.projection = exprs.clone(); rec(input, acc); }
             LogicalQueryPlan::Distinct { input } => { acc.distinct = true; rec(input, acc); }
             LogicalQueryPlan::Filter { predicate, input } => { acc.predicates.push(predicate.clone()); rec(input, acc); }
@@ -37,11 +56,13 @@ fn flatten_plan(plan: &LogicalQueryPlan) -> FlatSelect {
             LogicalQueryPlan::Join { left, right, on, kind } => {
                 // assume left eventually becomes main table, right is simple table scan
                 // Extract right table name if direct TableScan
-                let right_table = match &**right { LogicalQueryPlan::TableScan { table } => table.clone(), _ => "sub".into() };
+                let right_table = match &**right { LogicalQueryPlan::TableScan { table, alias } => match alias { Some(a)=> format!("{} {}", table, a), None=> table.clone() }, _ => "sub".into() };
                 acc.join = Some((kind.clone(), right_table, on.clone()));
                 rec(left, acc);
             }
             LogicalQueryPlan::Having { predicate, input } => { acc.having = Some(predicate.clone()); rec(input, acc); }
+            LogicalQueryPlan::With { input, .. } => { rec(input, acc); }
+            LogicalQueryPlan::SetOp { .. } => { /* SetOp cannot be flattened into single SELECT; higher emit handles it */ }
         }
     }
     let mut flat = FlatSelect::default();
@@ -126,7 +147,15 @@ impl FlatEmitter {
                 s.push_str(" END");
                 s
             }
-            Expr::Subquery(sql) => format!("({})", sql),
+            Expr::Subquery { sql, .. } => format!("({})", sql),
+            Expr::WindowFunc { name, args, partition_by, order_by, frame } => {
+                let args_sql = args.iter().map(|a| self.emit_expr(a)).collect::<Result<Vec<_>,_>>()?.join(", ");
+                let mut s = format!("{}({}) OVER (", name, args_sql);
+                if !partition_by.is_empty() { s.push_str("PARTITION BY "); s.push_str(&partition_by.iter().map(|e| self.emit_expr(e)).collect::<Result<Vec<_>,_>>()?.join(", ")); }
+                if !order_by.is_empty() { if !partition_by.is_empty() { s.push(' '); } s.push_str("ORDER BY "); s.push_str(&order_by.iter().map(|(e,asc)| format!("{} {}", self.emit_expr(e).unwrap_or_else(|_|"?".into()), if *asc {"ASC"} else {"DESC"})).collect::<Vec<_>>().join(", ")); }
+                if let Some(f) = frame { if !partition_by.is_empty() || !order_by.is_empty() { s.push(' '); } s.push_str(f); }
+                s.push(')'); s
+            }
         })
     }
 

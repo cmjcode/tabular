@@ -17,7 +17,8 @@ pub enum Expr {
     Like { expr: Box<Expr>, pattern: Box<Expr>, negated: bool },
     InList { expr: Box<Expr>, list: Vec<Expr>, negated: bool },
     Case { operand: Option<Box<Expr>>, when_then: Vec<(Expr, Expr)>, else_expr: Option<Box<Expr>> },
-    Subquery(String),
+    Subquery { sql: String, correlated: bool },
+    WindowFunc { name: String, args: Vec<Expr>, partition_by: Vec<Expr>, order_by: Vec<(Expr,bool)>, frame: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,16 +34,23 @@ pub enum LogicalQueryPlan {
     Group { group_exprs: Vec<Expr>, input: Box<LogicalQueryPlan> },
     Join { left: Box<LogicalQueryPlan>, right: Box<LogicalQueryPlan>, on: Option<Expr>, kind: JoinKind },
     Having { predicate: Expr, input: Box<LogicalQueryPlan> },
-    TableScan { table: String },
-    SubqueryScan { sql: String, alias: String },
+    // WITH ctes as (sql) ... <input>
+    With { ctes: Vec<(String,String)>, input: Box<LogicalQueryPlan> }, // (name, sql)
+    // Set operations (currently only UNION / UNION ALL implemented)
+    SetOp { left: Box<LogicalQueryPlan>, right: Box<LogicalQueryPlan>, op: SetOpKind },
+    TableScan { table: String, alias: Option<String> },
+    SubqueryScan { sql: String, alias: String, correlated: bool },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum JoinKind { Inner, Left, Right, Full }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SetOpKind { Union, UnionAll }
+
 impl LogicalQueryPlan {
-    pub fn table_scan(name: impl Into<String>) -> Self { Self::TableScan { table: name.into() } }
-    pub fn subquery_scan(sql: impl Into<String>, alias: impl Into<String>) -> Self { Self::SubqueryScan { sql: sql.into(), alias: alias.into() } }
+    pub fn table_scan(name: impl Into<String>) -> Self { Self::TableScan { table: name.into(), alias: None } }
+    pub fn subquery_scan(sql: impl Into<String>, alias: impl Into<String>) -> Self { Self::SubqueryScan { sql: sql.into(), alias: alias.into(), correlated: false } }
 }
 
 impl Expr {

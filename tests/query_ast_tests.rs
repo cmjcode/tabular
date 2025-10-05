@@ -1,3 +1,5 @@
+// NOTE: Tests require `--features query_ast`. If not provided, this module is skipped (0 tests run).
+// You can run: cargo test --features query_ast -- query_ast_tests
 #[cfg(feature = "query_ast")]
 mod query_ast_tests {
     use tabular::query_ast::compile_single_select;
@@ -131,5 +133,25 @@ mod query_ast_tests {
         let _ = compile_single_select(q2, &DatabaseType::PostgreSQL, None, true).unwrap();
         let (h2, m2) = tabular::query_ast::cache_stats();
         assert!(h2 > h1, "expected cache hit to increase (h1={h1}, h2={h2}) m1={m1} m2={m2}");
+    }
+
+    #[test]
+    fn window_function_basic() {
+        let sql = "select id, row_number() over (partition by group_id order by created_at) as rn from events limit 10";
+        let (out, headers) = compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
+        let lo = out.to_lowercase();
+        assert!(lo.contains("row_number() over"));
+        assert!(headers.iter().any(|h| h=="rn") || headers.iter().any(|h| h=="row_number"));
+    }
+
+    #[test]
+    fn correlated_subquery_blocks_limit_pushdown() {
+        // Outer alias u referenced inside subquery => correlated => inner should not gain LIMIT injection beyond original
+        let sql = "select * from users u where exists (select 1 from logs l where l.user_id = u.id) limit 5";
+        let (out, _h) = compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).unwrap();
+        // Ensure only one limit at end (no injected LIMIT into subquery text)
+        let lower = out.to_ascii_lowercase();
+        let subq_segment = lower.split("where exists").nth(1).unwrap_or("");
+        assert!(!subq_segment.contains(" limit 5"), "unexpected limit pushdown inside correlated subquery: {out}");
     }
 }
