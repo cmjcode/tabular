@@ -200,3 +200,41 @@ pub fn sample_collection_documents(
         }
     })
 }
+
+// Drop a MongoDB collection, returning true on success
+pub async fn drop_collection(
+    tabular: &mut Tabular,
+    connection_id: i64,
+    database_name: &str,
+    collection_name: &str,
+) -> bool {
+    if let Some(models::enums::DatabasePool::MongoDB(client)) =
+        connection::get_or_create_connection_pool(tabular, connection_id).await
+    {
+        let coll = client
+            .database(database_name)
+            .collection::<mongodb::bson::Document>(collection_name);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            coll.drop(),
+        )
+        .await
+        .map_err(|_| mongodb::error::Error::from(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timeout",
+        )))
+        .and_then(|r| r)
+        {
+            Ok(_) => true,
+            Err(e) => {
+                debug!(
+                    "MongoDB drop_collection error for {}.{}: {}",
+                    database_name, collection_name, e
+                );
+                false
+            }
+        }
+    } else {
+        false
+    }
+}

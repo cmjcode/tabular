@@ -4957,9 +4957,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d737192c0df02302f90cd18c8c73c8b06228d693ab24ebe8c7f378d7f429acb"
+checksum = "d94600de67117467e3c2364c7665d087bb23370ca4af352defd0a8b990be1df0"
 dependencies = [
  "arc-swap",
  "arcstr",
@@ -6150,7 +6150,7 @@ dependencies = [
 
 [[package]]
 name = "tabular"
-version = "0.4.20"
+version = "0.4.25"
 dependencies = [
  "anyhow",
  "bson 3.0.0",

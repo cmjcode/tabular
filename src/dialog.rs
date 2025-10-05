@@ -274,7 +274,11 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                                                             });
                                                         working.method = Some(selected);
                                                     }
-crate::models::enums::DatabaseType::MongoDB => todo!(),
+                            crate::models::enums::DatabaseType::MongoDB => {
+                                // MongoDB index "method" is the key spec (1/-1 per field), handled via Columns text.
+                                // Show a small hint instead of an algorithm picker.
+                                ui.label("Use Columns as 'field1:1, field2:-1'");
+                            }
                         }
                         ui.end_row();
                     });
@@ -375,8 +379,64 @@ crate::models::enums::DatabaseType::MongoDB => todo!(),
                                 (crate::models::structs::IndexDialogMode::Edit, DatabaseType::Redis) => {
                                                                 "-- Not applicable for Redis".to_string()
                                                             }
-                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MongoDB) => todo!(),
-                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MongoDB) => todo!(),
+                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MongoDB) => {
+                                    // Build MongoDB createIndex JavaScript snippet
+                                    let db = working
+                                        .database_name
+                                        .clone()
+                                        .unwrap_or_else(|| conn.database.clone());
+                                    // Parse columns into key doc: "a:1, b:-1" or plain "a,b" => "a:1,b:1"
+                                    let cols_raw = working.columns.clone();
+                                    let keys: Vec<String> = cols_raw
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
+                                        .collect();
+                                    let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
+                                    format!(
+                                        "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
+                                        db,
+                                        working.table_name,
+                                        keys_doc,
+                                        working.index_name,
+                                        if working.unique { "true" } else { "false" }
+                                    )
+                                }
+                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MongoDB) => {
+                                    let db = working
+                                        .database_name
+                                        .clone()
+                                        .unwrap_or_else(|| conn.database.clone());
+                                    let target_idx = working
+                                        .existing_index_name
+                                        .clone()
+                                        .unwrap_or_else(|| working.index_name.clone());
+                                    let cols_raw = working.columns.clone();
+                                    let keys: Vec<String> = cols_raw
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
+                                        .collect();
+                                    let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
+                                    format!(
+                                        "// MongoDB has no ALTER INDEX; typically drop and recreate\n{}
+{}",
+                                        format!(
+                                            "db.{}.{}.dropIndex(\"{}\");",
+                                            db, working.table_name, target_idx
+                                        ),
+                                        format!(
+                                            "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
+                                            db,
+                                            working.table_name,
+                                            keys_doc,
+                                            working.index_name,
+                                            if working.unique { "true" } else { "false" }
+                                        )
+                                    )
+                                }
                             }
                         } else {
                             "-- No connection selected".to_string()

@@ -28,6 +28,8 @@ struct RenderTreeNodeParams<'a> {
         >,
     >,
     is_search_mode: bool,
+    // New: fallback map of connection_id -> DatabaseType for DB type detection when pool not ready
+    connection_types: &'a std::collections::HashMap<i64, models::enums::DatabaseType>,
 }
 
 pub struct Tabular {
@@ -226,6 +228,8 @@ pub struct Tabular {
     // Pending drop column confirmation
     pub pending_drop_column_name: Option<String>,
     pub pending_drop_column_stmt: Option<String>,
+    // Pending drop Mongo collection confirmation
+    pub pending_drop_collection: Option<(i64, String, String)>, // (connection_id, db, collection)
     // Structure view column widths (separate from data grid)
     pub structure_col_widths: Vec<f32>,     // for columns table
     pub structure_idx_col_widths: Vec<f32>, // for indexes table
@@ -287,6 +291,13 @@ pub struct Tabular {
     // Lapce buffer integration for editor (replaces egui_code_editor)
     // Deprecated standalone lapce buffer (now integrated in EditorBuffer)
     // pub lapce_buffer: Option<Buffer>,
+    // Context menu for row operations
+    pub show_row_context_menu: bool,
+    pub context_menu_row: Option<usize>,
+    pub context_menu_just_opened: bool,
+    pub context_menu_pos: egui::Pos2,
+    // Track newly created/duplicated rows for highlighting
+    pub newly_created_rows: std::collections::HashSet<usize>,
 }
 
 // Preference tabs enumeration
@@ -318,6 +329,112 @@ impl Tabular {
     pub fn clear_extra_cursors(&mut self) {
         self.extra_cursors.clear();
     }
+
+    // Duplicate selected row for editing
+    pub fn duplicate_selected_row(&mut self) {
+        if let Some(selected_row_idx) = self.selected_row {
+            if selected_row_idx < self.current_table_data.len() {
+                // Clone the row data
+                let row_data = self.current_table_data[selected_row_idx].clone();
+                
+                // Insert the duplicated row right after the selected row
+                let insert_index = selected_row_idx + 1;
+                self.current_table_data.insert(insert_index, row_data.clone());
+                self.all_table_data.insert(insert_index, row_data.clone());
+                
+                // Update total rows count
+                self.total_rows = self.current_table_data.len();
+                
+                // Mark this row as newly created for highlighting
+                self.newly_created_rows.insert(insert_index);
+                
+                // Update indices in newly_created_rows for rows that shifted down
+                let mut updated_rows = std::collections::HashSet::new();
+                for &row_idx in &self.newly_created_rows {
+                    if row_idx >= insert_index && row_idx != insert_index {
+                        updated_rows.insert(row_idx + 1);
+                    } else {
+                        updated_rows.insert(row_idx);
+                    }
+                }
+                self.newly_created_rows = updated_rows;
+                
+                // Select the new duplicated row
+                self.selected_row = Some(insert_index);
+                self.selected_cell = Some((insert_index, 0)); // Select first cell of new row
+                
+                // Clear other selections
+                self.selected_rows.clear();
+                self.selected_columns.clear();
+                self.table_sel_anchor = None;
+                
+                // Mark spreadsheet as dirty
+                self.spreadsheet_state.is_dirty = true;
+                
+                // Create an insert operation for tracking
+                self.spreadsheet_state.pending_operations.push(
+                    models::structs::CellEditOperation::InsertRow {
+                        row_index: insert_index,
+                        values: row_data,
+                    }
+                );
+                
+                // Update tab state
+                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                    active_tab.result_rows = self.current_table_data.clone();
+                    active_tab.result_all_rows = self.all_table_data.clone();
+                    active_tab.total_rows = self.total_rows;
+                }
+                
+                debug!("Row {} duplicated successfully. New row at index {}", selected_row_idx, insert_index);
+            }
+        }
+    }
+
+    // Delete selected row
+    pub fn delete_selected_row(&mut self) {
+        if let Some(selected_row_idx) = self.selected_row {
+            if selected_row_idx < self.current_table_data.len() {
+                // Store the row data before deletion for undo capability
+                let row_data = self.current_table_data[selected_row_idx].clone();
+                
+                // Remove the row
+                self.current_table_data.remove(selected_row_idx);
+                self.all_table_data.remove(selected_row_idx);
+                
+                // Update total rows count
+                self.total_rows = self.current_table_data.len();
+                
+                // Clear selection
+                self.selected_row = None;
+                self.selected_cell = None;
+                self.selected_rows.clear();
+                self.selected_columns.clear();
+                self.table_sel_anchor = None;
+                
+                // Mark spreadsheet as dirty
+                self.spreadsheet_state.is_dirty = true;
+                
+                // Create a delete operation for tracking
+                self.spreadsheet_state.pending_operations.push(
+                    models::structs::CellEditOperation::DeleteRow {
+                        row_index: selected_row_idx,
+                        values: row_data,
+                    }
+                );
+                
+                // Update tab state
+                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                    active_tab.result_rows = self.current_table_data.clone();
+                    active_tab.result_all_rows = self.all_table_data.clone();
+                    active_tab.total_rows = self.total_rows;
+                }
+                
+                debug!("Row {} deleted successfully", selected_row_idx);
+            }
+        }
+    }
+
     // End: Spreadsheet helpers
     // Ensure a shared Tokio runtime exists (lazy init) to avoid spawning many runtimes
     fn get_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
@@ -507,6 +624,7 @@ impl Tabular {
             pending_drop_index_stmt: None,
             pending_drop_column_name: None,
             pending_drop_column_stmt: None,
+            pending_drop_collection: None,
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,
@@ -569,6 +687,12 @@ impl Tabular {
             highlight_cache: std::collections::HashMap::new(),
             last_highlight_hash: None,
             suppress_editor_arrow_once: false,
+            // Context menu for row operations
+            show_row_context_menu: false,
+            context_menu_row: None,
+            context_menu_just_opened: false,
+            context_menu_pos: egui::Pos2::ZERO,
+            newly_created_rows: std::collections::HashSet::new(),
         };
 
         // Clear any old cached pools
@@ -704,6 +828,13 @@ impl Tabular {
         nodes: &mut [models::structs::TreeNode],
         is_search_mode: bool,
     ) -> Vec<(String, String, String)> {
+        // Build quick lookup: connection_id -> DatabaseType
+        let mut connection_types: std::collections::HashMap<i64, models::enums::DatabaseType> = std::collections::HashMap::new();
+        for c in &self.connections {
+            if let Some(id) = c.id {
+                connection_types.insert(id, c.connection_type.clone());
+            }
+        }
         let mut expansion_requests = Vec::new();
         let mut tables_to_expand = Vec::new();
         let mut context_menu_requests = Vec::new();
@@ -728,6 +859,7 @@ impl Tabular {
                 dba_click_request,
                 index_click_request,
                 create_index_request,
+                drop_collection_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -739,6 +871,7 @@ impl Tabular {
                     pending_connection_pools: &self.pending_connection_pools,
                     shared_connection_pools: &self.shared_connection_pools,
                     is_search_mode,
+                    connection_types: &connection_types,
                 },
             );
             if let Some(expansion_req) = expansion_request {
@@ -820,6 +953,11 @@ impl Tabular {
             // Collect create index requests
             if let Some((conn_id, db_name, table_name)) = create_index_request {
                 create_index_requests.push((conn_id, db_name, table_name));
+            }
+            // Collect Mongo drop collection requests
+            if let Some((conn_id, db, coll)) = drop_collection_request {
+                // Store pending state for confirmation window outside the loop
+                self.pending_drop_collection = Some((conn_id, db, coll));
             }
         }
 
@@ -1461,6 +1599,10 @@ impl Tabular {
                             table_name,
                             database_name.as_deref().unwrap_or("Unknown")
                         );
+                        
+                        // Clear newly created rows highlight when switching tables
+                        self.newly_created_rows.clear();
+                        
                         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
                             active_tab.result_table_name = self.current_table_name.clone();
                         }
@@ -1974,6 +2116,7 @@ impl Tabular {
         let mut dba_click_request: Option<(i64, models::enums::NodeType)> = None;
         let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
+    let mut drop_collection_request: Option<(i64, String, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -2347,36 +2490,83 @@ impl Tabular {
                             }
                             ui.close();
                         }
-                        if ui.button("📋 SELECT Query (New Tab)").clicked() {
-                            // We'll create a new tab instead of modifying current editor
-                            // Store the request and handle it in render_tree
-                            ui.close();
-                        }
-                        if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
-                            let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                            editor.set_text(format!("SELECT COUNT(*) FROM {};", actual_table_name));
-                            editor.mark_text_modified();
-                            ui.close();
-                        }
-                        if ui.button("📝 DESCRIBE Query (Current Tab)").clicked() {
-                            let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                            // Different DESCRIBE syntax for different database types
-                            if node.database_name.is_some() {
-                                editor.set_text(format!("DESCRIBE {};", actual_table_name));
-                            } else {
-                                editor
-                                    .set_text(format!("PRAGMA table_info({});", actual_table_name)); // SQLite syntax
+                        // Detect DB type for MongoDB-specific options using available pools; fallback to connection_types
+                        let mut is_mongodb = false;
+                        if let Some(conn_id) = node.connection_id {
+                            if let Some(pool) = params.connection_pools.get(&conn_id) {
+                                if let models::enums::DatabasePool::MongoDB(_) = pool {
+                                    is_mongodb = true;
+                                }
+                            } else if let Some(t) = params.connection_types.get(&conn_id) {
+                                if *t == models::enums::DatabaseType::MongoDB {
+                                    is_mongodb = true;
+                                }
                             }
-                            editor.mark_text_modified();
-                            ui.close();
+                        }
+
+                        if !is_mongodb {
+                            if ui.button("📋 SELECT Query (New Tab)").clicked() {
+                                // We'll create a new tab instead of modifying current editor
+                                // Store the request and handle it in render_tree
+                                ui.close();
+                            }
+                            if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
+                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
+                                editor.set_text(format!("SELECT COUNT(*) FROM {};", actual_table_name));
+                                editor.mark_text_modified();
+                                ui.close();
+                            }
+                            if ui.button("📝 DESCRIBE Query (Current Tab)").clicked() {
+                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
+                                // Different DESCRIBE syntax for different database types
+                                if node.database_name.is_some() {
+                                    editor.set_text(format!("DESCRIBE {};", actual_table_name));
+                                } else {
+                                    editor.set_text(format!("PRAGMA table_info({});", actual_table_name)); // SQLite syntax
+                                }
+                                editor.mark_text_modified();
+                                ui.close();
+                            }
+                        } else {
+                            // MongoDB specific quick actions
+                            if ui.button("🔍 Count Documents (Current Tab)").clicked() {
+                                if let Some(db) = node.database_name.as_ref() {
+                                    let coll = node.table_name.as_ref().unwrap_or(&node.name);
+                                    editor.set_text(format!("// MongoDB mongo shell snippet\ndb.{}.{}.countDocuments({{}});", db, coll));
+                                } else {
+                                    editor.set_text("// Select a database first for MongoDB operations".to_string());
+                                }
+                                editor.mark_text_modified();
+                                ui.close();
+                            }
+                            if ui.button("📝 Show Collection Stats (Current Tab)").clicked() {
+                                if let Some(db) = node.database_name.as_ref() {
+                                    let coll = node.table_name.as_ref().unwrap_or(&node.name);
+                                    editor.set_text(format!("db.{}.runCommand({{ collStats: \"{}\" }});", db, coll));
+                                } else {
+                                    editor.set_text("// Select a database first for MongoDB operations".to_string());
+                                }
+                                editor.mark_text_modified();
+                                ui.close();
+                            }
                         }
                         ui.separator();
-                        if ui.button("🗑️ DROP TABLE").clicked() {
-                            let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                            // Use IF EXISTS for broad DB compatibility (MySQL, PostgreSQL, SQLite, SQL Server 2016+)
-                            editor.set_text(format!("DROP TABLE IF EXISTS {};", actual_table_name));
-                            editor.mark_text_modified();
-                            ui.close();
+                        if !is_mongodb {
+                            if ui.button("🗑️ DROP TABLE").clicked() {
+                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
+                                // Use IF EXISTS for broad DB compatibility (MySQL, PostgreSQL, SQLite, SQL Server 2016+)
+                                editor.set_text(format!("DROP TABLE IF EXISTS {};", actual_table_name));
+                                editor.mark_text_modified();
+                                ui.close();
+                            }
+                        } else {
+                            if ui.button("🗑️ Drop Collection").clicked() {
+                                if let (Some(conn_id), Some(db)) = (node.connection_id, node.database_name.as_ref()) {
+                                    let coll = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                    drop_collection_request = Some((conn_id, db.clone(), coll));
+                                }
+                                ui.close();
+                            }
                         }
                         ui.separator();
                         if ui.button("➕ Add Index (New Tab)").clicked() {
@@ -2392,7 +2582,7 @@ impl Tabular {
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button("🔧 Alter Table").clicked() {
+                        if !is_mongodb && ui.button("🔧 Alter Table").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 // Use connection_id + 30000 to indicate alter table request
                                 context_menu_request = Some(conn_id + 30000);
@@ -2500,6 +2690,7 @@ impl Tabular {
                             child_dba_click,
                             child_index_click,
                             child_create_index_request,
+                            _child_drop_collection_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -2511,6 +2702,7 @@ impl Tabular {
                                 pending_connection_pools: params.pending_connection_pools,
                                 shared_connection_pools: params.shared_connection_pools,
                                 is_search_mode: params.is_search_mode,
+                                connection_types: params.connection_types,
                             },
                         );
                         if let Some(child_expansion) = child_expansion_request {
@@ -2528,6 +2720,9 @@ impl Tabular {
                         }
                         if let Some((conn_id, table_name)) = child_table_click {
                             table_click_request = Some((conn_id, table_name));
+                        }
+                        if let Some(v) = _child_drop_collection_request {
+                            drop_collection_request = Some(v);
                         }
                         if let Some(v) = child_dba_click {
                             dba_click_request = Some(v);
@@ -2562,6 +2757,7 @@ impl Tabular {
                                 child_dba_click,
                                 child_index_click,
                                 child_create_index_request,
+                                _child_drop_collection_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -2573,6 +2769,7 @@ impl Tabular {
                                     pending_connection_pools: params.pending_connection_pools,
                                     shared_connection_pools: params.shared_connection_pools,
                                     is_search_mode: params.is_search_mode,
+                                    connection_types: params.connection_types,
                                 },
                             );
 
@@ -2598,6 +2795,10 @@ impl Tabular {
                             // Handle child table clicks - propagate to parent
                             if let Some((conn_id, table_name)) = child_table_click {
                                 table_click_request = Some((conn_id, table_name));
+                            }
+                            // Propagate drop collection request to parent
+                            if let Some(v) = _child_drop_collection_request {
+                                drop_collection_request = Some(v);
                             }
                             // Propagate DBA click to parent
                             if let Some(v) = child_dba_click {
@@ -2908,6 +3109,7 @@ impl Tabular {
             dba_click_request,
             index_click_request,
             create_index_request,
+            drop_collection_request,
         )
     }
 
@@ -9059,6 +9261,113 @@ impl App for Tabular {
 
                 data_table::render_drop_index_confirmation(self, ui.ctx());
                 data_table::render_drop_column_confirmation(self, ui.ctx());
+
+                // Render context menu for row operations
+                if self.show_row_context_menu {
+                    let mut close_menu = false;
+                    let mut menu_hovered = false;
+                    
+                    let area_response = egui::Area::new(egui::Id::new("row_context_menu"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(self.context_menu_pos)
+                        .show(ui.ctx(), |ui| {
+                            let frame_response = egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.set_min_width(150.0);
+                                
+                                if ui.button("📋 Duplicate Row").clicked() {
+                                    self.duplicate_selected_row();
+                                    close_menu = true;
+                                }
+                                
+                                ui.separator();
+                                
+                                if ui.button("🗑️ Delete Row").clicked() {
+                                    self.delete_selected_row();
+                                    close_menu = true;
+                                }
+                            });
+                            frame_response.response.hovered()
+                        });
+                    
+                    menu_hovered = area_response.inner;
+                    
+                    // Close context menu when clicking elsewhere or pressing Escape
+                    if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.show_row_context_menu = false;
+                        self.context_menu_row = None;
+                        self.context_menu_just_opened = false;
+                        self.context_menu_pos = egui::Pos2::ZERO;
+                    }
+                    
+                    if close_menu {
+                        self.show_row_context_menu = false;
+                        self.context_menu_row = None;
+                        self.context_menu_just_opened = false;
+                        self.context_menu_pos = egui::Pos2::ZERO;
+                    }
+                    
+                    // Close context menu when clicking anywhere outside the menu
+                    // Skip the first frame after opening to avoid immediate closure from the right-click event
+                    if !self.context_menu_just_opened {
+                        if ui.ctx().input(|i| i.pointer.any_click()) && !menu_hovered {
+                            self.show_row_context_menu = false;
+                            self.context_menu_row = None;
+                            self.context_menu_pos = egui::Pos2::ZERO;
+                        }
+                    } else {
+                        // Clear the flag after first frame
+                        self.context_menu_just_opened = false;
+                    }
+                }
+
+                // Render MongoDB drop collection confirmation dialog if pending
+                if let Some((conn_id, ref db, ref coll)) = self.pending_drop_collection.clone() {
+                    let title = format!("Konfirmasi Drop Collection: {}.{}", db, coll);
+                    egui::Window::new(title)
+                        .collapsible(false)
+                        .resizable(false)
+                        .pivot(egui::Align2::CENTER_CENTER)
+                        .fixed_size(egui::vec2(480.0, 160.0))
+                        .show(ui.ctx(), |ui| {
+                            ui.label("Tindakan ini tidak dapat dibatalkan.");
+                            ui.add_space(8.0);
+                            ui.code(format!("db.{}.{}.drop()", db, coll));
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Cancel").clicked() {
+                                    self.pending_drop_collection = None;
+                                }
+                                if ui
+                                    .button(egui::RichText::new("Confirm").color(egui::Color32::RED))
+                                    .clicked()
+                                {
+                                    // Execute drop via Mongo driver
+                                    let (cid, dbn, colln) = (conn_id, db.clone(), coll.clone());
+                                    let mut ok = false;
+                                    if let Some(rt) = self.runtime.clone() {
+                                        ok = rt.block_on(async {
+                                            crate::driver_mongodb::drop_collection(self, cid, &dbn, &colln).await
+                                        });
+                                    } else if let Ok(rt) = tokio::runtime::Runtime::new() {
+                                        ok = rt.block_on(async {
+                                            crate::driver_mongodb::drop_collection(self, cid, &dbn, &colln).await
+                                        });
+                                    }
+                                    if ok {
+                                        // Clear caches and refresh connection tree
+                                        self.clear_connection_cache(conn_id);
+                                        self.refresh_connection(conn_id);
+                                        self.error_message = format!("Collection '{}.{}' berhasil di-drop", db, coll);
+                                        self.show_error_message = true; // Show as toast/dialog
+                                    } else {
+                                        self.error_message = format!("Gagal drop collection '{}.{}'", db, coll);
+                                        self.show_error_message = true;
+                                    }
+                                    self.pending_drop_collection = None;
+                                }
+                            });
+                        });
+                }
             });
     } // end update
 } // end impl App for Tabular

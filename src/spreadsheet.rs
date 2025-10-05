@@ -691,6 +691,9 @@ impl SpreadsheetOperations for Tabular {
                     debug!("🔥 SQL executed successfully, clearing pending operations");
                     self.spreadsheet_state.pending_operations.clear();
                     self.spreadsheet_state.is_dirty = false;
+                    
+                    // Clear newly created rows highlight after successful save
+                    self.newly_created_rows.clear();
 
                     // Refresh grid after save so inserted rows become visible
                     if self.is_table_browse_mode {

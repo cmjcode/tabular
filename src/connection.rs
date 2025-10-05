@@ -1211,9 +1211,9 @@ async fn try_quick_pool_creation(
         .find(|c| c.id == Some(connection_id))?
         .clone();
 
-    // Quick attempt with very short timeout
+    // Quick attempt with short timeout (slightly relaxed to tolerate slower DNS / TLS)
     let result = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
+        std::time::Duration::from_millis(500),
         create_connection_pool_for_config(&connection),
     )
     .await;
@@ -1326,55 +1326,88 @@ async fn create_connection_pool_for_config(
             // let _ = helpers::ping_host(&connection.host);
 
             // Configure MySQL pool with improved settings for stability
-            let pool_result = MySqlPoolOptions::new()
-                .max_connections(10) // Reduced from 20 for better resource management
-                .min_connections(2) // Maintain some ready connections
-                .acquire_timeout(std::time::Duration::from_secs(10)) // Fail fast
-                .idle_timeout(std::time::Duration::from_secs(300)) // 10 minute idle timeout (longer)
-                .max_lifetime(std::time::Duration::from_secs(600)) // 60 minute max lifetime (longer)
-                .test_before_acquire(true) // Enable connection testing for reliability
-                .after_connect(|conn, _| {
-                    Box::pin(async move {
-                        // Set connection-specific settings for better stability and performance
-                        let _ = sqlx::query("SET SESSION wait_timeout = 600")
-                            .execute(&mut *conn)
-                            .await;
-                        let _ = sqlx::query("SET SESSION interactive_timeout = 600")
-                            .execute(&mut *conn)
-                            .await;
-                        let _ = sqlx::query("SET SESSION net_read_timeout = 60")
-                            .execute(&mut *conn)
-                            .await;
-                        let _ = sqlx::query("SET SESSION net_write_timeout = 60")
-                            .execute(&mut *conn)
-                            .await;
-                        // Optimize for performance
-                        let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
-                            .execute(&mut *conn)
-                            .await;
-                        Ok(())
-                    })
-                })
-                .connect(&connection_string)
-                .await;
+            // We perform up to 2 attempts with progressively relaxed constraints.
+            // Common causes of the earlier "pool timed out while waiting for an open connection" error:
+            //  - Slow initial handshake (network latency, DNS, TLS) exceeding acquire_timeout
+            //  - test_before_acquire adds an extra round-trip under latency
+            //  - min_connections > 0 forces eager creation of more than one connection
+            //  - after_connect statements (session tweaks) add latency before the pool marks a conn as ready
 
-            match pool_result {
-                Ok(pool) => {
-                    let database_pool = models::enums::DatabasePool::MySQL(Arc::new(pool));
-                    debug!(
-                        "✅ Created MySQL connection pool for connection {:?}",
-                        connection.id
-                    );
-                    Some(database_pool)
-                }
-                Err(e) => {
-                    debug!(
-                        "❌ Failed to create MySQL pool for connection {:?}: {}",
-                        connection.id, e
-                    );
-                    None
+            let mut last_err: Option<sqlx::Error> = None;
+
+            for attempt in 1..=2u8 {
+                let start = std::time::Instant::now();
+                let (min_conns, test_before, acquire_secs) = match attempt {
+                    1 => (0u32, false, 30u64), // Very permissive first attempt (lazy open)
+                    _ => (1u32, true, 45u64),  // Second attempt: enable validation, longer acquire
+                };
+                debug!(
+                    "⚙️ MySQL pool attempt {} (min_connections={}, test_before_acquire={}, acquire_timeout={}s) for connection {:?}",
+                    attempt, min_conns, test_before, acquire_secs, connection.id
+                );
+
+                let pool_result = MySqlPoolOptions::new()
+                    .max_connections(10)
+                    .min_connections(min_conns)
+                    .acquire_timeout(std::time::Duration::from_secs(acquire_secs))
+                    .idle_timeout(std::time::Duration::from_secs(600))
+                    .max_lifetime(std::time::Duration::from_secs(1800))
+                    .test_before_acquire(test_before)
+                    .after_connect(|conn, _| {
+                        Box::pin(async move {
+                            // Keep after_connect lean; avoid heavyweight or server-specific settings.
+                            let _ = sqlx::query("SET SESSION wait_timeout = 600")
+                                .execute(&mut *conn)
+                                .await;
+                            let _ = sqlx::query("SET SESSION interactive_timeout = 600")
+                                .execute(&mut *conn)
+                                .await;
+                            let _ = sqlx::query("SET SESSION net_read_timeout = 120")
+                                .execute(&mut *conn)
+                                .await;
+                            let _ = sqlx::query("SET SESSION net_write_timeout = 120")
+                                .execute(&mut *conn)
+                                .await;
+                            // Do NOT force sql_mode if server overrides / permissions limited; ignore errors.
+                            let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
+                                .execute(&mut *conn)
+                                .await;
+                            Ok(())
+                        })
+                    })
+                    .connect(&connection_string)
+                    .await;
+
+                match pool_result {
+                    Ok(pool) => {
+                        let elapsed = start.elapsed().as_millis();
+                        debug!(
+                            "✅ Created MySQL connection pool (attempt {}, {} ms) for connection {:?}",
+                            attempt, elapsed, connection.id
+                        );
+                        return Some(models::enums::DatabasePool::MySQL(Arc::new(pool)));
+                    }
+                    Err(e) => {
+                        let elapsed = start.elapsed().as_millis();
+                        debug!(
+                            "❌ MySQL pool attempt {} failed after {} ms for connection {:?}: {:?}",
+                            attempt, elapsed, connection.id, e
+                        );
+                        // If it is a timeout, we retry (if attempt 1). Otherwise break early.
+                        let is_timeout = matches!(e, sqlx::Error::PoolTimedOut) || e.to_string().contains("timeout");
+                        last_err = Some(e);
+                        if !is_timeout || attempt == 2 { break; }
+                    }
                 }
             }
+
+            if let Some(e) = last_err {
+                debug!(
+                    "❌ Failed to create MySQL pool for connection {:?} after retries: {:?}",
+                    connection.id, e
+                );
+            }
+            None
         }
         models::enums::DatabaseType::PostgreSQL => {
             let connection_string = format!(
@@ -1776,49 +1809,9 @@ pub(crate) async fn create_database_pool(
             );
 
             // Configure MySQL pool with optimized settings for large queries
-            let pool_result = MySqlPoolOptions::new()
-                .max_connections(3) // Reduced from 5 to 3 - fewer but more stable connections
-                .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(10)) // Faster timeout to fail fast
-                .idle_timeout(std::time::Duration::from_secs(600)) // 10 minutes idle timeout
-                .max_lifetime(std::time::Duration::from_secs(3600)) // 1 hour max lifetime
-                .test_before_acquire(true) // Test connections before use
-                .after_connect(|conn, _| {
-                    Box::pin(async move {
-                        // Optimize MySQL settings for performance with large datasets
-                        let _ = sqlx::query("SET SESSION wait_timeout = 600")
-                            .execute(&mut *conn)
-                            .await;
-                        let _ = sqlx::query("SET SESSION interactive_timeout = 600")
-                            .execute(&mut *conn)
-                            .await;
-                        let _ = sqlx::query("SET SESSION net_read_timeout = 120")
-                            .execute(&mut *conn)
-                            .await;
-                        let _ = sqlx::query("SET SESSION net_write_timeout = 120")
-                            .execute(&mut *conn)
-                            .await;
-                        // Increase max packet size for large result sets
-                        let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824")
-                            .execute(&mut *conn)
-                            .await; // 1GB
-                        // Optimize query cache and buffer settings
-                        let _ = sqlx::query("SET SESSION query_cache_type = ON")
-                            .execute(&mut *conn)
-                            .await;
-                        let _ = sqlx::query("SET SESSION read_buffer_size = 2097152")
-                            .execute(&mut *conn)
-                            .await; // 2MB
-                        Ok(())
-                    })
-                })
-                .connect(&connection_string)
-                .await;
-
-            match pool_result {
-                Ok(pool) => Some(models::enums::DatabasePool::MySQL(Arc::new(pool))),
-                Err(_e) => None,
-            }
+            // New: simplified + retried creation mirroring main path (avoid duplication by delegating)
+            // Reuse the logic above by constructing a temporary ConnectionConfig clone and calling create_connection_pool_for_config
+            return create_connection_pool_for_config(connection).await;
         }
         models::enums::DatabaseType::PostgreSQL => {
             let connection_string = format!(

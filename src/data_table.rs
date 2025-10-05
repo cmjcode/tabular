@@ -341,11 +341,21 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             let selected_rows = tabular.selected_rows.clone();
                             let selected_row = tabular.selected_row;
                             let error_column_index = error_column_index;
+                            let newly_created_rows = tabular.newly_created_rows.clone();
 
                             for (row_index, row) in current_table_data.iter().enumerate() {
                                 let is_selected_row = selected_rows.contains(&row_index)
                                     || selected_row == Some(row_index);
-                                let row_color = if is_selected_row {
+                                let is_newly_created = newly_created_rows.contains(&row_index);
+                                
+                                let row_color = if is_newly_created {
+                                    // Green highlight for newly created/duplicated rows
+                                    if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgba_unmultiplied(50, 200, 100, 40)
+                                    } else {
+                                        egui::Color32::from_rgba_unmultiplied(150, 255, 180, 100)
+                                    }
+                                } else if is_selected_row {
                                     if ui.visuals().dark_mode {
                                         egui::Color32::from_rgba_unmultiplied(100, 150, 255, 30)
                                     } else {
@@ -891,6 +901,21 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 handle_column_click(tabular, col_idx, modifiers);
                 tabular.table_sel_anchor = None;
                 tabular.table_dragging = false;
+            }
+            
+            // Handle right-click context menu for selected row
+            if tabular.is_table_browse_mode && tabular.selected_row.is_some() {
+                // Check for right-click separately to avoid conflict with any_click detection
+                let (should_show_menu, pointer_pos) = ui.input(|i| {
+                    (i.pointer.secondary_clicked(), i.pointer.hover_pos().unwrap_or(egui::Pos2::ZERO))
+                });
+                
+                if should_show_menu && !tabular.show_row_context_menu {
+                    tabular.show_row_context_menu = true;
+                    tabular.context_menu_row = tabular.selected_row;
+                    tabular.context_menu_just_opened = true;
+                    tabular.context_menu_pos = pointer_pos; // Save the position when menu opens
+                }
             }
             if let Some((r, c)) = cell_sel_requests.last().copied() {
                 tabular.selected_row = Some(r);

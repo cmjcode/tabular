@@ -593,6 +593,7 @@ impl ShallowForCache for Tabular {
             pending_drop_index_stmt: None,
             pending_drop_column_name: None,
             pending_drop_column_stmt: None,
+            pending_drop_collection: None,
             config_store: None,
             last_saved_prefs: None,
             prefs_dirty: false,
@@ -624,6 +625,11 @@ impl ShallowForCache for Tabular {
             spreadsheet_state: models::structs::SpreadsheetState::default(),
             suppress_editor_arrow_once: false,
             selection_force_clear: false,
+            show_row_context_menu: false,
+            context_menu_row: None,
+            context_menu_just_opened: false,
+            context_menu_pos: egui::Pos2::ZERO,
+            newly_created_rows: std::collections::HashSet::new(),
         })
     }
 }

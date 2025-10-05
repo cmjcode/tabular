@@ -235,6 +235,13 @@ pub enum StructureSubView {
 
 // Spreadsheet editing structures
 #[derive(Clone, Debug, PartialEq)]
+pub enum SpreadsheetOperationType {
+    Update,
+    Insert,
+    Delete,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum CellEditOperation {
     Update {
         row_index: usize,
@@ -250,6 +257,17 @@ pub enum CellEditOperation {
         row_index: usize,
         values: Vec<String>, // Store original values for undo
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct SpreadsheetOperation {
+    pub operation_type: SpreadsheetOperationType,
+    pub table_name: String,
+    pub row_index: usize,
+    pub column_name: String,
+    pub old_value: String,
+    pub new_value: String,
+    pub primary_key_values: std::collections::HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -275,4 +293,6 @@ pub type RenderTreeNodeResult = (
     Option<(i64, models::enums::NodeType)>,
     Option<(i64, String, Option<String>, Option<String>)>,
     Option<(i64, Option<String>, Option<String>)>,
+    // New: request to drop a MongoDB collection (connection_id, database_name, collection_name)
+    Option<(i64, String, String)>,
 );
