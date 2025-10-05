@@ -295,6 +295,19 @@ pub(crate) fn execute_table_query_sync(
                             .map(|s| s.trim())
                             .filter(|s| !s.is_empty())
                             .collect();
+                        // Phase 1 AST integration: if exactly one statement and starts with SELECT, try compile_single_select
+                        #[cfg(feature = "query_ast")]
+                        let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
+                        #[cfg(feature = "query_ast")]
+                        let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
+                            let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
+                            match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
+                                Ok((new_sql, hdrs)) => { if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs); } vec![new_sql] },
+                                Err(_e) => statements.iter().map(|s| s.to_string()).collect(),
+                            }
+                        } else { statements.iter().map(|s| s.to_string()).collect() };
+                        #[cfg(feature = "query_ast")]
+                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
                         debug!("Found {} SQL statements to execute", statements.len());
                         for (idx, stmt) in statements.iter().enumerate() {
                             debug!("Statement {}: '{}'", idx + 1, stmt);
@@ -466,7 +479,10 @@ pub(crate) fn execute_table_query_sync(
                                                     }
                                                 }
                                             } else {
-                                                // Zero rows: try to infer headers from SELECT list first
+                                                // Zero rows: try to use AST headers first (if any)
+                                                #[cfg(feature = "query_ast")]
+                                                if final_headers.is_empty() { if let Some(hh) = _inferred_headers_from_ast.clone() { if !hh.is_empty() { final_headers = hh; } } }
+                                                // Fallback: infer headers from SELECT list first
                                                 if trimmed.to_uppercase().starts_with("SELECT") {
                                                     let inferred = infer_select_headers(trimmed);
                                                     if !inferred.is_empty() { final_headers = inferred; }
@@ -568,6 +584,18 @@ pub(crate) fn execute_table_query_sync(
                             .map(|s| s.trim())
                             .filter(|s| !s.is_empty())
                             .collect();
+                        #[cfg(feature = "query_ast")]
+                        let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
+                        #[cfg(feature = "query_ast")]
+                        let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
+                            let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
+                            match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
+                                Ok((new_sql, hdrs)) => { if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs); } vec![new_sql] },
+                                Err(_)=> statements.iter().map(|s| s.to_string()).collect(),
+                            }
+                        } else { statements.iter().map(|s| s.to_string()).collect() };
+                        #[cfg(feature = "query_ast")]
+                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
                         debug!("Found {} SQL statements to execute", statements.len());
 
                         let mut final_headers = Vec::new();
@@ -596,7 +624,10 @@ pub(crate) fn execute_table_query_sync(
                                                 }).collect()
                                             }).collect();
                                         } else {
-                                            // Zero rows: infer headers from SELECT list
+                                            // Zero rows: attempt AST headers first
+                                            #[cfg(feature = "query_ast")]
+                                            if final_headers.is_empty() { if let Some(hh) = _inferred_headers_from_ast.clone() { if !hh.is_empty() { final_headers = hh; } } }
+                                            // Fallback to SELECT list heuristics
                                             if statement.to_uppercase().starts_with("SELECT") {
                                                 let inferred = infer_select_headers(statement);
                                                 if !inferred.is_empty() { final_headers = inferred; }
@@ -671,6 +702,18 @@ pub(crate) fn execute_table_query_sync(
                             .map(|s| s.trim())
                             .filter(|s| !s.is_empty())
                             .collect();
+                        #[cfg(feature = "query_ast")]
+                        let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
+                        #[cfg(feature = "query_ast")]
+                        let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
+                            let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
+                            match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
+                                Ok((new_sql, hdrs)) => { if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs); } vec![new_sql] },
+                                Err(_)=> statements.iter().map(|s| s.to_string()).collect(),
+                            }
+                        } else { statements.iter().map(|s| s.to_string()).collect() };
+                        #[cfg(feature = "query_ast")]
+                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
                         debug!("Found {} SQL statements to execute", statements.len());
 
                         let mut final_headers = Vec::new();
@@ -693,7 +736,10 @@ pub(crate) fn execute_table_query_sync(
                                             final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
                                             final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
                                         } else {
-                                            // Zero rows: infer headers from SELECT list
+                                            // Zero rows: attempt AST headers first
+                                            #[cfg(feature = "query_ast")]
+                                            if final_headers.is_empty() { if let Some(hh) = _inferred_headers_from_ast.clone() { if !hh.is_empty() { final_headers = hh; } } }
+                                            // Fallback to SELECT list heuristics
                                             if statement.to_uppercase().starts_with("SELECT") {
                                                 let inferred = infer_select_headers(statement);
                                                 if !inferred.is_empty() { final_headers = inferred; }
@@ -1310,12 +1356,14 @@ async fn create_connection_pool_for_config(
 ) -> Option<models::enums::DatabasePool> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
-            let encoded_username = modules::url_encode(&connection.username);
-            let encoded_password = modules::url_encode(&connection.password);
+            let _encoded_username = modules::url_encode(&connection.username);
+            let _encoded_password = modules::url_encode(&connection.password);
+            // Reintroduce connection_string (previously removed) because it's still needed below
+            // for establishing the MySQL pool. Use URL-encoded credentials to be safe with special chars.
             let connection_string = format!(
                 "mysql://{}:{}@{}:{}/{}",
-                encoded_username,
-                encoded_password,
+                _encoded_username,
+                _encoded_password,
                 connection.host,
                 connection.port,
                 connection.database
@@ -1797,16 +1845,11 @@ pub(crate) async fn create_database_pool(
 ) -> Option<models::enums::DatabasePool> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
-            let encoded_username = modules::url_encode(&connection.username);
-            let encoded_password = modules::url_encode(&connection.password);
-            let connection_string = format!(
-                "mysql://{}:{}@{}:{}/{}",
-                encoded_username,
-                encoded_password,
-                connection.host,
-                connection.port,
-                connection.database
-            );
+            let _encoded_username = modules::url_encode(&connection.username);
+            let _encoded_password = modules::url_encode(&connection.password);
+            // connection_string not needed here; we reuse create_connection_pool_for_config which
+            // builds its own connection string. Keep encoded variables in case future logic adds
+            // validation or logging.
 
             // Configure MySQL pool with optimized settings for large queries
             // New: simplified + retried creation mirroring main path (avoid duplication by delegating)

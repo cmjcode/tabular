@@ -28,6 +28,7 @@ sqlx = { version = "0.8.6", features = [
        "chrono",
        "rust_decimal",
 ] }
+sqlparser = { version = "0.50", optional = true }
 redis = { version = "1.0.0-alpha.2", features = ["tokio-comp", "connection-manager"] }
 bson = { version = "3", features = ["uuid-1"] }
 mongodb = { version = "3.3.0", features = ["zlib-compression"] }
@@ -71,6 +72,7 @@ tree-sitter = { version = "0.19", optional = true }
 tree-sitter-sql = { version = "0.0.2", optional = true }
 anyhow = { version = "1", optional = true }
 once_cell = { version = "1", optional = true }
+thiserror = "1"
 
 [features]
 # Placeholder feature to enable future granular rope editing integration with lapce_core::Buffer.
@@ -85,6 +87,9 @@ lapce_editor = []
 # Enable experimental tree-sitter SQL highlighting / structural parsing.
 # Activate with: `cargo run --features tree_sitter_sql` (nama feature memakai underscore)
 tree_sitter_sql = ["tree-sitter", "tree-sitter-sql", "anyhow", "once_cell"]
+
+# Enable experimental logical query AST parsing + emission (phase 1: simple SELECT)
+query_ast = ["sqlparser"]
 
 # NOTE: It's recommended to pin `lapce_core` to a specific commit for reproducible builds, e.g.:
 # lapce_core = { git = "https://github.com/lapce/lapce", package = "lapce-core", rev = "<commit-sha>" }
