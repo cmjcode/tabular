@@ -92,6 +92,10 @@ pub struct Tabular {
     pub background_receiver: Option<Receiver<models::enums::BackgroundResult>>,
     // Background refresh status tracking
     pub refreshing_connections: std::collections::HashSet<i64>,
+    // Pending expansion state restore after refresh
+    pub pending_expansion_restore: std::collections::HashMap<i64, std::collections::HashMap<String, bool>>,
+    // Connections that need their expanded nodes loaded after state restore
+    pub pending_auto_load: std::collections::HashSet<i64>,
     // Query tab system
     pub query_tabs: Vec<models::structs::QueryTab>,
     pub active_tab_index: usize,
@@ -235,6 +239,8 @@ pub struct Tabular {
     pub pending_drop_column_stmt: Option<String>,
     // Pending drop Mongo collection confirmation
     pub pending_drop_collection: Option<(i64, String, String)>, // (connection_id, db, collection)
+    // Pending drop table confirmation
+    pub pending_drop_table: Option<(i64, String, String, String)>, // (connection_id, database, table, stmt)
     // Structure view column widths (separate from data grid)
     pub structure_col_widths: Vec<f32>,     // for columns table
     pub structure_idx_col_widths: Vec<f32>, // for indexes table
@@ -549,6 +555,8 @@ impl Tabular {
             background_sender: Some(background_sender),
             background_receiver: Some(result_receiver),
             refreshing_connections: std::collections::HashSet::new(),
+            pending_expansion_restore: std::collections::HashMap::new(),
+            pending_auto_load: std::collections::HashSet::new(),
             query_tabs: Vec::new(),
             active_tab_index: 0,
             next_tab_id: 1,
@@ -640,6 +648,7 @@ impl Tabular {
             pending_drop_column_name: None,
             pending_drop_column_stmt: None,
             pending_drop_collection: None,
+            pending_drop_table: None,
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,
@@ -864,6 +873,32 @@ impl Tabular {
         nodes: &mut [models::structs::TreeNode],
         is_search_mode: bool,
     ) -> Vec<(String, String, String)> {
+        // Process pending auto-load requests FIRST, before rendering
+        // This ensures expanded nodes are loaded from cache before first render
+        let pending_loads: Vec<i64> = self.pending_auto_load.drain().collect();
+        if !pending_loads.is_empty() {
+            info!("📂 Processing {} pending auto-loads BEFORE render", pending_loads.len());
+        }
+        for connection_id in pending_loads {
+            info!("📂 Processing auto-load for connection {}", connection_id);
+            // Find the connection node
+            let mut found = false;
+            for node in nodes.iter_mut() {
+                if node.node_type == models::enums::NodeType::Connection
+                    && node.connection_id == Some(connection_id)
+                {
+                    info!("   ✅ Found connection node: {}", node.name);
+                    info!("   🔄 Loading expanded nodes recursively from cache...");
+                    self.load_expanded_nodes_recursive(connection_id, node);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                info!("   ❌ Connection node {} not found in tree!", connection_id);
+            }
+        }
+        
         // Build quick lookup: connection_id -> DatabaseType
         let mut connection_types: std::collections::HashMap<i64, models::enums::DatabaseType> = std::collections::HashMap::new();
         for c in &self.connections {
@@ -896,6 +931,7 @@ impl Tabular {
                 index_click_request,
                 create_index_request,
                 drop_collection_request,
+                drop_table_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -995,6 +1031,11 @@ impl Tabular {
             if let Some((conn_id, db, coll)) = drop_collection_request {
                 // Store pending state for confirmation window outside the loop
                 self.pending_drop_collection = Some((conn_id, db, coll));
+            }
+            // Collect DROP TABLE requests
+            if let Some((conn_id, db, table, stmt)) = drop_table_request {
+                // Store pending state for confirmation window outside the loop
+                self.pending_drop_table = Some((conn_id, db, table, stmt));
             }
         }
 
@@ -2164,6 +2205,7 @@ impl Tabular {
         let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
     let mut drop_collection_request: Option<(i64, String, String)> = None;
+    let mut drop_table_request: Option<(i64, String, String, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -2612,11 +2654,13 @@ impl Tabular {
                         }
                         ui.separator();
                         if !is_mongodb {
-                            if ui.button("🗑️ DROP TABLE").clicked() {
-                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                                // Use IF EXISTS for broad DB compatibility (MySQL, PostgreSQL, SQLite, SQL Server 2016+)
-                                editor.set_text(format!("DROP TABLE IF EXISTS {};", actual_table_name));
-                                editor.mark_text_modified();
+                            if ui.button("🗑 Drop Table").clicked() {
+                                if let (Some(conn_id), Some(db)) = (node.connection_id, node.database_name.as_ref()) {
+                                    let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                    // Generate the DROP TABLE statement with USE database
+                                    let stmt = format!("USE [{}];\nDROP TABLE IF EXISTS {};", db, actual_table_name);
+                                    drop_table_request = Some((conn_id, db.clone(), actual_table_name, stmt));
+                                }
                                 ui.close();
                             }
                         } else if ui.button("🗑️ Drop Collection").clicked() {
@@ -2749,6 +2793,7 @@ impl Tabular {
                             child_index_click,
                             child_create_index_request,
                             _child_drop_collection_request,
+                            _child_drop_table_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -2782,6 +2827,9 @@ impl Tabular {
                         }
                         if let Some(v) = _child_drop_collection_request {
                             drop_collection_request = Some(v);
+                        }
+                        if let Some(v) = _child_drop_table_request {
+                            drop_table_request = Some(v);
                         }
                         if let Some(v) = child_dba_click {
                             dba_click_request = Some(v);
@@ -2817,6 +2865,7 @@ impl Tabular {
                                 child_index_click,
                                 child_create_index_request,
                                 _child_drop_collection_request,
+                                _child_drop_table_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -2859,6 +2908,10 @@ impl Tabular {
                             // Propagate drop collection request to parent
                             if let Some(v) = _child_drop_collection_request {
                                 drop_collection_request = Some(v);
+                            }
+                            // Propagate drop table request to parent
+                            if let Some(v) = _child_drop_table_request {
+                                drop_table_request = Some(v);
                             }
                             // Propagate DBA click to parent
                             if let Some(v) = child_dba_click {
@@ -3170,6 +3223,7 @@ impl Tabular {
             index_click_request,
             create_index_request,
             drop_collection_request,
+            drop_table_request,
         )
     }
 
@@ -3621,6 +3675,222 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 
 
+    // Helper to save expansion state of a tree recursively
+    fn save_expansion_state(node: &models::structs::TreeNode, state_map: &mut std::collections::HashMap<String, bool>) {
+        // Create unique key for this node
+        let key = format!(
+            "{}:{}:{}:{}",
+            node.connection_id.unwrap_or(0),
+            node.database_name.as_ref().unwrap_or(&String::new()),
+            format!("{:?}", node.node_type),
+            node.name
+        );
+        state_map.insert(key, node.is_expanded);
+        
+        // Recursively save children
+        for child in &node.children {
+            Self::save_expansion_state(child, state_map);
+        }
+    }
+    
+    // Helper to restore expansion state of a tree recursively
+    fn restore_expansion_state(node: &mut models::structs::TreeNode, state_map: &std::collections::HashMap<String, bool>) {
+        use log::info;
+        
+        // Create unique key for this node
+        let key = format!(
+            "{}:{}:{}:{}",
+            node.connection_id.unwrap_or(0),
+            node.database_name.as_ref().unwrap_or(&String::new()),
+            format!("{:?}", node.node_type),
+            node.name
+        );
+        
+        // Restore expansion state from saved map
+        if let Some(&expanded) = state_map.get(&key) {
+            node.is_expanded = expanded;
+            if expanded {
+                info!("   📂 Restoring expanded: {:?} - {}", node.node_type, node.name);
+            }
+        }
+        
+        // Force expand important container folders if they were expanded before
+        // This ensures Database and TablesFolder are visible after refresh
+        match node.node_type {
+            models::enums::NodeType::Connection => {
+                // If connection was expanded, keep it expanded
+                if state_map.get(&key).copied().unwrap_or(false) {
+                    node.is_expanded = true;
+                }
+            }
+            models::enums::NodeType::DatabasesFolder => {
+                // If DatabasesFolder was expanded, keep it expanded
+                if state_map.get(&key).copied().unwrap_or(false) {
+                    node.is_expanded = true;
+                }
+            }
+            models::enums::NodeType::Database => {
+                // If Database was expanded, keep it expanded
+                if state_map.get(&key).copied().unwrap_or(false) {
+                    node.is_expanded = true;
+                }
+            }
+            models::enums::NodeType::TablesFolder => {
+                // If TablesFolder was expanded, keep it expanded
+                if state_map.get(&key).copied().unwrap_or(false) {
+                    node.is_expanded = true;
+                }
+            }
+            _ => {}
+        }
+        
+        // Recursively restore children
+        for child in &mut node.children {
+            Self::restore_expansion_state(child, state_map);
+        }
+    }
+    
+    // Helper to mark all nodes as not loaded (forces reload from cache)
+    fn mark_all_nodes_not_loaded(node: &mut models::structs::TreeNode) {
+        node.is_loaded = false;
+        for child in &mut node.children {
+            Self::mark_all_nodes_not_loaded(child);
+        }
+    }
+    
+    // Helper to mark expanded nodes as loaded (they'll auto-load from cache on render)
+    fn mark_expanded_nodes_loaded(node: &mut models::structs::TreeNode) {
+        use log::debug;
+        
+        // If this node is expanded, mark it as not loaded so it will reload from cache
+        if node.is_expanded {
+            match node.node_type {
+                models::enums::NodeType::Database 
+                | models::enums::NodeType::TablesFolder 
+                | models::enums::NodeType::ViewsFolder
+                | models::enums::NodeType::StoredProceduresFolder
+                | models::enums::NodeType::UserFunctionsFolder
+                | models::enums::NodeType::TriggersFolder
+                | models::enums::NodeType::EventsFolder => {
+                    // Mark as not loaded so it will trigger loading from cache on next render
+                    node.is_loaded = false;
+                    debug!("   📂 Marked expanded {:?} as needing reload: {}", node.node_type, node.name);
+                }
+                _ => {}
+            }
+        }
+        
+        // Recursively process children
+        for child in &mut node.children {
+            Self::mark_expanded_nodes_loaded(child);
+        }
+    }
+    
+    // Helper to recursively load all expanded nodes from cache
+    fn load_expanded_nodes_recursive(&mut self, connection_id: i64, node: &mut models::structs::TreeNode) {
+        use log::info;
+        
+        info!("🔍 Checking node: {:?} '{}' - expanded={}, loaded={}", 
+              node.node_type, node.name, node.is_expanded, node.is_loaded);
+        
+        // If this node is expanded and not loaded, load it
+        if node.is_expanded && !node.is_loaded {
+            match node.node_type {
+                models::enums::NodeType::Connection => {
+                    info!("   📂 Loading Connection node from cache");
+                    self.load_connection_tables(connection_id, node);
+                }
+                models::enums::NodeType::DatabasesFolder => {
+                    info!("   📂 Loading DatabasesFolder from cache");
+                    self.load_databases_for_folder(connection_id, node);
+                }
+                models::enums::NodeType::Database => {
+                    info!("   📂 Loading Database node from cache: {}", node.name);
+                    // Database node contains folders (Tables, Views, etc), they'll be loaded by their children
+                    node.is_loaded = true;
+                }
+                models::enums::NodeType::TablesFolder => {
+                    info!("   📂 Loading TablesFolder from cache");
+                    self.load_folder_content(connection_id, node, models::enums::NodeType::TablesFolder);
+                }
+                models::enums::NodeType::ViewsFolder => {
+                    info!("   📂 Loading ViewsFolder from cache");
+                    self.load_folder_content(connection_id, node, models::enums::NodeType::ViewsFolder);
+                }
+                models::enums::NodeType::StoredProceduresFolder => {
+                    info!("   📂 Loading StoredProceduresFolder from cache");
+                    self.load_folder_content(connection_id, node, models::enums::NodeType::StoredProceduresFolder);
+                }
+                _ => {
+                    info!("   ⏭️  Skipping {:?} node (no loader)", node.node_type);
+                }
+            }
+        } else if node.is_expanded {
+            info!("   ⏭️  Node already loaded, skipping");
+        }
+        
+        // Recursively process children (depth-first)
+        // Clone children vec to avoid borrow issues
+        let children_count = node.children.len();
+        info!("   👶 Processing {} children...", children_count);
+        for i in 0..children_count {
+            // Process each child
+            if let Some(child) = node.children.get_mut(i) {
+                Self::load_expanded_nodes_recursive(self, connection_id, child);
+            }
+        }
+    }
+    
+    // Refresh connection while preserving all expansion states
+    fn refresh_connection_preserving_state(&mut self, connection_id: i64) {
+        use log::info;
+        
+        info!("🔄 Refreshing connection {} while preserving expansion state", connection_id);
+        
+        // Save current expansion state
+        let mut expansion_state = std::collections::HashMap::new();
+        for node in &self.items_tree {
+            if node.connection_id == Some(connection_id) {
+                Self::save_expansion_state(node, &mut expansion_state);
+                info!("   Saved {} expansion states", expansion_state.len());
+                break;
+            }
+        }
+        
+        // Store the state FIRST before clearing anything
+        self.pending_expansion_restore.insert(connection_id, expansion_state);
+        
+        // Clear cache - this will make cache outdated
+        self.clear_connection_cache(connection_id);
+        
+        // Mark as refreshing
+        self.refreshing_connections.insert(connection_id);
+        
+        // CLEAR children to force rebuild from fresh cache
+        // This is necessary to remove dropped tables/databases from tree
+        if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
+            conn_node.is_loaded = false;
+            conn_node.children.clear();
+            info!("   Cleared children - tree will rebuild from fresh cache");
+        }
+        
+        // Send background task to refresh cache
+        if let Some(sender) = &self.background_sender {
+            if let Err(e) = sender.send(models::enums::BackgroundTask::RefreshConnection { connection_id }) {
+                debug!("Failed to send background refresh task: {}", e);
+                self.refreshing_connections.remove(&connection_id);
+                self.pending_expansion_restore.remove(&connection_id);
+                cache_data::fetch_and_cache_connection_data(self, connection_id);
+            } else {
+                info!("   Background refresh task sent");
+            }
+        } else {
+            self.refreshing_connections.remove(&connection_id);
+            self.pending_expansion_restore.remove(&connection_id);
+            cache_data::fetch_and_cache_connection_data(self, connection_id);
+        }
+    }
+
     // NEW: Disconnect connection - close pool and clear cache
     fn disconnect_connection(&mut self, connection_id: i64) {
         debug!("🔌 Disconnecting connection: {}", connection_id);
@@ -3719,6 +3989,177 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     .await;
             });
         }
+    }
+
+    // Clear cache for a specific table only
+    fn clear_table_cache(&self, connection_id: i64, database_name: &str, table_name: &str) {
+        use log::info;
+        
+        if let Some(ref pool) = self.db_pool {
+            let pool_clone = pool.clone();
+            let db = database_name.to_string();
+            let tbl = table_name.to_string();
+            let rt = tokio::runtime::Runtime::new().unwrap();
+
+            rt.block_on(async {
+                info!("🧹 Clearing cache for table {}.{}", db, tbl);
+                
+                // Clear table cache entry
+                let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .bind(&tbl)
+                    .execute(pool_clone.as_ref())
+                    .await;
+
+                // Clear column cache for this table
+                let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .bind(&tbl)
+                    .execute(pool_clone.as_ref())
+                    .await;
+
+                // Clear row cache for this table
+                let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .bind(&tbl)
+                    .execute(pool_clone.as_ref())
+                    .await;
+
+                // Clear index cache for this table
+                let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .bind(&tbl)
+                    .execute(pool_clone.as_ref())
+                    .await;
+                    
+                info!("✅ Cache cleared for table {}.{}", db, tbl);
+            });
+        }
+    }
+
+    // Remove a specific table from the sidebar tree without reloading entire connection
+    fn remove_table_from_tree(&mut self, connection_id: i64, database_name: &str, table_name: &str) {
+        use log::info;
+        
+        info!("🌲 Removing table {}.{} from sidebar tree", database_name, table_name);
+        info!("   Searching for table: '{}'", table_name);
+        
+        // Helper to match table names - handles [schema].[table], schema.table, or just table
+        let matches_table = |node_name: &str, search_name: &str| -> bool {
+            // Direct match
+            if node_name == search_name {
+                return true;
+            }
+            
+            // Remove brackets and compare
+            let clean_node = node_name.replace("[", "").replace("]", "");
+            let clean_search = search_name.replace("[", "").replace("]", "");
+            
+            if clean_node == clean_search {
+                return true;
+            }
+            
+            // Compare just the table part (after last dot)
+            let node_table = clean_node.split('.').last().unwrap_or(&clean_node);
+            let search_table = clean_search.split('.').last().unwrap_or(&clean_search);
+            
+            node_table == search_table
+        };
+        
+        // Find the connection node
+        for conn_node in &mut self.items_tree {
+            if conn_node.connection_id == Some(connection_id) {
+                info!("   Found connection node: {}", conn_node.name);
+                
+                // Navigate through the tree structure to find the table
+                // Structure: Connection -> Databases Folder -> Database -> Tables Folder -> Table
+                for child in &mut conn_node.children {
+                    // Look for Databases folder
+                    if child.node_type == models::enums::NodeType::DatabasesFolder {
+                        info!("   Found DatabasesFolder");
+                        for db_node in &mut child.children {
+                            // Find matching database
+                            if let Some(ref db_name) = db_node.database_name {
+                                info!("   Checking database: {}", db_name);
+                                if db_name == database_name {
+                                    info!("   ✓ Database matches!");
+                                    // Find Tables folder in this database
+                                    for folder in &mut db_node.children {
+                                        if folder.node_type == models::enums::NodeType::TablesFolder {
+                                            info!("   Found TablesFolder with {} tables", folder.children.len());
+                                            
+                                            // Log all tables before removal
+                                            for table_node in &folder.children {
+                                                let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                                info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
+                                                    tbl_name, table_node.name, table_node.table_name);
+                                            }
+                                            
+                                            // Remove the table from Tables folder
+                                            let before_count = folder.children.len();
+                                            folder.children.retain(|table_node| {
+                                                let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                                let keep = !matches_table(node_name, table_name);
+                                                if !keep {
+                                                    info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
+                                                }
+                                                keep
+                                            });
+                                            let after_count = folder.children.len();
+                                            info!("   Tables count: {} -> {}", before_count, after_count);
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Also check direct children for databases (some DB types don't use DatabasesFolder)
+                    else if child.node_type == models::enums::NodeType::Database {
+                        if let Some(ref db_name) = child.database_name {
+                            info!("   Checking direct database node: {}", db_name);
+                            if db_name == database_name {
+                                info!("   ✓ Database matches!");
+                                // Find Tables folder in this database
+                                for folder in &mut child.children {
+                                    if folder.node_type == models::enums::NodeType::TablesFolder {
+                                        info!("   Found TablesFolder with {} tables", folder.children.len());
+                                        
+                                        // Log all tables before removal
+                                        for table_node in &folder.children {
+                                            let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                            info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
+                                                tbl_name, table_node.name, table_node.table_name);
+                                        }
+                                        
+                                        // Remove the table from Tables folder
+                                        let before_count = folder.children.len();
+                                        folder.children.retain(|table_node| {
+                                            let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                            let keep = !matches_table(node_name, table_name);
+                                            if !keep {
+                                                info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
+                                            }
+                                            keep
+                                        });
+                                        let after_count = folder.children.len();
+                                        info!("   Tables count: {} -> {}", before_count, after_count);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        
+        info!("   ⚠️ Table '{}' not found in tree (may have been already removed)", table_name);
     }
 
     fn load_connection_tables(&mut self, connection_id: i64, node: &mut models::structs::TreeNode) {
@@ -8493,24 +8934,67 @@ impl App for Tabular {
                         self.refreshing_connections.remove(&connection_id);
 
                         if success {
-                            debug!(
-                                "Background refresh completed successfully for connection {}",
+                            info!(
+                                "✅ Background refresh completed successfully for connection {}",
                                 connection_id
                             );
+                            
+                            // Debug: log all connection nodes in tree
+                            info!("   🔍 Searching in items_tree with {} nodes", self.items_tree.len());
+                            for (i, n) in self.items_tree.iter().enumerate() {
+                                info!("      Node {}: type={:?}, conn_id={:?}, name={}", 
+                                      i, n.node_type, n.connection_id, n.name);
+                            }
+                            
                             // Re-expand connection node to show fresh data
+                            let mut node_found = false;
                             for node in &mut self.items_tree {
                                 if node.node_type == models::enums::NodeType::Connection
                                     && node.connection_id == Some(connection_id)
                                 {
-                                    node.is_loaded = false; // Force reload from cache
-                                    // Don't auto-expand after refresh, let user manually expand
+                                    node_found = true;
+                                    info!("   ✅ Found connection node: {}", node.name);
+                                    
+                                    // Restore expansion state if we have one pending
+                                    if let Some(expansion_state) = self.pending_expansion_restore.remove(&connection_id) {
+                                        info!("🔄 Restoring {} expansion states for connection {}", expansion_state.len(), connection_id);
+                                        
+                                        // Force reload from cache
+                                        node.is_loaded = false;
+                                        
+                                        // Restore the expansion state
+                                        Self::restore_expansion_state(node, &expansion_state);
+                                        info!("   ✅ Expansion state restored");
+                                        
+                                        // Mark expanded child nodes to reload from cache on next render
+                                        Self::mark_expanded_nodes_loaded(node);
+                                        info!("   ✅ Expanded nodes marked for loading");
+                                    } else {
+                                        info!("   ⚠️  No expansion state to restore");
+                                        // No expansion state to restore, just mark as not loaded
+                                        node.is_loaded = false;
+                                    }
+                                    
                                     break;
                                 }
                             }
+                            
+                            if !node_found {
+                                info!("   ❌ Connection node {} not found in tree!", connection_id);
+                            }
+                            
+                            // Mark this connection as needing auto-load
+                            // Will be processed in the sidebar render where we have proper borrow access
+                            self.pending_auto_load.insert(connection_id);
+                            info!("📂 Marked connection {} for auto-load after restore", connection_id);
+                            info!("   pending_auto_load size: {}", self.pending_auto_load.len());
+                            
                             // Request UI repaint to show updated data
                             ctx.request_repaint();
                         } else {
                             debug!("Background refresh failed for connection {}", connection_id);
+                            // Clean up pending restore state on failure
+                            self.pending_expansion_restore.remove(&connection_id);
                         }
                     }
                     models::enums::BackgroundResult::PrefetchProgress {
@@ -9549,6 +10033,108 @@ impl App for Tabular {
                                         self.show_error_message = true;
                                     }
                                     self.pending_drop_collection = None;
+                                }
+                            });
+                        });
+                }
+
+                // Render DROP TABLE confirmation dialog if pending
+                if let Some((conn_id, ref db, ref table, ref stmt)) = self.pending_drop_table.clone() {
+                    let title = format!("Konfirmasi Drop Table: {}.{}", db, table);
+                    let stmt_str = stmt.clone();
+                    egui::Window::new(title)
+                        .collapsible(false)
+                        .resizable(false)
+                        .pivot(egui::Align2::CENTER_CENTER)
+                        .fixed_size(egui::vec2(480.0, 180.0))
+                        .show(ui.ctx(), |ui| {
+                            ui.label("Tindakan ini tidak dapat dibatalkan.");
+                            ui.add_space(8.0);
+                            ui.code(&stmt_str);
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Cancel").clicked() {
+                                    self.pending_drop_table = None;
+                                }
+                                if ui
+                                    .button(egui::RichText::new("Confirm").color(egui::Color32::RED))
+                                    .clicked()
+                                {
+                                    use log::{info, error};
+                                    
+                                    info!("🗑️ Executing DROP TABLE:");
+                                    info!("   Connection ID: {}", conn_id);
+                                    info!("   Database: {}", db);
+                                    info!("   Table: {}", table);
+                                    info!("   Statement: {}", stmt_str);
+                                    
+                                    // Execute DROP TABLE statement
+                                    let result = crate::connection::execute_query_with_connection(
+                                        self,
+                                        conn_id,
+                                        stmt_str.clone(),
+                                    );
+                                    
+                                    // Log detailed result
+                                    match &result {
+                                        Some((headers, rows)) => {
+                                            info!("   Result: Success");
+                                            info!("   Headers: {:?}", headers);
+                                            info!("   Rows count: {}", rows.len());
+                                            if !rows.is_empty() {
+                                                info!("   First row: {:?}", rows.get(0));
+                                            }
+                                            // Check if it's an error result
+                                            if headers.first().map(|h| h == "Error").unwrap_or(false) {
+                                                error!("   ⚠️ Query returned Error header!");
+                                                if let Some(err_row) = rows.first() {
+                                                    error!("   Error message: {:?}", err_row);
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            error!("   Result: None (Failed)");
+                                        }
+                                    }
+                                    
+                                    // Check if result is successful (not None and not Error)
+                                    let is_success = match &result {
+                                        Some((headers, _)) => {
+                                            !headers.first().map(|h| h == "Error").unwrap_or(false)
+                                        }
+                                        None => false,
+                                    };
+                                    
+                                    if is_success {
+                                        info!("✅ DROP TABLE succeeded for {}.{}", db, table);
+                                        
+                                        // Refresh connection to update all caches while preserving expansion state
+                                        info!("🔄 Refreshing connection {} to update caches...", conn_id);
+                                        self.refresh_connection_preserving_state(conn_id);
+                                        
+                                        self.error_message = format!("Table '{}.{}' berhasil di-drop", db, table);
+                                        self.show_error_message = true;
+                                    } else {
+                                        error!("❌ DROP TABLE failed for {}.{}", db, table);
+                                        
+                                        // Show error message from result if available
+                                        let error_msg = if let Some((headers, rows)) = result {
+                                            if headers.first().map(|h| h == "Error").unwrap_or(false) {
+                                                rows.first()
+                                                    .and_then(|row| row.first())
+                                                    .cloned()
+                                                    .unwrap_or_else(|| format!("Gagal drop table '{}.{}'", db, table))
+                                            } else {
+                                                format!("Gagal drop table '{}.{}'", db, table)
+                                            }
+                                        } else {
+                                            format!("Gagal drop table '{}.{}'", db, table)
+                                        };
+                                        
+                                        self.error_message = error_msg;
+                                        self.show_error_message = true;
+                                    }
+                                    self.pending_drop_table = None;
                                 }
                             });
                         });

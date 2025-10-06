@@ -854,7 +854,7 @@ pub(crate) fn refresh_connections_tree(tabular: &mut window_egui::Tabular) {
 pub(crate) fn create_connections_folder_structure(
     tabular: &mut window_egui::Tabular,
 ) -> Vec<models::structs::TreeNode> {
-    // Group connections by custom folder first, then by database type
+    // Group connections by custom folder first
     let mut folder_groups: std::collections::HashMap<
         String,
         Vec<&models::structs::ConnectionConfig>,
@@ -885,111 +885,31 @@ pub(crate) fn create_connections_folder_structure(
         );
         custom_folder.is_expanded = false; // Start collapsed
 
-        // Within each custom folder, group by database type
-        let mut mysql_connections = Vec::new();
-        let mut postgresql_connections = Vec::new();
-        let mut sqlite_connections = Vec::new();
-        let mut redis_connections = Vec::new();
-        let mut mssql_connections = Vec::new();
-        let mut mongodb_connections = Vec::new();
-
+        // Add connections directly under the folder with database type icon
+        let mut folder_connections = Vec::new();
+        
         for conn in connections {
             if let Some(id) = conn.id {
-                let node = models::structs::TreeNode::new_connection(conn.name.clone(), id);
-                match conn.connection_type {
-                    models::enums::DatabaseType::MySQL => {
-                        mysql_connections.push(node);
-                    }
-                    models::enums::DatabaseType::PostgreSQL => {
-                        postgresql_connections.push(node);
-                    }
-                    models::enums::DatabaseType::SQLite => {
-                        sqlite_connections.push(node);
-                    }
-                    models::enums::DatabaseType::Redis => {
-                        redis_connections.push(node);
-                    }
-                    models::enums::DatabaseType::MsSQL => {
-                        mssql_connections.push(node);
-                    }
-                    models::enums::DatabaseType::MongoDB => {
-                        mongodb_connections.push(node);
-                    }
-                }
+                // Get database type icon
+                let db_icon = match conn.connection_type {
+                    models::enums::DatabaseType::MySQL => "🐬",
+                    models::enums::DatabaseType::PostgreSQL => "🐘",
+                    models::enums::DatabaseType::SQLite => "📄",
+                    models::enums::DatabaseType::Redis => "🔴",
+                    models::enums::DatabaseType::MsSQL => "🧰",
+                    models::enums::DatabaseType::MongoDB => "🍃",
+                };
+                
+                // Create display name with database icon
+                let display_name = format!("{} {}", db_icon, conn.name);
+                let node = models::structs::TreeNode::new_connection(display_name, id);
+                folder_connections.push(node);
             } else {
                 debug!("  -> Skipping connection with no ID");
             }
         }
 
-        // Create database type folders within custom folder
-        let mut db_type_folders = Vec::new();
-
-        if !mysql_connections.is_empty() {
-            let _ = mysql_connections.len();
-            let mut mysql_folder = models::structs::TreeNode::new(
-                "MySQL".to_string(),
-                models::enums::NodeType::MySQLFolder,
-            );
-            mysql_folder.children = mysql_connections;
-            mysql_folder.is_expanded = false;
-            db_type_folders.push(mysql_folder);
-        }
-
-        if !postgresql_connections.is_empty() {
-            let _ = postgresql_connections.len();
-            let mut postgresql_folder = models::structs::TreeNode::new(
-                "PostgreSQL".to_string(),
-                models::enums::NodeType::PostgreSQLFolder,
-            );
-            postgresql_folder.children = postgresql_connections;
-            postgresql_folder.is_expanded = false;
-            db_type_folders.push(postgresql_folder);
-        }
-
-        if !sqlite_connections.is_empty() {
-            let _ = sqlite_connections.len();
-            let mut sqlite_folder = models::structs::TreeNode::new(
-                "SQLite".to_string(),
-                models::enums::NodeType::SQLiteFolder,
-            );
-            sqlite_folder.children = sqlite_connections;
-            sqlite_folder.is_expanded = false;
-            db_type_folders.push(sqlite_folder);
-        }
-
-        if !redis_connections.is_empty() {
-            let _ = redis_connections.len();
-            let mut redis_folder = models::structs::TreeNode::new(
-                "Redis".to_string(),
-                models::enums::NodeType::RedisFolder,
-            );
-            redis_folder.children = redis_connections;
-            redis_folder.is_expanded = false;
-            db_type_folders.push(redis_folder);
-        }
-        if !mssql_connections.is_empty() {
-            let _ = mssql_connections.len();
-            // Correct NodeType for MsSQL folder (previously mistakenly used MySQLFolder)
-            let mut mssql_folder = models::structs::TreeNode::new(
-                "MsSQL".to_string(),
-                models::enums::NodeType::MsSQLFolder,
-            );
-            mssql_folder.children = mssql_connections;
-            mssql_folder.is_expanded = false;
-            db_type_folders.push(mssql_folder);
-        }
-        if !mongodb_connections.is_empty() {
-            let _ = mongodb_connections.len();
-            let mut mongodb_folder = models::structs::TreeNode::new(
-                "MongoDB".to_string(),
-                models::enums::NodeType::MongoDBFolder,
-            );
-            mongodb_folder.children = mongodb_connections;
-            mongodb_folder.is_expanded = false;
-            db_type_folders.push(mongodb_folder);
-        }
-
-        custom_folder.children = db_type_folders;
+        custom_folder.children = folder_connections;
         result.push(custom_folder);
     }
 
