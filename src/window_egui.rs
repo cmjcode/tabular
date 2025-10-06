@@ -2339,7 +2339,7 @@ impl Tabular {
                     models::enums::NodeType::CustomFolder => "📁",
                     models::enums::NodeType::QueryFolder => "📂",
                     models::enums::NodeType::HistoryDateFolder => "📅",
-                    models::enums::NodeType::MsSQLFolder => "🧰",
+                    models::enums::NodeType::MsSQLFolder => "🗳️",
                 };
 
                 // Build status info for Connection nodes (used below)
@@ -3010,6 +3010,8 @@ impl Tabular {
                         models::enums::NodeType::PostgreSQLFolder => "🐘",
                         models::enums::NodeType::SQLiteFolder => "📄",
                         models::enums::NodeType::RedisFolder => "🔴",
+                        models::enums::NodeType::MongoDBFolder => "🍃",
+                        models::enums::NodeType::MsSQLFolder => "�",
                         models::enums::NodeType::CustomFolder => "📁",
                         models::enums::NodeType::QueryFolder => "📂",
                         models::enums::NodeType::HistoryDateFolder => "📅",

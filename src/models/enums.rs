@@ -98,6 +98,20 @@ pub enum DatabaseType {
     MongoDB,
 }
 
+impl DatabaseType {
+    /// Returns the icon emoji for this database type
+    pub fn icon(&self) -> &'static str {
+        match self {
+            DatabaseType::MySQL => "🐬",
+            DatabaseType::PostgreSQL => "🐘",
+            DatabaseType::SQLite => "📄",
+            DatabaseType::Redis => "🔴",
+            DatabaseType::MsSQL => "💠",
+            DatabaseType::MongoDB => "🍃",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutocompleteKind {
     Table,

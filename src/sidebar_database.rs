@@ -6,6 +6,47 @@ use sqlx::SqlitePool;
 
 use crate::{connection, directory, models, modules, sidebar_history, window_egui};
 
+// Helper function to determine the sort order of database types
+fn database_type_order(db_type: &models::enums::DatabaseType) -> u8 {
+    match db_type {
+        models::enums::DatabaseType::MySQL => 0,
+        models::enums::DatabaseType::PostgreSQL => 1,
+        models::enums::DatabaseType::SQLite => 2,
+        models::enums::DatabaseType::Redis => 3,
+        models::enums::DatabaseType::MsSQL => 4,
+        models::enums::DatabaseType::MongoDB => 5,
+    }
+}
+
+// Helper function to sort connections in a folder by database type, then by name
+fn sort_connections_in_folder(
+    folder: &mut models::structs::TreeNode,
+    connections: &[models::structs::ConnectionConfig],
+) {
+    folder.children.sort_by(|a, b| {
+        // Get connection info for both nodes
+        let conn_a = a.connection_id.and_then(|id| {
+            connections.iter().find(|c| c.id == Some(id))
+        });
+        let conn_b = b.connection_id.and_then(|id| {
+            connections.iter().find(|c| c.id == Some(id))
+        });
+        
+        match (conn_a, conn_b) {
+            (Some(ca), Some(cb)) => {
+                // Compare by database type first, then by name
+                match database_type_order(&ca.connection_type).cmp(&database_type_order(&cb.connection_type)) {
+                    std::cmp::Ordering::Equal => ca.name.cmp(&cb.name),
+                    other => other,
+                }
+            }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.name.cmp(&b.name),
+        }
+    });
+}
+
 // Helper to parse an editable connection URL and sync it back to fields
 #[derive(Debug, Clone)]
 struct ParsedUrl {
@@ -932,24 +973,15 @@ pub(crate) fn add_connection_to_tree(tabular: &mut window_egui::Tabular, connect
     if let Some(id) = connection.id {
         let folder_name = connection.folder.as_ref().unwrap_or(&"Default".to_string()).clone();
         
-        // Get database type icon
-        let db_icon = match connection.connection_type {
-            models::enums::DatabaseType::MySQL => "🐬",
-            models::enums::DatabaseType::PostgreSQL => "🐘",
-            models::enums::DatabaseType::SQLite => "📄",
-            models::enums::DatabaseType::Redis => "🔴",
-            models::enums::DatabaseType::MsSQL => "🧰",
-            models::enums::DatabaseType::MongoDB => "🍃",
-        };
         
-        let display_name = format!("{} {}", db_icon, connection.name);
+        let display_name = format!("{} {}", connection.connection_type.icon(), connection.name);
         let new_node = models::structs::TreeNode::new_connection(display_name, id);
         
         // Find or create the folder
         if let Some(folder) = tabular.items_tree.iter_mut().find(|n| n.name == folder_name) {
-            // Add to existing folder, maintaining sort order
+            // Add to existing folder, maintaining sort order by database type
             folder.children.push(new_node);
-            folder.children.sort_by(|a, b| a.name.cmp(&b.name));
+            sort_connections_in_folder(folder, &tabular.connections);
         } else {
             // Create new folder
             let mut new_folder = models::structs::TreeNode::new(
@@ -977,18 +1009,8 @@ pub(crate) fn add_connection_to_tree(tabular: &mut window_egui::Tabular, connect
 pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, connection: &models::structs::ConnectionConfig) {
     if let Some(id) = connection.id {
         let new_folder = connection.folder.as_ref().unwrap_or(&"Default".to_string()).clone();
-        
-        // Get database type icon
-        let db_icon = match connection.connection_type {
-            models::enums::DatabaseType::MySQL => "🐬",
-            models::enums::DatabaseType::PostgreSQL => "🐘",
-            models::enums::DatabaseType::SQLite => "📄",
-            models::enums::DatabaseType::Redis => "🔴",
-            models::enums::DatabaseType::MsSQL => "🧰",
-            models::enums::DatabaseType::MongoDB => "🍃",
-        };
-        
-        let new_display_name = format!("{} {}", db_icon, connection.name);
+                
+        let new_display_name = format!("{} {}", connection.connection_type.icon(), connection.name);
         
         // Find and remove the old node (might be in different folder)
         let mut old_node_state: Option<(models::structs::TreeNode, String)> = None;
@@ -1011,7 +1033,7 @@ pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, conn
             // Add to the new folder
             if let Some(folder) = tabular.items_tree.iter_mut().find(|n| n.name == new_folder) {
                 folder.children.push(updated_node);
-                folder.children.sort_by(|a, b| a.name.cmp(&b.name));
+                sort_connections_in_folder(folder, &tabular.connections);
             } else {
                 // Create new folder if it doesn't exist
                 let mut new_folder_node = models::structs::TreeNode::new(
@@ -1067,7 +1089,7 @@ pub(crate) fn create_connections_folder_structure(
         String,
         Vec<&models::structs::ConnectionConfig>,
     > = std::collections::HashMap::new();
-
+    
     // Group connections by custom folder
     for conn in &tabular.connections {
         let folder_name = conn
@@ -1098,26 +1120,24 @@ pub(crate) fn create_connections_folder_structure(
         
         for conn in connections {
             if let Some(id) = conn.id {
-                // Get database type icon
-                let db_icon = match conn.connection_type {
-                    models::enums::DatabaseType::MySQL => "🐬",
-                    models::enums::DatabaseType::PostgreSQL => "🐘",
-                    models::enums::DatabaseType::SQLite => "📄",
-                    models::enums::DatabaseType::Redis => "🔴",
-                    models::enums::DatabaseType::MsSQL => "🧰",
-                    models::enums::DatabaseType::MongoDB => "🍃",
-                };
-                
                 // Create display name with database icon
-                let display_name = format!("{} {}", db_icon, conn.name);
+                let display_name = format!("{} {}", conn.connection_type.icon(), conn.name);
                 let node = models::structs::TreeNode::new_connection(display_name, id);
-                folder_connections.push(node);
+                folder_connections.push((node, conn.connection_type.clone(), conn.name.clone()));
             } else {
                 debug!("  -> Skipping connection with no ID");
             }
         }
 
-        custom_folder.children = folder_connections;
+        // Sort connections by database type first, then by name
+        folder_connections.sort_by(|a, b| {
+            match database_type_order(&a.1).cmp(&database_type_order(&b.1)) {
+                std::cmp::Ordering::Equal => a.2.cmp(&b.2),
+                other => other,
+            }
+        });
+
+        custom_folder.children = folder_connections.into_iter().map(|(node, _, _)| node).collect();
         result.push(custom_folder);
     }
 
