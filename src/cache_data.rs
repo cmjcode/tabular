@@ -397,8 +397,12 @@ pub(crate) fn get_columns_from_cache(
 ) -> Option<Vec<(String, String)>> {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
+        let query_sql = "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY ordinal_position";
+        debug!("📋 Executing cache query for columns: {}", query_sql);
+        debug!("   Parameters: connection_id={}, database={}, table={}", connection_id, database_name, table_name);
+        
         let fut = async {
-            sqlx::query_as::<_, (String, String)>("SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY ordinal_position")
+            sqlx::query_as::<_, (String, String)>(query_sql)
               .bind(connection_id)
               .bind(database_name)
               .bind(table_name)
@@ -410,6 +414,15 @@ pub(crate) fn get_columns_from_cache(
         } else {
             tokio::runtime::Runtime::new().unwrap().block_on(fut)
         };
+
+        match result {
+            Ok(ref rows) => {
+                debug!("✅ Successfully retrieved {} columns from column_cache", rows.len());
+            }
+            Err(ref e) => {
+                debug!("❌ Error retrieving columns from cache: {}", e);
+            }
+        }
 
         result.ok()
     } else {
@@ -425,12 +438,16 @@ pub(crate) fn get_primary_keys_from_cache(
 ) -> Option<Vec<String>> {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
+        let query_sql = "SELECT columns_json FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND index_name = 'PRIMARY' ORDER BY index_name";
+        debug!("🔐 Executing cache query for PRIMARY KEY: {}", query_sql);
+        debug!("   Parameters: connection_id={}, database={}, table={}", connection_id, database_name, table_name);
+        
         let fut = async {
-            sqlx::query_as::<_, (String,)>("SELECT column_name FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND is_primary_key = 1 ORDER BY ordinal_position")
+            sqlx::query_as::<_, (String,)>(query_sql)
               .bind(connection_id)
               .bind(database_name)
               .bind(table_name)
-              .fetch_all(pool_clone.as_ref())
+              .fetch_optional(pool_clone.as_ref())
               .await
         };
         let result = if let Some(rt) = tabular.runtime.clone() {
@@ -440,8 +457,20 @@ pub(crate) fn get_primary_keys_from_cache(
         };
 
         match result {
-            Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
-            Err(_) => None,
+            Ok(Some((columns_json,))) => {
+                // Parse JSON array dari columns_json
+                let columns: Vec<String> = serde_json::from_str(&columns_json).unwrap_or_default();
+                debug!("✅ Found PRIMARY KEY with {} columns: {:?}", columns.len(), columns);
+                Some(columns)
+            }
+            Ok(None) => {
+                debug!("⚠️ No PRIMARY KEY found in index_cache for {}.{}", database_name, table_name);
+                None
+            }
+            Err(e) => {
+                debug!("❌ Error retrieving PRIMARY KEY from cache: {}", e);
+                None
+            }
         }
     } else {
         None
@@ -645,10 +674,12 @@ pub(crate) fn get_indexes_from_cache(
 ) -> Option<Vec<models::structs::IndexStructInfo>> {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
+        let query_sql = "SELECT index_name, method, is_unique, columns_json FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY index_name";
+        debug!("🔑 Executing cache query for indexes: {}", query_sql);
+        debug!("   Parameters: connection_id={}, database={}, table={}", connection_id, database_name, table_name);
+        
         let fut = async move {
-            sqlx::query(
-                "SELECT index_name, method, is_unique, columns_json FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY index_name",
-            )
+            sqlx::query(query_sql)
             .bind(connection_id)
             .bind(database_name)
             .bind(table_name)
@@ -671,6 +702,12 @@ pub(crate) fn get_indexes_from_cache(
                     let is_unique_i: i64 = r.try_get(2).unwrap_or(0);
                     let cols_json: String = r.try_get(3).unwrap_or("[]".to_string());
                     let columns: Vec<String> = serde_json::from_str(&cols_json).unwrap_or_default();
+                    
+                    // Log detailed info untuk PRIMARY KEY
+                    if name == "PRIMARY" {
+                        debug!("   🔐 Found PRIMARY KEY: columns={:?}, is_unique={}, method={:?}", columns, is_unique_i != 0, method);
+                    }
+                    
                     list.push(models::structs::IndexStructInfo {
                         name,
                         method,
@@ -678,9 +715,13 @@ pub(crate) fn get_indexes_from_cache(
                         columns,
                     });
                 }
+                debug!("✅ Successfully retrieved {} indexes from index_cache", list.len());
                 Some(list)
             }
-            Err(_) => None,
+            Err(e) => {
+                debug!("❌ Error retrieving indexes from cache: {}", e);
+                None
+            }
         }
     } else {
         None

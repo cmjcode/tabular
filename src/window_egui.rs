@@ -2086,16 +2086,6 @@ impl Tabular {
                 self.disconnect_connection(connection_id);
                 // Mark for repaint so status updates immediately
                 ui.ctx().request_repaint();
-            } else if (2000..3000).contains(&context_id) {
-                // ID 2000-2999 means prefetch all tables (connection_id = context_id - 2000)
-                let connection_id = context_id - 2000;
-                debug!(
-                    "📦 Prefetch all tables operation for connection: {}",
-                    connection_id
-                );
-                self.start_prefetch_for_connection(connection_id);
-                // Mark for repaint so progress shows immediately
-                ui.ctx().request_repaint();
             } else if (1000..10000).contains(&context_id) {
                 // ID 1000-9999 means refresh connection (connection_id = context_id - 1000)
                 let connection_id = context_id - 1000;
@@ -2479,14 +2469,6 @@ impl Tabular {
                             if let Some(conn_id) = node.connection_id {
                                 // Use +1000 range to indicate refresh (handled in render_tree handler)
                                 context_menu_request = Some(conn_id + 1000);
-                            }
-                            ui.close();
-                        }
-                        // NEW: Prefetch All Tables option
-                        if ui.button("📦 Prefetch All Tables").clicked() {
-                            if let Some(conn_id) = node.connection_id {
-                                // Use +2000 range to indicate prefetch (handled in render_tree handler)
-                                context_menu_request = Some(conn_id + 2000);
                             }
                             ui.close();
                         }
@@ -3638,121 +3620,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         }
     }
 
-    // NEW: Start prefetch for connection (non-blocking with progress)
-    fn start_prefetch_for_connection(&mut self, connection_id: i64) {
-        // Check if already prefetching
-        if self.prefetch_in_progress.contains(&connection_id) {
-            debug!("Prefetch already in progress for connection {}", connection_id);
-            return;
-        }
-
-        // Check if connection exists and pool is available
-        let connection = match self.connections.iter().find(|c| c.id == Some(connection_id)) {
-            Some(c) => c.clone(),
-            None => {
-                debug!("Connection {} not found for prefetch", connection_id);
-                return;
-            }
-        };
-
-        // Get or create connection pool first
-        let pool_option = if let Some(p) = self.connection_pools.get(&connection_id) {
-            Some(p.clone())
-        } else {
-            // Try to get from shared pools
-            if let Ok(shared_pools) = self.shared_connection_pools.lock() {
-                if let Some(p) = shared_pools.get(&connection_id) {
-                    // Cache locally
-                    self.connection_pools.insert(connection_id, p.clone());
-                    Some(p.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        // If pool is not available, create it first (blocking)
-        let pool = if let Some(p) = pool_option {
-            p
-        } else {
-            debug!("📦 No connection pool available, creating one first for connection {}", connection_id);
-            
-            // Use runtime to create pool synchronously
-            let rt = self.get_runtime();
-            let pool_result = rt.block_on(async {
-                crate::connection::get_or_create_connection_pool(self, connection_id).await
-            });
-
-            match pool_result {
-                Some(p) => {
-                    debug!("✅ Connection pool created successfully for prefetch");
-                    p
-                }
-                None => {
-                    debug!("❌ Failed to create connection pool for prefetch, connection_id: {}", connection_id);
-                    // Pool is being created in background, mark as pending and return
-                    // We'll retry prefetch when pool becomes available
-                    if self.pending_connection_pools.contains(&connection_id) {
-                        debug!("🔄 Connection pool is being created in background, will retry prefetch later");
-                        // Schedule retry after a short delay (we'll need a mechanism for this)
-                        // For now, just return and user can try again
-                    }
-                    return;
-                }
-            }
-        };
-
-        // Check if we have cache pool
-        let cache_pool = match &self.db_pool {
-            Some(p) => p.clone(),
-            None => {
-                debug!("No cache pool available for prefetch");
-                return;
-            }
-        };
-
-        // Mark as in progress
-        self.prefetch_in_progress.insert(connection_id);
-        self.prefetch_progress.insert(connection_id, (0, 0));
-
-        // Create shared progress state for polling
-        let progress_state = Arc::new(std::sync::Mutex::new((0usize, 0usize)));
-        let progress_state_clone = progress_state.clone();
-
-        // Create progress channel
-        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-        
-        // Progress updater thread - updates shared state from channel
-        std::thread::spawn(move || {
-            while let Ok((_, completed, total)) = progress_rx.recv() {
-                if let Ok(mut state) = progress_state_clone.lock() {
-                    *state = (completed, total);
-                }
-                
-                if completed >= total {
-                    debug!("✅ Prefetch completed for connection");
-                    break;
-                }
-            }
-        });
-
-        // Store progress state for polling in update() loop
-        // We'll need to add a field to store these
-        // For now, just start the prefetch
-        
-        // Start the actual prefetch in background
-        crate::connection::start_optional_background_prefetch(
-            connection_id,
-            connection,
-            pool,
-            cache_pool,
-            progress_tx,
-        );
-
-        debug!("📦 Started prefetch for connection {}", connection_id);
-    }
 
     // NEW: Disconnect connection - close pool and clear cache
     fn disconnect_connection(&mut self, connection_id: i64) {

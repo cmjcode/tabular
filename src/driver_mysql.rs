@@ -490,9 +490,11 @@ pub(crate) async fn fetch_mysql_data(
             }
 
             // Fetch columns using INFORMATION_SCHEMA
-            let cols_res = sqlx::query(
-                "SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
-            )
+            let cols_query = "SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+            debug!("📋 Fetching columns from MySQL for {}.{}", db_name, table_name);
+            debug!("   Query: {}", cols_query);
+            
+            let cols_res = sqlx::query(cols_query)
             .bind(&db_name)
             .bind(&table_name)
             .fetch_all(pool)
@@ -525,6 +527,66 @@ pub(crate) async fn fetch_mysql_data(
                     "MySQL fetch_mysql_data: failed to list columns in {}.{}: {}",
                     db_name, table_name, e
                 );
+            }
+
+            // Now fetch and cache indexes for this table
+            let index_query = "SELECT INDEX_NAME, \
+                        GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, \
+                        MIN(NON_UNIQUE) AS NON_UNIQUE,\
+                        GROUP_CONCAT(DISTINCT INDEX_TYPE) AS TYPES \
+                 FROM INFORMATION_SCHEMA.STATISTICS \
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
+                 GROUP BY INDEX_NAME \
+                 ORDER BY INDEX_NAME";
+            debug!("🔍 Fetching indexes from MySQL for {}.{}", db_name, table_name);
+            debug!("   Query: {}", index_query);
+            
+            let indexes_res = sqlx::query(index_query)
+            .bind(&db_name)
+            .bind(&table_name)
+            .fetch_all(pool)
+            .await;
+
+            if let Ok(index_rows) = indexes_res {
+                let index_count = index_rows.len();
+                for idx_row in index_rows {
+                    let index_name = decode_cell(&idx_row, 0).unwrap_or_default();
+                    let columns_str = decode_cell(&idx_row, 1).unwrap_or_default();
+                    let non_unique: i64 = idx_row.try_get(2).unwrap_or(1);
+                    let index_types = decode_cell(&idx_row, 3);
+                    
+                    let is_unique: i64 = if non_unique == 0 { 1 } else { 0 };
+                    
+                    // Parse comma-separated column names into JSON array
+                    let columns: Vec<String> = columns_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let columns_json = serde_json::to_string(&columns).unwrap_or_else(|_| "[]".to_string());
+                    
+                    if let Err(e) = sqlx::query(
+                        "INSERT OR REPLACE INTO index_cache 
+                         (connection_id, database_name, table_name, index_name, method, is_unique, columns_json) 
+                         VALUES (?, ?, ?, ?, ?, ?, ?)"
+                    )
+                    .bind(connection_id)
+                    .bind(&db_name)
+                    .bind(&table_name)
+                    .bind(&index_name)
+                    .bind(index_types)
+                    .bind(is_unique)
+                    .bind(&columns_json)
+                    .execute(cache_pool)
+                    .await {
+                        debug!("MySQL fetch_mysql_data: failed to cache index {}.{}.{}: {}", db_name, table_name, index_name, e);
+                    } else if index_name == "PRIMARY" {
+                        debug!("✅ Cached PRIMARY KEY index for {}.{} with columns: {}", db_name, table_name, columns_str);
+                    }
+                }
+                debug!("MySQL fetch_mysql_data: cached {} indexes for {}.{}", index_count, db_name, table_name);
+            } else if let Err(e) = indexes_res {
+                debug!("MySQL fetch_mysql_data: failed to list indexes in {}.{}: {}", db_name, table_name, e);
             }
         }
     }
