@@ -2153,9 +2153,7 @@ impl Tabular {
                     processed_removals.insert(connection_id);
                     connection::remove_connection(self, connection_id);
 
-                    // Force immediate tree refresh and UI update
-                    self.items_tree.clear();
-                    sidebar_database::refresh_connections_tree(self);
+                    // No need for full tree refresh - remove_connection already does incremental update
                     needs_full_refresh = true;
                     ui.ctx().request_repaint();
 
@@ -3992,7 +3990,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 
     // Clear cache for a specific table only
-    fn clear_table_cache(&self, connection_id: i64, database_name: &str, table_name: &str) {
+    pub(crate) fn clear_table_cache(&self, connection_id: i64, database_name: &str, table_name: &str) {
         use log::info;
         
         if let Some(ref pool) = self.db_pool {
@@ -4042,11 +4040,22 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 
     // Remove a specific table from the sidebar tree without reloading entire connection
-    fn remove_table_from_tree(&mut self, connection_id: i64, database_name: &str, table_name: &str) {
-        use log::info;
+    pub(crate) fn remove_table_from_tree(&mut self, connection_id: i64, database_name: &str, table_name: &str) {
+        use log::{info, debug};
         
         info!("🌲 Removing table {}.{} from sidebar tree", database_name, table_name);
-        info!("   Searching for table: '{}'", table_name);
+        info!("   Connection ID: {}", connection_id);
+        info!("   Database name: '{}'", database_name);
+        info!("   Table name: '{}'", table_name);
+        
+        // Debug: print tree structure
+        debug!("   Current tree structure:");
+        for (i, conn_node) in self.items_tree.iter().enumerate() {
+            debug!("     [{}] Connection: {} (id={:?}, type={:?})", i, conn_node.name, conn_node.connection_id, conn_node.node_type);
+            for (j, child) in conn_node.children.iter().enumerate() {
+                debug!("       [{}] Child: {} (type={:?}, db={:?})", j, child.name, child.node_type, child.database_name);
+            }
+        }
         
         // Helper to match table names - handles [schema].[table], schema.table, or just table
         let matches_table = |node_name: &str, search_name: &str| -> bool {
@@ -4070,96 +4079,129 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             node_table == search_table
         };
         
-        // Find the connection node
-        for conn_node in &mut self.items_tree {
-            if conn_node.connection_id == Some(connection_id) {
-                info!("   Found connection node: {}", conn_node.name);
-                
-                // Navigate through the tree structure to find the table
-                // Structure: Connection -> Databases Folder -> Database -> Tables Folder -> Table
-                for child in &mut conn_node.children {
-                    // Look for Databases folder
-                    if child.node_type == models::enums::NodeType::DatabasesFolder {
-                        info!("   Found DatabasesFolder");
-                        for db_node in &mut child.children {
-                            // Find matching database
-                            if let Some(ref db_name) = db_node.database_name {
-                                info!("   Checking database: {}", db_name);
-                                if db_name == database_name {
-                                    info!("   ✓ Database matches!");
-                                    // Find Tables folder in this database
-                                    for folder in &mut db_node.children {
-                                        if folder.node_type == models::enums::NodeType::TablesFolder {
-                                            info!("   Found TablesFolder with {} tables", folder.children.len());
-                                            
-                                            // Log all tables before removal
-                                            for table_node in &folder.children {
-                                                let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                                info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
-                                                    tbl_name, table_node.name, table_node.table_name);
-                                            }
-                                            
-                                            // Remove the table from Tables folder
-                                            let before_count = folder.children.len();
-                                            folder.children.retain(|table_node| {
-                                                let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                                let keep = !matches_table(node_name, table_name);
-                                                if !keep {
-                                                    info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
-                                                }
-                                                keep
-                                            });
-                                            let after_count = folder.children.len();
-                                            info!("   Tables count: {} -> {}", before_count, after_count);
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
+        // Find the connection node (may be inside a CustomFolder)
+        for folder_or_conn in &mut self.items_tree {
+            // First check if this is a CustomFolder, if so search its children for the connection
+            if folder_or_conn.node_type == models::enums::NodeType::CustomFolder {
+                info!("   Searching in folder: {}", folder_or_conn.name);
+                for conn_node in &mut folder_or_conn.children {
+                    if conn_node.connection_id == Some(connection_id) {
+                        info!("   ✓ Found connection node: {} (ID: {})", conn_node.name, connection_id);
+                        
+                        // Navigate through the tree structure to find the table
+                        // Structure: Connection -> Databases Folder -> Database -> Tables Folder -> Table
+                        if Self::remove_table_from_connection_node(conn_node, database_name, table_name, &matches_table) {
+                            return;
                         }
                     }
-                    // Also check direct children for databases (some DB types don't use DatabasesFolder)
-                    else if child.node_type == models::enums::NodeType::Database {
-                        if let Some(ref db_name) = child.database_name {
-                            info!("   Checking direct database node: {}", db_name);
-                            if db_name == database_name {
-                                info!("   ✓ Database matches!");
-                                // Find Tables folder in this database
-                                for folder in &mut child.children {
-                                    if folder.node_type == models::enums::NodeType::TablesFolder {
-                                        info!("   Found TablesFolder with {} tables", folder.children.len());
-                                        
-                                        // Log all tables before removal
-                                        for table_node in &folder.children {
-                                            let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                            info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
-                                                tbl_name, table_node.name, table_node.table_name);
-                                        }
-                                        
-                                        // Remove the table from Tables folder
-                                        let before_count = folder.children.len();
-                                        folder.children.retain(|table_node| {
-                                            let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                            let keep = !matches_table(node_name, table_name);
-                                            if !keep {
-                                                info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
-                                            }
-                                            keep
-                                        });
-                                        let after_count = folder.children.len();
-                                        info!("   Tables count: {} -> {}", before_count, after_count);
-                                        return;
+                }
+            }
+            // Also check if this node itself is a connection (for backward compatibility with non-folder structure)
+            else if folder_or_conn.connection_id == Some(connection_id) {
+                info!("   ✓ Found connection node (direct): {}", folder_or_conn.name);
+                
+                // Navigate through the tree structure to find the table
+                if Self::remove_table_from_connection_node(folder_or_conn, database_name, table_name, &matches_table) {
+                    return;
+                }
+            }
+        }
+        
+        info!("   ⚠️ Connection {} not found in tree", connection_id);
+        info!("   ⚠️ Table '{}' not found in tree (may have been already removed)", table_name);
+    }
+
+    // Helper function to remove table from a connection node (static to avoid borrow checker issues)
+    fn remove_table_from_connection_node(
+        conn_node: &mut models::structs::TreeNode,
+        database_name: &str,
+        table_name: &str,
+        matches_table: &dyn Fn(&str, &str) -> bool,
+    ) -> bool {
+        use log::info;
+        
+        // Navigate through the tree structure to find the table
+        // Structure: Connection -> Databases Folder -> Database -> Tables Folder -> Table
+        for child in &mut conn_node.children {
+            // Look for Databases folder
+            if child.node_type == models::enums::NodeType::DatabasesFolder {
+                info!("   Found DatabasesFolder");
+                for db_node in &mut child.children {
+                    // Find matching database
+                    if let Some(ref db_name) = db_node.database_name {
+                        info!("   Checking database: {}", db_name);
+                        if db_name == database_name {
+                            info!("   ✓ Database matches!");
+                            // Find Tables folder in this database
+                            for folder in &mut db_node.children {
+                                if folder.node_type == models::enums::NodeType::TablesFolder {
+                                    info!("   Found TablesFolder with {} tables", folder.children.len());
+                                    
+                                    // Log all tables before removal
+                                    for table_node in &folder.children {
+                                        let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                        info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
+                                            tbl_name, table_node.name, table_node.table_name);
                                     }
+                                    
+                                    // Remove the table from Tables folder
+                                    let before_count = folder.children.len();
+                                    folder.children.retain(|table_node| {
+                                        let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                        let keep = !matches_table(node_name, table_name);
+                                        if !keep {
+                                            info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
+                                        }
+                                        keep
+                                    });
+                                    let after_count = folder.children.len();
+                                    info!("   Tables count: {} -> {}", before_count, after_count);
+                                    return true;
                                 }
                             }
                         }
                     }
                 }
-                break;
+            }
+            // Also check direct children for databases (some DB types don't use DatabasesFolder)
+            else if child.node_type == models::enums::NodeType::Database {
+                if let Some(ref db_name) = child.database_name {
+                    info!("   Checking direct database node: {}", db_name);
+                    if db_name == database_name {
+                        info!("   ✓ Database matches!");
+                        // Find Tables folder in this database
+                        for folder in &mut child.children {
+                            if folder.node_type == models::enums::NodeType::TablesFolder {
+                                info!("   Found TablesFolder with {} tables", folder.children.len());
+                                
+                                // Log all tables before removal
+                                for table_node in &folder.children {
+                                    let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                    info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
+                                        tbl_name, table_node.name, table_node.table_name);
+                                }
+                                
+                                // Remove the table from Tables folder
+                                let before_count = folder.children.len();
+                                folder.children.retain(|table_node| {
+                                    let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                    let keep = !matches_table(node_name, table_name);
+                                    if !keep {
+                                        info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
+                                    }
+                                    keep
+                                });
+                                let after_count = folder.children.len();
+                                info!("   Tables count: {} -> {}", before_count, after_count);
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
         }
         
-        info!("   ⚠️ Table '{}' not found in tree (may have been already removed)", table_name);
+        false // Table not found
     }
 
     fn load_connection_tables(&mut self, connection_id: i64, node: &mut models::structs::TreeNode) {
@@ -10107,10 +10149,20 @@ impl App for Tabular {
                                     
                                     if is_success {
                                         info!("✅ DROP TABLE succeeded for {}.{}", db, table);
+                                        info!("   Connection ID: {}", conn_id);
+                                        info!("   Database: '{}'", db);
+                                        info!("   Table: '{}'", table);
                                         
-                                        // Refresh connection to update all caches while preserving expansion state
-                                        info!("🔄 Refreshing connection {} to update caches...", conn_id);
-                                        self.refresh_connection_preserving_state(conn_id);
+                                        // Use incremental update: just remove the table from tree
+                                        info!("🌲 Removing table from sidebar tree (incremental)...");
+                                        self.remove_table_from_tree(conn_id, db, table);
+                                        
+                                        // Clear cache for this table (but don't refresh entire connection)
+                                        info!("🧹 Clearing cache for table {}.{}", db, table);
+                                        self.clear_table_cache(conn_id, db, table);
+                                        
+                                        // Force UI repaint to reflect changes immediately
+                                        ui.ctx().request_repaint();
                                         
                                         self.error_message = format!("Table '{}.{}' berhasil di-drop", db, table);
                                         self.show_error_message = true;

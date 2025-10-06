@@ -3301,8 +3301,11 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
     tabular.connections.retain(|c| c.id != Some(connection_id));
     // Remove from connection pool cache
     tabular.connection_pools.remove(&connection_id);
+    
+    // Use incremental update instead of full refresh
+    crate::sidebar_database::remove_connection_from_tree(tabular, connection_id);
 
-    // Set flag to force refresh on next update
+    // Set flag to force refresh on next update (for other components if needed)
     tabular.needs_refresh = true;
 }
 

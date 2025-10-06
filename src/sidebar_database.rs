@@ -367,14 +367,16 @@ pub(crate) fn render_connection_dialog(
                                     &connection_data,
                                 ) {
                                     load_connections(tabular);
-                                    refresh_connections_tree(tabular);
+                                    // Use incremental update instead of full rebuild
+                                    update_connection_in_tree(tabular, &connection_data);
                                 } else {
                                     // Fallback to in-memory update
                                     if let Some(existing) =
                                         tabular.connections.iter_mut().find(|c| c.id == Some(id))
                                     {
                                         *existing = connection_data.clone();
-                                        refresh_connections_tree(tabular);
+                                        // Use incremental update
+                                        update_connection_in_tree(tabular, &connection_data);
                                     } else {
                                         debug!("ERROR: Could not find connection {} in memory", id);
                                     }
@@ -391,7 +393,16 @@ pub(crate) fn render_connection_dialog(
                             if save_connection_to_database(tabular, &connection_to_add) {
                                 // If database save successful, reload from database to get ID
                                 load_connections(tabular);
-                                refresh_connections_tree(tabular);
+                                // Find the newly added connection and add to tree incrementally
+                                let added_conn = tabular.connections.iter().find(|c| 
+                                    c.name == connection_to_add.name && 
+                                    c.host == connection_to_add.host &&
+                                    c.port == connection_to_add.port
+                                ).cloned();
+                                
+                                if let Some(conn) = added_conn {
+                                    add_connection_to_tree(tabular, &conn);
+                                }
                             } else {
                                 // Fallback to in-memory storage
                                 let new_id = tabular
@@ -402,8 +413,9 @@ pub(crate) fn render_connection_dialog(
                                     .unwrap_or(0)
                                     + 1;
                                 connection_to_add.id = Some(new_id);
-                                tabular.connections.push(connection_to_add);
-                                refresh_connections_tree(tabular);
+                                tabular.connections.push(connection_to_add.clone());
+                                // Add to tree incrementally
+                                add_connection_to_tree(tabular, &connection_to_add);
                             }
 
                             tabular.new_connection = models::structs::ConnectionConfig::default();
@@ -607,6 +619,16 @@ pub(crate) fn copy_connection(tabular: &mut window_egui::Tabular, connection_id:
         if save_connection_to_database(tabular, &copied_connection) {
             // If database save successful, reload from database to get ID
             load_connections(tabular);
+            // Find the newly copied connection and add to tree incrementally
+            let added_conn = tabular.connections.iter().find(|c| 
+                c.name == copied_connection.name && 
+                c.host == copied_connection.host &&
+                c.port == copied_connection.port
+            ).cloned();
+            
+            if let Some(conn) = added_conn {
+                add_connection_to_tree(tabular, &conn);
+            }
         } else {
             // Fallback to in-memory storage
             let new_id = tabular
@@ -617,7 +639,9 @@ pub(crate) fn copy_connection(tabular: &mut window_egui::Tabular, connection_id:
                 .unwrap_or(0)
                 + 1;
             copied_connection.id = Some(new_id);
-            tabular.connections.push(copied_connection);
+            tabular.connections.push(copied_connection.clone());
+            // Add to tree incrementally
+            add_connection_to_tree(tabular, &copied_connection);
         }
     } else {
         debug!(
@@ -844,11 +868,195 @@ pub(crate) fn initialize_sample_data(tabular: &mut window_egui::Tabular) {
 }
 
 pub(crate) fn refresh_connections_tree(tabular: &mut window_egui::Tabular) {
+    // Save current expansion states before rebuilding
+    let expansion_states = save_tree_expansion_states(&tabular.items_tree);
+    
     // Clear existing tree
     tabular.items_tree.clear();
 
     // Create folder structure for connections
     tabular.items_tree = create_connections_folder_structure(tabular);
+    
+    // Restore expansion states
+    restore_tree_expansion_states(&mut tabular.items_tree, &expansion_states);
+}
+
+// Helper to save expansion states recursively
+fn save_tree_expansion_states(tree: &[models::structs::TreeNode]) -> std::collections::HashMap<String, bool> {
+    let mut states = std::collections::HashMap::new();
+    
+    fn collect_states(node: &models::structs::TreeNode, states: &mut std::collections::HashMap<String, bool>, path: String) {
+        if node.is_expanded {
+            states.insert(path.clone(), true);
+        }
+        for child in &node.children {
+            let child_path = if path.is_empty() {
+                child.name.clone()
+            } else {
+                format!("{}>{}", path, child.name)
+            };
+            collect_states(child, states, child_path);
+        }
+    }
+    
+    for node in tree {
+        collect_states(node, &mut states, node.name.clone());
+    }
+    
+    states
+}
+
+// Helper to restore expansion states recursively
+fn restore_tree_expansion_states(tree: &mut [models::structs::TreeNode], states: &std::collections::HashMap<String, bool>) {
+    fn restore_states(node: &mut models::structs::TreeNode, states: &std::collections::HashMap<String, bool>, path: String) {
+        if let Some(&expanded) = states.get(&path) {
+            node.is_expanded = expanded;
+        }
+        for child in &mut node.children {
+            let child_path = if path.is_empty() {
+                child.name.clone()
+            } else {
+                format!("{}>{}", path, child.name)
+            };
+            restore_states(child, states, child_path);
+        }
+    }
+    
+    for node in tree {
+        restore_states(node, states, node.name.clone());
+    }
+}
+
+// Incremental update: Add a new connection to the tree without full rebuild
+pub(crate) fn add_connection_to_tree(tabular: &mut window_egui::Tabular, connection: &models::structs::ConnectionConfig) {
+    if let Some(id) = connection.id {
+        let folder_name = connection.folder.as_ref().unwrap_or(&"Default".to_string()).clone();
+        
+        // Get database type icon
+        let db_icon = match connection.connection_type {
+            models::enums::DatabaseType::MySQL => "🐬",
+            models::enums::DatabaseType::PostgreSQL => "🐘",
+            models::enums::DatabaseType::SQLite => "📄",
+            models::enums::DatabaseType::Redis => "🔴",
+            models::enums::DatabaseType::MsSQL => "🧰",
+            models::enums::DatabaseType::MongoDB => "🍃",
+        };
+        
+        let display_name = format!("{} {}", db_icon, connection.name);
+        let new_node = models::structs::TreeNode::new_connection(display_name, id);
+        
+        // Find or create the folder
+        if let Some(folder) = tabular.items_tree.iter_mut().find(|n| n.name == folder_name) {
+            // Add to existing folder, maintaining sort order
+            folder.children.push(new_node);
+            folder.children.sort_by(|a, b| a.name.cmp(&b.name));
+        } else {
+            // Create new folder
+            let mut new_folder = models::structs::TreeNode::new(
+                folder_name.clone(),
+                models::enums::NodeType::CustomFolder,
+            );
+            new_folder.children.push(new_node);
+            tabular.items_tree.push(new_folder);
+            
+            // Re-sort folders
+            tabular.items_tree.sort_by(|a, b| {
+                if a.name == "Default" {
+                    std::cmp::Ordering::Less
+                } else if b.name == "Default" {
+                    std::cmp::Ordering::Greater
+                } else {
+                    a.name.cmp(&b.name)
+                }
+            });
+        }
+    }
+}
+
+// Incremental update: Update an existing connection in the tree
+pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, connection: &models::structs::ConnectionConfig) {
+    if let Some(id) = connection.id {
+        let new_folder = connection.folder.as_ref().unwrap_or(&"Default".to_string()).clone();
+        
+        // Get database type icon
+        let db_icon = match connection.connection_type {
+            models::enums::DatabaseType::MySQL => "🐬",
+            models::enums::DatabaseType::PostgreSQL => "🐘",
+            models::enums::DatabaseType::SQLite => "📄",
+            models::enums::DatabaseType::Redis => "🔴",
+            models::enums::DatabaseType::MsSQL => "🧰",
+            models::enums::DatabaseType::MongoDB => "🍃",
+        };
+        
+        let new_display_name = format!("{} {}", db_icon, connection.name);
+        
+        // Find and remove the old node (might be in different folder)
+        let mut old_node_state: Option<(models::structs::TreeNode, String)> = None;
+        
+        for folder in &mut tabular.items_tree {
+            if let Some(pos) = folder.children.iter().position(|n| n.connection_id == Some(id)) {
+                old_node_state = Some((folder.children.remove(pos), folder.name.clone()));
+                break;
+            }
+        }
+        
+        // Create updated node, preserving expansion state
+        let mut updated_node = models::structs::TreeNode::new_connection(new_display_name, id);
+        if let Some((old_node, old_folder)) = old_node_state {
+            // Preserve expansion state and children if expanded
+            updated_node.is_expanded = old_node.is_expanded;
+            updated_node.is_loaded = old_node.is_loaded;
+            updated_node.children = old_node.children;
+            
+            // Add to the new folder
+            if let Some(folder) = tabular.items_tree.iter_mut().find(|n| n.name == new_folder) {
+                folder.children.push(updated_node);
+                folder.children.sort_by(|a, b| a.name.cmp(&b.name));
+            } else {
+                // Create new folder if it doesn't exist
+                let mut new_folder_node = models::structs::TreeNode::new(
+                    new_folder.clone(),
+                    models::enums::NodeType::CustomFolder,
+                );
+                new_folder_node.children.push(updated_node);
+                tabular.items_tree.push(new_folder_node);
+                
+                // Re-sort folders
+                tabular.items_tree.sort_by(|a, b| {
+                    if a.name == "Default" {
+                        std::cmp::Ordering::Less
+                    } else if b.name == "Default" {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        a.name.cmp(&b.name)
+                    }
+                });
+            }
+            
+            // Clean up empty folder if old folder is now empty
+            if old_folder != new_folder {
+                if let Some(pos) = tabular.items_tree.iter().position(|f| f.name == old_folder && f.children.is_empty()) {
+                    tabular.items_tree.remove(pos);
+                }
+            }
+        }
+    }
+}
+
+// Incremental update: Remove a connection from the tree
+pub(crate) fn remove_connection_from_tree(tabular: &mut window_egui::Tabular, connection_id: i64) {
+    // Find and remove the connection node
+    for folder in &mut tabular.items_tree {
+        if let Some(pos) = folder.children.iter().position(|n| n.connection_id == Some(connection_id)) {
+            folder.children.remove(pos);
+            break;
+        }
+    }
+    
+    // Remove empty folders (except Default)
+    tabular.items_tree.retain(|folder| {
+        !folder.children.is_empty() || folder.name == "Default"
+    });
 }
 
 pub(crate) fn create_connections_folder_structure(
@@ -929,4 +1137,97 @@ pub(crate) fn create_connections_folder_structure(
     }
 
     result
+}
+
+// Incremental update: Remove a table from the tree
+pub(crate) fn remove_table_from_tree(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+) {
+    // Delegate to window_egui implementation which has the full logic
+    tabular.remove_table_from_tree(connection_id, database_name, table_name);
+}
+
+// Incremental update: Add a table to the tree
+pub(crate) fn add_table_to_tree(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+    _table_type: &str, // "table", "view", etc. (reserved for future use)
+) {
+    use log::info;
+    
+    info!("🌲 Adding table {}.{} to sidebar tree", database_name, table_name);
+    
+    // Find the connection node
+    for conn_node in &mut tabular.items_tree {
+        if conn_node.connection_id == Some(connection_id) {
+            info!("   Found connection node: {}", conn_node.name);
+            
+            // Navigate through the tree structure to find the Tables folder
+            for child in &mut conn_node.children {
+                // Look for Databases folder
+                if child.node_type == models::enums::NodeType::DatabasesFolder {
+                    for db_node in &mut child.children {
+                        if let Some(ref db_name) = db_node.database_name {
+                            if db_name == database_name {
+                                // Find Tables folder
+                                for folder in &mut db_node.children {
+                                    if folder.node_type == models::enums::NodeType::TablesFolder {
+                                        // Create new table node
+                                        let mut new_table_node = models::structs::TreeNode::new(
+                                            table_name.to_string(),
+                                            models::enums::NodeType::Table,
+                                        );
+                                        new_table_node.connection_id = Some(connection_id);
+                                        new_table_node.database_name = Some(database_name.to_string());
+                                        new_table_node.table_name = Some(table_name.to_string());
+                                        
+                                        // Add to Tables folder maintaining sort order
+                                        folder.children.push(new_table_node);
+                                        folder.children.sort_by(|a, b| a.name.cmp(&b.name));
+                                        
+                                        info!("✅ Added table '{}' to tree", table_name);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Also check direct database nodes
+                else if child.node_type == models::enums::NodeType::Database {
+                    if let Some(ref db_name) = child.database_name {
+                        if db_name == database_name {
+                            // Find Tables folder
+                            for folder in &mut child.children {
+                                if folder.node_type == models::enums::NodeType::TablesFolder {
+                                    // Create new table node
+                                    let mut new_table_node = models::structs::TreeNode::new(
+                                        table_name.to_string(),
+                                        models::enums::NodeType::Table,
+                                    );
+                                    new_table_node.connection_id = Some(connection_id);
+                                    new_table_node.database_name = Some(database_name.to_string());
+                                    new_table_node.table_name = Some(table_name.to_string());
+                                    
+                                    // Add to Tables folder maintaining sort order
+                                    folder.children.push(new_table_node);
+                                    folder.children.sort_by(|a, b| a.name.cmp(&b.name));
+                                    
+                                    info!("✅ Added table '{}' to tree", table_name);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    info!("⚠️ Could not find location to add table '{}' in tree", table_name);
 }
