@@ -73,6 +73,7 @@ tree-sitter-sql = { version = "0.0.2", optional = true }
 anyhow = { version = "1", optional = true }
 once_cell = { version = "1", optional = true }
 thiserror = "1"
+async-trait = "0.1.89"
 
 [features]
 # Placeholder feature to enable future granular rope editing integration with lapce_core::Buffer.

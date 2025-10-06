@@ -1814,16 +1814,16 @@ pub(crate) async fn refresh_connection_background_async(
             .await
             {
                 Ok(Some(new_pool)) => {
-                    let ok = fetch_and_cache_all_data(
+                    
+                    // ✨ OPTIMIZATION: No longer prefetch here to avoid blocking connection opening.
+                    // Prefetch will be done on-demand or via optional background task.
+                    fetch_and_cache_all_data(
                         connection_id,
                         &connection,
                         &new_pool,
                         cache_pool_arc.as_ref(),
                     )
-                    .await;
-                    // ✨ OPTIMIZATION: No longer prefetch here to avoid blocking connection opening.
-                    // Prefetch will be done on-demand or via optional background task.
-                    ok
+                    .await
                 }
                 Ok(None) => false,
                 Err(_) => false,
@@ -2403,6 +2403,7 @@ async fn prefetch_first_rows_with_progress(
 }
 
 // After metadata is cached, fetch first 100 rows for all tables and store in row_cache
+#[allow(dead_code)]
 async fn prefetch_first_rows_for_all_tables(
     connection_id: i64,
     connection: &models::structs::ConnectionConfig,

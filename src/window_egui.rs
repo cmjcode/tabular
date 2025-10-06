@@ -347,8 +347,8 @@ impl Tabular {
 
     // Duplicate selected row for editing
     pub fn duplicate_selected_row(&mut self) {
-        if let Some(selected_row_idx) = self.selected_row {
-            if selected_row_idx < self.current_table_data.len() {
+        if let Some(selected_row_idx) = self.selected_row
+            && selected_row_idx < self.current_table_data.len() {
                 // Clone the row data
                 let row_data = self.current_table_data[selected_row_idx].clone();
                 
@@ -403,13 +403,12 @@ impl Tabular {
                 
                 debug!("Row {} duplicated successfully. New row at index {}", selected_row_idx, insert_index);
             }
-        }
     }
 
     // Delete selected row
     pub fn delete_selected_row(&mut self) {
-        if let Some(selected_row_idx) = self.selected_row {
-            if selected_row_idx < self.current_table_data.len() {
+        if let Some(selected_row_idx) = self.selected_row
+            && selected_row_idx < self.current_table_data.len() {
                 // Store the row data before deletion for undo capability
                 let row_data = self.current_table_data[selected_row_idx].clone();
                 
@@ -447,7 +446,6 @@ impl Tabular {
                 
                 debug!("Row {} deleted successfully", selected_row_idx);
             }
-        }
     }
 
     // End: Spreadsheet helpers
@@ -807,7 +805,7 @@ impl Tabular {
                     }
                     models::enums::BackgroundTask::StartPrefetch { connection_id, show_progress: _ } => {
                         // Start optional background prefetch with progress tracking
-                        if let Some(cache_pool_arc) = &cache_pool {
+                        if let Some(_cache_pool_arc) = &cache_pool {
                             // Need to get connection config and pool
                             // This is a bit tricky since we're in background thread
                             // We'll need to pass the necessary data or fetch from cache
@@ -2578,11 +2576,10 @@ impl Tabular {
                                 if let models::enums::DatabasePool::MongoDB(_) = pool {
                                     is_mongodb = true;
                                 }
-                            } else if let Some(t) = params.connection_types.get(&conn_id) {
-                                if *t == models::enums::DatabaseType::MongoDB {
+                            } else if let Some(t) = params.connection_types.get(&conn_id)
+                                && *t == models::enums::DatabaseType::MongoDB {
                                     is_mongodb = true;
                                 }
-                            }
                         }
 
                         if !is_mongodb {
@@ -2640,14 +2637,12 @@ impl Tabular {
                                 editor.mark_text_modified();
                                 ui.close();
                             }
-                        } else {
-                            if ui.button("🗑️ Drop Collection").clicked() {
-                                if let (Some(conn_id), Some(db)) = (node.connection_id, node.database_name.as_ref()) {
-                                    let coll = node.table_name.as_ref().unwrap_or(&node.name).clone();
-                                    drop_collection_request = Some((conn_id, db.clone(), coll));
-                                }
-                                ui.close();
+                        } else if ui.button("🗑️ Drop Collection").clicked() {
+                            if let (Some(conn_id), Some(db)) = (node.connection_id, node.database_name.as_ref()) {
+                                let coll = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                drop_collection_request = Some((conn_id, db.clone(), coll));
                             }
+                            ui.close();
                         }
                         ui.separator();
                         if ui.button("➕ Add Index (New Tab)").clicked() {
@@ -3769,11 +3764,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         }
 
         // 2. Remove from shared connection pools
-        if let Ok(mut shared_pools) = self.shared_connection_pools.lock() {
-            if shared_pools.remove(&connection_id).is_some() {
+        if let Ok(mut shared_pools) = self.shared_connection_pools.lock()
+            && shared_pools.remove(&connection_id).is_some() {
                 debug!("✅ Removed connection pool from shared cache");
             }
-        }
 
         // 3. Remove from pending pools (if connection was being created)
         if self.pending_connection_pools.remove(&connection_id) {

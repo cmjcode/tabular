@@ -197,18 +197,19 @@ fn try_pushdown_limit_into_subquery(plan: &mut LogicalQueryPlan) -> bool {
     let mut changed=false;
     match plan {
         L::Limit { limit, offset, input } if *offset==0 => {
-            if let L::Projection { input: inner2, .. } | L::Distinct { input: inner2 } | L::Sort { input: inner2, .. } = &mut **input {
-                // Recurse first
-                changed |= try_pushdown_limit_into_subquery(inner2);
+                        if let L::Projection { input: inner2, .. } | L::Distinct { input: inner2 } | L::Sort { input: inner2, .. } = &mut **input {
+                            // Recurse first
+                            changed |= try_pushdown_limit_into_subquery(inner2);
+                        }
+                        if let L::SubqueryScan { sql, alias: _, correlated } = &mut **input {
+                            if !*correlated && !sql.to_ascii_lowercase().contains(" limit ") { sql.push_str(&format!(" LIMIT {}", limit)); changed=true; }
+                        }
             }
-            if let L::SubqueryScan { sql, alias: _, correlated } = &mut **input {
-                if !*correlated && !sql.to_ascii_lowercase().contains(" limit ") { sql.push_str(&format!(" LIMIT {}", limit)); changed=true; }
-            }
-        }
         L::Limit { input, .. } => { changed |= try_pushdown_limit_into_subquery(input); }
-    L::Projection { input, .. } | L::Filter { input, .. } | L::Sort { input, .. } | L::Distinct { input } | L::Group { input, .. } | L::Having { input, .. } | L::With { input, .. } => { changed |= try_pushdown_limit_into_subquery(input); }
+        L::Projection { input, .. } | L::Filter { input, .. } | L::Sort { input, .. } | L::Distinct { input } | L::Group { input, .. } | L::Having { input, .. } | L::With { input, .. } => { changed |= try_pushdown_limit_into_subquery(input); }
         L::Join { left, right, .. } => { changed |= try_pushdown_limit_into_subquery(left); changed |= try_pushdown_limit_into_subquery(right); }
         L::TableScan { .. } | L::SubqueryScan { .. } => {}
+        L::SetOp { left, right, op } => todo!(),
     }
     changed
 }

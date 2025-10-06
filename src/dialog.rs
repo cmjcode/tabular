@@ -420,21 +420,22 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                                         .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
                                         .collect();
                                     let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
+                                    let drop_cmd = format!(
+                                        "db.{}.{}.dropIndex(\"{}\");",
+                                        db, working.table_name, target_idx
+                                    );
+                                    let create_cmd = format!(
+                                        "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
+                                        db,
+                                        working.table_name,
+                                        keys_doc,
+                                        working.index_name,
+                                        if working.unique { "true" } else { "false" }
+                                    );
                                     format!(
-                                        "// MongoDB has no ALTER INDEX; typically drop and recreate\n{}
-{}",
-                                        format!(
-                                            "db.{}.{}.dropIndex(\"{}\");",
-                                            db, working.table_name, target_idx
-                                        ),
-                                        format!(
-                                            "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
-                                            db,
-                                            working.table_name,
-                                            keys_doc,
-                                            working.index_name,
-                                            if working.unique { "true" } else { "false" }
-                                        )
+                                        "// MongoDB has no ALTER INDEX; typically drop and recreate\n{}\n{}",
+                                        drop_cmd,
+                                        create_cmd
                                     )
                                 }
                             }

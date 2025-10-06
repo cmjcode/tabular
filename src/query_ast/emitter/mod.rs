@@ -1,6 +1,9 @@
 use crate::models::enums::DatabaseType;
 use super::{logical::{LogicalQueryPlan, Expr, SortItem}, errors::QueryAstError};
 
+pub mod dialect;
+use dialect::{SqlDialect, get_dialect};
+
 pub fn emit_sql(plan: &LogicalQueryPlan, db_type: &DatabaseType) -> Result<String, QueryAstError> {
     // If top-level is With and still has CTEs, emit a proper WITH clause wrapping emitted SELECT.
     if let LogicalQueryPlan::With { ctes, input } = plan {
@@ -23,7 +26,8 @@ pub fn emit_sql(plan: &LogicalQueryPlan, db_type: &DatabaseType) -> Result<Strin
         return Ok(format!("({}) {} ({})", left_sql, op_str, right_sql));
     }
     let flat = flatten_plan(plan);
-    let mut emitter = FlatEmitter { dialect: db_type.clone() };
+    let dialect = get_dialect(db_type);
+    let mut emitter = FlatEmitter { dialect };
     emitter.emit(&flat)
 }
 
@@ -70,15 +74,17 @@ fn flatten_plan(plan: &LogicalQueryPlan) -> FlatSelect {
     flat
 }
 
-struct FlatEmitter { dialect: DatabaseType }
+struct FlatEmitter { 
+    dialect: Box<dyn SqlDialect>
+}
 
 impl FlatEmitter {
     fn emit(&mut self, flat: &FlatSelect) -> Result<String, QueryAstError> {
         let proj_sql = if flat.projection.is_empty() { "*".to_string() } else { flat.projection.iter().map(|e| self.emit_expr(e)).collect::<Result<Vec<_>,_>>()?.join(", ") };
         let from_clause = if let Some((sub_sql, alias)) = &flat.subquery { format!("({}) {}", sub_sql, self.quote_table(alias)) } else { self.quote_table(&flat.table.clone().unwrap_or_else(|| "DUAL".to_string())) };
-        let mut sql = if flat.distinct { format!("SELECT DISTINCT {} FROM {}", proj_sql, from_clause) } else { format!("SELECT {} FROM {}", proj_sql, from_clause) };
+        let mut sql = if flat.distinct { format!("SELECT {} {} FROM {}", self.dialect.emit_distinct(), proj_sql, from_clause) } else { format!("SELECT {} FROM {}", proj_sql, from_clause) };
         if let Some((kind, right_table, on)) = &flat.join {
-            let join_kw = match kind { super::logical::JoinKind::Inner => "INNER JOIN", super::logical::JoinKind::Left => "LEFT JOIN", super::logical::JoinKind::Right => "RIGHT JOIN", super::logical::JoinKind::Full => "FULL JOIN" };
+            let join_kw = self.dialect.emit_join_kind(kind);
             sql.push_str(&format!(" {} {}", join_kw, self.quote_table(right_table)));
             if let Some(on_expr) = on { sql.push_str(&format!(" ON {}", self.emit_expr(on_expr)?)); }
         }
@@ -95,19 +101,22 @@ impl FlatEmitter {
             let order = flat.sort.iter().map(|s| format!("{} {}", self.emit_expr(&s.expr).unwrap_or_else(|_| "?".into()), if s.asc {"ASC"} else {"DESC"})).collect::<Vec<_>>().join(", ");
             sql.push_str(&format!(" ORDER BY {}", order));
         }
-        match self.dialect {
-            DatabaseType::MsSQL => {
-                if let Some(l) = flat.limit {
-                    if let Some(off) = flat.offset { if off > 0 { sql.push_str(&format!(" OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", off, l)); } else { // inject TOP
-                        // crude replacement of leading SELECT with SELECT TOP N
-                        if sql.to_uppercase().starts_with("SELECT ") { sql = sql.replacen("SELECT ", &format!("SELECT TOP {} ", l), 1); }
-                    }} else {
-                        if sql.to_uppercase().starts_with("SELECT ") { sql = sql.replacen("SELECT ", &format!("SELECT TOP {} ", l), 1); }
-                    }
+        
+        // Use dialect-specific LIMIT emission
+        if let Some(l) = flat.limit {
+            let offset = flat.offset.unwrap_or(0);
+            let limit_clause = self.dialect.emit_limit(l, offset);
+            
+            // Special handling for MS SQL TOP (needs to be injected after SELECT)
+            if self.dialect.db_type() == DatabaseType::MsSQL && offset == 0 && !limit_clause.is_empty() {
+                // Already handled by SELECT TOP injection in dialect
+            } else if self.dialect.db_type() == DatabaseType::MsSQL && offset == 0 {
+                // Inject TOP for MS SQL when no offset
+                if sql.to_uppercase().starts_with("SELECT ") { 
+                    sql = sql.replacen("SELECT ", &format!("SELECT TOP {} ", l), 1); 
                 }
-            }
-            _ => {
-                if let Some(l) = flat.limit { if let Some(off) = flat.offset { if off > 0 { sql.push_str(&format!(" LIMIT {} OFFSET {}", l, off)); } else { sql.push_str(&format!(" LIMIT {}", l)); } } else { sql.push_str(&format!(" LIMIT {}", l)); }}
+            } else {
+                sql.push_str(&limit_clause);
             }
         }
         Ok(sql)
@@ -116,7 +125,7 @@ impl FlatEmitter {
     fn emit_expr(&mut self, expr: &Expr) -> Result<String, QueryAstError> {
         Ok(match expr {
             Expr::Column(c) => self.emit_column(c),
-            Expr::StringLiteral(s) => format!("'{}'", s.replace("'", "''")),
+            Expr::StringLiteral(s) => self.dialect.quote_string(s),
             Expr::Number(n) => n.clone(),
             Expr::BinaryOp { left, op, right } => format!("{} {} {}", self.emit_expr(left)?, op, self.emit_expr(right)?),
             Expr::FuncCall { name, args } => {
@@ -126,8 +135,8 @@ impl FlatEmitter {
             Expr::Star => "*".into(),
             Expr::Alias { expr, alias } => format!("{} AS {}", self.emit_expr(expr)?, self.quote_ident(alias)),
             Expr::Raw(r) => r.clone(),
-            Expr::Null => "NULL".into(),
-            Expr::Boolean(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+            Expr::Null => self.dialect.emit_null(),
+            Expr::Boolean(b) => self.dialect.emit_boolean(*b),
             Expr::Not(inner) => format!("NOT {}", self.emit_expr(inner)?),
             Expr::IsNull { expr, negated } => {
                 if *negated { format!("{} IS NOT NULL", self.emit_expr(expr)?) } else { format!("{} IS NULL", self.emit_expr(expr)?) }
@@ -166,10 +175,6 @@ impl FlatEmitter {
     fn quote_table(&self, t: &str) -> String { self.emit_column(t) }
 
     fn quote_ident(&self, ident: &str) -> String {
-        match self.dialect {
-            DatabaseType::MySQL | DatabaseType::SQLite => format!("`{}`", ident.replace('`', "``")),
-            DatabaseType::PostgreSQL | DatabaseType::MongoDB | DatabaseType::Redis => format!("\"{}\"", ident.replace('"', "\"")),
-            DatabaseType::MsSQL => format!("[{}]", ident.replace(']', "]]")),
-        }
+        self.dialect.quote_ident(ident)
     }
 }

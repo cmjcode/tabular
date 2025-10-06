@@ -6162,6 +6162,7 @@ name = "tabular"
 version = "0.4.25"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bson 3.0.0",
  "chrono",
  "colorful",

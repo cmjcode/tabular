@@ -18,6 +18,10 @@ pub mod rewrite;
 pub mod errors;
 #[cfg(feature = "query_ast")]
 pub mod plan_cache;
+#[cfg(feature = "query_ast")]
+pub mod executor;
+#[cfg(feature = "query_ast")]
+pub mod executors;
 
 #[cfg(feature = "query_ast")]
 pub use errors::*;
