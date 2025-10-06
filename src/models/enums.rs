@@ -63,6 +63,10 @@ pub enum DBASpecialMode {
 pub enum BackgroundTask {
     RefreshConnection { connection_id: i64 },
     CheckForUpdates,
+    StartPrefetch { 
+        connection_id: i64,
+        show_progress: bool, // Whether to show progress in UI
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +77,14 @@ pub enum BackgroundResult {
     },
     UpdateCheckComplete {
         result: Result<crate::self_update::UpdateInfo, String>,
+    },
+    PrefetchProgress {
+        connection_id: i64,
+        completed: usize,
+        total: usize,
+    },
+    PrefetchComplete {
+        connection_id: i64,
     },
 }
 

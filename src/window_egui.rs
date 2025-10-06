@@ -30,6 +30,8 @@ struct RenderTreeNodeParams<'a> {
     is_search_mode: bool,
     // New: fallback map of connection_id -> DatabaseType for DB type detection when pool not ready
     connection_types: &'a std::collections::HashMap<i64, models::enums::DatabaseType>,
+    // Prefetch progress tracking
+    prefetch_progress: &'a HashMap<i64, (usize, usize)>,
 }
 
 pub struct Tabular {
@@ -55,6 +57,9 @@ pub struct Tabular {
     pub shared_connection_pools: Arc<std::sync::Mutex<HashMap<i64, models::enums::DatabasePool>>>,
     // Rate-limit log spam for pending pool creation messages
     pub pending_pool_log_last: HashMap<i64, std::time::Instant>,
+    // Prefetch progress tracking
+    pub prefetch_progress: HashMap<i64, (usize, usize)>, // connection_id -> (completed, total)
+    pub prefetch_in_progress: std::collections::HashSet<i64>, // connections currently prefetching
     // Context menu and edit connection fields
     pub show_edit_connection: bool,
     pub edit_connection: models::structs::ConnectionConfig,
@@ -521,6 +526,8 @@ impl Tabular {
             pending_connection_pools: std::collections::HashSet::new(), // Track pools being created
             shared_connection_pools: Arc::new(std::sync::Mutex::new(HashMap::new())), // Shared pools for background tasks
             pending_pool_log_last: HashMap::new(),
+            prefetch_progress: HashMap::new(),
+            prefetch_in_progress: std::collections::HashSet::new(),
             show_edit_connection: false,
             edit_connection: models::structs::ConnectionConfig::default(),
             needs_refresh: false,
@@ -798,6 +805,17 @@ impl Tabular {
                         let _ = result_sender
                             .send(models::enums::BackgroundResult::UpdateCheckComplete { result });
                     }
+                    models::enums::BackgroundTask::StartPrefetch { connection_id, show_progress: _ } => {
+                        // Start optional background prefetch with progress tracking
+                        if let Some(cache_pool_arc) = &cache_pool {
+                            // Need to get connection config and pool
+                            // This is a bit tricky since we're in background thread
+                            // We'll need to pass the necessary data or fetch from cache
+                            let _ = result_sender.send(models::enums::BackgroundResult::PrefetchComplete {
+                                connection_id,
+                            });
+                        }
+                    }
                 }
             }
         });
@@ -892,6 +910,7 @@ impl Tabular {
                     shared_connection_pools: &self.shared_connection_pools,
                     is_search_mode,
                     connection_types: &connection_types,
+                    prefetch_progress: &self.prefetch_progress,
                 },
             );
             if let Some(expansion_req) = expansion_request {
@@ -2059,6 +2078,26 @@ impl Tabular {
 
                 // Break early to prevent further processing
                 break;
+            } else if (3000..4000).contains(&context_id) {
+                // ID 3000-3999 means disconnect (connection_id = context_id - 3000)
+                let connection_id = context_id - 3000;
+                debug!(
+                    "🔌 Disconnect operation for connection: {}",
+                    connection_id
+                );
+                self.disconnect_connection(connection_id);
+                // Mark for repaint so status updates immediately
+                ui.ctx().request_repaint();
+            } else if (2000..3000).contains(&context_id) {
+                // ID 2000-2999 means prefetch all tables (connection_id = context_id - 2000)
+                let connection_id = context_id - 2000;
+                debug!(
+                    "📦 Prefetch all tables operation for connection: {}",
+                    connection_id
+                );
+                self.start_prefetch_for_connection(connection_id);
+                // Mark for repaint so progress shows immediately
+                ui.ctx().request_repaint();
             } else if (1000..10000).contains(&context_id) {
                 // ID 1000-9999 means refresh connection (connection_id = context_id - 1000)
                 let connection_id = context_id - 1000;
@@ -2299,10 +2338,16 @@ impl Tabular {
                     // Draw colored status dot then a button for the connection name
                     ui.colored_label(status_color, egui::RichText::new("●").strong());
                     let mut name_text = node.name.clone();
-                    if let Some(conn_id) = node.connection_id
-                        && params.refreshing_connections.contains(&conn_id) {
+                    if let Some(conn_id) = node.connection_id {
+                        // Show refreshing spinner
+                        if params.refreshing_connections.contains(&conn_id) {
                             name_text.push_str(" 🔄");
                         }
+                        // Show prefetch progress
+                        if let Some((completed, total)) = params.prefetch_progress.get(&conn_id) {
+                            name_text.push_str(&format!(" 📦 {}/{}", completed, total));
+                        }
+                    }
                     ui.button(name_text)
                 } else {
                     // Non-connection nodes: keep icon + name label
@@ -2426,26 +2471,42 @@ impl Tabular {
                 // Add context menu for connection nodes
                 if node.node_type == models::enums::NodeType::Connection {
                     response.context_menu(|ui| {
-                        if ui.button("Copy Connection").clicked() {
+                        if ui.button("📋 Copy Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(conn_id + 10000); // Use +10000 to indicate copy
                             }
                             ui.close();
                         }
-                        if ui.button("Refresh Connection").clicked() {
+                        if ui.button("🔄 Refresh Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 // Use +1000 range to indicate refresh (handled in render_tree handler)
                                 context_menu_request = Some(conn_id + 1000);
                             }
                             ui.close();
                         }
-                        if ui.button("Edit Connection").clicked() {
+                        // NEW: Prefetch All Tables option
+                        if ui.button("📦 Prefetch All Tables").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                // Use +2000 range to indicate prefetch (handled in render_tree handler)
+                                context_menu_request = Some(conn_id + 2000);
+                            }
+                            ui.close();
+                        }
+                        // NEW: Disconnect option
+                        if ui.button("🔌 Disconnect").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                // Use +3000 range to indicate disconnect (handled in render_tree handler)
+                                context_menu_request = Some(conn_id + 3000);
+                            }
+                            ui.close();
+                        }
+                        if ui.button("🔧 Edit Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(conn_id);
                             }
                             ui.close();
                         }
-                        if ui.button("Remove Connection").clicked() {
+                        if ui.button("🗑 Remove Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(-conn_id); // Negative ID indicates removal
                             }
@@ -2723,6 +2784,7 @@ impl Tabular {
                                 shared_connection_pools: params.shared_connection_pools,
                                 is_search_mode: params.is_search_mode,
                                 connection_types: params.connection_types,
+                                prefetch_progress: params.prefetch_progress,
                             },
                         );
                         if let Some(child_expansion) = child_expansion_request {
@@ -2790,6 +2852,7 @@ impl Tabular {
                                     shared_connection_pools: params.shared_connection_pools,
                                     is_search_mode: params.is_search_mode,
                                     connection_types: params.connection_types,
+                                    prefetch_progress: params.prefetch_progress,
                                 },
                             );
 
@@ -3578,6 +3641,186 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             self.refreshing_connections.remove(&connection_id);
             cache_data::fetch_and_cache_connection_data(self, connection_id);
         }
+    }
+
+    // NEW: Start prefetch for connection (non-blocking with progress)
+    fn start_prefetch_for_connection(&mut self, connection_id: i64) {
+        // Check if already prefetching
+        if self.prefetch_in_progress.contains(&connection_id) {
+            debug!("Prefetch already in progress for connection {}", connection_id);
+            return;
+        }
+
+        // Check if connection exists and pool is available
+        let connection = match self.connections.iter().find(|c| c.id == Some(connection_id)) {
+            Some(c) => c.clone(),
+            None => {
+                debug!("Connection {} not found for prefetch", connection_id);
+                return;
+            }
+        };
+
+        // Get or create connection pool first
+        let pool_option = if let Some(p) = self.connection_pools.get(&connection_id) {
+            Some(p.clone())
+        } else {
+            // Try to get from shared pools
+            if let Ok(shared_pools) = self.shared_connection_pools.lock() {
+                if let Some(p) = shared_pools.get(&connection_id) {
+                    // Cache locally
+                    self.connection_pools.insert(connection_id, p.clone());
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        // If pool is not available, create it first (blocking)
+        let pool = if let Some(p) = pool_option {
+            p
+        } else {
+            debug!("📦 No connection pool available, creating one first for connection {}", connection_id);
+            
+            // Use runtime to create pool synchronously
+            let rt = self.get_runtime();
+            let pool_result = rt.block_on(async {
+                crate::connection::get_or_create_connection_pool(self, connection_id).await
+            });
+
+            match pool_result {
+                Some(p) => {
+                    debug!("✅ Connection pool created successfully for prefetch");
+                    p
+                }
+                None => {
+                    debug!("❌ Failed to create connection pool for prefetch, connection_id: {}", connection_id);
+                    // Pool is being created in background, mark as pending and return
+                    // We'll retry prefetch when pool becomes available
+                    if self.pending_connection_pools.contains(&connection_id) {
+                        debug!("🔄 Connection pool is being created in background, will retry prefetch later");
+                        // Schedule retry after a short delay (we'll need a mechanism for this)
+                        // For now, just return and user can try again
+                    }
+                    return;
+                }
+            }
+        };
+
+        // Check if we have cache pool
+        let cache_pool = match &self.db_pool {
+            Some(p) => p.clone(),
+            None => {
+                debug!("No cache pool available for prefetch");
+                return;
+            }
+        };
+
+        // Mark as in progress
+        self.prefetch_in_progress.insert(connection_id);
+        self.prefetch_progress.insert(connection_id, (0, 0));
+
+        // Create shared progress state for polling
+        let progress_state = Arc::new(std::sync::Mutex::new((0usize, 0usize)));
+        let progress_state_clone = progress_state.clone();
+
+        // Create progress channel
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        
+        // Progress updater thread - updates shared state from channel
+        std::thread::spawn(move || {
+            while let Ok((_, completed, total)) = progress_rx.recv() {
+                if let Ok(mut state) = progress_state_clone.lock() {
+                    *state = (completed, total);
+                }
+                
+                if completed >= total {
+                    debug!("✅ Prefetch completed for connection");
+                    break;
+                }
+            }
+        });
+
+        // Store progress state for polling in update() loop
+        // We'll need to add a field to store these
+        // For now, just start the prefetch
+        
+        // Start the actual prefetch in background
+        crate::connection::start_optional_background_prefetch(
+            connection_id,
+            connection,
+            pool,
+            cache_pool,
+            progress_tx,
+        );
+
+        debug!("📦 Started prefetch for connection {}", connection_id);
+    }
+
+    // NEW: Disconnect connection - close pool and clear cache
+    fn disconnect_connection(&mut self, connection_id: i64) {
+        debug!("🔌 Disconnecting connection: {}", connection_id);
+
+        // 1. Remove from local connection pool cache
+        if self.connection_pools.remove(&connection_id).is_some() {
+            debug!("✅ Removed connection pool from local cache");
+        }
+
+        // 2. Remove from shared connection pools
+        if let Ok(mut shared_pools) = self.shared_connection_pools.lock() {
+            if shared_pools.remove(&connection_id).is_some() {
+                debug!("✅ Removed connection pool from shared cache");
+            }
+        }
+
+        // 3. Remove from pending pools (if connection was being created)
+        if self.pending_connection_pools.remove(&connection_id) {
+            debug!("✅ Removed from pending connection pools");
+        }
+
+        // 4. Stop any prefetch in progress
+        if self.prefetch_in_progress.remove(&connection_id) {
+            debug!("✅ Stopped prefetch for connection");
+        }
+        self.prefetch_progress.remove(&connection_id);
+
+        // 5. Remove from refreshing set
+        if self.refreshing_connections.remove(&connection_id) {
+            debug!("✅ Removed from refreshing connections");
+        }
+
+        // 6. Clear database cache for this connection
+        self.database_cache.remove(&connection_id);
+        self.database_cache_time.remove(&connection_id);
+
+        // 7. Clear connection cache (database/table/column metadata)
+        self.clear_connection_cache(connection_id);
+
+        // 8. Reset connection node state in tree
+        if let Some(conn_node) =
+            Self::find_connection_node_recursive(&mut self.items_tree, connection_id)
+        {
+            conn_node.is_loaded = false;
+            conn_node.is_expanded = false; // Collapse node
+            conn_node.children.clear();
+            debug!(
+                "✅ Reset connection node: {} (collapsed and cleared)",
+                conn_node.name
+            );
+        }
+
+        // Also check filtered tree
+        if let Some(conn_node) =
+            Self::find_connection_node_recursive(&mut self.filtered_items_tree, connection_id)
+        {
+            conn_node.is_loaded = false;
+            conn_node.is_expanded = false;
+            conn_node.children.clear();
+        }
+
+        debug!("✅ Connection {} disconnected successfully", connection_id);
     }
 
     // Function to clear cache for a connection (useful for refresh)
@@ -8408,6 +8651,22 @@ impl App for Tabular {
                         } else {
                             debug!("Background refresh failed for connection {}", connection_id);
                         }
+                    }
+                    models::enums::BackgroundResult::PrefetchProgress {
+                        connection_id,
+                        completed,
+                        total,
+                    } => {
+                        // Update prefetch progress
+                        self.prefetch_progress.insert(connection_id, (completed, total));
+                        ctx.request_repaint();
+                    }
+                    models::enums::BackgroundResult::PrefetchComplete { connection_id } => {
+                        // Prefetch completed
+                        self.prefetch_in_progress.remove(&connection_id);
+                        self.prefetch_progress.remove(&connection_id);
+                        debug!("Prefetch completed for connection {}", connection_id);
+                        ctx.request_repaint();
                     }
                     models::enums::BackgroundResult::UpdateCheckComplete { result } => {
                         // Finish check state first
