@@ -2050,8 +2050,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         .id_source("sql_editor")
         .layouter(&mut layouter);
 
-    let egui::InnerResponse { inner: text_output, .. } =
-        ui.allocate_ui_at_rect(editor_rect, |ui| text_edit.show(ui));
+    let egui::InnerResponse { inner: text_output, .. } = ui.scope_builder(
+        egui::UiBuilder::new().max_rect(editor_rect),
+        |ui| text_edit.show(ui),
+    );
     let egui::text_edit::TextEditOutput {
         response,
         galley,

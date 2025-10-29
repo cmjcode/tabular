@@ -553,12 +553,10 @@ fn column_at(text: &str, line_start: usize, pos: usize) -> usize {
 
 fn column_to_byte(text: &str, line_start: usize, line_end: usize, column: usize) -> usize {
     let slice = &text[line_start..line_end];
-    let mut chars = 0usize;
-    for (offset, _) in slice.char_indices() {
-        if chars == column {
+    for (idx, (offset, _)) in slice.char_indices().enumerate() {
+        if idx == column {
             return line_start + offset;
         }
-        chars += 1;
     }
     line_end
 }
