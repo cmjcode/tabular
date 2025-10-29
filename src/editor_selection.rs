@@ -1,6 +1,8 @@
 //! Lightweight multi-selection abstraction independent of lapce-core.
 //! Provides a minimal API used by the editor for multi-caret typing and backspace.
 
+use unicode_segmentation::UnicodeSegmentation;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelRegion {
     pub anchor: usize,
@@ -114,6 +116,47 @@ impl MultiSelection {
         v.sort_unstable();
         v.dedup();
         v
+    }
+    /// Move all carets one grapheme to the left (collapses selections first).
+    pub fn move_left(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let anchor = r.anchor.min(text.len());
+            let head = r.head.min(text.len());
+            let collapsed = anchor == head;
+            let target = if collapsed {
+                prev_grapheme_boundary(text, head)
+            } else {
+                anchor.min(head)
+            };
+            updated.push(SelRegion::new(target, target, None));
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
+    /// Move all carets one grapheme to the right (collapses selections first).
+    pub fn move_right(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let anchor = r.anchor.min(len);
+            let head = r.head.min(len);
+            let collapsed = anchor == head;
+            let target = if collapsed {
+                next_grapheme_boundary(text, head)
+            } else {
+                anchor.max(head)
+            };
+            updated.push(SelRegion::new(target, target, None));
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
     }
     /// Apply same inserted text at each collapsed caret (multi-cursor typing).
     /// Assumes all carets are collapsed. Processes from right to left to avoid shifting earlier indices.
@@ -270,4 +313,38 @@ impl MultiSelection {
             .map(|(i, r)| (r.min(), r.max(), i == 0))
             .collect()
     }
+}
+
+fn sort_and_dedup(regions: &mut Vec<SelRegion>) {
+    regions.sort_by_key(|r| (r.min(), r.max()));
+    regions.dedup();
+}
+
+fn prev_grapheme_boundary(text: &str, pos: usize) -> usize {
+    if pos == 0 {
+        return 0;
+    }
+    let clamp = pos.min(text.len());
+    let mut prev = 0usize;
+    for (idx, _) in text.grapheme_indices(true) {
+        if idx >= clamp {
+            break;
+        }
+        prev = idx;
+    }
+    prev
+}
+
+fn next_grapheme_boundary(text: &str, pos: usize) -> usize {
+    let len = text.len();
+    if pos >= len {
+        return len;
+    }
+    let clamp = pos.min(len);
+    for (idx, _) in text.grapheme_indices(true) {
+        if idx > clamp {
+            return idx;
+        }
+    }
+    len
 }
