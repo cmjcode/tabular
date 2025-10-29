@@ -146,80 +146,72 @@ pub fn try_tree_sitter_sequel_highlight(text: &str, dark: bool) -> Option<Layout
 
         fn classify(node: Node, text: &str) -> Option<SpanKind> {
             let kind = node.kind();
-            
-            // Grammar-based classification: tree-sitter-sql uses UPPERCASE for keyword node kinds
-            match kind {
-                // Literals
-                "string" | "quoted_text" | "string_literal" => Some(SpanKind::String),
-                "number" | "numeric_literal" | "integer" => Some(SpanKind::Number),
-                
-                // Comments
-                "comment" | "line_comment" | "block_comment" => Some(SpanKind::Comment),
-                
-                // SQL Keywords - tree-sitter-sql grammar defines these as UPPERCASE node types
-                "SELECT" | "FROM" | "WHERE" | "INSERT" | "INTO" | "UPDATE" | "DELETE" |
-                "CREATE" | "ALTER" | "DROP" | "TABLE" | "VALUES" | "JOIN" | "LEFT" | "RIGHT" |
-                "INNER" | "OUTER" | "ON" | "GROUP" | "BY" | "HAVING" | "ORDER" | "LIMIT" |
-                "OFFSET" | "UNION" | "DISTINCT" | "ASC" | "DESC" | "AND" | "OR" | "NOT" |
-                "NULL" | "IS" | "SET" | "SHOW" | "START" | "STOP" | "RESET" | "CHANGE" | "PURGE" |
-                "AS" | "IN" | "EXISTS" | "CASE" | "WHEN" | "THEN" | "ELSE" | "END" |
-                "BETWEEN" | "LIKE" | "ALL" | "ANY" | "SOME" | "GLOBAL" | "BEFORE" | "TO" |
-                "ORDER BY" | "PRIMARY" | "KEY" | "USING" | "DEFAULT" | "ENGINE" | "CHARSET" |
-                "COLLATE" | "CHARACTER" | "AUTO_INCREMENT" | "CURRENT_TIMESTAMP" |
-                "ROW_FORMAT" | "DYNAMIC" => Some(SpanKind::Keyword),
-                
-                // Types
-                "INT" | "VARCHAR" | "TEXT" | "BIGINT" | "DATETIME" | "TIMESTAMP" | 
-                "BOOLEAN" | "DECIMAL" | "FLOAT" | "DOUBLE" | "CHAR" | "LONGTEXT" => Some(SpanKind::Keyword),
-                
-                // Statement types
-                "select_statement" | "insert_statement" | "update_statement" | "delete_statement" |
-                "create_statement" | "alter_statement" | "drop_statement" => None, // composite node, recurse
-                
-                // Clauses
-                "select_clause" | "from_clause" | "where_clause" | "order_by_clause" | 
-                "group_by_clause" | "having_clause" | "order_by_clause_body" => None, // composite, recurse
-                
-                // ERROR nodes - grammar doesn't recognize modern MySQL syntax
-                "ERROR" => None, // recurse into children to salvage what we can
-                
-                // Identifiers
-                "identifier" | "column_name" | "table_name" | "schema_name" => {
-                    let token_text = &text[node.start_byte()..node.end_byte()];
-                    
-                    // Check if it's actually a keyword that grammar missed (case-insensitive)
-                    if is_sql_keyword(token_text) {
-                        return Some(SpanKind::Keyword);
-                    }
-                    
-                    Some(SpanKind::Ident)
-                }
-                
-                // Operators & punctuation
-                "=" | ">" | "<" | ">=" | "<=" | "!=" | "<>" | "+" | "-" | "*" | "/" | "%" |
-                "(" | ")" | "," | ";" | "." | "`" => Some(SpanKind::Punctuation),
-                
-                // For unnamed nodes (anonymous tokens in grammar)
-                _ => {
-                    if !node.is_named() {
-                        let token_text = &text[node.start_byte()..node.end_byte()];
-                        
-                        // Check if it's a keyword (case-insensitive match)
-                        if is_sql_keyword(token_text) {
-                            return Some(SpanKind::Keyword);
-                        }
-                        
-                        // Single-char punctuation
-                        if token_text.len() == 1 {
-                            let ch = token_text.chars().next().unwrap();
-                            if ch.is_ascii_punctuation() || ch == '`' {
-                                return Some(SpanKind::Punctuation);
-                            }
-                        }
-                    }
-                    None
-                }
+
+            // Adapted for tree-sitter-sequel: keywords are named as `keyword_*`,
+            // literals use `literal`, and comments are `comment`.
+            if kind == "comment" || kind == "line_comment" || kind == "block_comment" {
+                return Some(SpanKind::Comment);
             }
+
+            // keyword_* nodes (e.g., keyword_select, keyword_from, keyword_insert)
+            if kind.starts_with("keyword_") {
+                return Some(SpanKind::Keyword);
+            }
+
+            // literal may be a string (quoted) or number (unquoted digits)
+            if kind == "literal" || kind == "string" || kind == "quoted_text" || kind == "string_literal" {
+                let s = node.start_byte();
+                let e = node.end_byte().min(text.len());
+                if s < e {
+                    let token_text = &text[s..e];
+                    let trimmed = token_text.trim();
+                    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+                        return Some(SpanKind::String);
+                    }
+                    // Simple numeric detection (int/float)
+                    let numeric = trimmed.parse::<f64>().is_ok();
+                    if numeric { return Some(SpanKind::Number); }
+                }
+                // If unsure, treat as Other and let children/punctuation handle details
+                return Some(SpanKind::Other);
+            }
+
+            // Identifiers
+            if matches!(kind, "identifier" | "column_name" | "table_name" | "schema_name" | "field") {
+                return Some(SpanKind::Ident);
+            }
+
+            // Composite constructs: let traversal recurse into children
+            if matches!(kind,
+                "program" | "statement" | "select" | "insert" | "update" | "delete" |
+                "from" | "where" | "group_by" | "order_by" | "order_target" | "direction" |
+                "relation" | "object_reference" | "list" | "select_expression"
+            ) || kind.ends_with("_statement") || kind.ends_with("_clause") {
+                return None;
+            }
+
+            if kind == "ERROR" {
+                return None; // dive into children to salvage tokens
+            }
+
+            // Punctuation and anonymous tokens
+            if !node.is_named() {
+                let s = node.start_byte();
+                let e = node.end_byte().min(text.len());
+                if s < e {
+                    let token_text = &text[s..e];
+                    // keyword recovery for anonymous uppercase tokens (rare here)
+                    if is_sql_keyword(token_text) { return Some(SpanKind::Keyword); }
+                    if token_text.len() == 1 {
+                        let ch = token_text.chars().next().unwrap();
+                        if ch.is_ascii_punctuation() || ch == '`' { return Some(SpanKind::Punctuation); }
+                    }
+                }
+                return None;
+            }
+
+            // Default: don't classify composite/unknown; recurse
+            None
         }
 
         // Check if token is a SQL keyword (case-insensitive)
