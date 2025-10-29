@@ -9,7 +9,7 @@ use redis::AsyncCommands;
 use std::sync::Arc;
 use log::{debug, warn};
 
-use crate::models::enums::{DatabaseType, DatabasePool};
+use crate::models::enums::DatabaseType;
 use crate::query_ast::executor::{DatabaseExecutor, QueryResult, SqlFeature};
 use crate::query_ast::errors::QueryAstError;
 
@@ -90,21 +90,20 @@ impl DatabaseExecutor for RedisExecutor {
         
         // Get connection manager from global registry
         let manager = Self::get_connection_manager(connection_id)?;
-        let mut conn = manager.clone();
+        let mut conn = (*manager).clone();
         
         // Redis database selection (0-15 by default)
-        if let Some(db) = database_name {
-            if let Ok(db_num) = db.parse::<i64>() {
-                redis::cmd("SELECT")
+        if let Some(db) = database_name
+            && let Ok(db_num) = db.parse::<i64>() {
+                let _: () = redis::cmd("SELECT")
                     .arg(db_num)
-                    .query_async::<_, ()>(&mut conn)
+                    .query_async(&mut conn)
                     .await
                     .map_err(|e| QueryAstError::Execution {
                         query: format!("SELECT {}", db_num),
                         reason: e.to_string(),
                     })?;
             }
-        }
         
         // Parse the query
         let operation = Self::parse_query_type(sql)?;

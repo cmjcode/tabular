@@ -88,7 +88,7 @@ pub enum BackgroundResult {
     },
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub enum DatabaseType {
     MySQL,
     PostgreSQL,

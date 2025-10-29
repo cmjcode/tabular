@@ -5,7 +5,6 @@
 
 use crate::models::enums::DatabaseType;
 use super::errors::QueryAstError;
-use async_trait::async_trait;
 
 /// Result of query execution: (headers, rows)
 pub type QueryResult = (Vec<String>, Vec<Vec<String>>);
@@ -169,7 +168,7 @@ pub async fn execute_ast_query(
     // 2. Get executor for this database type
     let executor = registry
         .get(db_type)
-        .ok_or_else(|| QueryAstError::Unsupported("database type not registered"))?;
+        .ok_or(QueryAstError::Unsupported("database type not registered"))?;
     
     // 3. Execute the query
     executor.execute_query(&emitted_sql, database_name, connection_id).await

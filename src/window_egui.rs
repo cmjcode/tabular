@@ -3674,35 +3674,17 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         }
     }
 
-
-    // Helper to save expansion state of a tree recursively
-    fn save_expansion_state(node: &models::structs::TreeNode, state_map: &mut std::collections::HashMap<String, bool>) {
-        // Create unique key for this node
-        let key = format!(
-            "{}:{}:{}:{}",
-            node.connection_id.unwrap_or(0),
-            node.database_name.as_ref().unwrap_or(&String::new()),
-            format!("{:?}", node.node_type),
-            node.name
-        );
-        state_map.insert(key, node.is_expanded);
-        
-        // Recursively save children
-        for child in &node.children {
-            Self::save_expansion_state(child, state_map);
-        }
-    }
-    
     // Helper to restore expansion state of a tree recursively
     fn restore_expansion_state(node: &mut models::structs::TreeNode, state_map: &std::collections::HashMap<String, bool>) {
         use log::info;
         
         // Create unique key for this node
+        let node_type_str = format!("{:?}", node.node_type);
         let key = format!(
             "{}:{}:{}:{}",
             node.connection_id.unwrap_or(0),
             node.database_name.as_ref().unwrap_or(&String::new()),
-            format!("{:?}", node.node_type),
+            node_type_str,
             node.name
         );
         
@@ -3750,13 +3732,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         }
     }
     
-    // Helper to mark all nodes as not loaded (forces reload from cache)
-    fn mark_all_nodes_not_loaded(node: &mut models::structs::TreeNode) {
-        node.is_loaded = false;
-        for child in &mut node.children {
-            Self::mark_all_nodes_not_loaded(child);
-        }
-    }
     
     // Helper to mark expanded nodes as loaded (they'll auto-load from cache on render)
     fn mark_expanded_nodes_loaded(node: &mut models::structs::TreeNode) {
@@ -3841,55 +3816,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         }
     }
     
-    // Refresh connection while preserving all expansion states
-    fn refresh_connection_preserving_state(&mut self, connection_id: i64) {
-        use log::info;
-        
-        info!("🔄 Refreshing connection {} while preserving expansion state", connection_id);
-        
-        // Save current expansion state
-        let mut expansion_state = std::collections::HashMap::new();
-        for node in &self.items_tree {
-            if node.connection_id == Some(connection_id) {
-                Self::save_expansion_state(node, &mut expansion_state);
-                info!("   Saved {} expansion states", expansion_state.len());
-                break;
-            }
-        }
-        
-        // Store the state FIRST before clearing anything
-        self.pending_expansion_restore.insert(connection_id, expansion_state);
-        
-        // Clear cache - this will make cache outdated
-        self.clear_connection_cache(connection_id);
-        
-        // Mark as refreshing
-        self.refreshing_connections.insert(connection_id);
-        
-        // CLEAR children to force rebuild from fresh cache
-        // This is necessary to remove dropped tables/databases from tree
-        if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
-            conn_node.is_loaded = false;
-            conn_node.children.clear();
-            info!("   Cleared children - tree will rebuild from fresh cache");
-        }
-        
-        // Send background task to refresh cache
-        if let Some(sender) = &self.background_sender {
-            if let Err(e) = sender.send(models::enums::BackgroundTask::RefreshConnection { connection_id }) {
-                debug!("Failed to send background refresh task: {}", e);
-                self.refreshing_connections.remove(&connection_id);
-                self.pending_expansion_restore.remove(&connection_id);
-                cache_data::fetch_and_cache_connection_data(self, connection_id);
-            } else {
-                info!("   Background refresh task sent");
-            }
-        } else {
-            self.refreshing_connections.remove(&connection_id);
-            self.pending_expansion_restore.remove(&connection_id);
-            cache_data::fetch_and_cache_connection_data(self, connection_id);
-        }
-    }
 
     // NEW: Disconnect connection - close pool and clear cache
     fn disconnect_connection(&mut self, connection_id: i64) {
@@ -4075,8 +4001,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             }
             
             // Compare just the table part (after last dot)
-            let node_table = clean_node.split('.').last().unwrap_or(&clean_node);
-            let search_table = clean_search.split('.').last().unwrap_or(&clean_search);
+            let node_table = clean_node.split('.').next_back().unwrap_or(&clean_node);
+            let search_table = clean_search.split('.').next_back().unwrap_or(&clean_search);
             
             node_table == search_table
         };
@@ -4166,37 +4092,36 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 }
             }
             // Also check direct children for databases (some DB types don't use DatabasesFolder)
-            else if child.node_type == models::enums::NodeType::Database {
-                if let Some(ref db_name) = child.database_name {
-                    info!("   Checking direct database node: {}", db_name);
-                    if db_name == database_name {
-                        info!("   ✓ Database matches!");
-                        // Find Tables folder in this database
-                        for folder in &mut child.children {
-                            if folder.node_type == models::enums::NodeType::TablesFolder {
-                                info!("   Found TablesFolder with {} tables", folder.children.len());
-                                
-                                // Log all tables before removal
-                                for table_node in &folder.children {
-                                    let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                    info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
-                                        tbl_name, table_node.name, table_node.table_name);
-                                }
-                                
-                                // Remove the table from Tables folder
-                                let before_count = folder.children.len();
-                                folder.children.retain(|table_node| {
-                                    let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                    let keep = !matches_table(node_name, table_name);
-                                    if !keep {
-                                        info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
-                                    }
-                                    keep
-                                });
-                                let after_count = folder.children.len();
-                                info!("   Tables count: {} -> {}", before_count, after_count);
-                                return true;
+            else if child.node_type == models::enums::NodeType::Database
+                && let Some(ref db_name) = child.database_name {
+                info!("   Checking direct database node: {}", db_name);
+                if db_name == database_name {
+                    info!("   ✓ Database matches!");
+                    // Find Tables folder in this database
+                    for folder in &mut child.children {
+                        if folder.node_type == models::enums::NodeType::TablesFolder {
+                            info!("   Found TablesFolder with {} tables", folder.children.len());
+                            
+                            // Log all tables before removal
+                            for table_node in &folder.children {
+                                let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
+                                    tbl_name, table_node.name, table_node.table_name);
                             }
+                            
+                            // Remove the table from Tables folder
+                            let before_count = folder.children.len();
+                            folder.children.retain(|table_node| {
+                                let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                let keep = !matches_table(node_name, table_name);
+                                if !keep {
+                                    info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
+                                }
+                                keep
+                            });
+                            let after_count = folder.children.len();
+                            info!("   Tables count: {} -> {}", before_count, after_count);
+                            return true;
                         }
                     }
                 }
@@ -8158,16 +8083,13 @@ impl App for Tabular {
                     if ui.button("Refresh Stats").clicked() {
                         let (h,m) = crate::query_ast::cache_stats();
                         self.last_cache_hits = h; self.last_cache_misses = m;
-                        if let Some(sql) = &self.last_compiled_sql {
-                            if let Some(active_tab) = self.query_tabs.get(self.active_tab_index) {
-                                if let Some(conn_id) = active_tab.connection_id {
-                                    if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
+                        if let Some(sql) = &self.last_compiled_sql
+                            && let Some(active_tab) = self.query_tabs.get(self.active_tab_index)
+                                && let Some(conn_id) = active_tab.connection_id
+                                    && let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
                                         if let Ok(plan_txt) = crate::query_ast::debug_plan(sql, &conn.connection_type) { self.last_debug_plan = Some(plan_txt); }
                                         if let Ok((nodes,depth,subs_total,subs_corr,wins)) = crate::query_ast::plan_metrics(sql) { ui.label(format!("Plan: nodes={} depth={} subqueries={} (corr={}) windows={}", nodes, depth, subs_total, subs_corr, wins)); }
                                     }
-                                }
-                            }
-                        }
                     }
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -8177,7 +8099,7 @@ impl App for Tabular {
                     if !rules.is_empty() { ui.collapsing("Rewrite Rules Applied", |ui| { ui.label(rules.join(", ")); }); }
                     if let Some(h) = self.last_plan_hash { ui.label(format!("Plan Hash: {:x}", h)); }
                     if let Some(k) = &self.last_plan_cache_key { ui.collapsing("Cache Key", |ui| { ui.code(k); }); }
-                    if let Some(ctes) = &self.last_ctes { if !ctes.is_empty() { ui.collapsing("Remaining CTEs", |ui| { ui.label(ctes.join(", ")); }); } }
+                    if let Some(ctes) = &self.last_ctes && !ctes.is_empty() { ui.collapsing("Remaining CTEs", |ui| { ui.label(ctes.join(", ")); }); }
                     if let Some(sql) = &self.last_compiled_sql { ui.collapsing("Last Emitted SQL", |ui| { ui.code(sql); }); }
                     if !self.last_compiled_headers.is_empty() { ui.collapsing("Last Inferred Headers", |ui| { ui.label(self.last_compiled_headers.join(", ")); }); }
                     if let Some(plan) = &self.last_debug_plan { ui.collapsing("Logical Plan", |ui| { ui.code(plan); }); }
@@ -10126,7 +10048,7 @@ impl App for Tabular {
                                             info!("   Headers: {:?}", headers);
                                             info!("   Rows count: {}", rows.len());
                                             if !rows.is_empty() {
-                                                info!("   First row: {:?}", rows.get(0));
+                                                info!("   First row: {:?}", rows.first());
                                             }
                                             // Check if it's an error result
                                             if headers.first().map(|h| h == "Error").unwrap_or(false) {

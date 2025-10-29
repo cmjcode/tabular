@@ -19,7 +19,7 @@ pub fn apply_basic_rewrites(plan: &mut LogicalQueryPlan, inject_auto_limit: bool
     for _iter in 0..4 { // small loop; rules idempotent
         let mut changed = false;
         if inject_auto_limit && !has_limit(plan) { let new = LogicalQueryPlan::Limit { limit: 1000, offset: 0, input: Box::new(plan.clone()) }; *plan = new; applied.push(Rule::AutoLimit.name().into()); changed=true; }
-        if let Some(p) = pagination { if replace_or_add_limit_record(plan, p.page_size, p.page * p.page_size) { applied.push(Rule::PaginationLimit.name().into()); changed=true;} }
+        if let Some(ref p) = pagination && replace_or_add_limit_record(plan, p.page_size, p.page * p.page_size) { applied.push(Rule::PaginationLimit.name().into()); changed=true;}
         if pushdown_filters(plan) { applied.push(Rule::FilterPushdown.name().into()); changed=true; }
         if merge_consecutive_filters(plan) { applied.push(Rule::MergeFilters.name().into()); changed=true; }
         if remove_redundant_projection(plan) { applied.push(Rule::RemoveRedundantProjection.name().into()); changed=true; }
@@ -56,23 +56,18 @@ fn is_barrier(p: &LogicalQueryPlan) -> bool {
 fn pushdown_filters(plan: &mut LogicalQueryPlan) -> bool {
     use super::logical::LogicalQueryPlan as L;
     let mut changed=false;
-    match plan {
-    L::Projection { .. } => {
-            // Look for Projection(Filter(inner)) pattern
-            if let L::Projection { exprs, input: inner_box } = plan {
-                if let L::Filter { predicate, input: filter_inner } = &**inner_box {
-                    if !contains_group_or_distinct(filter_inner) && !is_barrier(filter_inner) {
-                        let new_plan = L::Filter {
-                            predicate: predicate.clone(),
-                            input: Box::new(L::Projection { exprs: exprs.clone(), input: filter_inner.clone() })
-                        };
-                        *plan = new_plan;
-                        changed=true;
-                    }
+    if let L::Projection { .. } = plan {
+        // Look for Projection(Filter(inner)) pattern
+        if let L::Projection { exprs, input: inner_box } = plan
+            && let L::Filter { predicate, input: filter_inner } = &**inner_box
+                && !contains_group_or_distinct(filter_inner) && !is_barrier(filter_inner) {
+                    let new_plan = L::Filter {
+                        predicate: predicate.clone(),
+                        input: Box::new(L::Projection { exprs: exprs.clone(), input: filter_inner.clone() })
+                    };
+                    *plan = new_plan;
+                    changed=true;
                 }
-            }
-        }
-        _ => {}
     }
     changed
 }
@@ -107,7 +102,7 @@ fn projection_prune(plan: &mut LogicalQueryPlan) -> bool {
             L::TableScan { .. } | L::SubqueryScan { .. } => {}
         }
     }
-    fn collect_expr_cols(e: &Expr, out: &mut std::collections::HashSet<String>) { use Expr::*; match e { Column(c) => { out.insert(c.split('.').last().unwrap_or(c).to_ascii_lowercase()); }, Alias { expr, alias } => { out.insert(alias.to_ascii_lowercase()); collect_expr_cols(expr,out); }, BinaryOp { left, right, .. } => { collect_expr_cols(left,out); collect_expr_cols(right,out); }, FuncCall { args, .. } => { for a in args { collect_expr_cols(a,out);} }, Not(inner) => collect_expr_cols(inner,out), IsNull { expr, .. } => collect_expr_cols(expr,out), Like { expr, pattern, .. } => { collect_expr_cols(expr,out); collect_expr_cols(pattern,out); }, InList { expr, list, .. } => { collect_expr_cols(expr,out); for l in list { collect_expr_cols(l,out);} }, Case { operand, when_then, else_expr } => { if let Some(o)=operand { collect_expr_cols(o,out);} for (w,t) in when_then { collect_expr_cols(w,out); collect_expr_cols(t,out);} if let Some(e2)=else_expr { collect_expr_cols(e2,out);} }, WindowFunc { args, partition_by, order_by, .. } => { for a in args { collect_expr_cols(a,out);} for p in partition_by { collect_expr_cols(p,out);} for (o,_) in order_by { collect_expr_cols(o,out);} }, Subquery { .. } | Star | StringLiteral(_) | Number(_) | Raw(_) | Null | Boolean(_) => {} }
+    fn collect_expr_cols(e: &Expr, out: &mut std::collections::HashSet<String>) { use Expr::*; match e { Column(c) => { out.insert(c.split('.').next_back().unwrap_or(c).to_ascii_lowercase()); }, Alias { expr, alias } => { out.insert(alias.to_ascii_lowercase()); collect_expr_cols(expr,out); }, BinaryOp { left, right, .. } => { collect_expr_cols(left,out); collect_expr_cols(right,out); }, FuncCall { args, .. } => { for a in args { collect_expr_cols(a,out);} }, Not(inner) => collect_expr_cols(inner,out), IsNull { expr, .. } => collect_expr_cols(expr,out), Like { expr, pattern, .. } => { collect_expr_cols(expr,out); collect_expr_cols(pattern,out); }, InList { expr, list, .. } => { collect_expr_cols(expr,out); for l in list { collect_expr_cols(l,out);} }, Case { operand, when_then, else_expr } => { if let Some(o)=operand { collect_expr_cols(o,out);} for (w,t) in when_then { collect_expr_cols(w,out); collect_expr_cols(t,out);} if let Some(e2)=else_expr { collect_expr_cols(e2,out);} }, WindowFunc { args, partition_by, order_by, .. } => { for a in args { collect_expr_cols(a,out);} for p in partition_by { collect_expr_cols(p,out);} for (o,_) in order_by { collect_expr_cols(o,out);} }, Subquery { .. } | Star | StringLiteral(_) | Number(_) | Raw(_) | Null | Boolean(_) => {} }
     }
     // Recursive pruning
     fn recurse(p: &mut L, changed:&mut bool, needed_parent:&std::collections::HashSet<String>) {
@@ -118,7 +113,7 @@ fn projection_prune(plan: &mut LogicalQueryPlan) -> bool {
                 for e in exprs.iter() {
                     let keep = match e {
                         Expr::Alias { alias, .. } => needed_parent.contains(&alias.to_ascii_lowercase()),
-                        Expr::Column(c) => needed_parent.contains(&c.split('.').last().unwrap_or(c).to_ascii_lowercase()),
+                        Expr::Column(c) => needed_parent.contains(&c.split('.').next_back().unwrap_or(c).to_ascii_lowercase()),
                         Expr::Star => true, // cannot prune * safely
                         _ => true, // keep complex expressions conservatively
                     };
@@ -127,7 +122,7 @@ fn projection_prune(plan: &mut LogicalQueryPlan) -> bool {
                 if kept.len() != exprs.len() { *exprs = kept; *changed = true; }
                 // Build next needed set from current projection outputs (all aliases/columns that remain)
                 let mut next_needed = std::collections::HashSet::new();
-                for e in exprs.iter() { match e { Expr::Alias { alias, .. } => { next_needed.insert(alias.to_ascii_lowercase()); }, Expr::Column(c) => { next_needed.insert(c.split('.').last().unwrap_or(c).to_ascii_lowercase()); }, Expr::Star => { /* wildcard ensures everything */ }, _ => {} } }
+                for e in exprs.iter() { match e { Expr::Alias { alias, .. } => { next_needed.insert(alias.to_ascii_lowercase()); }, Expr::Column(c) => { next_needed.insert(c.split('.').next_back().unwrap_or(c).to_ascii_lowercase()); }, Expr::Star => { /* wildcard ensures everything */ }, _ => {} } }
                 recurse(input, changed, &next_needed);
             }
             L::Filter { input, .. } | L::Sort { input, .. } | L::Limit { input, .. } | L::Distinct { input } | L::Group { input, .. } | L::Having { input, .. } | L::With { input, .. } => recurse(input, changed, needed_parent),
@@ -158,9 +153,9 @@ fn merge_consecutive_filters(plan: &mut LogicalQueryPlan) -> bool {
                 changed=true;
             }
         }
-        L::Limit { input, .. } => { merge_consecutive_filters(input); }
-        L::With { input, .. } => { merge_consecutive_filters(input); }
-        L::Projection { input, .. } | L::Sort { input, .. } | L::Limit { input, .. } | L::Distinct { input } | L::Group { input, .. } | L::Having { input, .. } | L::With { input, .. } => merge_consecutive_filters(input),
+        L::Projection { input, .. } | L::Sort { input, .. } | L::Limit { input, .. } | L::Distinct { input } | L::Group { input, .. } | L::Having { input, .. } | L::With { input, .. } => {
+            merge_consecutive_filters(input);
+        }
         L::Join { left, right, .. } | L::SetOp { left, right, .. } => { merge_consecutive_filters(left); merge_consecutive_filters(right); }
         L::TableScan { .. } | L::SubqueryScan { .. } => {}
     }
@@ -176,15 +171,16 @@ fn remove_redundant_projection(plan: &mut LogicalQueryPlan) -> bool {
     match plan {
         L::Projection { exprs, input } => {
             remove_redundant_projection(input);
-            if exprs.len()==1 && matches!(exprs[0], Expr::Star) && matches!(&**input, L::Projection { .. }) {
-                if let L::Projection { exprs: inner_exprs, input: inner_input } = &**input {
+            if exprs.len()==1 && matches!(exprs[0], Expr::Star) && matches!(&**input, L::Projection { .. })
+                && let L::Projection { exprs: inner_exprs, input: inner_input } = &**input {
                     *exprs = inner_exprs.clone();
                     *input = inner_input.clone();
                     changed=true;
                 }
-            }
         }
-        L::Filter { input, .. } | L::Sort { input, .. } | L::Limit { input, .. } | L::Distinct { input } | L::Group { input, .. } | L::Having { input, .. } | L::With { input, .. } => remove_redundant_projection(input),
+        L::Filter { input, .. } | L::Sort { input, .. } | L::Limit { input, .. } | L::Distinct { input } | L::Group { input, .. } | L::Having { input, .. } | L::With { input, .. } => {
+            remove_redundant_projection(input);
+        }
         L::Join { left, right, .. } | L::SetOp { left, right, .. } => { remove_redundant_projection(left); remove_redundant_projection(right); }
         L::TableScan { .. } | L::SubqueryScan { .. } => {}
     }
@@ -201,15 +197,14 @@ fn try_pushdown_limit_into_subquery(plan: &mut LogicalQueryPlan) -> bool {
                             // Recurse first
                             changed |= try_pushdown_limit_into_subquery(inner2);
                         }
-                        if let L::SubqueryScan { sql, alias: _, correlated } = &mut **input {
-                            if !*correlated && !sql.to_ascii_lowercase().contains(" limit ") { sql.push_str(&format!(" LIMIT {}", limit)); changed=true; }
-                        }
+                        if let L::SubqueryScan { sql, alias: _, correlated } = &mut **input
+                            && !*correlated && !sql.to_ascii_lowercase().contains(" limit ") { sql.push_str(&format!(" LIMIT {}", limit)); changed=true; }
             }
         L::Limit { input, .. } => { changed |= try_pushdown_limit_into_subquery(input); }
         L::Projection { input, .. } | L::Filter { input, .. } | L::Sort { input, .. } | L::Distinct { input } | L::Group { input, .. } | L::Having { input, .. } | L::With { input, .. } => { changed |= try_pushdown_limit_into_subquery(input); }
         L::Join { left, right, .. } => { changed |= try_pushdown_limit_into_subquery(left); changed |= try_pushdown_limit_into_subquery(right); }
         L::TableScan { .. } | L::SubqueryScan { .. } => {}
-        L::SetOp { left, right, op } => todo!(),
+        L::SetOp { left: _left, right: _right, op: _op } => todo!(),
     }
     changed
 }
@@ -269,25 +264,75 @@ fn collect_ident_roots_stmt(stmt: &sqlparser::ast::Statement, out: &mut std::col
     use sqlparser::ast as sq; if let sq::Statement::Query(q)=stmt { collect_ident_roots_query(q,out); }
 }
 fn collect_ident_roots_query(q: &sqlparser::ast::Query, out: &mut std::collections::HashSet<String>) {
-    use sqlparser::ast as sq; match q.body.as_ref() { sq::SetExpr::Select(sel) => { for proj in &sel.projection { match proj { sq::SelectItem::UnnamedExpr(e) => collect_ident_roots_expr(e,out), sq::SelectItem::ExprWithAlias { expr, .. } => collect_ident_roots_expr(expr,out), sq::SelectItem::QualifiedWildcard(obj, _) => { if let Some(id)=obj.0.first() { out.insert(id.value.to_ascii_lowercase()); } }, sq::SelectItem::Wildcard(_) => {} _=>{} } }
+    use sqlparser::ast as sq; if let sq::SetExpr::Select(sel) = q.body.as_ref() { for proj in &sel.projection { match proj { sq::SelectItem::UnnamedExpr(e) => collect_ident_roots_expr(e,out), sq::SelectItem::ExprWithAlias { expr, .. } => collect_ident_roots_expr(expr,out), sq::SelectItem::QualifiedWildcard(obj, _) => { if let Some(id)=obj.0.first() { out.insert(id.value.to_ascii_lowercase()); } }, sq::SelectItem::Wildcard(_) => {} } }
         if let Some(sel_expr)=&sel.selection { collect_ident_roots_expr(sel_expr,out); }
-        for g in sel.group_by.clone().exprs() { collect_ident_roots_expr(&g,out); }
+        match &sel.group_by {
+            sq::GroupByExpr::Expressions(exprs, _) => {
+                for g in exprs { collect_ident_roots_expr(g,out); }
+            }
+            sq::GroupByExpr::All(_) => {}
+        }
         if let Some(h)=&sel.having { collect_ident_roots_expr(h,out); }
-        for fw in &sel.from { collect_ident_roots_factor(&fw.relation,out); for j in &fw.joins { if let sq::JoinConstraint::On(e)=&j.join_operator.get_constraint() { collect_ident_roots_expr(e,out); } collect_ident_roots_factor(&j.relation,out); } }
-    }
-    _ => {}
+        for fw in &sel.from { 
+            collect_ident_roots_factor(&fw.relation,out); 
+            for j in &fw.joins { 
+                match &j.join_operator {
+                    sq::JoinOperator::Inner(constraint) | 
+                    sq::JoinOperator::LeftOuter(constraint) |
+                    sq::JoinOperator::RightOuter(constraint) |
+                    sq::JoinOperator::FullOuter(constraint) => {
+                        if let sq::JoinConstraint::On(e) = constraint {
+                            collect_ident_roots_expr(e,out); 
+                        }
+                    }
+                    _ => {}
+                }
+                collect_ident_roots_factor(&j.relation,out); 
+            } 
+        }
     }
     if let Some(ob)=&q.order_by { for obe in &ob.exprs { collect_ident_roots_expr(&obe.expr,out); } }
     if let Some(limit)=&q.limit { collect_ident_roots_expr(limit,out); }
     if let Some(offset)=&q.offset { collect_ident_roots_expr(&offset.value,out); }
 }
 fn collect_ident_roots_factor(f:&sqlparser::ast::TableFactor,out:&mut std::collections::HashSet<String>) {
-    use sqlparser::ast::TableFactor as TF; match f { TF::Table { .. } => {}, TF::Derived { subquery, .. } => { if let sqlparser::ast::SetExpr::Select(sel)=subquery.body.as_ref() { // recurse minimal
+    use sqlparser::ast::TableFactor as TF; match f { TF::Table { .. } => {}, TF::Derived { subquery, .. } => { if let sqlparser::ast::SetExpr::Select(_sel)=subquery.body.as_ref() { // recurse minimal
             let stmt = sqlparser::ast::Statement::Query(subquery.clone()); collect_ident_roots_stmt(&stmt,out);
         } }, _=>{} }
 }
 fn collect_ident_roots_expr(e:&sqlparser::ast::Expr,out:&mut std::collections::HashSet<String>) {
-    use sqlparser::ast as sq; match e { sq::Expr::Identifier(id) => { out.insert(id.value.to_ascii_lowercase()); }, sq::Expr::CompoundIdentifier(ids) => { if let Some(first)=ids.first() { out.insert(first.value.to_ascii_lowercase()); } }, sq::Expr::BinaryOp { left, right, .. } => { collect_ident_roots_expr(left,out); collect_ident_roots_expr(right,out); }, sq::Expr::UnaryOp { expr, .. } => collect_ident_roots_expr(expr,out), sq::Expr::Function(f) => { for arg in f.args.iter() { if let sq::FunctionArg::Unnamed(sq::FunctionArgExpr::Expr(ex))=arg { collect_ident_roots_expr(ex,out); } } if let Some(over)=&f.over { for p in &over.partition_by { collect_ident_roots_expr(p,out); } for o in &over.order_by { collect_ident_roots_expr(&o.expr,out); } } }, sq::Expr::Nested(inner) => collect_ident_roots_expr(inner,out), sq::Expr::Like { expr, pattern, .. } | sq::Expr::ILike { expr, pattern, .. } => { collect_ident_roots_expr(expr,out); collect_ident_roots_expr(pattern,out); }, sq::Expr::InList { expr, list, .. } => { collect_ident_roots_expr(expr,out); for l in list { collect_ident_roots_expr(l,out); } }, sq::Expr::IsNull(inner) | sq::Expr::IsNotNull(inner) => collect_ident_roots_expr(inner,out), sq::Expr::Case { operand, conditions, results, else_result } => { if let Some(o)=operand { collect_ident_roots_expr(o,out); } for c in conditions { collect_ident_roots_expr(c,out); } for r in results { collect_ident_roots_expr(r,out); } if let Some(er)=else_result { collect_ident_roots_expr(er,out); } }, sq::Expr::Between { expr, low, high, .. } => { collect_ident_roots_expr(expr,out); collect_ident_roots_expr(low,out); collect_ident_roots_expr(high,out); }, sq::Expr::Subquery(sub) => { let stmt = sqlparser::ast::Statement::Query(sub.clone()); collect_ident_roots_stmt(&stmt,out); }, _=>{} }
+    use sqlparser::ast as sq; 
+    match e { 
+        sq::Expr::Identifier(id) => { out.insert(id.value.to_ascii_lowercase()); }, 
+        sq::Expr::CompoundIdentifier(ids) => { if let Some(first)=ids.first() { out.insert(first.value.to_ascii_lowercase()); } }, 
+        sq::Expr::BinaryOp { left, right, .. } => { collect_ident_roots_expr(left,out); collect_ident_roots_expr(right,out); }, 
+        sq::Expr::UnaryOp { expr, .. } => collect_ident_roots_expr(expr,out), 
+        sq::Expr::Function(f) => { 
+            if let sq::FunctionArguments::List(args_list) = &f.args {
+                for arg in &args_list.args {
+                    if let sq::FunctionArg::Unnamed(sq::FunctionArgExpr::Expr(ex))=arg { 
+                        collect_ident_roots_expr(ex,out); 
+                    } 
+                }
+            }
+            if let Some(sq::WindowType::WindowSpec(spec))=&f.over { 
+                for p in &spec.partition_by { 
+                    collect_ident_roots_expr(p,out); 
+                } 
+                for o in &spec.order_by { 
+                    collect_ident_roots_expr(&o.expr,out); 
+                } 
+            } 
+        }, 
+        sq::Expr::Nested(inner) => collect_ident_roots_expr(inner,out), 
+        sq::Expr::Like { expr, pattern, .. } | sq::Expr::ILike { expr, pattern, .. } => { collect_ident_roots_expr(expr,out); collect_ident_roots_expr(pattern,out); }, 
+        sq::Expr::InList { expr, list, .. } => { collect_ident_roots_expr(expr,out); for l in list { collect_ident_roots_expr(l,out); } }, 
+        sq::Expr::IsNull(inner) | sq::Expr::IsNotNull(inner) => collect_ident_roots_expr(inner,out), 
+        sq::Expr::Case { operand, conditions, results, else_result } => { if let Some(o)=operand { collect_ident_roots_expr(o,out); } for c in conditions { collect_ident_roots_expr(c,out); } for r in results { collect_ident_roots_expr(r,out); } if let Some(er)=else_result { collect_ident_roots_expr(er,out); } }, 
+        sq::Expr::Between { expr, low, high, .. } => { collect_ident_roots_expr(expr,out); collect_ident_roots_expr(low,out); collect_ident_roots_expr(high,out); }, 
+        sq::Expr::Subquery(sub) => { let stmt = sqlparser::ast::Statement::Query(sub.clone()); collect_ident_roots_stmt(&stmt,out); }, 
+        _=>{} 
+    }
 }
 
 // Inline single-use CTEs: For With { ctes, input } count textual references of each CTE name (case-insensitive whole word) in emitted subtree SQL forms (approximation via Raw string occurrences in SubqueryScan sql + TableScan table). If count==1 -> replace occurrences by subquery SQL, drop from ctes list.

@@ -16,7 +16,7 @@ pub fn parse_single_select_to_plan(sql: &str) -> Result<LogicalQueryPlan, QueryA
 
 fn convert_query(q: &sq::Query, raw_sql: &str) -> Result<LogicalQueryPlan, QueryAstError> {
     let mut plan = convert_set_expr(&q.body, q, raw_sql)?;
-    if let Some(with) = &q.with { if !with.cte_tables.is_empty() { let mut ctes = Vec::new(); for c in &with.cte_tables { ctes.push((c.alias.name.value.clone(), c.query.to_string())); } plan = LogicalQueryPlan::With { ctes, input: Box::new(plan) }; } }
+    if let Some(with) = &q.with && !with.cte_tables.is_empty() { let mut ctes = Vec::new(); for c in &with.cte_tables { ctes.push((c.alias.name.value.clone(), c.query.to_string())); } plan = LogicalQueryPlan::With { ctes, input: Box::new(plan) }; }
     Ok(plan)
 }
 
@@ -45,7 +45,7 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
     let base = match &sel.from[0].relation {
         sq::TableFactor::Table { name, alias, .. } => {
             let mut scan = LogicalQueryPlan::table_scan(name.to_string());
-            if let LogicalQueryPlan::TableScan { alias: a, .. } = &mut scan { if let Some(a2)=alias { *a = Some(a2.name.value.clone()); } }
+            if let LogicalQueryPlan::TableScan { alias: a, .. } = &mut scan && let Some(a2)=alias { *a = Some(a2.name.value.clone()); }
             scan
         }
         sq::TableFactor::Derived { subquery, alias, .. } => {
@@ -59,7 +59,7 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
         let right = match &join.relation {
             sq::TableFactor::Table { name, alias, .. } => {
                 let mut scan = LogicalQueryPlan::table_scan(name.to_string());
-                if let LogicalQueryPlan::TableScan { alias: a, .. } = &mut scan { if let Some(a2)=alias { *a = Some(a2.name.value.clone()); } }
+                if let LogicalQueryPlan::TableScan { alias: a, .. } = &mut scan && let Some(a2)=alias { *a = Some(a2.name.value.clone()); }
                 scan
             }
             sq::TableFactor::Derived { subquery, alias, .. } => {
@@ -79,8 +79,8 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
     // GROUP BY (primary attempt via AST)
     use sqlparser::ast::GroupByExpr;
     let mut group_added = false;
-    if let GroupByExpr::Expressions(_mod, list) = &sel.group_by {
-        if !list.is_empty() {
+    if let GroupByExpr::Expressions(_mod, list) = &sel.group_by
+        && !list.is_empty() {
             let mut gexprs = Vec::new();
             for item in list {
                 let s = item.to_string();
@@ -94,7 +94,6 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
             plan = LogicalQueryPlan::Group { group_exprs: gexprs, input: Box::new(plan) };
             group_added = true;
         }
-    }
     // Fallback heuristic: if parser gave us no group node but raw SQL contains GROUP BY
     if !group_added {
         let lower = raw_sql.to_ascii_lowercase();
@@ -105,7 +104,7 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
             let tail = &lower[start..];
             let mut end_rel = tail.len();
             for kw in [" having ", " order by ", " limit ", ";"] {
-                if let Some(idx) = tail.find(kw) { if idx < end_rel { end_rel = idx; } }
+                if let Some(idx) = tail.find(kw) && idx < end_rel { end_rel = idx; }
             }
             let original_slice = &raw_sql[start..start+end_rel];
             let candidates: Vec<Expr> = original_slice.split(',')
@@ -149,7 +148,7 @@ fn convert_select(sel: &sq::Select, q: &sq::Query, raw_sql: &str) -> Result<Logi
     if sel.distinct.is_some() { plan = LogicalQueryPlan::Distinct { input: Box::new(plan) }; }
 
     // ORDER BY
-    if let Some(ob) = &q.order_by { if !ob.exprs.is_empty() { let mut items = Vec::new(); for obe in &ob.exprs { items.push(SortItem { expr: convert_expr(&obe.expr), asc: obe.asc.unwrap_or(true) }); } plan = LogicalQueryPlan::Sort { items, input: Box::new(plan) }; } }
+    if let Some(ob) = &q.order_by && !ob.exprs.is_empty() { let mut items = Vec::new(); for obe in &ob.exprs { items.push(SortItem { expr: convert_expr(&obe.expr), asc: obe.asc.unwrap_or(true) }); } plan = LogicalQueryPlan::Sort { items, input: Box::new(plan) }; }
 
     // LIMIT/OFFSET
     let (limit, offset) = extract_limit_offset(q)?;
@@ -195,10 +194,10 @@ fn convert_expr(e: &sq::Expr) -> Expr {
                 }
                 other => { return Expr::Raw(other.to_string()); }
             }
-            if let Some(over) = &func.over { // proper window spec
-                let partition_by = over.partition_by.iter().map(convert_expr).collect::<Vec<_>>();
-                let order_by = over.order_by.iter().map(|obe| (convert_expr(&obe.expr), obe.asc.unwrap_or(true))).collect::<Vec<_>>();
-                let frame = over.window_frame.as_ref().map(|wf| wf.to_string());
+            if let Some(sq::WindowType::WindowSpec(spec)) = &func.over { // proper window spec
+                let partition_by = spec.partition_by.iter().map(convert_expr).collect::<Vec<_>>();
+                let order_by = spec.order_by.iter().map(|obe| (convert_expr(&obe.expr), obe.asc.unwrap_or(true))).collect::<Vec<_>>();
+                let frame = spec.window_frame.as_ref().map(|wf| format!("{:?}", wf));
                 return Expr::WindowFunc { name, args: out_args, partition_by, order_by, frame };
             }
             Expr::FuncCall { name, args: out_args }
@@ -231,7 +230,7 @@ fn collect_table_aliases(plan: &LogicalQueryPlan, out: &mut HashSet<String>) {
     match plan {
         LogicalQueryPlan::TableScan { table, alias } => {
             if let Some(a)=alias { out.insert(a.to_ascii_lowercase()); }
-            else { out.insert(table.split('.').last().unwrap_or(table).to_ascii_lowercase()); }
+            else { out.insert(table.split('.').next_back().unwrap_or(table).to_ascii_lowercase()); }
         }
         LogicalQueryPlan::SubqueryScan { alias, .. } => { out.insert(alias.to_ascii_lowercase()); }
         LogicalQueryPlan::Projection { input, .. } | LogicalQueryPlan::Filter { input, .. } | LogicalQueryPlan::Sort { input, .. } | LogicalQueryPlan::Limit { input, .. } | LogicalQueryPlan::Distinct { input } | LogicalQueryPlan::Group { input, .. } | LogicalQueryPlan::Having { input, .. } | LogicalQueryPlan::With { input, .. } => collect_table_aliases(input, out),

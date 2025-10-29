@@ -1056,10 +1056,9 @@ pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, conn
             }
             
             // Clean up empty folder if old folder is now empty
-            if old_folder != new_folder {
-                if let Some(pos) = tabular.items_tree.iter().position(|f| f.name == old_folder && f.children.is_empty()) {
-                    tabular.items_tree.remove(pos);
-                }
+            if old_folder != new_folder
+                && let Some(pos) = tabular.items_tree.iter().position(|f| f.name == old_folder && f.children.is_empty()) {
+                tabular.items_tree.remove(pos);
             }
         }
     }
@@ -1157,97 +1156,4 @@ pub(crate) fn create_connections_folder_structure(
     }
 
     result
-}
-
-// Incremental update: Remove a table from the tree
-pub(crate) fn remove_table_from_tree(
-    tabular: &mut window_egui::Tabular,
-    connection_id: i64,
-    database_name: &str,
-    table_name: &str,
-) {
-    // Delegate to window_egui implementation which has the full logic
-    tabular.remove_table_from_tree(connection_id, database_name, table_name);
-}
-
-// Incremental update: Add a table to the tree
-pub(crate) fn add_table_to_tree(
-    tabular: &mut window_egui::Tabular,
-    connection_id: i64,
-    database_name: &str,
-    table_name: &str,
-    _table_type: &str, // "table", "view", etc. (reserved for future use)
-) {
-    use log::info;
-    
-    info!("🌲 Adding table {}.{} to sidebar tree", database_name, table_name);
-    
-    // Find the connection node
-    for conn_node in &mut tabular.items_tree {
-        if conn_node.connection_id == Some(connection_id) {
-            info!("   Found connection node: {}", conn_node.name);
-            
-            // Navigate through the tree structure to find the Tables folder
-            for child in &mut conn_node.children {
-                // Look for Databases folder
-                if child.node_type == models::enums::NodeType::DatabasesFolder {
-                    for db_node in &mut child.children {
-                        if let Some(ref db_name) = db_node.database_name {
-                            if db_name == database_name {
-                                // Find Tables folder
-                                for folder in &mut db_node.children {
-                                    if folder.node_type == models::enums::NodeType::TablesFolder {
-                                        // Create new table node
-                                        let mut new_table_node = models::structs::TreeNode::new(
-                                            table_name.to_string(),
-                                            models::enums::NodeType::Table,
-                                        );
-                                        new_table_node.connection_id = Some(connection_id);
-                                        new_table_node.database_name = Some(database_name.to_string());
-                                        new_table_node.table_name = Some(table_name.to_string());
-                                        
-                                        // Add to Tables folder maintaining sort order
-                                        folder.children.push(new_table_node);
-                                        folder.children.sort_by(|a, b| a.name.cmp(&b.name));
-                                        
-                                        info!("✅ Added table '{}' to tree", table_name);
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Also check direct database nodes
-                else if child.node_type == models::enums::NodeType::Database {
-                    if let Some(ref db_name) = child.database_name {
-                        if db_name == database_name {
-                            // Find Tables folder
-                            for folder in &mut child.children {
-                                if folder.node_type == models::enums::NodeType::TablesFolder {
-                                    // Create new table node
-                                    let mut new_table_node = models::structs::TreeNode::new(
-                                        table_name.to_string(),
-                                        models::enums::NodeType::Table,
-                                    );
-                                    new_table_node.connection_id = Some(connection_id);
-                                    new_table_node.database_name = Some(database_name.to_string());
-                                    new_table_node.table_name = Some(table_name.to_string());
-                                    
-                                    // Add to Tables folder maintaining sort order
-                                    folder.children.push(new_table_node);
-                                    folder.children.sort_by(|a, b| a.name.cmp(&b.name));
-                                    
-                                    info!("✅ Added table '{}' to tree", table_name);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    info!("⚠️ Could not find location to add table '{}' in tree", table_name);
 }

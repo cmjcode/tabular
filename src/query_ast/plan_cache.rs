@@ -19,7 +19,7 @@ const CACHE_VERSION: u8 = 3; // bump: added TableScan alias + rule engine + corr
 pub struct PlanCache { inner: Mutex<(HashMap<String, PlanEntry>, VecDeque<String>)>, hits: std::sync::atomic::AtomicU64, misses: std::sync::atomic::AtomicU64 }
 
 impl PlanCache {
-    pub fn global() -> &'static PlanCache { static INSTANCE: once_cell::sync::Lazy<PlanCache> = once_cell::sync::Lazy::new(|| PlanCache::default()); &INSTANCE }
+    pub fn global() -> &'static PlanCache { static INSTANCE: once_cell::sync::Lazy<PlanCache> = once_cell::sync::Lazy::new(PlanCache::default); &INSTANCE }
     pub fn get(&self, key: &str) -> Option<PlanEntry> {
         let versioned = format!("v{}::{}", CACHE_VERSION, key);
         let out = self.inner.lock().ok()?.0.get(&versioned).cloned();

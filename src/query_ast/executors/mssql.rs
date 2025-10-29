@@ -5,7 +5,7 @@ use futures_util::TryStreamExt;
 use std::sync::Arc;
 use log::debug;
 
-use crate::models::enums::{DatabaseType, DatabasePool};
+use crate::models::enums::DatabaseType;
 use crate::query_ast::executor::{DatabaseExecutor, QueryResult, SqlFeature};
 use crate::query_ast::errors::QueryAstError;
 
@@ -52,8 +52,33 @@ impl DatabaseExecutor for MssqlExecutor {
         // Get config from global registry
         let config_wrapper = Self::get_config(connection_id)?;
         
-        // Create connection from config
-        let mut client = tiberius::Client::connect(config_wrapper.config.clone())
+        // Build tiberius config
+        let mut config = tiberius::Config::new();
+        config.host(&config_wrapper.host);
+        config.port(config_wrapper.port);
+        config.authentication(tiberius::AuthMethod::sql_server(
+            &config_wrapper.username,
+            &config_wrapper.password,
+        ));
+        config.trust_cert();
+        
+        if !config_wrapper.database.is_empty() {
+            config.database(&config_wrapper.database);
+        }
+        
+        // Create TCP connection
+        let tcp = tokio::net::TcpStream::connect((&config_wrapper.host[..], config_wrapper.port))
+            .await
+            .map_err(|e| QueryAstError::Execution {
+                query: sql.to_string(),
+                reason: format!("Failed to connect TCP: {}", e),
+            })?;
+        
+        let _ = tcp.set_nodelay(true);
+        
+        // Create tiberius client
+        use tokio_util::compat::TokioAsyncWriteCompatExt;
+        let mut client = tiberius::Client::connect(config, tcp.compat_write())
             .await
             .map_err(|e| QueryAstError::Execution {
                 query: sql.to_string(),

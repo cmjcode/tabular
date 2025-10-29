@@ -4,7 +4,7 @@
 //! database-specific SQL generation logic.
 
 use crate::models::enums::DatabaseType;
-use super::super::{logical::Expr, errors::QueryAstError};
+use super::super::errors::QueryAstError;
 
 /// Trait for database-specific SQL dialect
 pub trait SqlDialect: Send + Sync {

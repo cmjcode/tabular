@@ -59,7 +59,7 @@ pub fn compile_single_select(
             E::Null => {},
             E::Boolean(b)=> b.hash(h),
             E::Not(inner)=> hash_expr(inner,h),
-            E::IsNull { expr, negated } => { *negated as u8; hash_expr(expr,h); }
+            E::IsNull { expr, negated } => { let _ = *negated; hash_expr(expr,h); }
             E::Like { expr, pattern, negated } => { (*negated as u8).hash(h); hash_expr(expr,h); hash_expr(pattern,h); }
             E::InList { expr, list, negated } => { (*negated as u8).hash(h); hash_expr(expr,h); for i in list { hash_expr(i,h);} }
             E::Case { operand, when_then, else_expr } => { if let Some(o)=operand { hash_expr(o,h);} for (w,t) in when_then { hash_expr(w,h); hash_expr(t,h);} if let Some(e2)=else_expr { hash_expr(e2,h);} }
@@ -100,7 +100,7 @@ pub fn compile_single_select(
     }
     // Basic structural fingerprint: lowercase, remove redundant spaces and quote style agnostic
     fn structural_fingerprint(s: &str) -> u64 {
-        let norm = canonicalize_space(&s.to_ascii_lowercase().replace('`', "\"").replace('[', "\"").replace(']', "\""));
+        let norm = canonicalize_space(&s.to_ascii_lowercase().replace(['`', '[', ']'], "\""));
         let mut hasher = DefaultHasher::new(); norm.hash(&mut hasher); hasher.finish()
     }
     // let _canon = canonicalize_space(raw); // reserved for future debugging
@@ -111,8 +111,8 @@ pub fn compile_single_select(
 
     let mut working_sql = raw.to_string();
     // Very simple CTE inlining (Phase A): if WITH cte AS (sub) SELECT ... ; only support single simple CTE referenced once
-    if working_sql.trim_start().to_ascii_lowercase().starts_with("with ") {
-        if let Some(as_pos) = working_sql.to_ascii_lowercase().find(" as (") {
+    if working_sql.trim_start().to_ascii_lowercase().starts_with("with ")
+        && let Some(as_pos) = working_sql.to_ascii_lowercase().find(" as (") {
             // Extract cte name
             let with_body = &working_sql[4..as_pos];
             let cte_name = with_body.trim().trim_matches(|c: char| c==',' );
@@ -132,7 +132,6 @@ pub fn compile_single_select(
                 }
             }
         }
-    }
     let mut plan = parse_single_select_to_plan(&working_sql)?;
     // Compute precise hash of plan shape + expressions
     let mut hasher = DefaultHasher::new();
@@ -144,7 +143,7 @@ pub fn compile_single_select(
     apply_basic_rewrites(&mut plan, inject_auto_limit, pagination)?;
     // Extract remaining CTE names if any after rewrites (for debug UI)
     let mut remaining_ctes: Option<Vec<String>> = None;
-    if let logical::LogicalQueryPlan::With { ctes, .. } = &plan { if !ctes.is_empty() { remaining_ctes = Some(ctes.iter().map(|(n,_)| n.clone()).collect()); } }
+    if let logical::LogicalQueryPlan::With { ctes, .. } = &plan && !ctes.is_empty() { remaining_ctes = Some(ctes.iter().map(|(n,_)| n.clone()).collect()); }
     let headers = infer_headers_from_plan(&plan);
     let sql = emit_sql(&plan, db_type)?;
     // (Optionally we could store remaining_ctes inside PlanEntry in future)
@@ -154,7 +153,9 @@ pub fn compile_single_select(
     Ok((sql, headers))
 }
 
-thread_local! { static STORE_DEBUG: std::cell::RefCell<Option<(u64,String,Option<Vec<String>>)>> = const { std::cell::RefCell::new(None) }; }
+type StoreDebugType = Option<(u64,String,Option<Vec<String>>)>;
+
+thread_local! { static STORE_DEBUG: std::cell::RefCell<StoreDebugType> = const { std::cell::RefCell::new(None) }; }
 
 #[cfg(feature="query_ast")]
 pub fn take_last_debug() -> Option<(u64,String,Option<Vec<String>>)> { let mut out=None; STORE_DEBUG.with(|s| { out = s.borrow_mut().take(); }); out }
@@ -230,7 +231,7 @@ fn infer_headers_from_plan(plan: &LogicalQueryPlan) -> Vec<String> {
         for e in exprs {
             match e {
                 E::Alias { alias, .. } => out.push(alias.clone()),
-                E::Column(c) => out.push(c.split('.').last().unwrap_or(c).to_string()),
+                E::Column(c) => out.push(c.split('.').next_back().unwrap_or(c).to_string()),
                 E::FuncCall { name, .. } => out.push(name.clone()),
                 E::Star => return Vec::new(), // unknown until runtime
                 E::Number(n) => out.push(n.clone()),

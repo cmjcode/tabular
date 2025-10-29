@@ -6,8 +6,8 @@ use dialect::{SqlDialect, get_dialect};
 
 pub fn emit_sql(plan: &LogicalQueryPlan, db_type: &DatabaseType) -> Result<String, QueryAstError> {
     // If top-level is With and still has CTEs, emit a proper WITH clause wrapping emitted SELECT.
-    if let LogicalQueryPlan::With { ctes, input } = plan {
-        if !ctes.is_empty() {
+    if let LogicalQueryPlan::With { ctes, input } = plan
+        && !ctes.is_empty() {
             let mut parts = Vec::new();
             for (name, sql) in ctes {
                 // Ensure subquery body does not end with semicolon
@@ -17,7 +17,6 @@ pub fn emit_sql(plan: &LogicalQueryPlan, db_type: &DatabaseType) -> Result<Strin
             let rendered_inner = emit_sql(input, db_type)?; // recursive (will flatten below)
             return Ok(format!("WITH {} {}", parts.join(", "), rendered_inner));
         }
-    }
     // If top-level is a SetOp, emit recursively (each side may itself contain WITH already handled above)
     if let LogicalQueryPlan::SetOp { left, right, op } = plan {
         let left_sql = emit_sql(left, db_type)?;
@@ -61,7 +60,7 @@ fn flatten_plan(plan: &LogicalQueryPlan) -> FlatSelect {
                 // assume left eventually becomes main table, right is simple table scan
                 // Extract right table name if direct TableScan
                 let right_table = match &**right { LogicalQueryPlan::TableScan { table, alias } => match alias { Some(a)=> format!("{} {}", table, a), None=> table.clone() }, _ => "sub".into() };
-                acc.join = Some((kind.clone(), right_table, on.clone()));
+                acc.join = Some((*kind, right_table, on.clone()));
                 rec(left, acc);
             }
             LogicalQueryPlan::Having { predicate, input } => { acc.having = Some(predicate.clone()); rec(input, acc); }

@@ -38,7 +38,7 @@ pub fn run() -> Result<(), eframe::Error> {
     dotenv::dotenv().ok();
     let _ = env_logger::Builder::from_default_env()
         // Enable info-level logs for our crate so users can see data source messages
-        .filter_module("tabular", log::LevelFilter::Debug)
+        .filter_module("tabular", log::LevelFilter::Off)
         .is_test(false)
         .try_init();
     config::init_data_dir();
@@ -47,7 +47,7 @@ pub fn run() -> Result<(), eframe::Error> {
         config::get_data_dir().display()
     );
     let mut options = eframe::NativeOptions::default();
-    options.viewport.inner_size = Some(egui::vec2(1400.0, 900.0));
+    options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
     options.viewport.min_inner_size = Some(egui::vec2(800.0, 600.0));
     if let Some(icon) = modules::load_icon() {
         options.viewport.icon = Some(std::sync::Arc::new(icon));

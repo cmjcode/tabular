@@ -10,7 +10,7 @@ use futures_util::TryStreamExt;
 use std::sync::Arc;
 use log::{debug, warn};
 
-use crate::models::enums::{DatabaseType, DatabasePool};
+use crate::models::enums::DatabaseType;
 use crate::query_ast::executor::{DatabaseExecutor, QueryResult, SqlFeature};
 use crate::query_ast::errors::QueryAstError;
 
@@ -39,14 +39,14 @@ impl MongoDbExecutor {
         
         // Extract collection name after FROM
         let from_pos = sql_upper.find(" FROM ")
-            .ok_or_else(|| QueryAstError::Unsupported("Missing FROM clause"))?;
+            .ok_or(QueryAstError::Unsupported("Missing FROM clause"))?;
         
         let after_from = &sql[from_pos + 6..];
         
         // Find collection name (until WHERE, LIMIT, or end)
         let collection = after_from.split_whitespace()
             .next()
-            .ok_or_else(|| QueryAstError::Unsupported("Missing collection name"))?
+            .ok_or(QueryAstError::Unsupported("Missing collection name"))?
             .trim_matches(|c| c == '`' || c == '"' || c == ';')
             .to_string();
         
@@ -71,10 +71,10 @@ impl MongoDbExecutor {
         // Extract LIMIT
         let limit = if let Some(limit_pos) = sql_upper.find(" LIMIT ") {
             let limit_str = &sql[limit_pos + 7..];
-            let limit_num = limit_str.split_whitespace()
+            
+            limit_str.split_whitespace()
                 .next()
-                .and_then(|s| s.trim_matches(';').parse::<i64>().ok());
-            limit_num
+                .and_then(|s| s.trim_matches(';').parse::<i64>().ok())
         } else {
             None
         };

@@ -1,11 +1,11 @@
 //! SQLite database executor
 
 use async_trait::async_trait;
-use sqlx::{Sqlite, Row, Column};
+use sqlx::{Row, Column};
 use std::sync::Arc;
 use log::debug;
 
-use crate::models::enums::{DatabaseType, DatabasePool};
+use crate::models::enums::DatabaseType;
 use crate::query_ast::executor::{DatabaseExecutor, QueryResult, SqlFeature};
 use crate::query_ast::errors::QueryAstError;
 
