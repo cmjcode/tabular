@@ -33,7 +33,7 @@ pub trait SpreadsheetOperations {
     // Methods that need to be implemented by the parent struct
     fn execute_paginated_query(&mut self);
     fn update_current_page_data(&mut self);
-    
+
     // Method to get primary keys - can be overridden by implementors
     fn get_primary_keys_for_table(
         &self,
@@ -391,9 +391,7 @@ pub trait SpreadsheetOperations {
         // This method needs to be implemented by the parent struct to access cache
         // For now, fall back to first column if not overridden
         // Use only the first column (usually primary key like RecID) for WHERE clause
-        if let (Some(first_header), Some(first_value)) =
-            (headers.first(), row.first())
-        {
+        if let (Some(first_header), Some(first_value)) = (headers.first(), row.first()) {
             let lhs = self.spreadsheet_quote_ident(conn, first_header);
             let rhs = self.spreadsheet_quote_value(conn, first_value);
             Some(format!("{} = {}", lhs, rhs))
@@ -568,7 +566,6 @@ pub trait SpreadsheetOperations {
     fn execute_spreadsheet_sql(&mut self, sql: String);
 }
 
-
 // Implement the SpreadsheetOperations trait for Tabular
 impl SpreadsheetOperations for Tabular {
     fn get_spreadsheet_state(&self) -> &crate::models::structs::SpreadsheetState {
@@ -684,7 +681,7 @@ impl SpreadsheetOperations for Tabular {
             self.total_rows = 0;
         }
     }
-    
+
     fn get_primary_keys_for_table(
         &self,
         connection_id: i64,
@@ -696,7 +693,7 @@ impl SpreadsheetOperations for Tabular {
             let pool_clone = pool.clone();
             let db_name = database_name.to_string();
             let tbl_name = table_name.to_string();
-            
+
             let fut = async move {
                 // Query index_cache for PRIMARY index
                 let row_opt = sqlx::query(
@@ -709,10 +706,12 @@ impl SpreadsheetOperations for Tabular {
                 .fetch_optional(pool_clone.as_ref())
                 .await
                 .map_err(|e| format!("Failed to query index_cache: {}", e))?;
-                
+
                 if let Some(row) = row_opt {
                     use sqlx::Row as _;
-                    let columns_json: String = row.try_get(0).map_err(|e| format!("Failed to get columns_json: {}", e))?;
+                    let columns_json: String = row
+                        .try_get(0)
+                        .map_err(|e| format!("Failed to get columns_json: {}", e))?;
                     let columns: Vec<String> = serde_json::from_str(&columns_json)
                         .map_err(|e| format!("Failed to parse columns_json: {}", e))?;
                     Ok::<Vec<String>, String>(columns)
@@ -720,20 +719,29 @@ impl SpreadsheetOperations for Tabular {
                     Ok::<Vec<String>, String>(Vec::new())
                 }
             };
-            
+
             let result: Result<Vec<String>, String> = if let Some(ref rt) = self.runtime {
                 rt.block_on(fut)
             } else {
                 tokio::runtime::Runtime::new().ok()?.block_on(fut)
             };
-            
+
             match result {
                 Ok(pks) if !pks.is_empty() => {
-                    debug!("✅ Found {} primary key(s) from cache for {}.{}: {:?}", pks.len(), database_name, table_name, pks);
+                    debug!(
+                        "✅ Found {} primary key(s) from cache for {}.{}: {:?}",
+                        pks.len(),
+                        database_name,
+                        table_name,
+                        pks
+                    );
                     Some(pks)
                 }
                 Ok(_) => {
-                    debug!("⚠️ No primary key found in cache for {}.{}", database_name, table_name);
+                    debug!(
+                        "⚠️ No primary key found in cache for {}.{}",
+                        database_name, table_name
+                    );
                     None
                 }
                 Err(e) => {
@@ -768,7 +776,7 @@ impl SpreadsheetOperations for Tabular {
                     debug!("🔥 SQL executed successfully, clearing pending operations");
                     self.spreadsheet_state.pending_operations.clear();
                     self.spreadsheet_state.is_dirty = false;
-                    
+
                     // Clear newly created rows highlight after successful save
                     self.newly_created_rows.clear();
 
@@ -1289,34 +1297,45 @@ impl SpreadsheetOperations for Tabular {
     ) -> Option<String> {
         let row = self.get_current_table_data().get(row_index)?;
         let headers = self.get_current_table_headers();
-        
+
         // Try to get primary keys from cache
         let conn_id = conn.id?;
-        let database_name = self.query_tabs.get(self.active_tab_index)?.database_name.as_ref()?;
-        
+        let database_name = self
+            .query_tabs
+            .get(self.active_tab_index)?
+            .database_name
+            .as_ref()?;
+
         // Extract clean table name (without "Table: " prefix)
         let table_name = self.spreadsheet_extract_table_name()?;
-        
+
         // Get primary keys from cache using the trait method
         let primary_keys = self.get_primary_keys_for_table(conn_id, database_name, &table_name);
-        
-        debug!("🔍 Primary keys from cache for table {}: {:?}", table_name, primary_keys);
-        
+
+        debug!(
+            "🔍 Primary keys from cache for table {}: {:?}",
+            table_name, primary_keys
+        );
+
         if let Some(pk_cols) = primary_keys {
             if !pk_cols.is_empty() {
                 // Build WHERE clause using all primary key columns
                 let mut conditions = Vec::new();
                 for pk_col in &pk_cols {
                     if let Some(col_idx) = headers.iter().position(|h| h == pk_col)
-                        && let Some(value) = row.get(col_idx) {
-                            let lhs = self.spreadsheet_quote_ident(conn, pk_col);
-                            let rhs = self.spreadsheet_quote_value(conn, value);
-                            conditions.push(std::format!("{} = {}", lhs, rhs));
-                        }
+                        && let Some(value) = row.get(col_idx)
+                    {
+                        let lhs = self.spreadsheet_quote_ident(conn, pk_col);
+                        let rhs = self.spreadsheet_quote_value(conn, value);
+                        conditions.push(std::format!("{} = {}", lhs, rhs));
+                    }
                 }
-                
+
                 if !conditions.is_empty() {
-                    debug!("✅ Using primary key WHERE clause: {}", conditions.join(" AND "));
+                    debug!(
+                        "✅ Using primary key WHERE clause: {}",
+                        conditions.join(" AND ")
+                    );
                     return Some(conditions.join(" AND "));
                 } else {
                     debug!("⚠️ Primary keys found but no matching columns in headers");
@@ -1325,16 +1344,20 @@ impl SpreadsheetOperations for Tabular {
         } else {
             debug!("⚠️ No primary keys found in cache for table {}", table_name);
         }
-        
+
         // Fallback: use first column if it looks like an ID
         if let (Some(first_header), Some(first_value)) = (headers.first(), row.first())
-            && first_header.to_lowercase().contains("id") {
-                debug!("⚠️ Falling back to first column (looks like ID): {}", first_header);
-                let lhs = self.spreadsheet_quote_ident(conn, first_header);
-                let rhs = self.spreadsheet_quote_value(conn, first_value);
-                return Some(std::format!("{} = {}", lhs, rhs));
-            }
-        
+            && first_header.to_lowercase().contains("id")
+        {
+            debug!(
+                "⚠️ Falling back to first column (looks like ID): {}",
+                first_header
+            );
+            let lhs = self.spreadsheet_quote_ident(conn, first_header);
+            let rhs = self.spreadsheet_quote_value(conn, first_value);
+            return Some(std::format!("{} = {}", lhs, rhs));
+        }
+
         // Last resort: use all columns for WHERE clause
         debug!("⚠️ No primary key found, using all columns for WHERE clause");
         let mut conditions = Vec::new();
@@ -1345,12 +1368,11 @@ impl SpreadsheetOperations for Tabular {
                 conditions.push(std::format!("{} = {}", lhs, rhs));
             }
         }
-        
+
         if !conditions.is_empty() {
             Some(conditions.join(" AND "))
         } else {
             None
         }
     }
-
 }

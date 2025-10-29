@@ -39,7 +39,9 @@ pub async fn fetch_mongodb_data(
         client.list_database_names(),
     )
     .await
-    .map_err(|_| mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")))
+    .map_err(|_| {
+        mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout"))
+    })
     .and_then(|r| r)
     {
         Ok(v) => v,
@@ -75,7 +77,12 @@ pub async fn fetch_mongodb_data(
             client.database(db_name).list_collection_names(),
         )
         .await
-        .map_err(|_| mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")))
+        .map_err(|_| {
+            mongodb::error::Error::from(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timeout",
+            ))
+        })
         .and_then(|r| r)
         {
             Ok(cols) => {
@@ -137,7 +144,12 @@ pub fn fetch_collections_from_mongodb_connection(
                 client.database(database_name).list_collection_names(),
             )
             .await
-            .map_err(|_| mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")))
+            .map_err(|_| {
+                mongodb::error::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timeout",
+                ))
+            })
             .and_then(|r| r)
             {
                 Ok(cols) => Some(cols),
@@ -173,7 +185,12 @@ pub fn sample_collection_documents(
                 coll.find(doc! {}).limit(limit),
             )
             .await
-            .map_err(|_| mongodb::error::Error::from(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")))
+            .map_err(|_| {
+                mongodb::error::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timeout",
+                ))
+            })
             .and_then(|r| r)
             {
                 Ok(mut cursor) => {
@@ -214,16 +231,15 @@ pub async fn drop_collection(
         let coll = client
             .database(database_name)
             .collection::<mongodb::bson::Document>(collection_name);
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            coll.drop(),
-        )
-        .await
-        .map_err(|_| mongodb::error::Error::from(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "timeout",
-        )))
-        .and_then(|r| r)
+        match tokio::time::timeout(std::time::Duration::from_secs(10), coll.drop())
+            .await
+            .map_err(|_| {
+                mongodb::error::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timeout",
+                ))
+            })
+            .and_then(|r| r)
         {
             Ok(_) => true,
             Err(e) => {

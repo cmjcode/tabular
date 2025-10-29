@@ -13,7 +13,10 @@ pub struct SelectAst {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectItemAst {
-    Expr { expr: ExprAst, alias: Option<String> },
+    Expr {
+        expr: ExprAst,
+        alias: Option<String>,
+    },
     Wildcard,
 }
 
@@ -33,8 +36,15 @@ pub enum ExprAst {
     Column(String),
     StringLiteral(String),
     Number(String),
-    BinaryOp { left: Box<ExprAst>, op: String, right: Box<ExprAst> },
-    FuncCall { name: String, args: Vec<ExprAst> },
+    BinaryOp {
+        left: Box<ExprAst>,
+        op: String,
+        right: Box<ExprAst>,
+    },
+    FuncCall {
+        name: String,
+        args: Vec<ExprAst>,
+    },
     Paren(Box<ExprAst>),
     // Fallback for unsupported/complex expressions; stored as raw string for emission.
     Raw(String),

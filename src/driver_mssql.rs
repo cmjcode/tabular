@@ -255,8 +255,14 @@ pub(crate) fn fetch_objects_from_mssql_connection(
         .await
         {
             Ok(Ok(t)) => t,
-            Ok(Err(e)) => { log::debug!("MsSQL connect error for object fetch: {}", e); return None; }
-            Err(_) => { log::debug!("MsSQL connect timeout for object fetch"); return None; }
+            Ok(Err(e)) => {
+                log::debug!("MsSQL connect error for object fetch: {}", e);
+                return None;
+            }
+            Err(_) => {
+                log::debug!("MsSQL connect timeout for object fetch");
+                return None;
+            }
         };
         let _ = tcp.set_nodelay(true);
         let mut client = match tokio::time::timeout(
@@ -266,8 +272,14 @@ pub(crate) fn fetch_objects_from_mssql_connection(
         .await
         {
             Ok(Ok(c)) => c,
-            Ok(Err(e)) => { log::debug!("MsSQL client connect error: {}", e); return None; }
-            Err(_) => { log::debug!("MsSQL client connect timeout"); return None; }
+            Ok(Err(e)) => {
+                log::debug!("MsSQL client connect error: {}", e);
+                return None;
+            }
+            Err(_) => {
+                log::debug!("MsSQL client connect timeout");
+                return None;
+            }
         };
 
         let query = match object_type {
@@ -311,8 +323,14 @@ pub(crate) fn fetch_objects_from_mssql_connection(
         .await
         {
             Ok(Ok(s)) => s,
-            Ok(Err(e)) => { log::debug!("MsSQL object list query error: {}", e); return None; }
-            Err(_) => { log::debug!("MsSQL object list query timeout"); return None; }
+            Ok(Err(e)) => {
+                log::debug!("MsSQL object list query error: {}", e);
+                return None;
+            }
+            Err(_) => {
+                log::debug!("MsSQL object list query timeout");
+                return None;
+            }
         };
 
         let mut items = Vec::new();

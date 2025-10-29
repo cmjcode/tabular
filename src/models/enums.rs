@@ -61,9 +61,11 @@ pub enum DBASpecialMode {
 
 #[derive(Debug, Clone)]
 pub enum BackgroundTask {
-    RefreshConnection { connection_id: i64 },
+    RefreshConnection {
+        connection_id: i64,
+    },
     CheckForUpdates,
-    StartPrefetch { 
+    StartPrefetch {
         connection_id: i64,
         show_progress: bool, // Whether to show progress in UI
     },

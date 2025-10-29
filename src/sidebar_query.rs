@@ -328,13 +328,12 @@ pub(crate) fn open_query_file(
 
     // Create new tab for the file (with parsed connection metadata if any)
     // Fallback: if no connection metadata and exactly one connection exists, attach it
-    let auto_single_connection = if resolved_connection_id.is_none()
-        && tabular.connections.len() == 1
-    {
-        tabular.connections[0].id
-    } else {
-        None
-    };
+    let auto_single_connection =
+        if resolved_connection_id.is_none() && tabular.connections.len() == 1 {
+            tabular.connections[0].id
+        } else {
+            None
+        };
     let effective_connection_id = resolved_connection_id.or(auto_single_connection);
 
     let new_tab = models::structs::QueryTab {

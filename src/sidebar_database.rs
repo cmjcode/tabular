@@ -25,17 +25,19 @@ fn sort_connections_in_folder(
 ) {
     folder.children.sort_by(|a, b| {
         // Get connection info for both nodes
-        let conn_a = a.connection_id.and_then(|id| {
-            connections.iter().find(|c| c.id == Some(id))
-        });
-        let conn_b = b.connection_id.and_then(|id| {
-            connections.iter().find(|c| c.id == Some(id))
-        });
-        
+        let conn_a = a
+            .connection_id
+            .and_then(|id| connections.iter().find(|c| c.id == Some(id)));
+        let conn_b = b
+            .connection_id
+            .and_then(|id| connections.iter().find(|c| c.id == Some(id)));
+
         match (conn_a, conn_b) {
             (Some(ca), Some(cb)) => {
                 // Compare by database type first, then by name
-                match database_type_order(&ca.connection_type).cmp(&database_type_order(&cb.connection_type)) {
+                match database_type_order(&ca.connection_type)
+                    .cmp(&database_type_order(&cb.connection_type))
+                {
                     std::cmp::Ordering::Equal => ca.name.cmp(&cb.name),
                     other => other,
                 }
@@ -435,12 +437,16 @@ pub(crate) fn render_connection_dialog(
                                 // If database save successful, reload from database to get ID
                                 load_connections(tabular);
                                 // Find the newly added connection and add to tree incrementally
-                                let added_conn = tabular.connections.iter().find(|c| 
-                                    c.name == connection_to_add.name && 
-                                    c.host == connection_to_add.host &&
-                                    c.port == connection_to_add.port
-                                ).cloned();
-                                
+                                let added_conn = tabular
+                                    .connections
+                                    .iter()
+                                    .find(|c| {
+                                        c.name == connection_to_add.name
+                                            && c.host == connection_to_add.host
+                                            && c.port == connection_to_add.port
+                                    })
+                                    .cloned();
+
                                 if let Some(conn) = added_conn {
                                     add_connection_to_tree(tabular, &conn);
                                 }
@@ -661,12 +667,16 @@ pub(crate) fn copy_connection(tabular: &mut window_egui::Tabular, connection_id:
             // If database save successful, reload from database to get ID
             load_connections(tabular);
             // Find the newly copied connection and add to tree incrementally
-            let added_conn = tabular.connections.iter().find(|c| 
-                c.name == copied_connection.name && 
-                c.host == copied_connection.host &&
-                c.port == copied_connection.port
-            ).cloned();
-            
+            let added_conn = tabular
+                .connections
+                .iter()
+                .find(|c| {
+                    c.name == copied_connection.name
+                        && c.host == copied_connection.host
+                        && c.port == copied_connection.port
+                })
+                .cloned();
+
             if let Some(conn) = added_conn {
                 add_connection_to_tree(tabular, &conn);
             }
@@ -911,22 +921,28 @@ pub(crate) fn initialize_sample_data(tabular: &mut window_egui::Tabular) {
 pub(crate) fn refresh_connections_tree(tabular: &mut window_egui::Tabular) {
     // Save current expansion states before rebuilding
     let expansion_states = save_tree_expansion_states(&tabular.items_tree);
-    
+
     // Clear existing tree
     tabular.items_tree.clear();
 
     // Create folder structure for connections
     tabular.items_tree = create_connections_folder_structure(tabular);
-    
+
     // Restore expansion states
     restore_tree_expansion_states(&mut tabular.items_tree, &expansion_states);
 }
 
 // Helper to save expansion states recursively
-fn save_tree_expansion_states(tree: &[models::structs::TreeNode]) -> std::collections::HashMap<String, bool> {
+fn save_tree_expansion_states(
+    tree: &[models::structs::TreeNode],
+) -> std::collections::HashMap<String, bool> {
     let mut states = std::collections::HashMap::new();
-    
-    fn collect_states(node: &models::structs::TreeNode, states: &mut std::collections::HashMap<String, bool>, path: String) {
+
+    fn collect_states(
+        node: &models::structs::TreeNode,
+        states: &mut std::collections::HashMap<String, bool>,
+        path: String,
+    ) {
         if node.is_expanded {
             states.insert(path.clone(), true);
         }
@@ -939,17 +955,24 @@ fn save_tree_expansion_states(tree: &[models::structs::TreeNode]) -> std::collec
             collect_states(child, states, child_path);
         }
     }
-    
+
     for node in tree {
         collect_states(node, &mut states, node.name.clone());
     }
-    
+
     states
 }
 
 // Helper to restore expansion states recursively
-fn restore_tree_expansion_states(tree: &mut [models::structs::TreeNode], states: &std::collections::HashMap<String, bool>) {
-    fn restore_states(node: &mut models::structs::TreeNode, states: &std::collections::HashMap<String, bool>, path: String) {
+fn restore_tree_expansion_states(
+    tree: &mut [models::structs::TreeNode],
+    states: &std::collections::HashMap<String, bool>,
+) {
+    fn restore_states(
+        node: &mut models::structs::TreeNode,
+        states: &std::collections::HashMap<String, bool>,
+        path: String,
+    ) {
         if let Some(&expanded) = states.get(&path) {
             node.is_expanded = expanded;
         }
@@ -962,23 +985,33 @@ fn restore_tree_expansion_states(tree: &mut [models::structs::TreeNode], states:
             restore_states(child, states, child_path);
         }
     }
-    
+
     for node in tree {
         restore_states(node, states, node.name.clone());
     }
 }
 
 // Incremental update: Add a new connection to the tree without full rebuild
-pub(crate) fn add_connection_to_tree(tabular: &mut window_egui::Tabular, connection: &models::structs::ConnectionConfig) {
+pub(crate) fn add_connection_to_tree(
+    tabular: &mut window_egui::Tabular,
+    connection: &models::structs::ConnectionConfig,
+) {
     if let Some(id) = connection.id {
-        let folder_name = connection.folder.as_ref().unwrap_or(&"Default".to_string()).clone();
-        
-        
+        let folder_name = connection
+            .folder
+            .as_ref()
+            .unwrap_or(&"Default".to_string())
+            .clone();
+
         let display_name = format!("{} {}", connection.connection_type.icon(), connection.name);
         let new_node = models::structs::TreeNode::new_connection(display_name, id);
-        
+
         // Find or create the folder
-        if let Some(folder) = tabular.items_tree.iter_mut().find(|n| n.name == folder_name) {
+        if let Some(folder) = tabular
+            .items_tree
+            .iter_mut()
+            .find(|n| n.name == folder_name)
+        {
             // Add to existing folder, maintaining sort order by database type
             folder.children.push(new_node);
             sort_connections_in_folder(folder, &tabular.connections);
@@ -990,7 +1023,7 @@ pub(crate) fn add_connection_to_tree(tabular: &mut window_egui::Tabular, connect
             );
             new_folder.children.push(new_node);
             tabular.items_tree.push(new_folder);
-            
+
             // Re-sort folders
             tabular.items_tree.sort_by(|a, b| {
                 if a.name == "Default" {
@@ -1006,22 +1039,33 @@ pub(crate) fn add_connection_to_tree(tabular: &mut window_egui::Tabular, connect
 }
 
 // Incremental update: Update an existing connection in the tree
-pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, connection: &models::structs::ConnectionConfig) {
+pub(crate) fn update_connection_in_tree(
+    tabular: &mut window_egui::Tabular,
+    connection: &models::structs::ConnectionConfig,
+) {
     if let Some(id) = connection.id {
-        let new_folder = connection.folder.as_ref().unwrap_or(&"Default".to_string()).clone();
-                
+        let new_folder = connection
+            .folder
+            .as_ref()
+            .unwrap_or(&"Default".to_string())
+            .clone();
+
         let new_display_name = format!("{} {}", connection.connection_type.icon(), connection.name);
-        
+
         // Find and remove the old node (might be in different folder)
         let mut old_node_state: Option<(models::structs::TreeNode, String)> = None;
-        
+
         for folder in &mut tabular.items_tree {
-            if let Some(pos) = folder.children.iter().position(|n| n.connection_id == Some(id)) {
+            if let Some(pos) = folder
+                .children
+                .iter()
+                .position(|n| n.connection_id == Some(id))
+            {
                 old_node_state = Some((folder.children.remove(pos), folder.name.clone()));
                 break;
             }
         }
-        
+
         // Create updated node, preserving expansion state
         let mut updated_node = models::structs::TreeNode::new_connection(new_display_name, id);
         if let Some((old_node, old_folder)) = old_node_state {
@@ -1029,7 +1073,7 @@ pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, conn
             updated_node.is_expanded = old_node.is_expanded;
             updated_node.is_loaded = old_node.is_loaded;
             updated_node.children = old_node.children;
-            
+
             // Add to the new folder
             if let Some(folder) = tabular.items_tree.iter_mut().find(|n| n.name == new_folder) {
                 folder.children.push(updated_node);
@@ -1042,7 +1086,7 @@ pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, conn
                 );
                 new_folder_node.children.push(updated_node);
                 tabular.items_tree.push(new_folder_node);
-                
+
                 // Re-sort folders
                 tabular.items_tree.sort_by(|a, b| {
                     if a.name == "Default" {
@@ -1054,10 +1098,14 @@ pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, conn
                     }
                 });
             }
-            
+
             // Clean up empty folder if old folder is now empty
             if old_folder != new_folder
-                && let Some(pos) = tabular.items_tree.iter().position(|f| f.name == old_folder && f.children.is_empty()) {
+                && let Some(pos) = tabular
+                    .items_tree
+                    .iter()
+                    .position(|f| f.name == old_folder && f.children.is_empty())
+            {
                 tabular.items_tree.remove(pos);
             }
         }
@@ -1068,16 +1116,20 @@ pub(crate) fn update_connection_in_tree(tabular: &mut window_egui::Tabular, conn
 pub(crate) fn remove_connection_from_tree(tabular: &mut window_egui::Tabular, connection_id: i64) {
     // Find and remove the connection node
     for folder in &mut tabular.items_tree {
-        if let Some(pos) = folder.children.iter().position(|n| n.connection_id == Some(connection_id)) {
+        if let Some(pos) = folder
+            .children
+            .iter()
+            .position(|n| n.connection_id == Some(connection_id))
+        {
             folder.children.remove(pos);
             break;
         }
     }
-    
+
     // Remove empty folders (except Default)
-    tabular.items_tree.retain(|folder| {
-        !folder.children.is_empty() || folder.name == "Default"
-    });
+    tabular
+        .items_tree
+        .retain(|folder| !folder.children.is_empty() || folder.name == "Default");
 }
 
 pub(crate) fn create_connections_folder_structure(
@@ -1088,7 +1140,7 @@ pub(crate) fn create_connections_folder_structure(
         String,
         Vec<&models::structs::ConnectionConfig>,
     > = std::collections::HashMap::new();
-    
+
     // Group connections by custom folder
     for conn in &tabular.connections {
         let folder_name = conn
@@ -1116,7 +1168,7 @@ pub(crate) fn create_connections_folder_structure(
 
         // Add connections directly under the folder with database type icon
         let mut folder_connections = Vec::new();
-        
+
         for conn in connections {
             if let Some(id) = conn.id {
                 // Create display name with database icon
@@ -1136,7 +1188,10 @@ pub(crate) fn create_connections_folder_structure(
             }
         });
 
-        custom_folder.children = folder_connections.into_iter().map(|(node, _, _)| node).collect();
+        custom_folder.children = folder_connections
+            .into_iter()
+            .map(|(node, _, _)| node)
+            .collect();
         result.push(custom_folder);
     }
 

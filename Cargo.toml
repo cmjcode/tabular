@@ -82,7 +82,7 @@ thiserror = "1"
 async-trait = "0.1.89"
 
 [features]
-default = ["tree_sitter_sequel"]
+default = ["tree_sitter_sequel", "query_ast"]
 
 # Enable experimental tree-sitter SQL highlighting / structural parsing.
 # Activate with: `cargo run --features tree_sitter_sequel` (nama feature memakai underscore)

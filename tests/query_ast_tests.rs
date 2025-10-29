@@ -2,13 +2,14 @@
 // You can run: cargo test --features query_ast -- query_ast_tests
 #[cfg(feature = "query_ast")]
 mod query_ast_tests {
-    use tabular::query_ast::compile_single_select;
     use tabular::models::enums::DatabaseType;
+    use tabular::query_ast::compile_single_select;
 
     #[test]
     fn simple_select_projection() {
         let sql = "select id, name from users";
-        let (out_sql, headers) = compile_single_select(sql, &DatabaseType::MySQL, None, true).expect("ok");
+        let (out_sql, headers) =
+            compile_single_select(sql, &DatabaseType::MySQL, None, true).expect("ok");
         assert!(out_sql.to_lowercase().contains("select"));
         assert!(out_sql.to_lowercase().contains("from"));
         assert!(headers.iter().any(|h| h.eq_ignore_ascii_case("id")));
@@ -18,14 +19,16 @@ mod query_ast_tests {
     #[test]
     fn auto_limit_injection() {
         let sql = "select * from products order by created_at desc";
-        let (out_sql, _headers) = compile_single_select(sql, &DatabaseType::PostgreSQL, Some((1,50)), true).expect("ok");
+        let (out_sql, _headers) =
+            compile_single_select(sql, &DatabaseType::PostgreSQL, Some((1, 50)), true).expect("ok");
         assert!(out_sql.to_lowercase().contains("limit"));
     }
 
     #[test]
     fn aggregate_auto_alias() {
         let sql = "select count(*) from orders";
-        let (_out, headers) = compile_single_select(sql, &DatabaseType::MySQL, None, true).expect("ok");
+        let (_out, headers) =
+            compile_single_select(sql, &DatabaseType::MySQL, None, true).expect("ok");
         // Expect auto alias like count_col or count
         assert!(headers.iter().any(|h| h.starts_with("count")));
     }
@@ -33,7 +36,8 @@ mod query_ast_tests {
     #[test]
     fn distinct_with_limit() {
         let sql = "select distinct user_id from sessions";
-        let (out, _h) = compile_single_select(sql, &DatabaseType::SQLite, Some((0,10)), true).expect("ok");
+        let (out, _h) =
+            compile_single_select(sql, &DatabaseType::SQLite, Some((0, 10)), true).expect("ok");
         let lo = out.to_lowercase();
         assert!(lo.contains("select distinct"));
         assert!(lo.contains("limit"));
@@ -42,9 +46,10 @@ mod query_ast_tests {
     #[test]
     fn group_by_having_order_limit_sequence() {
         let sql = "select user_id, count(*) from logins where status = 'OK' group by user_id having count(*) > 2 order by user_id desc limit 5";
-        let (out, headers) = compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
-    let lo = out.to_lowercase();
-    eprintln!("EMITTED_SQL={}", lo);
+        let (out, headers) =
+            compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
+        let lo = out.to_lowercase();
+        eprintln!("EMITTED_SQL={}", lo);
         // Ensure clause ordering: select .. from .. where .. group by .. having .. order by .. limit ..
         let where_pos = lo.find(" where ").unwrap();
         let group_pos = lo.find(" group by ").unwrap();
@@ -60,7 +65,8 @@ mod query_ast_tests {
     #[test]
     fn join_group_distinct_having_combo() {
         let sql = "select distinct a.user_id, count(b.id) from accounts a left join sessions b on a.user_id = b.user_id where a.active = true group by a.user_id having count(b.id) > 1 order by a.user_id limit 20";
-        let (out, headers) = compile_single_select(sql, &DatabaseType::MySQL, None, true).expect("ok");
+        let (out, headers) =
+            compile_single_select(sql, &DatabaseType::MySQL, None, true).expect("ok");
         let lo = out.to_lowercase();
         assert!(lo.starts_with("select distinct"));
         assert!(lo.contains(" left join "));
@@ -81,7 +87,8 @@ mod query_ast_tests {
     #[test]
     fn subquery_in_from_supported() {
         let sql = "select t.user_id from (select user_id, count(*) c from logs group by user_id) t limit 10";
-        let (out, _h) = compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
+        let (out, _h) =
+            compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
         assert!(out.to_lowercase().contains("from (select"));
     }
 
@@ -95,7 +102,8 @@ mod query_ast_tests {
     #[test]
     fn cte_pass_through() {
         let sql = "WITH recent AS (select id, created_at from orders where created_at > now() - interval '7 days') select id from recent limit 10";
-        let (out, _h) = compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
+        let (out, _h) =
+            compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
         let lo = out.to_lowercase();
         assert!(lo.trim_start().starts_with("with "));
         assert!(lo.contains("limit 10"));
@@ -109,7 +117,7 @@ mod query_ast_tests {
         let (h1, m1) = tabular::query_ast::cache_stats();
         let _ = compile_single_select(sql, &DatabaseType::MySQL, None, true).unwrap();
         let (h2, m2) = tabular::query_ast::cache_stats();
-    assert!(h2 > h1, "expected hit counter to increase");
+        assert!(h2 > h1, "expected hit counter to increase");
         assert!(m2 == m1);
     }
 
@@ -118,8 +126,14 @@ mod query_ast_tests {
         let sql = "WITH cte AS (select id from users) select * from cte limit 5";
         let (out, _h) = compile_single_select(sql, &DatabaseType::MySQL, None, true).expect("ok");
         let lo = out.to_lowercase();
-        assert!(!lo.trim_start().starts_with("with "), "expected CTE to be inlined, got {lo}");
-        assert!(lo.contains("(select id from users)"), "expected subquery present: {lo}");
+        assert!(
+            !lo.trim_start().starts_with("with "),
+            "expected CTE to be inlined, got {lo}"
+        );
+        assert!(
+            lo.contains("(select id from users)"),
+            "expected subquery present: {lo}"
+        );
         assert!(lo.contains("limit 5"));
     }
 
@@ -132,16 +146,20 @@ mod query_ast_tests {
         let q2 = "select id from users limit 7"; // structurally identical
         let _ = compile_single_select(q2, &DatabaseType::PostgreSQL, None, true).unwrap();
         let (h2, m2) = tabular::query_ast::cache_stats();
-        assert!(h2 > h1, "expected cache hit to increase (h1={h1}, h2={h2}) m1={m1} m2={m2}");
+        assert!(
+            h2 > h1,
+            "expected cache hit to increase (h1={h1}, h2={h2}) m1={m1} m2={m2}"
+        );
     }
 
     #[test]
     fn window_function_basic() {
         let sql = "select id, row_number() over (partition by group_id order by created_at) as rn from events limit 10";
-        let (out, headers) = compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
+        let (out, headers) =
+            compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).expect("ok");
         let lo = out.to_lowercase();
         assert!(lo.contains("row_number() over"));
-        assert!(headers.iter().any(|h| h=="rn") || headers.iter().any(|h| h=="row_number"));
+        assert!(headers.iter().any(|h| h == "rn") || headers.iter().any(|h| h == "row_number"));
     }
 
     #[test]
@@ -152,6 +170,9 @@ mod query_ast_tests {
         // Ensure only one limit at end (no injected LIMIT into subquery text)
         let lower = out.to_ascii_lowercase();
         let subq_segment = lower.split("where exists").nth(1).unwrap_or("");
-        assert!(!subq_segment.contains(" limit 5"), "unexpected limit pushdown inside correlated subquery: {out}");
+        assert!(
+            !subq_segment.contains(" limit 5"),
+            "unexpected limit pushdown inside correlated subquery: {out}"
+        );
     }
 }

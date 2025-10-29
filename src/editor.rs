@@ -56,7 +56,7 @@ pub(crate) fn create_new_tab(
 
     tab_id
 }
- 
+
 // Convenience: create a new query tab and pre-assign a connection
 pub(crate) fn create_new_tab_with_connection(
     tabular: &mut window_egui::Tabular,
@@ -91,7 +91,7 @@ pub(crate) fn create_new_tab_with_connection_and_database(
     }
     tab_id
 }
- 
+
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     if tabular.query_tabs.len() <= 1 {
         // Don't close the last tab, just clear it
@@ -158,10 +158,22 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 current_tab.is_modified = true;
             }
             // Persist current global result state into the tab before switching (swap to avoid clones)
-            std::mem::swap(&mut current_tab.result_headers, &mut tabular.current_table_headers);
-            std::mem::swap(&mut current_tab.result_rows, &mut tabular.current_table_data);
-            std::mem::swap(&mut current_tab.result_all_rows, &mut tabular.all_table_data);
-            std::mem::swap(&mut current_tab.result_table_name, &mut tabular.current_table_name);
+            std::mem::swap(
+                &mut current_tab.result_headers,
+                &mut tabular.current_table_headers,
+            );
+            std::mem::swap(
+                &mut current_tab.result_rows,
+                &mut tabular.current_table_data,
+            );
+            std::mem::swap(
+                &mut current_tab.result_all_rows,
+                &mut tabular.all_table_data,
+            );
+            std::mem::swap(
+                &mut current_tab.result_table_name,
+                &mut tabular.current_table_name,
+            );
             current_tab.is_table_browse_mode = tabular.is_table_browse_mode;
             current_tab.current_page = tabular.current_page;
             current_tab.page_size = tabular.page_size;
@@ -179,10 +191,16 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
         if let Some(new_tab) = tabular.query_tabs.get_mut(tab_index) {
             tabular.editor.set_text(new_tab.content.clone());
             // Restore per-tab result state into global display (swap to avoid clones)
-            std::mem::swap(&mut tabular.current_table_headers, &mut new_tab.result_headers);
+            std::mem::swap(
+                &mut tabular.current_table_headers,
+                &mut new_tab.result_headers,
+            );
             std::mem::swap(&mut tabular.current_table_data, &mut new_tab.result_rows);
             std::mem::swap(&mut tabular.all_table_data, &mut new_tab.result_all_rows);
-            std::mem::swap(&mut tabular.current_table_name, &mut new_tab.result_table_name);
+            std::mem::swap(
+                &mut tabular.current_table_name,
+                &mut new_tab.result_table_name,
+            );
             tabular.is_table_browse_mode = new_tab.is_table_browse_mode;
             tabular.current_page = new_tab.current_page;
             tabular.page_size = new_tab.page_size;
@@ -220,7 +238,10 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
     }
     // Deferred connection attempt after borrows released: trigger background creation without blocking UI
     if let Some(conn_id) = need_connect {
-        log::debug!("Triggering background connection pool creation for {}", conn_id);
+        log::debug!(
+            "Triggering background connection pool creation for {}",
+            conn_id
+        );
         crate::connection::ensure_background_pool_creation(tabular, conn_id);
         // Optionally, we can set a friendly status indicator here if needed.
     }
@@ -430,7 +451,6 @@ pub(crate) fn save_current_tab_with_name(
 }
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-
     // Find & Replace panel
     if tabular.advanced_editor.show_find_replace {
         ui.horizontal(|ui| {
@@ -503,7 +523,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     indented.push_str(nl);
                 }
                 // Apply via rope edit API for consistency
-                tabular.editor.apply_single_replace(line_start..sel_end_clamped, &indented);
+                tabular
+                    .editor
+                    .apply_single_replace(line_start..sel_end_clamped, &indented);
                 tabular.selection_start = line_start;
                 tabular.selection_end = line_start + indented.len();
                 tabular.cursor_position = tabular.selection_end;
@@ -533,7 +555,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     outdented.push_str(nl);
                 }
                 if changed {
-                    tabular.editor.apply_single_replace(line_start..sel_end_clamped, &outdented);
+                    tabular
+                        .editor
+                        .apply_single_replace(line_start..sel_end_clamped, &outdented);
                     tabular.selection_start = line_start;
                     tabular.selection_end = line_start + outdented.len();
                     tabular.cursor_position = tabular.selection_end;
@@ -573,7 +597,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut arrow_up_pressed = false;
     ui.input(|i| {
         for ev in &i.events {
-            if let egui::Event::Key { key: egui::Key::Tab, pressed: true, .. } = ev {
+            if let egui::Event::Key {
+                key: egui::Key::Tab,
+                pressed: true,
+                ..
+            } = ev
+            {
                 raw_tab = true;
             }
         }
@@ -587,23 +616,35 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let mut _enter_consumed = false; // renamed to silence unused warning
             for ev in ri.events.drain(..) {
                 match ev {
-                    egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowDown,
+                        pressed: true,
+                        ..
+                    } => {
                         arrow_down_pressed = true;
                         // user navigated popup
                         tabular.autocomplete_navigated = true;
                     }
-                    egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowUp,
+                        pressed: true,
+                        ..
+                    } => {
                         arrow_up_pressed = true;
                         // user navigated popup
                         tabular.autocomplete_navigated = true;
                     }
                     // Smart Enter handling: only consume if we should accept autocomplete
-                    e @ egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                    e @ egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    } => {
                         // Heuristic: accept on Enter if user navigated OR
                         //  - there is only one suggestion OR
                         //  - selected suggestion extends current prefix (case-insensitive)
                         let mut should_accept = tabular.autocomplete_navigated;
-                        
+
                         if !should_accept {
                             let sugg_count = tabular.autocomplete_suggestions.len();
                             if sugg_count == 1 {
@@ -613,16 +654,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                                 if let Some(sugg) = tabular
                                     .autocomplete_suggestions
                                     .get(tabular.selected_autocomplete_index)
-                                    && !prefix.is_empty() {
-                                        let p = prefix.to_lowercase();
-                                        let s = sugg.to_lowercase();
-                                        if s.starts_with(&p) {
-                                            should_accept = true;
-                                        }
+                                    && !prefix.is_empty()
+                                {
+                                    let p = prefix.to_lowercase();
+                                    let s = sugg.to_lowercase();
+                                    if s.starts_with(&p) {
+                                        should_accept = true;
                                     }
+                                }
                             }
                         }
-                        
+
                         if should_accept {
                             enter_pressed_pre = true; // we'll accept suggestion
                             _enter_consumed = true;
@@ -632,10 +674,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         }
                     }
                     // Jangan hilangkan release events agar repeat logic internal tidak stuck; hanya pressed yang kita konsumsi
-                    other @ egui::Event::Key { key: egui::Key::ArrowDown, pressed: false, .. } => {
+                    other @ egui::Event::Key {
+                        key: egui::Key::ArrowDown,
+                        pressed: false,
+                        ..
+                    } => {
                         kept.push(other);
                     }
-                    other @ egui::Event::Key { key: egui::Key::ArrowUp, pressed: false, .. } => {
+                    other @ egui::Event::Key {
+                        key: egui::Key::ArrowUp,
+                        pressed: false,
+                        ..
+                    } => {
                         kept.push(other);
                     }
                     other => kept.push(other),
@@ -707,40 +757,58 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let mut do_delete_selection = false;
         let mut del_key_consumed = false;
         let mut has_selection = false;
-        
+
         // Check for key presses first
         let (pressed_bs, pressed_del) = ui.input(|i| {
-            (i.key_pressed(egui::Key::Backspace), i.key_pressed(egui::Key::Delete))
+            (
+                i.key_pressed(egui::Key::Backspace),
+                i.key_pressed(egui::Key::Delete),
+            )
         });
-        
+
         if pressed_bs || pressed_del {
             // Method 1: Check egui state selection (char indices)
-            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
-                && rng.start != rng.end {
-                    has_selection = true;
-                    log::debug!("Selection detected via egui state: {} to {}", rng.start, rng.end);
-                }
-            
-            
-            // Method 2: Fallback to stored selection state (byte indices)  
+            if let Some(rng) =
+                crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                && rng.start != rng.end
+            {
+                has_selection = true;
+                log::debug!(
+                    "Selection detected via egui state: {} to {}",
+                    rng.start,
+                    rng.end
+                );
+            }
+
+            // Method 2: Fallback to stored selection state (byte indices)
             if !has_selection && tabular.selection_start != tabular.selection_end {
                 has_selection = true;
-                log::debug!("Selection detected via stored state: {} to {}", tabular.selection_start, tabular.selection_end);
+                log::debug!(
+                    "Selection detected via stored state: {} to {}",
+                    tabular.selection_start,
+                    tabular.selection_end
+                );
             }
-            
+
             // Method 3: Check if there's selected text
             if !has_selection && !tabular.selected_text.is_empty() {
                 has_selection = true;
-                log::debug!("Selection detected via selected_text: '{}'", tabular.selected_text);
+                log::debug!(
+                    "Selection detected via selected_text: '{}'",
+                    tabular.selected_text
+                );
             }
-            
+
             // Only intercept and handle deletion if there's actually a selection
             // If no selection, let egui TextEdit handle normal Delete/Backspace behavior
             if has_selection {
                 do_delete_selection = true;
                 del_key_consumed = true;
-                log::debug!("Will delete selection on {} key", if pressed_del { "Delete" } else { "Backspace" });
-                
+                log::debug!(
+                    "Will delete selection on {} key",
+                    if pressed_del { "Delete" } else { "Backspace" }
+                );
+
                 // Remove the key event so TextEdit doesn't do additional mutation
                 ui.ctx().input_mut(|ri| {
                     ri.events.retain(|e| {
@@ -751,8 +819,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                                 pressed: true,
                                 ..
                             }
-                        ) &&
-                        !matches!(
+                        ) && !matches!(
                             e,
                             egui::Event::Key {
                                 key: egui::Key::Delete,
@@ -764,34 +831,43 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 });
             } else {
                 // No selection - let egui TextEdit handle normal Delete/Backspace
-                log::debug!("No selection detected, letting TextEdit handle {} key normally", if pressed_del { "Delete" } else { "Backspace" });
+                log::debug!(
+                    "No selection detected, letting TextEdit handle {} key normally",
+                    if pressed_del { "Delete" } else { "Backspace" }
+                );
                 // Proactively request a repaint to avoid any visual lag/stale frame (outside locks)
                 ui.ctx().request_repaint();
             }
         }
-        
+
         if do_delete_selection {
             let mut start_b = 0;
             let mut end_b = 0;
-            
+
             // Try to get selection range from egui state first
-            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
-                && rng.start != rng.end {
-                    start_b = to_byte_index(&tabular.editor.text, rng.start);
-                    end_b = to_byte_index(&tabular.editor.text, rng.end);
-                }
-            
-            
+            if let Some(rng) =
+                crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                && rng.start != rng.end
+            {
+                start_b = to_byte_index(&tabular.editor.text, rng.start);
+                end_b = to_byte_index(&tabular.editor.text, rng.end);
+            }
+
             // Fallback to stored selection
             if start_b == end_b {
                 start_b = tabular.selection_start;
                 end_b = tabular.selection_end;
             }
-            
+
             if start_b < end_b && end_b <= tabular.editor.text.len() {
                 let selected_text = &tabular.editor.text[start_b..end_b];
-                log::debug!("Deleting selection from {} to {}: '{}'", start_b, end_b, selected_text);
-                
+                log::debug!(
+                    "Deleting selection from {} to {}: '{}'",
+                    start_b,
+                    end_b,
+                    selected_text
+                );
+
                 tabular.editor.apply_single_replace(start_b..end_b, "");
                 tabular.cursor_position = start_b;
                 tabular.selection_start = start_b;
@@ -799,40 +875,46 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 tabular.selected_text.clear();
                 // Mark for hard selection clear enforcement next frame
                 tabular.selection_force_clear = true;
-                
+
                 // Sync egui caret to collapsed at start
                 let ci = to_char_index(&tabular.editor.text, start_b);
-                crate::editor_state_adapter::EditorStateAdapter::set_single(
-                    ui.ctx(), id, ci,
-                );
-                
+                crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
+
                 // CRITICAL: Ensure editor maintains focus and cursor stays active for immediate typing
                 ui.memory_mut(|m| m.request_focus(id));
-                
+
                 // Set focus boost to keep editor focused for several frames
                 tabular.editor_focus_boost_frames = 10;
-                
+
                 // Mark tab as modified
                 if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
                     tab.content = tabular.editor.text.clone();
                     tab.is_modified = true;
                 }
-                
-                log::debug!("Selection deleted successfully, cursor now at {} with focus maintained", start_b);
+
+                log::debug!(
+                    "Selection deleted successfully, cursor now at {} with focus maintained",
+                    start_b
+                );
                 // Log remaining text preview
                 {
                     let s = &tabular.editor.text;
                     let mut end = s.len();
                     for (count, (i, _)) in s.char_indices().enumerate() {
-                        if count >= 200 { end = i; break; }
+                        if count >= 200 {
+                            end = i;
+                            break;
+                        }
                     }
                     let rem = if end < s.len() {
                         format!("{}… (len={})", s[..end].escape_debug(), s.len())
-                    } else { s.escape_debug().to_string() };
+                    } else {
+                        s.escape_debug().to_string()
+                    };
                     log::debug!("Remaining text after selection delete: {}", rem);
                 }
             }
-            
+
             // If we consumed the key, request a repaint so UI reflects the change immediately
             if del_key_consumed {
                 ui.ctx().request_repaint();
@@ -847,7 +929,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let bs_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
         if bs_pressed && tabular.editor.text.is_empty() {
             // Ensure there's no selection
-            let selection_exists = if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+            let selection_exists = if let Some(rng) =
+                crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+            {
                 rng.start != rng.end
             } else {
                 tabular.selection_start != tabular.selection_end
@@ -859,10 +943,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     let mut kept = Vec::with_capacity(ri.events.len());
                     for ev in ri.events.drain(..) {
                         if !consumed_bs_empty
-                            && let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = ev {
-                                consumed_bs_empty = true;
-                                continue;
-                            }
+                            && let egui::Event::Key {
+                                key: egui::Key::Backspace,
+                                pressed: true,
+                                ..
+                            } = ev
+                        {
+                            consumed_bs_empty = true;
+                            continue;
+                        }
                         kept.push(ev);
                     }
                     ri.events = kept;
@@ -882,7 +971,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         if del_pressed_no_sel {
             // Determine if there's an active selection via egui state first, otherwise via stored state
             let mut has_selection = false;
-            if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+            if let Some(rng) =
+                crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+            {
                 has_selection = rng.start != rng.end;
             } else if tabular.selection_start != tabular.selection_end {
                 has_selection = true;
@@ -938,10 +1029,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             let mut kept = Vec::with_capacity(before);
                             for ev in ri.events.drain(..) {
                                 if !consumed_delete_event
-                                    && let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
-                                        consumed_delete_event = true;
-                                        continue;
-                                    }
+                                    && let egui::Event::Key {
+                                        key: egui::Key::Delete,
+                                        pressed: true,
+                                        ..
+                                    } = ev
+                                {
+                                    consumed_delete_event = true;
+                                    continue;
+                                }
                                 kept.push(ev);
                             }
                             ri.events = kept;
@@ -954,11 +1050,16 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             let s = &tabular.editor.text;
                             let mut end = s.len();
                             for (count, (i, _)) in s.char_indices().enumerate() {
-                                if count >= 200 { end = i; break; }
+                                if count >= 200 {
+                                    end = i;
+                                    break;
+                                }
                             }
                             let rem = if end < s.len() {
                                 format!("{}… (len={})", s[..end].escape_debug(), s.len())
-                            } else { s.escape_debug().to_string() };
+                            } else {
+                                s.escape_debug().to_string()
+                            };
                             log::debug!("Remaining text after forward delete: {}", rem);
                         }
                     }
@@ -990,7 +1091,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             s[..b].chars().count()
                         };
                         crate::editor_state_adapter::EditorStateAdapter::set_single(
-                            ui.ctx(), id, ci,
+                            ui.ctx(),
+                            id,
+                            ci,
                         );
                         ui.memory_mut(|m| m.request_focus(id));
                         tabular.editor_focus_boost_frames = 6;
@@ -1006,10 +1109,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             let mut kept = Vec::with_capacity(ri.events.len());
                             for ev in ri.events.drain(..) {
                                 if !consumed_delete_event
-                                    && let egui::Event::Key { key: egui::Key::Delete, pressed: true, .. } = ev {
-                                        consumed_delete_event = true;
-                                        continue;
-                                    }
+                                    && let egui::Event::Key {
+                                        key: egui::Key::Delete,
+                                        pressed: true,
+                                        ..
+                                    } = ev
+                                {
+                                    consumed_delete_event = true;
+                                    continue;
+                                }
                                 kept.push(ev);
                             }
                             ri.events = kept;
@@ -1022,11 +1130,16 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             let s = &tabular.editor.text;
                             let mut end = s.len();
                             for (count, (i, _)) in s.char_indices().enumerate() {
-                                if count >= 200 { end = i; break; }
+                                if count >= 200 {
+                                    end = i;
+                                    break;
+                                }
                             }
                             let rem = if end < s.len() {
                                 format!("{}… (len={})", s[..end].escape_debug(), s.len())
-                            } else { s.escape_debug().to_string() };
+                            } else {
+                                s.escape_debug().to_string()
+                            };
                             log::debug!("Remaining text after delete-at-end/backspace: {}", rem);
                         }
                     }
@@ -1037,7 +1150,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Note: Removed the confusing "Backspace at start -> forward delete" behavior
     // Now Backspace at start of text does nothing (standard behavior)
     // If users want to delete forward, they should use the Delete key (Fn+Delete on Mac)
-    
+
     // [DISABLED] Special-case: Backspace at start-of-text with no selection -> perform forward delete of next grapheme
     // This entire block has been commented out because it was confusing - backspace at start should do nothing
     /*
@@ -1067,12 +1180,22 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let line_bounds = |s: &str, pos: usize| -> (usize, usize, usize) {
         let bytes = s.as_bytes();
         let mut start = pos.min(bytes.len());
-        while start > 0 && bytes[start - 1] != b'\n' { start -= 1; }
+        while start > 0 && bytes[start - 1] != b'\n' {
+            start -= 1;
+        }
         let mut end = pos.min(bytes.len());
-        while end < bytes.len() && bytes[end] != b'\n' { end += 1; }
+        while end < bytes.len() && bytes[end] != b'\n' {
+            end += 1;
+        }
         // compute line number (slow but fine for pre-op)
-        let mut ln = 0usize; let mut idx = 0usize;
-        while idx < start { if bytes[idx] == b'\n' { ln += 1; } idx += 1; }
+        let mut ln = 0usize;
+        let mut idx = 0usize;
+        while idx < start {
+            if bytes[idx] == b'\n' {
+                ln += 1;
+            }
+            idx += 1;
+        }
         (start, end, ln)
     };
     // Consume relevant events and set flags
@@ -1080,24 +1203,54 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let mut kept = Vec::with_capacity(ri.events.len());
         for ev in ri.events.drain(..) {
             match ev {
-                egui::Event::Key { key: egui::Key::ArrowLeft, pressed: true, modifiers, .. } if modifiers.alt => {
+                egui::Event::Key {
+                    key: egui::Key::ArrowLeft,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.alt => {
                     word_left_pressed = true;
                     word_nav_shift = modifiers.shift;
                 }
-                egui::Event::Key { key: egui::Key::ArrowRight, pressed: true, modifiers, .. } if modifiers.alt => {
+                egui::Event::Key {
+                    key: egui::Key::ArrowRight,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.alt => {
                     word_right_pressed = true;
                     word_nav_shift = modifiers.shift;
                 }
-                egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.shift => {
+                egui::Event::Key {
+                    key: egui::Key::ArrowUp,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.alt && !modifiers.shift => {
                     move_line_up = true;
                 }
-                egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.shift => {
+                egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.alt && !modifiers.shift => {
                     move_line_down = true;
                 }
-                egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, modifiers, .. } if modifiers.alt && modifiers.shift => {
+                egui::Event::Key {
+                    key: egui::Key::ArrowUp,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.alt && modifiers.shift => {
                     dup_line_up = true;
                 }
-                egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, modifiers, .. } if modifiers.alt && modifiers.shift => {
+                egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.alt && modifiers.shift => {
                     dup_line_down = true;
                 }
                 other => kept.push(other),
@@ -1128,7 +1281,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let end_ci = to_char_index(&tabular.editor.text, anchor.max(new_pos));
             let primary_ci = to_char_index(&tabular.editor.text, new_pos);
             crate::editor_state_adapter::EditorStateAdapter::set_selection(
-                ui.ctx(), id, start_ci, end_ci, primary_ci,
+                ui.ctx(),
+                id,
+                start_ci,
+                end_ci,
+                primary_ci,
             );
             tabular.selection_start = anchor.min(new_pos);
             tabular.selection_end = anchor.max(new_pos);
@@ -1153,11 +1310,20 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let text = &mut tabular.editor.text;
         let len = text.len();
         let rng = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id);
-        let (sel_start, sel_end) = if let Some(r) = rng { (r.start, r.end) } else { (tabular.selection_start.min(len), tabular.selection_end.min(len)) };
+        let (sel_start, sel_end) = if let Some(r) = rng {
+            (r.start, r.end)
+        } else {
+            (
+                tabular.selection_start.min(len),
+                tabular.selection_end.min(len),
+            )
+        };
         // Expand to whole lines
-    let (line_start, _, _) = line_bounds(text, sel_start);
+        let (line_start, _, _) = line_bounds(text, sel_start);
         let (_, mut line_end, _) = line_bounds(text, sel_end.max(sel_start));
-        if line_end < len { line_end += 1; /* include trailing \n of last line if present */ }
+        if line_end < len {
+            line_end += 1; /* include trailing \n of last line if present */
+        }
         // Extract block
         let block = text.get(line_start..line_end).unwrap_or("").to_string();
         // Locate neighbor line bounds
@@ -1165,45 +1331,79 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if line_start == 0 {
                 // Top-most; duplicate above still allowed
                 if dup_line_up {
-                    tabular.editor.apply_single_replace(line_start..line_start, &block);
+                    tabular
+                        .editor
+                        .apply_single_replace(line_start..line_start, &block);
                     let new_start = line_start;
                     let new_end = line_end + block.len();
                     let s_ci = to_char_index(&tabular.editor.text, new_start);
                     let e_ci = to_char_index(&tabular.editor.text, new_end);
-                    crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, s_ci, e_ci, e_ci);
-                    tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+                    crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                        ui.ctx(),
+                        id,
+                        s_ci,
+                        e_ci,
+                        e_ci,
+                    );
+                    tabular.selection_start = new_start;
+                    tabular.selection_end = new_end;
+                    tabular.cursor_position = new_end;
                 }
             } else {
                 // Find previous line start
                 let prev_start = {
                     let bytes = text.as_bytes();
                     let mut s = line_start - 1; // currently at '\n' or char before current line
-                    while s > 0 && bytes[s - 1] != b'\n' { s -= 1; }
+                    while s > 0 && bytes[s - 1] != b'\n' {
+                        s -= 1;
+                    }
                     s
                 };
                 if move_line_up {
                     // Remove block and insert before previous line
                     // First remove
                     let removed = block.clone();
-                    tabular.editor.apply_single_replace(line_start..line_end, "");
+                    tabular
+                        .editor
+                        .apply_single_replace(line_start..line_end, "");
                     // Adjust indices after removal
                     let insert_at = prev_start;
-                    tabular.editor.apply_single_replace(insert_at..insert_at, &removed);
+                    tabular
+                        .editor
+                        .apply_single_replace(insert_at..insert_at, &removed);
                     let new_start = insert_at;
                     let new_end = insert_at + removed.len();
                     let s_ci = to_char_index(&tabular.editor.text, new_start);
                     let e_ci = to_char_index(&tabular.editor.text, new_end);
-                    crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, s_ci, e_ci, e_ci);
-                    tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+                    crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                        ui.ctx(),
+                        id,
+                        s_ci,
+                        e_ci,
+                        e_ci,
+                    );
+                    tabular.selection_start = new_start;
+                    tabular.selection_end = new_end;
+                    tabular.cursor_position = new_end;
                 } else if dup_line_up {
                     let insert_at = prev_start;
-                    tabular.editor.apply_single_replace(insert_at..insert_at, &block);
+                    tabular
+                        .editor
+                        .apply_single_replace(insert_at..insert_at, &block);
                     let new_start = insert_at;
                     let new_end = insert_at + block.len();
                     let s_ci = to_char_index(&tabular.editor.text, new_start);
                     let e_ci = to_char_index(&tabular.editor.text, new_end);
-                    crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, s_ci, e_ci, e_ci);
-                    tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+                    crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                        ui.ctx(),
+                        id,
+                        s_ci,
+                        e_ci,
+                        e_ci,
+                    );
+                    tabular.selection_start = new_start;
+                    tabular.selection_end = new_end;
+                    tabular.cursor_position = new_end;
                 }
             }
         } else if move_line_down || dup_line_down {
@@ -1212,30 +1412,56 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if move_line_down {
                 // Remove block, then insert after next line
                 let removed = block.clone();
-                tabular.editor.apply_single_replace(line_start..line_end, "");
+                tabular
+                    .editor
+                    .apply_single_replace(line_start..line_end, "");
                 // After removal, the insertion point shifts left by removed.len()
                 let mut after_next = insert_after - removed.len();
                 // Move past the next line (find its end)
                 let bytes2 = tabular.editor.text.as_bytes();
                 let mut s = after_next;
-                while s < bytes2.len() && bytes2[s] != b'\n' { s += 1; }
-                if s < bytes2.len() { s += 1; }
+                while s < bytes2.len() && bytes2[s] != b'\n' {
+                    s += 1;
+                }
+                if s < bytes2.len() {
+                    s += 1;
+                }
                 after_next = s;
-                tabular.editor.apply_single_replace(after_next..after_next, &removed);
+                tabular
+                    .editor
+                    .apply_single_replace(after_next..after_next, &removed);
                 let new_start = after_next;
                 let new_end = after_next + block.len();
                 let s_ci = to_char_index(&tabular.editor.text, new_start);
                 let e_ci = to_char_index(&tabular.editor.text, new_end);
-                crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, s_ci, e_ci, e_ci);
-                tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+                crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                    ui.ctx(),
+                    id,
+                    s_ci,
+                    e_ci,
+                    e_ci,
+                );
+                tabular.selection_start = new_start;
+                tabular.selection_end = new_end;
+                tabular.cursor_position = new_end;
             } else if dup_line_down {
-                tabular.editor.apply_single_replace(insert_after..insert_after, &block);
+                tabular
+                    .editor
+                    .apply_single_replace(insert_after..insert_after, &block);
                 let new_start = insert_after;
                 let new_end = insert_after + block.len();
                 let s_ci = to_char_index(&tabular.editor.text, new_start);
                 let e_ci = to_char_index(&tabular.editor.text, new_end);
-                crate::editor_state_adapter::EditorStateAdapter::set_selection(ui.ctx(), id, s_ci, e_ci, e_ci);
-                tabular.selection_start = new_start; tabular.selection_end = new_end; tabular.cursor_position = new_end;
+                crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                    ui.ctx(),
+                    id,
+                    s_ci,
+                    e_ci,
+                    e_ci,
+                );
+                tabular.selection_start = new_start;
+                tabular.selection_end = new_end;
+                tabular.cursor_position = new_end;
             }
         }
         ui.memory_mut(|m| m.request_focus(id));
@@ -1256,12 +1482,28 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().input_mut(|ri| {
             let before = ri.events.len();
             ri.events.retain(|e| {
-                !matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, .. })
-                    && !matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Tab,
+                        pressed: true,
+                        ..
+                    }
+                ) && !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    }
+                )
             });
             let removed = before - ri.events.len();
             if removed > 0 {
-                log::debug!("Removed {} key event(s) (Tab/Enter) before autocomplete accept", removed);
+                log::debug!(
+                    "Removed {} key event(s) (Tab/Enter) before autocomplete accept",
+                    removed
+                );
             }
         });
         // Mark acceptance to be applied after TextEdit render
@@ -1284,7 +1526,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Simple layouter; honor Word Wrap toggle by adjusting max_width
     let word_wrap = tabular.advanced_editor.word_wrap;
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
-    let mut job = crate::syntax_ts::highlight_text(text.as_str(), lang, dark);
+        let mut job = crate::syntax_ts::highlight_text(text.as_str(), lang, dark);
         job.wrap.max_width = if word_wrap { wrap_width } else { f32::INFINITY };
         ui.fonts(|f| f.layout_job(job))
     };
@@ -1300,17 +1542,23 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Snapshot pre-change text and caret/selection for debug diff
     let pre_text_for_diff = tabular.editor.text.clone();
     let pre_state_for_diff = crate::editor_state_adapter::EditorStateAdapter::get_range(
-        ui.ctx(), egui::Id::new("sql_editor"),
+        ui.ctx(),
+        egui::Id::new("sql_editor"),
     );
-    let (pre_sel_start_b, pre_sel_end_b, pre_cursor_b_for_diff) = if let Some(r) = pre_state_for_diff {
-        let ss = to_byte_index(&tabular.editor.text, r.start);
-        let ee = to_byte_index(&tabular.editor.text, r.end);
-        let pp = to_byte_index(&tabular.editor.text, r.primary);
-        (ss, ee, pp)
-    } else {
-        let p = tabular.cursor_position.min(tabular.editor.text.len());
-        (tabular.selection_start.min(tabular.editor.text.len()), tabular.selection_end.min(tabular.editor.text.len()), p)
-    };
+    let (pre_sel_start_b, pre_sel_end_b, pre_cursor_b_for_diff) =
+        if let Some(r) = pre_state_for_diff {
+            let ss = to_byte_index(&tabular.editor.text, r.start);
+            let ee = to_byte_index(&tabular.editor.text, r.end);
+            let pp = to_byte_index(&tabular.editor.text, r.primary);
+            (ss, ee, pp)
+        } else {
+            let p = tabular.cursor_position.min(tabular.editor.text.len());
+            (
+                tabular.selection_start.min(tabular.editor.text.len()),
+                tabular.selection_end.min(tabular.editor.text.len()),
+                p,
+            )
+        };
 
     let text_edit = egui::TextEdit::multiline(&mut tabular.editor.text)
         .font(egui::TextStyle::Monospace)
@@ -1365,21 +1613,34 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Tidak lagi override clip_rect secara manual; biarkan ScrollArea mengatur viewport dan scrolling.
     let response = ui.put(editor_rect, text_edit);
-    
+
     // While focus boost is active, keep focus on the editor so typing works immediately after actions
     if tabular.editor_focus_boost_frames > 0 {
         ui.memory_mut(|m| m.request_focus(response.id));
-        log::debug!("Focus boost active: {} frames remaining", tabular.editor_focus_boost_frames);
+        log::debug!(
+            "Focus boost active: {} frames remaining",
+            tabular.editor_focus_boost_frames
+        );
     }
     // VSCode-like: subtle current line highlight
     if response.has_focus() {
         let cur = tabular.cursor_position.min(tabular.editor.text.len());
         let bytes = tabular.editor.text.as_bytes();
-        let mut line_no = 0usize; let mut i = 0usize;
-        while i < cur { if bytes[i] == b'\n' { line_no += 1; } i += 1; }
+        let mut line_no = 0usize;
+        let mut i = 0usize;
+        while i < cur {
+            if bytes[i] == b'\n' {
+                line_no += 1;
+            }
+            i += 1;
+        }
         let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let y_top = response.rect.top() + 6.0 + (line_no as f32) * line_height;
-        let gutter_w = if tabular.advanced_editor.show_line_numbers { gutter_width } else { 0.0 };
+        let gutter_w = if tabular.advanced_editor.show_line_numbers {
+            gutter_width
+        } else {
+            0.0
+        };
         let rect = egui::Rect::from_min_max(
             egui::pos2(response.rect.left() + gutter_w, y_top),
             egui::pos2(response.rect.right(), y_top + line_height),
@@ -1410,11 +1671,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
-    if input_snapshot.key_pressed(egui::Key::Escape)
-        && !tabular.multi_selection.is_empty() {
-            tabular.multi_selection.clear();
-            tabular.selected_text.clear();
-        }
+    if input_snapshot.key_pressed(egui::Key::Escape) && !tabular.multi_selection.is_empty() {
+        tabular.multi_selection.clear();
+        tabular.selected_text.clear();
+    }
     let cmd_or_ctrl = input_snapshot.modifiers.command || input_snapshot.modifiers.ctrl;
     if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
         // tabular.add_next_occurrence_cursor(); // already mirrors into multi_selection
@@ -1423,70 +1683,89 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Alt/Option + Click to add an extra caret (approximate hit-test on monospace grid)
     if input_snapshot.modifiers.alt
         && let Some(pos) = input_snapshot.pointer.interact_pos()
-            && input_snapshot.pointer.primary_clicked()
-            && response.rect.contains(pos)
-        {
-            // Compute line/column based on painter metrics
-            let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
-            let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
-            let gutter_width = if tabular.advanced_editor.show_line_numbers {
-                let total_lines = tabular.editor.text.lines().count().max(1);
-                ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0'))
-                    * (total_lines.to_string().len() as f32 + 1.0)
-            } else { 0.0 };
-            let local = pos - response.rect.min;
-            let mut line = ((local.y - 6.0) / line_height).floor() as isize;
-            let mut col = ((local.x - gutter_width - 6.0) / char_w).floor() as isize;
-            if line < 0 { line = 0; }
-            if col < 0 { col = 0; }
-            let line = line as usize;
-            let col = col as usize;
-            let start = tabular.editor.line_start(line);
-            let end = if line + 1 < tabular.editor.line_count() { tabular.editor.line_start(line + 1).min(tabular.editor.text.len()) } else { tabular.editor.text.len() };
-            let slice = &tabular.editor.text[start..end];
-            let mut byte_off = start;
-            let mut chars = 0usize;
-            for (i, _) in slice.char_indices() {
-                if chars >= col { break; }
-                chars += 1; byte_off = start + i + 1;
-            }
-            // If requested column beyond line length, clamp to end
-            if chars < col { byte_off = end; }
-            tabular.add_cursor(byte_off);
-            ui.ctx().request_repaint();
+        && input_snapshot.pointer.primary_clicked()
+        && response.rect.contains(pos)
+    {
+        // Compute line/column based on painter metrics
+        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        let char_w =
+            ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
+        let gutter_width = if tabular.advanced_editor.show_line_numbers {
+            let total_lines = tabular.editor.text.lines().count().max(1);
+            ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0'))
+                * (total_lines.to_string().len() as f32 + 1.0)
+        } else {
+            0.0
+        };
+        let local = pos - response.rect.min;
+        let mut line = ((local.y - 6.0) / line_height).floor() as isize;
+        let mut col = ((local.x - gutter_width - 6.0) / char_w).floor() as isize;
+        if line < 0 {
+            line = 0;
         }
+        if col < 0 {
+            col = 0;
+        }
+        let line = line as usize;
+        let col = col as usize;
+        let start = tabular.editor.line_start(line);
+        let end = if line + 1 < tabular.editor.line_count() {
+            tabular
+                .editor
+                .line_start(line + 1)
+                .min(tabular.editor.text.len())
+        } else {
+            tabular.editor.text.len()
+        };
+        let slice = &tabular.editor.text[start..end];
+        let mut byte_off = start;
+        let mut chars = 0usize;
+        for (i, _) in slice.char_indices() {
+            if chars >= col {
+                break;
+            }
+            chars += 1;
+            byte_off = start + i + 1;
+        }
+        // If requested column beyond line length, clamp to end
+        if chars < col {
+            byte_off = end;
+        }
+        tabular.add_cursor(byte_off);
+        ui.ctx().request_repaint();
+    }
 
     // Handle multi-cursor typing - apply changes to all cursors
     // Multi-selection typing compensations handled later in response.changed() branch now.
     if tabular.advanced_editor.show_line_numbers
         && let Some(gutter_rect) =
             ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("gutter_rect")))
-        {
-            let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
-            let total_lines = tabular.editor.text.lines().count().max(1);
-            let editor_height = response.rect.height();
-            let needed_height = line_height * total_lines as f32 + 8.0;
-            let final_rect = egui::Rect::from_min_size(
-                gutter_rect.min,
-                egui::vec2(gutter_rect.width(), editor_height.max(needed_height)),
+    {
+        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        let total_lines = tabular.editor.text.lines().count().max(1);
+        let editor_height = response.rect.height();
+        let needed_height = line_height * total_lines as f32 + 8.0;
+        let final_rect = egui::Rect::from_min_size(
+            gutter_rect.min,
+            egui::vec2(gutter_rect.width(), editor_height.max(needed_height)),
+        );
+        let painter = ui.painter();
+        painter.rect_filled(final_rect, 0.0, ui.visuals().faint_bg_color);
+        let mut y = final_rect.top() + 4.0;
+        for (i, _) in tabular.editor.text.lines().enumerate() {
+            painter.text(
+                egui::pos2(final_rect.right() - 6.0, y),
+                egui::Align2::RIGHT_TOP,
+                (i + 1).to_string(),
+                egui::TextStyle::Monospace.resolve(ui.style()),
+                ui.visuals().weak_text_color(),
             );
-            let painter = ui.painter();
-            painter.rect_filled(final_rect, 0.0, ui.visuals().faint_bg_color);
-            let mut y = final_rect.top() + 4.0;
-            for (i, _) in tabular.editor.text.lines().enumerate() {
-                painter.text(
-                    egui::pos2(final_rect.right() - 6.0, y),
-                    egui::Align2::RIGHT_TOP,
-                    (i + 1).to_string(),
-                    egui::TextStyle::Monospace.resolve(ui.style()),
-                    ui.visuals().weak_text_color(),
-                );
-                y += line_height;
-                if y > final_rect.bottom() {
-                    break;
-                }
+            y += line_height;
+            if y > final_rect.bottom() {
+                break;
             }
         }
+    }
 
     // Paint extra cursors (after gutter so they appear above text) using approximate positioning
     if !tabular.multi_selection.is_empty() {
@@ -1546,20 +1825,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let mut reapplied = false;
         if let Some(s2) = TextEditState::load(ui.ctx(), id)
             && let Some(rng) = s2.cursor.char_range()
-            && rng.primary.index != ci {
-                let mut s3 = s2;
-                s3.cursor
-                    .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
-                s3.store(ui.ctx(), id);
-                reapplied = true;
-            }
+            && rng.primary.index != ci
+        {
+            let mut s3 = s2;
+            s3.cursor
+                .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
+            s3.store(ui.ctx(), id);
+            reapplied = true;
+        }
         tabular.cursor_position = clamped;
         tabular.pending_cursor_set = None;
         // Enforce for a few frames to fight any late overrides
         tabular.autocomplete_expected_cursor = Some(clamped);
-        tabular.autocomplete_protection_frames = tabular
-            .autocomplete_protection_frames
-            .max(8);
+        tabular.autocomplete_protection_frames = tabular.autocomplete_protection_frames.max(8);
         // Keep focus and repaint so the caret moves visually this frame
         ui.memory_mut(|m| m.request_focus(id));
         ui.ctx().request_repaint();
@@ -1591,7 +1869,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     let exp_ci = to_char_index(&tabular.editor.text, expected);
                     if current != exp_ci {
                         let mut st = state;
-                        st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
+                        st.cursor
+                            .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
                         st.store(ui.ctx(), id);
                         ui.memory_mut(|m| m.request_focus(id));
                     }
@@ -1599,12 +1878,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             } else {
                 let mut st = TextEditState::default();
                 let exp_ci = to_char_index(&tabular.editor.text, expected);
-                st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
+                st.cursor
+                    .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
                 st.store(ui.ctx(), id);
                 ui.memory_mut(|m| m.request_focus(id));
             }
         }
-        tabular.autocomplete_protection_frames = tabular.autocomplete_protection_frames.saturating_sub(1);
+        tabular.autocomplete_protection_frames =
+            tabular.autocomplete_protection_frames.saturating_sub(1);
         if tabular.autocomplete_protection_frames == 0 {
             tabular.autocomplete_expected_cursor = None;
         }
@@ -1643,11 +1924,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     // Adjust egui state cursor (convert byte -> char index)
                     let id = egui::Id::new("sql_editor");
                     let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
-                    crate::editor_state_adapter::EditorStateAdapter::set_single(
-                        ui.ctx(),
-                        id,
-                        ci,
-                    );
+                    crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
                     log::debug!(
                         "Removed tab character from accepted token; new token='{}'",
                         cleaned
@@ -1723,7 +2000,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let post_b = post_s.as_bytes();
         let mut pref = 0usize;
         let max_pref = pre_b.len().min(post_b.len());
-        while pref < max_pref && pre_b[pref] == post_b[pref] { pref += 1; }
+        while pref < max_pref && pre_b[pref] == post_b[pref] {
+            pref += 1;
+        }
         let mut pre_suf = pre_b.len();
         let mut post_suf = post_b.len();
         while pre_suf > pref && post_suf > pref && pre_b[pre_suf - 1] == post_b[post_suf - 1] {
@@ -1732,24 +2011,30 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
         let deleted_dbg = pre_s[pref..pre_suf].escape_debug().to_string();
         let inserted_dbg = post_s[pref..post_suf].escape_debug().to_string();
-        let post_state_for_diff = crate::editor_state_adapter::EditorStateAdapter::get_range(
-            ui.ctx(), response.id,
-        );
-        let (post_sel_start_b, post_sel_end_b, post_cursor_b_for_diff) = if let Some(r) = post_state_for_diff {
-            let ss = to_byte_index(&tabular.editor.text, r.start);
-            let ee = to_byte_index(&tabular.editor.text, r.end);
-            let pp = to_byte_index(&tabular.editor.text, r.primary);
-            (ss, ee, pp)
-        } else {
-            let p = tabular.cursor_position.min(tabular.editor.text.len());
-            (tabular.selection_start.min(tabular.editor.text.len()), tabular.selection_end.min(tabular.editor.text.len()), p)
-        };
-        let (bs_pressed, del_pressed, left_pressed, right_pressed) = ui.input(|i| (
-            i.key_pressed(egui::Key::Backspace),
-            i.key_pressed(egui::Key::Delete),
-            i.key_pressed(egui::Key::ArrowLeft),
-            i.key_pressed(egui::Key::ArrowRight),
-        ));
+        let post_state_for_diff =
+            crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id);
+        let (post_sel_start_b, post_sel_end_b, post_cursor_b_for_diff) =
+            if let Some(r) = post_state_for_diff {
+                let ss = to_byte_index(&tabular.editor.text, r.start);
+                let ee = to_byte_index(&tabular.editor.text, r.end);
+                let pp = to_byte_index(&tabular.editor.text, r.primary);
+                (ss, ee, pp)
+            } else {
+                let p = tabular.cursor_position.min(tabular.editor.text.len());
+                (
+                    tabular.selection_start.min(tabular.editor.text.len()),
+                    tabular.selection_end.min(tabular.editor.text.len()),
+                    p,
+                )
+            };
+        let (bs_pressed, del_pressed, left_pressed, right_pressed) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Backspace),
+                i.key_pressed(egui::Key::Delete),
+                i.key_pressed(egui::Key::ArrowLeft),
+                i.key_pressed(egui::Key::ArrowRight),
+            )
+        });
         log::debug!(
             "Δ edit: del='{}' ins='{}' @ [{}..{}] -> [{}..{}]; keys: BS={} DEL={} ←={} →={}; cursor {}->{}; sel {}..{} -> {}..{}",
             deleted_dbg,
@@ -1774,11 +2059,16 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let s = &tabular.editor.text;
             let mut end = s.len();
             for (count, (i, _)) in s.char_indices().enumerate() {
-                if count >= 200 { end = i; break; }
+                if count >= 200 {
+                    end = i;
+                    break;
+                }
             }
             let rem = if end < s.len() {
                 format!("{}… (len={})", s[..end].escape_debug(), s.len())
-            } else { s.escape_debug().to_string() };
+            } else {
+                s.escape_debug().to_string()
+            };
             log::debug!("Deleted chars: '{}' | Remaining text: {}", deleted_dbg, rem);
         }
         // Update rope text directly from current editor text to avoid any rebase/merge anomalies
@@ -1787,7 +2077,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tabular.editor.set_text(new_full_owned.clone());
             tab.content = new_full_owned;
             tab.is_modified = true;
-            log::debug!("Synced rope via set_text; incremental update disabled to prevent trailing-char resurfacing");
+            log::debug!(
+                "Synced rope via set_text; incremental update disabled to prevent trailing-char resurfacing"
+            );
         } else {
             // No tab? still mark rope dirty via full path
             tabular.editor.mark_text_modified();
@@ -1797,36 +2089,39 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // (avoid interfering with normal single-caret Delete/Backspace behavior)
         {
             if tabular.multi_selection.len() > 1 {
-            // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
-            if let Some(rng) =
-                crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
-            {
-                // Convert char -> byte for comparisons and slicing
-                let new_primary_b = to_byte_index(&tabular.editor.text, rng.primary);
-                let old_primary = tabular.cursor_position;
-                if new_primary_b > old_primary {
-                    if let Some(inserted_slice) = tabular.editor.text.get(old_primary..new_primary_b)
+                // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
+                if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(
+                    ui.ctx(),
+                    response.id,
+                ) {
+                    // Convert char -> byte for comparisons and slicing
+                    let new_primary_b = to_byte_index(&tabular.editor.text, rng.primary);
+                    let old_primary = tabular.cursor_position;
+                    if new_primary_b > old_primary {
+                        if let Some(inserted_slice) =
+                            tabular.editor.text.get(old_primary..new_primary_b)
+                        {
+                            let inserted = inserted_slice.to_string();
+                            tabular
+                                .multi_selection
+                                .apply_insert_text(&mut tabular.editor.text, &inserted);
+                            tabular.cursor_position = new_primary_b;
+                        }
+                    } else if new_primary_b < old_primary
+                        && old_primary.saturating_sub(new_primary_b) == 1
                     {
-                        let inserted = inserted_slice.to_string();
-                        tabular
-                            .multi_selection
-                            .apply_insert_text(&mut tabular.editor.text, &inserted);
-                        tabular.cursor_position = new_primary_b;
-                    }
-                } else if new_primary_b < old_primary
-                    && old_primary.saturating_sub(new_primary_b) == 1 {
                         tabular
                             .multi_selection
                             .apply_backspace(&mut tabular.editor.text);
                         tabular.cursor_position = new_primary_b;
                     }
-            }
+                }
             } else {
                 // Skip multi-cursor compensation when only a single caret is active
                 // to avoid misinterpreting normal Delete/Backspace edits.
             }
         }
-        
+
         // Rebuild autocomplete suggestions on text changes unless we're in the middle of accepting via Tab/Enter
         // Also skip if the change was just a newline insertion (to avoid lag after Enter)
         if !accept_via_tab_pre && !accept_via_enter_pre {
@@ -1835,7 +2130,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 log::debug!("🔍 AUTOCOMPLETE DEBUG: Updating autocomplete after text change");
                 editor_autocomplete::update_autocomplete(tabular);
             } else {
-                log::debug!("🔍 AUTOCOMPLETE DEBUG: Skipping autocomplete update after newline insertion");
+                log::debug!(
+                    "🔍 AUTOCOMPLETE DEBUG: Skipping autocomplete update after newline insertion"
+                );
             }
         }
 
@@ -1878,7 +2175,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let clamped = tabular.cursor_position.min(tabular.editor.text.len());
             let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
             let ci = to_char_index(&tabular.editor.text, clamped);
-            state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
+            state
+                .cursor
+                .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
             state.store(ui.ctx(), id);
             ui.memory_mut(|m| m.request_focus(id));
         } else if cur >= 4 && &tabular.editor.text[cur - 4..cur] == "    " {
@@ -1893,7 +2192,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let clamped = tabular.cursor_position.min(tabular.editor.text.len());
             let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
             let ci = to_char_index(&tabular.editor.text, clamped);
-            state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
+            state
+                .cursor
+                .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
             state.store(ui.ctx(), id);
             ui.memory_mut(|m| m.request_focus(id));
         }
@@ -1919,16 +2220,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     if let Some(sugg) = tabular
                         .autocomplete_suggestions
                         .get(tabular.selected_autocomplete_index)
-                        && !prefix.is_empty() {
-                            let p = prefix.to_lowercase();
-                            let s = sugg.to_lowercase();
-                            if s.starts_with(&p) {
-                                should_accept = true;
-                            }
+                        && !prefix.is_empty()
+                    {
+                        let p = prefix.to_lowercase();
+                        let s = sugg.to_lowercase();
+                        if s.starts_with(&p) {
+                            should_accept = true;
                         }
+                    }
                 }
             }
-            
+
             if should_accept {
                 editor_autocomplete::accept_current_suggestion(tabular);
                 accepted = true;
@@ -1971,7 +2273,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             // Apply collapsed caret directly via set_ccursor_range equivalent
             let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
             let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
-            state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
+            state
+                .cursor
+                .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
             state.store(ui.ctx(), id);
             // Re-focus editor so Tab doesn't move focus away
             ui.memory_mut(|m| m.request_focus(id));
@@ -1982,7 +2286,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Update suggestions saat kursor bergerak kiri/kanan (tanpa perubahan teks)
-    let moved_lr = input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowRight);
+    let moved_lr =
+        input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowRight);
     if moved_lr && !accept_via_tab_pre && !accept_via_enter_pre {
         if should_suppress_autocomplete_on_arrow(tabular) {
             log::trace!(
@@ -2039,7 +2344,8 @@ pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
 
     let new_text = if tabular.advanced_editor.use_regex {
         if let Ok(re) = regex::Regex::new(find_text) {
-            re.replace_all(&tabular.editor.text, replace_text).into_owned()
+            re.replace_all(&tabular.editor.text, replace_text)
+                .into_owned()
         } else {
             return;
         }
@@ -2047,7 +2353,7 @@ pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
         tabular.editor.text.replace(find_text, replace_text)
     } else {
         // case-insensitive simple replace
-    let src = tabular.editor.text.clone();
+        let src = tabular.editor.text.clone();
         let find_lower = find_text.to_lowercase();
         let mut result = String::new();
         let mut last = 0;
@@ -2561,7 +2867,9 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                 }
 
                 // Execute first page and exit normal path
-                debug!("🚀 Auto server-pagination enabled (no LIMIT/TOP found). Executing first page...");
+                debug!(
+                    "🚀 Auto server-pagination enabled (no LIMIT/TOP found). Executing first page..."
+                );
                 tabular.execute_paginated_query();
                 return;
             }

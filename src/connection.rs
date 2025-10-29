@@ -1,6 +1,6 @@
 use crate::{
-    connection, driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite,
-    models, modules,
+    connection, driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models,
+    modules,
     window_egui::{self, Tabular},
 };
 use eframe::egui;
@@ -16,7 +16,6 @@ use sqlx::{
     sqlite::SqlitePoolOptions,
 };
 use std::sync::Arc;
-
 
 // Limit concurrent prefetch tasks to avoid overwhelming servers and local machine
 const PREFETCH_CONCURRENCY: usize = 6;
@@ -120,7 +119,6 @@ fn clean_identifier(id: &str) -> String {
 
 // Helper function to add auto LIMIT if not present
 pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseType) -> String {
-
     let trimmed_query = query.trim();
 
     // Don't add LIMIT/TOP if the entire query already has LIMIT/TOP/OFFSET/FETCH
@@ -210,7 +208,9 @@ pub(crate) fn execute_query_with_connection(
                 || upper.contains(" FETCH ")
                 || upper.contains(" TOP ")
                 || upper.contains("TOP(");
-            let has_select_stmt = upper.split(';').any(|s| s.trim_start().starts_with("SELECT"));
+            let has_select_stmt = upper
+                .split(';')
+                .any(|s| s.trim_start().starts_with("SELECT"));
 
             if has_select_stmt && !has_pagination_clause {
                 match connection.connection_type {
@@ -230,7 +230,8 @@ pub(crate) fn execute_query_with_connection(
                             tab.page_size = tabular.page_size;
                         }
                         let offset = tabular.current_page * tabular.page_size;
-                        final_query = format!("{} LIMIT {} OFFSET {}", base, tabular.page_size, offset);
+                        final_query =
+                            format!("{} LIMIT {} OFFSET {}", base, tabular.page_size, offset);
                         debug!(
                             "🛑 Auto server-pagination (connection layer) applied. Rewritten query: {}",
                             final_query
@@ -1060,7 +1061,9 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
 
     // Keep a local filter text in temporary egui memory (per-session)
     let filter_id = egui::Id::new("conn_selector_filter");
-    let mut filter_text = ctx.data(|d| d.get_temp::<String>(filter_id)).unwrap_or_default();
+    let mut filter_text = ctx
+        .data(|d| d.get_temp::<String>(filter_id))
+        .unwrap_or_default();
 
     let mut open = tabular.show_connection_selector;
     egui::Window::new("Connection Selector")
@@ -1077,7 +1080,8 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                         .desired_width(f32::INFINITY),
                 );
                 if r.changed() {
-                    ui.ctx().data_mut(|d| d.insert_temp(filter_id, filter_text.clone()));
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(filter_id, filter_text.clone()));
                 }
             });
             ui.separator();
@@ -1089,7 +1093,9 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                     c.name.to_lowercase().contains(&f)
                         || c.host.to_lowercase().contains(&f)
                         || c.database.to_lowercase().contains(&f)
-                        || format!("{:?}", c.connection_type).to_lowercase().contains(&f)
+                        || format!("{:?}", c.connection_type)
+                            .to_lowercase()
+                            .contains(&f)
                 });
             }
 
@@ -1122,7 +1128,9 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                         if should_connect {
                             if let Some(id) = conn.id {
                                 // Assign connection to active tab and optionally its default database
-                                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                                if let Some(tab) =
+                                    tabular.query_tabs.get_mut(tabular.active_tab_index)
+                                {
                                     tab.connection_id = Some(id);
                                     if (tab.database_name.is_none()
                                         || tab.database_name.as_deref().unwrap_or("").is_empty())
@@ -1154,7 +1162,6 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                         }
                     }
                 });
-
         });
     // Close when X is clicked
     if !open {
@@ -1454,9 +1461,12 @@ async fn create_connection_pool_for_config(
                             attempt, elapsed, connection.id, e
                         );
                         // If it is a timeout, we retry (if attempt 1). Otherwise break early.
-                        let is_timeout = matches!(e, sqlx::Error::PoolTimedOut) || e.to_string().contains("timeout");
+                        let is_timeout = matches!(e, sqlx::Error::PoolTimedOut)
+                            || e.to_string().contains("timeout");
                         last_err = Some(e);
-                        if !is_timeout || attempt == 2 { break; }
+                        if !is_timeout || attempt == 2 {
+                            break;
+                        }
                     }
                 }
             }
@@ -1575,7 +1585,12 @@ async fn create_connection_pool_for_config(
                 )
             };
             debug!("Creating MongoDB client for URI: {}", uri);
-            match tokio::time::timeout(std::time::Duration::from_secs(10), MongoClient::with_uri_str(uri)).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                MongoClient::with_uri_str(uri),
+            )
+            .await
+            {
                 Ok(Ok(client)) => {
                     let pool = models::enums::DatabasePool::MongoDB(Arc::new(client));
                     Some(pool)
@@ -1813,7 +1828,6 @@ pub(crate) async fn refresh_connection_background_async(
             .await
             {
                 Ok(Some(new_pool)) => {
-                    
                     // ✨ OPTIMIZATION: No longer prefetch here to avoid blocking connection opening.
                     // Prefetch will be done on-demand or via optional background task.
                     fetch_and_cache_all_data(
@@ -1933,7 +1947,12 @@ pub(crate) async fn create_database_pool(
                     enc_user, enc_pass, connection.host, connection.port
                 )
             };
-            match tokio::time::timeout(std::time::Duration::from_secs(10), MongoClient::with_uri_str(uri)).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                MongoClient::with_uri_str(uri),
+            )
+            .await
+            {
                 Ok(Ok(client)) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
                 _ => None,
             }
@@ -2022,7 +2041,6 @@ async fn save_row_cache_direct(
     .await;
 }
 
-
 // After metadata is cached, fetch first 100 rows for all tables and store in row_cache
 #[allow(dead_code)]
 async fn prefetch_first_rows_for_all_tables(
@@ -2075,8 +2093,18 @@ async fn prefetch_first_rows_for_all_tables(
                                         Err(_) => Vec::new(),
                                     }
                                 };
-                                let data = crate::driver_mysql::convert_mysql_rows_to_table_data(mysql_rows);
-                                save_row_cache_direct(cache_pool, connection_id, &dbn, &tbn, &headers, &data).await;
+                                let data = crate::driver_mysql::convert_mysql_rows_to_table_data(
+                                    mysql_rows,
+                                );
+                                save_row_cache_direct(
+                                    cache_pool,
+                                    connection_id,
+                                    &dbn,
+                                    &tbn,
+                                    &headers,
+                                    &data,
+                                )
+                                .await;
                             }
                         }
                     }
@@ -2143,7 +2171,8 @@ async fn prefetch_first_rows_for_all_tables(
                             let headers: Vec<String> = if let Some(r0) = sqlite_rows.first() {
                                 r0.columns().iter().map(|c| c.name().to_string()).collect()
                             } else {
-                                let iq = format!("PRAGMA table_info(\"{}\")", tbn.replace('"', "\\\""));
+                                let iq =
+                                    format!("PRAGMA table_info(\"{}\")", tbn.replace('"', "\\\""));
                                 match sqlx::query(&iq).fetch_all(pool.as_ref()).await {
                                     Ok(infos) => infos
                                         .iter()
@@ -2152,8 +2181,18 @@ async fn prefetch_first_rows_for_all_tables(
                                     Err(_) => Vec::new(),
                                 }
                             };
-                            let data = crate::driver_sqlite::convert_sqlite_rows_to_table_data(sqlite_rows);
-                            save_row_cache_direct(cache_pool, connection_id, "main", &tbn, &headers, &data).await;
+                            let data = crate::driver_sqlite::convert_sqlite_rows_to_table_data(
+                                sqlite_rows,
+                            );
+                            save_row_cache_direct(
+                                cache_pool,
+                                connection_id,
+                                "main",
+                                &tbn,
+                                &headers,
+                                &data,
+                            )
+                            .await;
                         }
                     }
                 })
@@ -2922,7 +2961,7 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
     tabular.connections.retain(|c| c.id != Some(connection_id));
     // Remove from connection pool cache
     tabular.connection_pools.remove(&connection_id);
-    
+
     // Use incremental update instead of full refresh
     crate::sidebar_database::remove_connection_from_tree(tabular, connection_id);
 

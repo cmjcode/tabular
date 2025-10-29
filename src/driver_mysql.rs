@@ -491,14 +491,17 @@ pub(crate) async fn fetch_mysql_data(
 
             // Fetch columns using INFORMATION_SCHEMA
             let cols_query = "SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
-            debug!("📋 Fetching columns from MySQL for {}.{}", db_name, table_name);
+            debug!(
+                "📋 Fetching columns from MySQL for {}.{}",
+                db_name, table_name
+            );
             debug!("   Query: {}", cols_query);
-            
+
             let cols_res = sqlx::query(cols_query)
-            .bind(&db_name)
-            .bind(&table_name)
-            .fetch_all(pool)
-            .await;
+                .bind(&db_name)
+                .bind(&table_name)
+                .fetch_all(pool)
+                .await;
 
             if let Ok(cols) = cols_res {
                 let mut count = 0usize;
@@ -538,14 +541,17 @@ pub(crate) async fn fetch_mysql_data(
                  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
                  GROUP BY INDEX_NAME \
                  ORDER BY INDEX_NAME";
-            debug!("🔍 Fetching indexes from MySQL for {}.{}", db_name, table_name);
+            debug!(
+                "🔍 Fetching indexes from MySQL for {}.{}",
+                db_name, table_name
+            );
             debug!("   Query: {}", index_query);
-            
+
             let indexes_res = sqlx::query(index_query)
-            .bind(&db_name)
-            .bind(&table_name)
-            .fetch_all(pool)
-            .await;
+                .bind(&db_name)
+                .bind(&table_name)
+                .fetch_all(pool)
+                .await;
 
             if let Ok(index_rows) = indexes_res {
                 let index_count = index_rows.len();
@@ -554,17 +560,18 @@ pub(crate) async fn fetch_mysql_data(
                     let columns_str = decode_cell(&idx_row, 1).unwrap_or_default();
                     let non_unique: i64 = idx_row.try_get(2).unwrap_or(1);
                     let index_types = decode_cell(&idx_row, 3);
-                    
+
                     let is_unique: i64 = if non_unique == 0 { 1 } else { 0 };
-                    
+
                     // Parse comma-separated column names into JSON array
                     let columns: Vec<String> = columns_str
                         .split(',')
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
-                    let columns_json = serde_json::to_string(&columns).unwrap_or_else(|_| "[]".to_string());
-                    
+                    let columns_json =
+                        serde_json::to_string(&columns).unwrap_or_else(|_| "[]".to_string());
+
                     if let Err(e) = sqlx::query(
                         "INSERT OR REPLACE INTO index_cache 
                          (connection_id, database_name, table_name, index_name, method, is_unique, columns_json) 
@@ -584,9 +591,15 @@ pub(crate) async fn fetch_mysql_data(
                         debug!("✅ Cached PRIMARY KEY index for {}.{} with columns: {}", db_name, table_name, columns_str);
                     }
                 }
-                debug!("MySQL fetch_mysql_data: cached {} indexes for {}.{}", index_count, db_name, table_name);
+                debug!(
+                    "MySQL fetch_mysql_data: cached {} indexes for {}.{}",
+                    index_count, db_name, table_name
+                );
             } else if let Err(e) = indexes_res {
-                debug!("MySQL fetch_mysql_data: failed to list indexes in {}.{}: {}", db_name, table_name, e);
+                debug!(
+                    "MySQL fetch_mysql_data: failed to list indexes in {}.{}: {}",
+                    db_name, table_name, e
+                );
             }
         }
     }
@@ -743,7 +756,6 @@ pub(crate) fn load_mysql_structure(
     master_status_folder.connection_id = Some(connection_id);
     master_status_folder.is_loaded = false;
     dba_children.push(master_status_folder);
-
 
     dba_folder.children = dba_children;
 

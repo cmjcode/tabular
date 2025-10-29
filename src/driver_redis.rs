@@ -193,7 +193,9 @@ pub(crate) fn fetch_tables_from_redis_connection(
                             {
                                 if let Ok(Ok(_)) = tokio::time::timeout(
                                     std::time::Duration::from_secs(10),
-                                    redis::cmd("SELECT").arg(db_num).query_async::<String>(&mut conn),
+                                    redis::cmd("SELECT")
+                                        .arg(db_num)
+                                        .query_async::<String>(&mut conn),
                                 )
                                 .await
                                 {

@@ -8,7 +8,6 @@ use std::path::PathBuf;
 /// File name to store the current data directory location
 const CONFIG_LOCATION_FILE: &str = "config_location.txt";
 
-
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppPreferences {
     pub is_dark_mode: bool,

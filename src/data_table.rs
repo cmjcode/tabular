@@ -347,7 +347,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 let is_selected_row = selected_rows.contains(&row_index)
                                     || selected_row == Some(row_index);
                                 let is_newly_created = newly_created_rows.contains(&row_index);
-                                
+
                                 let row_color = if is_newly_created {
                                     // Green highlight for newly created/duplicated rows
                                     if ui.visuals().dark_mode {
@@ -446,14 +446,26 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 }
                                             }
                                             // Multi-cell block overlay (between anchor and current selected cell)
-                                            if let (Some((ar, ac)), Some((br, bc))) = (tabular.table_sel_anchor, tabular.selected_cell) {
-                                                let rmin = ar.min(br); let rmax = ar.max(br);
-                                                let cmin = ac.min(bc); let cmax = ac.max(bc);
-                                                if row_index >= rmin && row_index <= rmax && col_index >= cmin && col_index <= cmax {
+                                            if let (Some((ar, ac)), Some((br, bc))) =
+                                                (tabular.table_sel_anchor, tabular.selected_cell)
+                                            {
+                                                let rmin = ar.min(br);
+                                                let rmax = ar.max(br);
+                                                let cmin = ac.min(bc);
+                                                let cmax = ac.max(bc);
+                                                if row_index >= rmin
+                                                    && row_index <= rmax
+                                                    && col_index >= cmin
+                                                    && col_index <= cmax
+                                                {
                                                     let sel_color = if ui.visuals().dark_mode {
-                                                        egui::Color32::from_rgba_unmultiplied(255, 120, 40, 36)
+                                                        egui::Color32::from_rgba_unmultiplied(
+                                                            255, 120, 40, 36,
+                                                        )
                                                     } else {
-                                                        egui::Color32::from_rgba_unmultiplied(255, 140, 60, 70)
+                                                        egui::Color32::from_rgba_unmultiplied(
+                                                            255, 140, 60, 70,
+                                                        )
                                                     };
                                                     ui.painter().rect_filled(rect, 0.0, sel_color);
                                                 }
@@ -540,10 +552,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 if shift {
                                                     if tabular.table_sel_anchor.is_none() {
                                                         tabular.table_sel_anchor = Some(
-                                                            tabular.selected_cell.unwrap_or((row_index, col_index)),
+                                                            tabular
+                                                                .selected_cell
+                                                                .unwrap_or((row_index, col_index)),
                                                         );
                                                     }
-                                                    tabular.selected_cell = Some((row_index, col_index));
+                                                    tabular.selected_cell =
+                                                        Some((row_index, col_index));
                                                 } else {
                                                     cell_sel_requests.push((row_index, col_index));
                                                     tabular.table_sel_anchor = None;
@@ -551,21 +566,30 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             }
                                             // Attach hover text without moving away the response we keep using
                                             let mut cell_resp = cell_response;
-                                            if cell.chars().count() > max_chars || !cell.is_empty() {
+                                            if cell.chars().count() > max_chars || !cell.is_empty()
+                                            {
                                                 cell_resp = cell_resp.on_hover_text(cell);
                                             }
                                             // Drag-to-select lifecycle
                                             if cell_resp.drag_started() {
                                                 if tabular.table_sel_anchor.is_none() {
-                                                    tabular.table_sel_anchor = Some((row_index, col_index));
+                                                    tabular.table_sel_anchor =
+                                                        Some((row_index, col_index));
                                                 }
-                                                tabular.selected_cell = Some((row_index, col_index));
+                                                tabular.selected_cell =
+                                                    Some((row_index, col_index));
                                                 tabular.table_dragging = true;
                                             }
-                                            if tabular.table_dragging && ui.input(|i| i.pointer.primary_down()) && cell_resp.hovered() {
-                                                tabular.selected_cell = Some((row_index, col_index));
+                                            if tabular.table_dragging
+                                                && ui.input(|i| i.pointer.primary_down())
+                                                && cell_resp.hovered()
+                                            {
+                                                tabular.selected_cell =
+                                                    Some((row_index, col_index));
                                             }
-                                            if tabular.table_dragging && !ui.input(|i| i.pointer.primary_down()) {
+                                            if tabular.table_dragging
+                                                && !ui.input(|i| i.pointer.primary_down())
+                                            {
                                                 tabular.table_dragging = false;
                                             }
                                             // Check if this cell is being edited
@@ -643,13 +667,22 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.ctx().copy_text(cell.clone());
                                                         ui.close();
                                                     }
-                                                    if tabular.table_sel_anchor.is_some() && tabular.selected_cell.is_some()
-                                                        && ui.button("📄 Copy Selection as CSV").clicked()
+                                                    if tabular.table_sel_anchor.is_some()
+                                                        && tabular.selected_cell.is_some()
+                                                        && ui
+                                                            .button("📄 Copy Selection as CSV")
+                                                            .clicked()
                                                     {
-                                                        if let (Some(a), Some(b)) = (tabular.table_sel_anchor, tabular.selected_cell)
-                                                            && let Some(csv) = copy_selected_block_as_csv(tabular, a, b) {
-                                                                ui.ctx().copy_text(csv);
-                                                            }
+                                                        if let (Some(a), Some(b)) = (
+                                                            tabular.table_sel_anchor,
+                                                            tabular.selected_cell,
+                                                        ) && let Some(csv) =
+                                                            copy_selected_block_as_csv(
+                                                                tabular, a, b,
+                                                            )
+                                                        {
+                                                            ui.ctx().copy_text(csv);
+                                                        }
                                                         ui.close();
                                                     }
                                                     if !tabular.selected_rows.is_empty()
@@ -749,13 +782,16 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 refresh_request_data = true;
                                 ui.close();
                             }
-                            if tabular.table_sel_anchor.is_some() && tabular.selected_cell.is_some()
+                            if tabular.table_sel_anchor.is_some()
+                                && tabular.selected_cell.is_some()
                                 && ui.button("📋 Copy Selection as CSV").clicked()
                             {
-                                if let (Some(a), Some(b)) = (tabular.table_sel_anchor, tabular.selected_cell)
-                                    && let Some(csv) = copy_selected_block_as_csv(tabular, a, b) {
-                                        ui.ctx().copy_text(csv);
-                                    }
+                                if let (Some(a), Some(b)) =
+                                    (tabular.table_sel_anchor, tabular.selected_cell)
+                                    && let Some(csv) = copy_selected_block_as_csv(tabular, a, b)
+                                {
+                                    ui.ctx().copy_text(csv);
+                                }
                                 ui.close();
                             }
                             if ui.button("📄 Export to CSV").clicked() {
@@ -902,14 +938,17 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.table_sel_anchor = None;
                 tabular.table_dragging = false;
             }
-            
+
             // Handle right-click context menu for selected row
             if tabular.is_table_browse_mode && tabular.selected_row.is_some() {
                 // Check for right-click separately to avoid conflict with any_click detection
                 let (should_show_menu, pointer_pos) = ui.input(|i| {
-                    (i.pointer.secondary_clicked(), i.pointer.hover_pos().unwrap_or(egui::Pos2::ZERO))
+                    (
+                        i.pointer.secondary_clicked(),
+                        i.pointer.hover_pos().unwrap_or(egui::Pos2::ZERO),
+                    )
                 });
-                
+
                 if should_show_menu && !tabular.show_row_context_menu {
                     tabular.show_row_context_menu = true;
                     tabular.context_menu_row = tabular.selected_row;
@@ -929,7 +968,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 if tabular.spreadsheet_state.editing_cell.is_some()
                     && tabular.spreadsheet_state.editing_cell != Some((r, c))
                 {
-                tabular.scroll_to_selected_cell = true;
+                    tabular.scroll_to_selected_cell = true;
                     tabular.spreadsheet_finish_cell_edit(true);
                 }
                 tabular.selected_row = Some(r);
@@ -1026,10 +1065,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
             if actual_total > 0 {
                 let start_row = tabular.current_page * tabular.page_size + 1;
                 let end_row = ((tabular.current_page + 1) * tabular.page_size).min(actual_total);
-                ui.label(format!(
-                    "Showing rows {}-{}",
-                    start_row, end_row
-                ));
+                ui.label(format!("Showing rows {}-{}", start_row, end_row));
             } else {
                 ui.label("0 rows");
             }
@@ -1388,14 +1424,18 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                 .unwrap_or(false)
         {
             match tabular.structure_sub_view {
-                models::structs::StructureSubView::Columns if !tabular.structure_columns.is_empty() => {
+                models::structs::StructureSubView::Columns
+                    if !tabular.structure_columns.is_empty() =>
+                {
                     debug!(
                         "✅ Structure (columns) already loaded in-memory for {}/{} (skip reload)",
                         database, table_guess
                     );
                     return;
                 }
-                models::structs::StructureSubView::Indexes if !tabular.structure_indexes.is_empty() => {
+                models::structs::StructureSubView::Indexes
+                    if !tabular.structure_indexes.is_empty() =>
+                {
                     debug!(
                         "✅ Structure (indexes) already loaded in-memory for {}/{} (skip reload)",
                         database, table_guess
@@ -1406,12 +1446,12 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
             }
         }
 
-    // Reset current in-memory structure before (re)loading
+        // Reset current in-memory structure before (re)loading
         tabular.structure_columns.clear();
         tabular.structure_indexes.clear();
-    tabular.structure_selected_row = None;
-    tabular.structure_selected_cell = None;
-    tabular.structure_sel_anchor = None;
+        tabular.structure_selected_row = None;
+        tabular.structure_selected_cell = None;
+        tabular.structure_sel_anchor = None;
 
         // Branch: if user explicitly requested refresh, force live fetch and update cache
         if tabular.request_structure_refresh {
@@ -1508,7 +1548,8 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
         if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
             if tabular.request_structure_refresh {
                 // Force live fetch and update cache
-                let idx = fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
+                let idx =
+                    fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
                 crate::cache_data::save_indexes_to_cache(
                     tabular,
                     conn_id,
@@ -1528,7 +1569,13 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                     if !cached.is_empty() {
                         tabular.structure_indexes = cached;
                     } else {
-                        let idx = fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
+                        let idx = fetch_index_details_for_table(
+                            tabular,
+                            conn_id,
+                            &conn,
+                            &database,
+                            &table_guess,
+                        );
                         if !idx.is_empty() {
                             crate::cache_data::save_indexes_to_cache(
                                 tabular,
@@ -1541,7 +1588,13 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                         tabular.structure_indexes = idx;
                     }
                 } else {
-                    let idx = fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
+                    let idx = fetch_index_details_for_table(
+                        tabular,
+                        conn_id,
+                        &conn,
+                        &database,
+                        &table_guess,
+                    );
                     if !idx.is_empty() {
                         crate::cache_data::save_indexes_to_cache(
                             tabular,
@@ -2032,14 +2085,18 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
         let active_cols = tabular.structure_sub_view == models::structs::StructureSubView::Columns;
         if ui.selectable_label(active_cols, "Columns").clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Columns;
-            tabular.structure_sel_anchor = None; tabular.structure_selected_cell = None; tabular.structure_selected_row = None;
+            tabular.structure_sel_anchor = None;
+            tabular.structure_selected_cell = None;
+            tabular.structure_selected_row = None;
         }
         let active_idx = tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
         if ui.selectable_label(active_idx, "Indexes").clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
             // Load using cache-first; if empty, live fetch inside the loader will populate and cache
             load_structure_info_for_current_table(tabular);
-            tabular.structure_sel_anchor = None; tabular.structure_selected_cell = None; tabular.structure_selected_row = None;
+            tabular.structure_sel_anchor = None;
+            tabular.structure_selected_cell = None;
+            tabular.structure_selected_row = None;
         }
     });
 }
@@ -2656,7 +2713,11 @@ fn commit_new_column(tabular: &mut window_egui::Tabular) {
     };
 
     // Append to editor for visibility via rope edit
-    let insertion = if stmt.starts_with("--") { stmt.clone() } else { format!("\n{}", stmt) };
+    let insertion = if stmt.starts_with("--") {
+        stmt.clone()
+    } else {
+        format!("\n{}", stmt)
+    };
     let pos = tabular.editor.text.len();
     tabular.editor.apply_single_replace(pos..pos, &insertion);
     tabular.cursor_position = pos + insertion.len();
@@ -2872,7 +2933,11 @@ fn commit_new_index(tabular: &mut window_egui::Tabular) {
         }
         _ => "-- Create index not supported for this database type".to_string(),
     };
-    let insertion = if stmt.starts_with("--") { stmt.clone() } else { format!("\n{}", stmt) };
+    let insertion = if stmt.starts_with("--") {
+        stmt.clone()
+    } else {
+        format!("\n{}", stmt)
+    };
     let pos = tabular.editor.text.len();
     tabular.editor.apply_single_replace(pos..pos, &insertion);
     tabular.cursor_position = pos + insertion.len();
@@ -3152,7 +3217,11 @@ pub(crate) fn copy_selected_block_as_csv(
             lines.push(cols.join(","));
         }
     }
-    if lines.is_empty() { None } else { Some(lines.join("\n")) }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
 }
 
 // Pagination methods

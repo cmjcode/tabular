@@ -1,34 +1,34 @@
 //! Database dialect trait for extensible SQL emission
-//! 
+//!
 //! Each database dialect implements this trait to provide
 //! database-specific SQL generation logic.
 
-use crate::models::enums::DatabaseType;
 use super::super::errors::QueryAstError;
+use crate::models::enums::DatabaseType;
 
 /// Trait for database-specific SQL dialect
 pub trait SqlDialect: Send + Sync {
     /// Get the database type
     fn db_type(&self) -> DatabaseType;
-    
+
     /// Quote an identifier (table/column name)
     fn quote_ident(&self, ident: &str) -> String;
-    
+
     /// Quote a string literal
     fn quote_string(&self, s: &str) -> String {
         format!("'{}'", s.replace("'", "''"))
     }
-    
+
     /// Emit boolean literal
     fn emit_boolean(&self, value: bool) -> String {
         if value { "TRUE" } else { "FALSE" }.to_string()
     }
-    
+
     /// Emit NULL literal
     fn emit_null(&self) -> String {
         "NULL".to_string()
     }
-    
+
     /// Emit LIMIT clause
     fn emit_limit(&self, limit: u64, offset: u64) -> String {
         if offset > 0 {
@@ -37,12 +37,12 @@ pub trait SqlDialect: Send + Sync {
             format!(" LIMIT {}", limit)
         }
     }
-    
+
     /// Emit DISTINCT keyword
     fn emit_distinct(&self) -> &'static str {
         "DISTINCT"
     }
-    
+
     /// Emit JOIN keyword for given kind
     fn emit_join_kind(&self, kind: &super::super::logical::JoinKind) -> &'static str {
         use super::super::logical::JoinKind;
@@ -53,25 +53,25 @@ pub trait SqlDialect: Send + Sync {
             JoinKind::Full => "FULL JOIN",
         }
     }
-    
+
     /// Check if this dialect supports a feature
     fn supports_window_functions(&self) -> bool {
         !matches!(self.db_type(), DatabaseType::SQLite | DatabaseType::Redis)
     }
-    
+
     fn supports_cte(&self) -> bool {
         !matches!(self.db_type(), DatabaseType::Redis)
     }
-    
+
     fn supports_full_join(&self) -> bool {
         !matches!(self.db_type(), DatabaseType::MySQL | DatabaseType::SQLite)
     }
-    
+
     /// Emit a cast expression (database-specific syntax)
     fn emit_cast(&self, expr: &str, target_type: &str) -> String {
         format!("CAST({} AS {})", expr, target_type)
     }
-    
+
     /// Emit ILIKE (case-insensitive LIKE) - fallback to LIKE LOWER() if not supported
     fn emit_ilike(&self, expr: &str, pattern: &str, negated: bool) -> String {
         if matches!(self.db_type(), DatabaseType::PostgreSQL) {
@@ -86,21 +86,25 @@ pub trait SqlDialect: Send + Sync {
             format!("LOWER({}) {} LOWER({})", expr, op, pattern)
         }
     }
-    
+
     /// Emit regex match expression (very database-specific)
     fn emit_regex_match(&self, expr: &str, pattern: &str) -> Result<String, QueryAstError> {
         match self.db_type() {
             DatabaseType::PostgreSQL => Ok(format!("{} ~ {}", expr, pattern)),
             DatabaseType::MySQL => Ok(format!("{} REGEXP {}", expr, pattern)),
-            _ => Err(QueryAstError::Unsupported("regex not supported by this database")),
+            _ => Err(QueryAstError::Unsupported(
+                "regex not supported by this database",
+            )),
         }
     }
-    
+
     /// Emit array literal (if supported)
     fn emit_array(&self, elements: &[String]) -> Result<String, QueryAstError> {
         match self.db_type() {
             DatabaseType::PostgreSQL => Ok(format!("ARRAY[{}]", elements.join(", "))),
-            _ => Err(QueryAstError::Unsupported("arrays not supported by this database")),
+            _ => Err(QueryAstError::Unsupported(
+                "arrays not supported by this database",
+            )),
         }
     }
 }
@@ -112,7 +116,7 @@ impl SqlDialect for MySqlDialect {
     fn db_type(&self) -> DatabaseType {
         DatabaseType::MySQL
     }
-    
+
     fn quote_ident(&self, ident: &str) -> String {
         format!("`{}`", ident.replace('`', "``"))
     }
@@ -125,7 +129,7 @@ impl SqlDialect for PostgresDialect {
     fn db_type(&self) -> DatabaseType {
         DatabaseType::PostgreSQL
     }
-    
+
     fn quote_ident(&self, ident: &str) -> String {
         format!("\"{}\"", ident.replace('"', "\"\""))
     }
@@ -138,11 +142,11 @@ impl SqlDialect for SqliteDialect {
     fn db_type(&self) -> DatabaseType {
         DatabaseType::SQLite
     }
-    
+
     fn quote_ident(&self, ident: &str) -> String {
         format!("`{}`", ident.replace('`', "``"))
     }
-    
+
     fn supports_window_functions(&self) -> bool {
         true // SQLite 3.25.0+ supports window functions
     }
@@ -155,11 +159,11 @@ impl SqlDialect for MssqlDialect {
     fn db_type(&self) -> DatabaseType {
         DatabaseType::MsSQL
     }
-    
+
     fn quote_ident(&self, ident: &str) -> String {
         format!("[{}]", ident.replace(']', "]]"))
     }
-    
+
     fn emit_limit(&self, limit: u64, offset: u64) -> String {
         if offset > 0 {
             format!(" OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", offset, limit)
@@ -169,7 +173,7 @@ impl SqlDialect for MssqlDialect {
             String::new()
         }
     }
-    
+
     fn emit_boolean(&self, value: bool) -> String {
         if value { "1" } else { "0" }.to_string()
     }
@@ -182,15 +186,15 @@ impl SqlDialect for MongoDialect {
     fn db_type(&self) -> DatabaseType {
         DatabaseType::MongoDB
     }
-    
+
     fn quote_ident(&self, ident: &str) -> String {
         format!("\"{}\"", ident.replace('"', "\"\""))
     }
-    
+
     fn supports_window_functions(&self) -> bool {
         false
     }
-    
+
     fn supports_full_join(&self) -> bool {
         false
     }
@@ -203,19 +207,19 @@ impl SqlDialect for RedisDialect {
     fn db_type(&self) -> DatabaseType {
         DatabaseType::Redis
     }
-    
+
     fn quote_ident(&self, ident: &str) -> String {
         format!("\"{}\"", ident.replace('"', "\"\""))
     }
-    
+
     fn supports_window_functions(&self) -> bool {
         false
     }
-    
+
     fn supports_cte(&self) -> bool {
         false
     }
-    
+
     fn supports_full_join(&self) -> bool {
         false
     }

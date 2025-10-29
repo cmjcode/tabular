@@ -19,14 +19,10 @@ use crate::{data_table, driver_mssql};
 struct RenderTreeNodeParams<'a> {
     node_index: usize,
     refreshing_connections: &'a std::collections::HashSet<i64>,
-    connection_pools:
-        &'a std::collections::HashMap<i64, models::enums::DatabasePool>,
+    connection_pools: &'a std::collections::HashMap<i64, models::enums::DatabasePool>,
     pending_connection_pools: &'a std::collections::HashSet<i64>,
-    shared_connection_pools: &'a Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<i64, models::enums::DatabasePool>,
-        >,
-    >,
+    shared_connection_pools:
+        &'a Arc<std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>>,
     is_search_mode: bool,
     // New: fallback map of connection_id -> DatabaseType for DB type detection when pool not ready
     connection_types: &'a std::collections::HashMap<i64, models::enums::DatabaseType>,
@@ -93,7 +89,8 @@ pub struct Tabular {
     // Background refresh status tracking
     pub refreshing_connections: std::collections::HashSet<i64>,
     // Pending expansion state restore after refresh
-    pub pending_expansion_restore: std::collections::HashMap<i64, std::collections::HashMap<String, bool>>,
+    pub pending_expansion_restore:
+        std::collections::HashMap<i64, std::collections::HashMap<String, bool>>,
     // Connections that need their expanded nodes loaded after state restore
     pub pending_auto_load: std::collections::HashSet<i64>,
     // Query tab system
@@ -340,11 +337,11 @@ impl Tabular {
             self.extra_cursors.sort_unstable();
         }
         // Transitional mirror to structured selections
-    if self.multi_selection.is_empty() {
+        if self.multi_selection.is_empty() {
             self.multi_selection
                 .add_collapsed(self.cursor_position.min(self.editor.text.len()));
         }
-    self.multi_selection.add_collapsed(p);
+        self.multi_selection.add_collapsed(p);
     }
 
     pub fn clear_extra_cursors(&mut self) {
@@ -354,104 +351,110 @@ impl Tabular {
     // Duplicate selected row for editing
     pub fn duplicate_selected_row(&mut self) {
         if let Some(selected_row_idx) = self.selected_row
-            && selected_row_idx < self.current_table_data.len() {
-                // Clone the row data
-                let row_data = self.current_table_data[selected_row_idx].clone();
-                
-                // Insert the duplicated row right after the selected row
-                let insert_index = selected_row_idx + 1;
-                self.current_table_data.insert(insert_index, row_data.clone());
-                self.all_table_data.insert(insert_index, row_data.clone());
-                
-                // Update total rows count
-                self.total_rows = self.current_table_data.len();
-                
-                // Mark this row as newly created for highlighting
-                self.newly_created_rows.insert(insert_index);
-                
-                // Update indices in newly_created_rows for rows that shifted down
-                let mut updated_rows = std::collections::HashSet::new();
-                for &row_idx in &self.newly_created_rows {
-                    if row_idx >= insert_index && row_idx != insert_index {
-                        updated_rows.insert(row_idx + 1);
-                    } else {
-                        updated_rows.insert(row_idx);
-                    }
+            && selected_row_idx < self.current_table_data.len()
+        {
+            // Clone the row data
+            let row_data = self.current_table_data[selected_row_idx].clone();
+
+            // Insert the duplicated row right after the selected row
+            let insert_index = selected_row_idx + 1;
+            self.current_table_data
+                .insert(insert_index, row_data.clone());
+            self.all_table_data.insert(insert_index, row_data.clone());
+
+            // Update total rows count
+            self.total_rows = self.current_table_data.len();
+
+            // Mark this row as newly created for highlighting
+            self.newly_created_rows.insert(insert_index);
+
+            // Update indices in newly_created_rows for rows that shifted down
+            let mut updated_rows = std::collections::HashSet::new();
+            for &row_idx in &self.newly_created_rows {
+                if row_idx >= insert_index && row_idx != insert_index {
+                    updated_rows.insert(row_idx + 1);
+                } else {
+                    updated_rows.insert(row_idx);
                 }
-                self.newly_created_rows = updated_rows;
-                
-                // Select the new duplicated row
-                self.selected_row = Some(insert_index);
-                self.selected_cell = Some((insert_index, 0)); // Select first cell of new row
-                
-                // Clear other selections
-                self.selected_rows.clear();
-                self.selected_columns.clear();
-                self.table_sel_anchor = None;
-                
-                // Mark spreadsheet as dirty
-                self.spreadsheet_state.is_dirty = true;
-                
-                // Create an insert operation for tracking
-                self.spreadsheet_state.pending_operations.push(
-                    models::structs::CellEditOperation::InsertRow {
-                        row_index: insert_index,
-                        values: row_data,
-                    }
-                );
-                
-                // Update tab state
-                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    active_tab.result_rows = self.current_table_data.clone();
-                    active_tab.result_all_rows = self.all_table_data.clone();
-                    active_tab.total_rows = self.total_rows;
-                }
-                
-                debug!("Row {} duplicated successfully. New row at index {}", selected_row_idx, insert_index);
             }
+            self.newly_created_rows = updated_rows;
+
+            // Select the new duplicated row
+            self.selected_row = Some(insert_index);
+            self.selected_cell = Some((insert_index, 0)); // Select first cell of new row
+
+            // Clear other selections
+            self.selected_rows.clear();
+            self.selected_columns.clear();
+            self.table_sel_anchor = None;
+
+            // Mark spreadsheet as dirty
+            self.spreadsheet_state.is_dirty = true;
+
+            // Create an insert operation for tracking
+            self.spreadsheet_state.pending_operations.push(
+                models::structs::CellEditOperation::InsertRow {
+                    row_index: insert_index,
+                    values: row_data,
+                },
+            );
+
+            // Update tab state
+            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                active_tab.result_rows = self.current_table_data.clone();
+                active_tab.result_all_rows = self.all_table_data.clone();
+                active_tab.total_rows = self.total_rows;
+            }
+
+            debug!(
+                "Row {} duplicated successfully. New row at index {}",
+                selected_row_idx, insert_index
+            );
+        }
     }
 
     // Delete selected row
     pub fn delete_selected_row(&mut self) {
         if let Some(selected_row_idx) = self.selected_row
-            && selected_row_idx < self.current_table_data.len() {
-                // Store the row data before deletion for undo capability
-                let row_data = self.current_table_data[selected_row_idx].clone();
-                
-                // Remove the row
-                self.current_table_data.remove(selected_row_idx);
-                self.all_table_data.remove(selected_row_idx);
-                
-                // Update total rows count
-                self.total_rows = self.current_table_data.len();
-                
-                // Clear selection
-                self.selected_row = None;
-                self.selected_cell = None;
-                self.selected_rows.clear();
-                self.selected_columns.clear();
-                self.table_sel_anchor = None;
-                
-                // Mark spreadsheet as dirty
-                self.spreadsheet_state.is_dirty = true;
-                
-                // Create a delete operation for tracking
-                self.spreadsheet_state.pending_operations.push(
-                    models::structs::CellEditOperation::DeleteRow {
-                        row_index: selected_row_idx,
-                        values: row_data,
-                    }
-                );
-                
-                // Update tab state
-                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    active_tab.result_rows = self.current_table_data.clone();
-                    active_tab.result_all_rows = self.all_table_data.clone();
-                    active_tab.total_rows = self.total_rows;
-                }
-                
-                debug!("Row {} deleted successfully", selected_row_idx);
+            && selected_row_idx < self.current_table_data.len()
+        {
+            // Store the row data before deletion for undo capability
+            let row_data = self.current_table_data[selected_row_idx].clone();
+
+            // Remove the row
+            self.current_table_data.remove(selected_row_idx);
+            self.all_table_data.remove(selected_row_idx);
+
+            // Update total rows count
+            self.total_rows = self.current_table_data.len();
+
+            // Clear selection
+            self.selected_row = None;
+            self.selected_cell = None;
+            self.selected_rows.clear();
+            self.selected_columns.clear();
+            self.table_sel_anchor = None;
+
+            // Mark spreadsheet as dirty
+            self.spreadsheet_state.is_dirty = true;
+
+            // Create a delete operation for tracking
+            self.spreadsheet_state.pending_operations.push(
+                models::structs::CellEditOperation::DeleteRow {
+                    row_index: selected_row_idx,
+                    values: row_data,
+                },
+            );
+
+            // Update tab state
+            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                active_tab.result_rows = self.current_table_data.clone();
+                active_tab.result_all_rows = self.all_table_data.clone();
+                active_tab.total_rows = self.total_rows;
             }
+
+            debug!("Row {} deleted successfully", selected_row_idx);
+        }
     }
 
     // End: Spreadsheet helpers
@@ -786,10 +789,12 @@ impl Tabular {
                         // Perform actual refresh and cache preload on a lightweight runtime
                         let success = if let Some(cache_pool_arc) = &cache_pool {
                             match tokio::runtime::Runtime::new() {
-                                Ok(rt) => rt.block_on(crate::connection::refresh_connection_background_async(
-                                    connection_id,
-                                    &Some(cache_pool_arc.clone()),
-                                )),
+                                Ok(rt) => rt.block_on(
+                                    crate::connection::refresh_connection_background_async(
+                                        connection_id,
+                                        &Some(cache_pool_arc.clone()),
+                                    ),
+                                ),
                                 Err(_) => false,
                             }
                         } else {
@@ -812,15 +817,18 @@ impl Tabular {
                         let _ = result_sender
                             .send(models::enums::BackgroundResult::UpdateCheckComplete { result });
                     }
-                    models::enums::BackgroundTask::StartPrefetch { connection_id, show_progress: _ } => {
+                    models::enums::BackgroundTask::StartPrefetch {
+                        connection_id,
+                        show_progress: _,
+                    } => {
                         // Start optional background prefetch with progress tracking
                         if let Some(_cache_pool_arc) = &cache_pool {
                             // Need to get connection config and pool
                             // This is a bit tricky since we're in background thread
                             // We'll need to pass the necessary data or fetch from cache
-                            let _ = result_sender.send(models::enums::BackgroundResult::PrefetchComplete {
-                                connection_id,
-                            });
+                            let _ = result_sender.send(
+                                models::enums::BackgroundResult::PrefetchComplete { connection_id },
+                            );
                         }
                     }
                 }
@@ -877,7 +885,10 @@ impl Tabular {
         // This ensures expanded nodes are loaded from cache before first render
         let pending_loads: Vec<i64> = self.pending_auto_load.drain().collect();
         if !pending_loads.is_empty() {
-            info!("📂 Processing {} pending auto-loads BEFORE render", pending_loads.len());
+            info!(
+                "📂 Processing {} pending auto-loads BEFORE render",
+                pending_loads.len()
+            );
         }
         for connection_id in pending_loads {
             info!("📂 Processing auto-load for connection {}", connection_id);
@@ -898,9 +909,10 @@ impl Tabular {
                 info!("   ❌ Connection node {} not found in tree!", connection_id);
             }
         }
-        
+
         // Build quick lookup: connection_id -> DatabaseType
-        let mut connection_types: std::collections::HashMap<i64, models::enums::DatabaseType> = std::collections::HashMap::new();
+        let mut connection_types: std::collections::HashMap<i64, models::enums::DatabaseType> =
+            std::collections::HashMap::new();
         for c in &self.connections {
             if let Some(id) = c.id {
                 connection_types.insert(id, c.connection_type.clone());
@@ -983,7 +995,9 @@ impl Tabular {
                     .find(|c| c.id == Some(conn_id))
                     .cloned()
                 {
-                    if let Some((tab_title, query_content, special_mode)) = self.build_dba_query(&conn, &node_type) {
+                    if let Some((tab_title, query_content, special_mode)) =
+                        self.build_dba_query(&conn, &node_type)
+                    {
                         // Create tab first so active_tab_index refers to the new tab before we set special mode
                         editor::create_new_tab_with_connection(
                             self,
@@ -993,17 +1007,22 @@ impl Tabular {
                         );
                         // Now attach special mode to that newly created active tab
                         if let Some(mode) = special_mode
-                            && let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                active_tab.dba_special_mode = Some(mode);
-                            }
+                            && let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index)
+                        {
+                            active_tab.dba_special_mode = Some(mode);
+                        }
                         self.current_connection_id = Some(conn_id);
                         // Ensure (or kick off) connection pool before executing; fall back to direct exec if still pending
                         if let Some(rt) = self.runtime.clone() {
                             rt.block_on(async {
-                                let _ = crate::connection::get_or_create_connection_pool(self, conn_id).await;
+                                let _ =
+                                    crate::connection::get_or_create_connection_pool(self, conn_id)
+                                        .await;
                             });
                         }
-                        if let Some((headers, data)) = connection::execute_query_with_connection(self, conn_id, query_content) {
+                        if let Some((headers, data)) =
+                            connection::execute_query_with_connection(self, conn_id, query_content)
+                        {
                             self.current_table_headers = headers;
                             self.current_table_data = data.clone();
                             self.all_table_data = data;
@@ -1677,10 +1696,10 @@ impl Tabular {
                             table_name,
                             database_name.as_deref().unwrap_or("Unknown")
                         );
-                        
+
                         // Clear newly created rows highlight when switching tables
                         self.newly_created_rows.clear();
-                        
+
                         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
                             active_tab.result_table_name = self.current_table_name.clone();
                         }
@@ -2120,10 +2139,7 @@ impl Tabular {
             } else if (3000..4000).contains(&context_id) {
                 // ID 3000-3999 means disconnect (connection_id = context_id - 3000)
                 let connection_id = context_id - 3000;
-                debug!(
-                    "🔌 Disconnect operation for connection: {}",
-                    connection_id
-                );
+                debug!("🔌 Disconnect operation for connection: {}", connection_id);
                 self.disconnect_connection(connection_id);
                 // Mark for repaint so status updates immediately
                 ui.ctx().request_repaint();
@@ -2182,7 +2198,6 @@ impl Tabular {
         results
     }
 
-
     fn render_tree_node_with_table_expansion(
         ui: &mut egui::Ui,
         node: &mut models::structs::TreeNode,
@@ -2202,8 +2217,8 @@ impl Tabular {
         let mut dba_click_request: Option<(i64, models::enums::NodeType)> = None;
         let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
-    let mut drop_collection_request: Option<(i64, String, String)> = None;
-    let mut drop_table_request: Option<(i64, String, String, String)> = None;
+        let mut drop_collection_request: Option<(i64, String, String)> = None;
+        let mut drop_table_request: Option<(i64, String, String, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -3675,9 +3690,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 
     // Helper to restore expansion state of a tree recursively
-    fn restore_expansion_state(node: &mut models::structs::TreeNode, state_map: &std::collections::HashMap<String, bool>) {
+    fn restore_expansion_state(
+        node: &mut models::structs::TreeNode,
+        state_map: &std::collections::HashMap<String, bool>,
+    ) {
         use log::info;
-        
+
         // Create unique key for this node
         let node_type_str = format!("{:?}", node.node_type);
         let key = format!(
@@ -3687,15 +3705,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             node_type_str,
             node.name
         );
-        
+
         // Restore expansion state from saved map
         if let Some(&expanded) = state_map.get(&key) {
             node.is_expanded = expanded;
             if expanded {
-                info!("   📂 Restoring expanded: {:?} - {}", node.node_type, node.name);
+                info!(
+                    "   📂 Restoring expanded: {:?} - {}",
+                    node.node_type, node.name
+                );
             }
         }
-        
+
         // Force expand important container folders if they were expanded before
         // This ensures Database and TablesFolder are visible after refresh
         match node.node_type {
@@ -3725,23 +3746,22 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             }
             _ => {}
         }
-        
+
         // Recursively restore children
         for child in &mut node.children {
             Self::restore_expansion_state(child, state_map);
         }
     }
-    
-    
+
     // Helper to mark expanded nodes as loaded (they'll auto-load from cache on render)
     fn mark_expanded_nodes_loaded(node: &mut models::structs::TreeNode) {
         use log::debug;
-        
+
         // If this node is expanded, mark it as not loaded so it will reload from cache
         if node.is_expanded {
             match node.node_type {
-                models::enums::NodeType::Database 
-                | models::enums::NodeType::TablesFolder 
+                models::enums::NodeType::Database
+                | models::enums::NodeType::TablesFolder
                 | models::enums::NodeType::ViewsFolder
                 | models::enums::NodeType::StoredProceduresFolder
                 | models::enums::NodeType::UserFunctionsFolder
@@ -3749,25 +3769,34 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 | models::enums::NodeType::EventsFolder => {
                     // Mark as not loaded so it will trigger loading from cache on next render
                     node.is_loaded = false;
-                    debug!("   📂 Marked expanded {:?} as needing reload: {}", node.node_type, node.name);
+                    debug!(
+                        "   📂 Marked expanded {:?} as needing reload: {}",
+                        node.node_type, node.name
+                    );
                 }
                 _ => {}
             }
         }
-        
+
         // Recursively process children
         for child in &mut node.children {
             Self::mark_expanded_nodes_loaded(child);
         }
     }
-    
+
     // Helper to recursively load all expanded nodes from cache
-    fn load_expanded_nodes_recursive(&mut self, connection_id: i64, node: &mut models::structs::TreeNode) {
+    fn load_expanded_nodes_recursive(
+        &mut self,
+        connection_id: i64,
+        node: &mut models::structs::TreeNode,
+    ) {
         use log::info;
-        
-        info!("🔍 Checking node: {:?} '{}' - expanded={}, loaded={}", 
-              node.node_type, node.name, node.is_expanded, node.is_loaded);
-        
+
+        info!(
+            "🔍 Checking node: {:?} '{}' - expanded={}, loaded={}",
+            node.node_type, node.name, node.is_expanded, node.is_loaded
+        );
+
         // If this node is expanded and not loaded, load it
         if node.is_expanded && !node.is_loaded {
             match node.node_type {
@@ -3786,15 +3815,27 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 }
                 models::enums::NodeType::TablesFolder => {
                     info!("   📂 Loading TablesFolder from cache");
-                    self.load_folder_content(connection_id, node, models::enums::NodeType::TablesFolder);
+                    self.load_folder_content(
+                        connection_id,
+                        node,
+                        models::enums::NodeType::TablesFolder,
+                    );
                 }
                 models::enums::NodeType::ViewsFolder => {
                     info!("   📂 Loading ViewsFolder from cache");
-                    self.load_folder_content(connection_id, node, models::enums::NodeType::ViewsFolder);
+                    self.load_folder_content(
+                        connection_id,
+                        node,
+                        models::enums::NodeType::ViewsFolder,
+                    );
                 }
                 models::enums::NodeType::StoredProceduresFolder => {
                     info!("   📂 Loading StoredProceduresFolder from cache");
-                    self.load_folder_content(connection_id, node, models::enums::NodeType::StoredProceduresFolder);
+                    self.load_folder_content(
+                        connection_id,
+                        node,
+                        models::enums::NodeType::StoredProceduresFolder,
+                    );
                 }
                 _ => {
                     info!("   ⏭️  Skipping {:?} node (no loader)", node.node_type);
@@ -3803,7 +3844,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         } else if node.is_expanded {
             info!("   ⏭️  Node already loaded, skipping");
         }
-        
+
         // Recursively process children (depth-first)
         // Clone children vec to avoid borrow issues
         let children_count = node.children.len();
@@ -3815,7 +3856,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             }
         }
     }
-    
 
     // NEW: Disconnect connection - close pool and clear cache
     fn disconnect_connection(&mut self, connection_id: i64) {
@@ -3828,9 +3868,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
 
         // 2. Remove from shared connection pools
         if let Ok(mut shared_pools) = self.shared_connection_pools.lock()
-            && shared_pools.remove(&connection_id).is_some() {
-                debug!("✅ Removed connection pool from shared cache");
-            }
+            && shared_pools.remove(&connection_id).is_some()
+        {
+            debug!("✅ Removed connection pool from shared cache");
+        }
 
         // 3. Remove from pending pools (if connection was being created)
         if self.pending_connection_pools.remove(&connection_id) {
@@ -3918,9 +3959,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 
     // Clear cache for a specific table only
-    pub(crate) fn clear_table_cache(&self, connection_id: i64, database_name: &str, table_name: &str) {
+    pub(crate) fn clear_table_cache(
+        &self,
+        connection_id: i64,
+        database_name: &str,
+        table_name: &str,
+    ) {
         use log::info;
-        
+
         if let Some(ref pool) = self.db_pool {
             let pool_clone = pool.clone();
             let db = database_name.to_string();
@@ -3968,45 +4014,59 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 
     // Remove a specific table from the sidebar tree without reloading entire connection
-    pub(crate) fn remove_table_from_tree(&mut self, connection_id: i64, database_name: &str, table_name: &str) {
-        use log::{info, debug};
-        
-        info!("🌲 Removing table {}.{} from sidebar tree", database_name, table_name);
+    pub(crate) fn remove_table_from_tree(
+        &mut self,
+        connection_id: i64,
+        database_name: &str,
+        table_name: &str,
+    ) {
+        use log::{debug, info};
+
+        info!(
+            "🌲 Removing table {}.{} from sidebar tree",
+            database_name, table_name
+        );
         info!("   Connection ID: {}", connection_id);
         info!("   Database name: '{}'", database_name);
         info!("   Table name: '{}'", table_name);
-        
+
         // Debug: print tree structure
         debug!("   Current tree structure:");
         for (i, conn_node) in self.items_tree.iter().enumerate() {
-            debug!("     [{}] Connection: {} (id={:?}, type={:?})", i, conn_node.name, conn_node.connection_id, conn_node.node_type);
+            debug!(
+                "     [{}] Connection: {} (id={:?}, type={:?})",
+                i, conn_node.name, conn_node.connection_id, conn_node.node_type
+            );
             for (j, child) in conn_node.children.iter().enumerate() {
-                debug!("       [{}] Child: {} (type={:?}, db={:?})", j, child.name, child.node_type, child.database_name);
+                debug!(
+                    "       [{}] Child: {} (type={:?}, db={:?})",
+                    j, child.name, child.node_type, child.database_name
+                );
             }
         }
-        
+
         // Helper to match table names - handles [schema].[table], schema.table, or just table
         let matches_table = |node_name: &str, search_name: &str| -> bool {
             // Direct match
             if node_name == search_name {
                 return true;
             }
-            
+
             // Remove brackets and compare
             let clean_node = node_name.replace("[", "").replace("]", "");
             let clean_search = search_name.replace("[", "").replace("]", "");
-            
+
             if clean_node == clean_search {
                 return true;
             }
-            
+
             // Compare just the table part (after last dot)
             let node_table = clean_node.split('.').next_back().unwrap_or(&clean_node);
             let search_table = clean_search.split('.').next_back().unwrap_or(&clean_search);
-            
+
             node_table == search_table
         };
-        
+
         // Find the connection node (may be inside a CustomFolder)
         for folder_or_conn in &mut self.items_tree {
             // First check if this is a CustomFolder, if so search its children for the connection
@@ -4014,11 +4074,19 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 info!("   Searching in folder: {}", folder_or_conn.name);
                 for conn_node in &mut folder_or_conn.children {
                     if conn_node.connection_id == Some(connection_id) {
-                        info!("   ✓ Found connection node: {} (ID: {})", conn_node.name, connection_id);
-                        
+                        info!(
+                            "   ✓ Found connection node: {} (ID: {})",
+                            conn_node.name, connection_id
+                        );
+
                         // Navigate through the tree structure to find the table
                         // Structure: Connection -> Databases Folder -> Database -> Tables Folder -> Table
-                        if Self::remove_table_from_connection_node(conn_node, database_name, table_name, &matches_table) {
+                        if Self::remove_table_from_connection_node(
+                            conn_node,
+                            database_name,
+                            table_name,
+                            &matches_table,
+                        ) {
                             return;
                         }
                     }
@@ -4026,17 +4094,28 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             }
             // Also check if this node itself is a connection (for backward compatibility with non-folder structure)
             else if folder_or_conn.connection_id == Some(connection_id) {
-                info!("   ✓ Found connection node (direct): {}", folder_or_conn.name);
-                
+                info!(
+                    "   ✓ Found connection node (direct): {}",
+                    folder_or_conn.name
+                );
+
                 // Navigate through the tree structure to find the table
-                if Self::remove_table_from_connection_node(folder_or_conn, database_name, table_name, &matches_table) {
+                if Self::remove_table_from_connection_node(
+                    folder_or_conn,
+                    database_name,
+                    table_name,
+                    &matches_table,
+                ) {
                     return;
                 }
             }
         }
-        
+
         info!("   ⚠️ Connection {} not found in tree", connection_id);
-        info!("   ⚠️ Table '{}' not found in tree (may have been already removed)", table_name);
+        info!(
+            "   ⚠️ Table '{}' not found in tree (may have been already removed)",
+            table_name
+        );
     }
 
     // Helper function to remove table from a connection node (static to avoid borrow checker issues)
@@ -4047,7 +4126,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         matches_table: &dyn Fn(&str, &str) -> bool,
     ) -> bool {
         use log::info;
-        
+
         // Navigate through the tree structure to find the table
         // Structure: Connection -> Databases Folder -> Database -> Tables Folder -> Table
         for child in &mut conn_node.children {
@@ -4063,15 +4142,23 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                             // Find Tables folder in this database
                             for folder in &mut db_node.children {
                                 if folder.node_type == models::enums::NodeType::TablesFolder {
-                                    info!("   Found TablesFolder with {} tables", folder.children.len());
-                                    
+                                    info!(
+                                        "   Found TablesFolder with {} tables",
+                                        folder.children.len()
+                                    );
+
                                     // Log all tables before removal
                                     for table_node in &folder.children {
-                                        let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                        info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
-                                            tbl_name, table_node.name, table_node.table_name);
+                                        let tbl_name = table_node
+                                            .table_name
+                                            .as_ref()
+                                            .unwrap_or(&table_node.name);
+                                        info!(
+                                            "      - Table in tree: '{}' (node.name='{}', node.table_name={:?})",
+                                            tbl_name, table_node.name, table_node.table_name
+                                        );
                                     }
-                                    
+
                                     // Remove the table from Tables folder
                                     let before_count = folder.children.len();
                                     folder.children.retain(|table_node| {
@@ -4093,29 +4180,40 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             }
             // Also check direct children for databases (some DB types don't use DatabasesFolder)
             else if child.node_type == models::enums::NodeType::Database
-                && let Some(ref db_name) = child.database_name {
+                && let Some(ref db_name) = child.database_name
+            {
                 info!("   Checking direct database node: {}", db_name);
                 if db_name == database_name {
                     info!("   ✓ Database matches!");
                     // Find Tables folder in this database
                     for folder in &mut child.children {
                         if folder.node_type == models::enums::NodeType::TablesFolder {
-                            info!("   Found TablesFolder with {} tables", folder.children.len());
-                            
+                            info!(
+                                "   Found TablesFolder with {} tables",
+                                folder.children.len()
+                            );
+
                             // Log all tables before removal
                             for table_node in &folder.children {
-                                let tbl_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                info!("      - Table in tree: '{}' (node.name='{}', node.table_name={:?})", 
-                                    tbl_name, table_node.name, table_node.table_name);
+                                let tbl_name =
+                                    table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                info!(
+                                    "      - Table in tree: '{}' (node.name='{}', node.table_name={:?})",
+                                    tbl_name, table_node.name, table_node.table_name
+                                );
                             }
-                            
+
                             // Remove the table from Tables folder
                             let before_count = folder.children.len();
                             folder.children.retain(|table_node| {
-                                let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
+                                let node_name =
+                                    table_node.table_name.as_ref().unwrap_or(&table_node.name);
                                 let keep = !matches_table(node_name, table_name);
                                 if !keep {
-                                    info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
+                                    info!(
+                                        "   ✅ Removed table '{}' from tree (matched with '{}')",
+                                        node_name, table_name
+                                    );
                                 }
                                 keep
                             });
@@ -4127,7 +4225,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 }
             }
         }
-        
+
         false // Table not found
     }
 
@@ -6253,12 +6351,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         };
 
         // Try to get index names from cache first (fast tree render)
-        let indexes_list = if let Some(names) = cache_data::get_index_names_from_cache(
-            self,
-            connection_id,
-            database_name,
-            table_name,
-        ) {
+        let indexes_list = if let Some(names) =
+            cache_data::get_index_names_from_cache(self, connection_id, database_name, table_name)
+        {
             if !names.is_empty() {
                 names
             } else {
@@ -7836,7 +7931,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 }
 
-
 impl App for Tabular {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)
@@ -8078,32 +8172,90 @@ impl App for Tabular {
                 .default_size(egui::vec2(520.0, 320.0))
                 .show(ctx, |ui| {
                     // Attempt to capture latest plan hash/cache key from thread-local store (pop once per frame)
-                    if let Some((h,key,ctes)) = crate::query_ast::take_last_debug() { self.last_plan_hash = Some(h); self.last_plan_cache_key = Some(key); self.last_ctes = ctes; }
+                    if let Some((h, key, ctes)) = crate::query_ast::take_last_debug() {
+                        self.last_plan_hash = Some(h);
+                        self.last_plan_cache_key = Some(key);
+                        self.last_ctes = ctes;
+                    }
                     ui.label("Press F9 to toggle this panel.");
                     if ui.button("Refresh Stats").clicked() {
-                        let (h,m) = crate::query_ast::cache_stats();
-                        self.last_cache_hits = h; self.last_cache_misses = m;
+                        let (h, m) = crate::query_ast::cache_stats();
+                        self.last_cache_hits = h;
+                        self.last_cache_misses = m;
                         if let Some(sql) = &self.last_compiled_sql
                             && let Some(active_tab) = self.query_tabs.get(self.active_tab_index)
-                                && let Some(conn_id) = active_tab.connection_id
-                                    && let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
-                                        if let Ok(plan_txt) = crate::query_ast::debug_plan(sql, &conn.connection_type) { self.last_debug_plan = Some(plan_txt); }
-                                        if let Ok((nodes,depth,subs_total,subs_corr,wins)) = crate::query_ast::plan_metrics(sql) { ui.label(format!("Plan: nodes={} depth={} subqueries={} (corr={}) windows={}", nodes, depth, subs_total, subs_corr, wins)); }
-                                    }
+                            && let Some(conn_id) = active_tab.connection_id
+                            && let Some(conn) =
+                                self.connections.iter().find(|c| c.id == Some(conn_id))
+                        {
+                            if let Ok(plan_txt) =
+                                crate::query_ast::debug_plan(sql, &conn.connection_type)
+                            {
+                                self.last_debug_plan = Some(plan_txt);
+                            }
+                            if let Ok((nodes, depth, subs_total, subs_corr, wins)) =
+                                crate::query_ast::plan_metrics(sql)
+                            {
+                                ui.label(format!(
+                                    "Plan: nodes={} depth={} subqueries={} (corr={}) windows={}",
+                                    nodes, depth, subs_total, subs_corr, wins
+                                ));
+                            }
+                        }
                     }
                     ui.separator();
                     ui.horizontal(|ui| {
-                        ui.label(format!("Cache: hits={} misses={} hit_rate={:.1}%", self.last_cache_hits, self.last_cache_misses, if self.last_cache_hits + self.last_cache_misses > 0 { (self.last_cache_hits as f64 *100.0)/(self.last_cache_hits + self.last_cache_misses) as f64 } else { 0.0 }));
+                        ui.label(format!(
+                            "Cache: hits={} misses={} hit_rate={:.1}%",
+                            self.last_cache_hits,
+                            self.last_cache_misses,
+                            if self.last_cache_hits + self.last_cache_misses > 0 {
+                                (self.last_cache_hits as f64 * 100.0)
+                                    / (self.last_cache_hits + self.last_cache_misses) as f64
+                            } else {
+                                0.0
+                            }
+                        ));
                     });
                     let rules = crate::query_ast::last_rewrite_rules();
-                    if !rules.is_empty() { ui.collapsing("Rewrite Rules Applied", |ui| { ui.label(rules.join(", ")); }); }
-                    if let Some(h) = self.last_plan_hash { ui.label(format!("Plan Hash: {:x}", h)); }
-                    if let Some(k) = &self.last_plan_cache_key { ui.collapsing("Cache Key", |ui| { ui.code(k); }); }
-                    if let Some(ctes) = &self.last_ctes && !ctes.is_empty() { ui.collapsing("Remaining CTEs", |ui| { ui.label(ctes.join(", ")); }); }
-                    if let Some(sql) = &self.last_compiled_sql { ui.collapsing("Last Emitted SQL", |ui| { ui.code(sql); }); }
-                    if !self.last_compiled_headers.is_empty() { ui.collapsing("Last Inferred Headers", |ui| { ui.label(self.last_compiled_headers.join(", ")); }); }
-                    if let Some(plan) = &self.last_debug_plan { ui.collapsing("Logical Plan", |ui| { ui.code(plan); }); }
-                    if self.last_compiled_sql.is_none() { ui.label("(Run a SELECT query to populate data)"); }
+                    if !rules.is_empty() {
+                        ui.collapsing("Rewrite Rules Applied", |ui| {
+                            ui.label(rules.join(", "));
+                        });
+                    }
+                    if let Some(h) = self.last_plan_hash {
+                        ui.label(format!("Plan Hash: {:x}", h));
+                    }
+                    if let Some(k) = &self.last_plan_cache_key {
+                        ui.collapsing("Cache Key", |ui| {
+                            ui.code(k);
+                        });
+                    }
+                    if let Some(ctes) = &self.last_ctes
+                        && !ctes.is_empty()
+                    {
+                        ui.collapsing("Remaining CTEs", |ui| {
+                            ui.label(ctes.join(", "));
+                        });
+                    }
+                    if let Some(sql) = &self.last_compiled_sql {
+                        ui.collapsing("Last Emitted SQL", |ui| {
+                            ui.code(sql);
+                        });
+                    }
+                    if !self.last_compiled_headers.is_empty() {
+                        ui.collapsing("Last Inferred Headers", |ui| {
+                            ui.label(self.last_compiled_headers.join(", "));
+                        });
+                    }
+                    if let Some(plan) = &self.last_debug_plan {
+                        ui.collapsing("Logical Plan", |ui| {
+                            ui.code(plan);
+                        });
+                    }
+                    if self.last_compiled_sql.is_none() {
+                        ui.label("(Run a SELECT query to populate data)");
+                    }
                 });
         }
 
@@ -8112,9 +8264,9 @@ impl App for Tabular {
         let mut copy_mode: u8 = 0; // 1=cell 2=rows 3=cols
         let mut snapshot_cell: Option<(usize, usize)> = None;
         let mut snapshot_value: Option<String> = None; // only for cell
-    let mut snapshot_rows_csv: Option<String> = None;
-    let mut snapshot_cols_csv: Option<String> = None;
-    let mut snapshot_structure_csv: Option<String> = None; // for Structure multi-cell selection
+        let mut snapshot_rows_csv: Option<String> = None;
+        let mut snapshot_cols_csv: Option<String> = None;
+        let mut snapshot_structure_csv: Option<String> = None; // for Structure multi-cell selection
 
         // Detect Save shortcut using consume_key so it works reliably on macOS/Windows/Linux
         let mut save_shortcut = false;
@@ -8154,8 +8306,7 @@ impl App for Tabular {
                                             (r + 1).to_string(),
                                             row.name.clone(),
                                             row.data_type.clone(),
-                                            row
-                                                .nullable
+                                            row.nullable
                                                 .map(|b| if b { "YES" } else { "NO" })
                                                 .unwrap_or("?")
                                                 .to_string(),
@@ -8187,7 +8338,11 @@ impl App for Tabular {
                                             (r + 1).to_string(),
                                             row.name.clone(),
                                             row.method.clone().unwrap_or_default(),
-                                            if row.unique { "YES".to_string() } else { "NO".to_string() },
+                                            if row.unique {
+                                                "YES".to_string()
+                                            } else {
+                                                "NO".to_string()
+                                            },
                                             if row.columns.is_empty() {
                                                 String::new()
                                             } else {
@@ -8231,8 +8386,7 @@ impl App for Tabular {
                                         (r + 1).to_string(),
                                         row.name.clone(),
                                         row.data_type.clone(),
-                                        row
-                                            .nullable
+                                        row.nullable
                                             .map(|b| if b { "YES" } else { "NO" })
                                             .unwrap_or("?")
                                             .to_string(),
@@ -8250,7 +8404,11 @@ impl App for Tabular {
                                         (r + 1).to_string(),
                                         row.name.clone(),
                                         row.method.clone().unwrap_or_default(),
-                                        if row.unique { "YES".to_string() } else { "NO".to_string() },
+                                        if row.unique {
+                                            "YES".to_string()
+                                        } else {
+                                            "NO".to_string()
+                                        },
                                         if row.columns.is_empty() {
                                             String::new()
                                         } else {
@@ -8345,7 +8503,7 @@ impl App for Tabular {
             }
 
             // Handle table cell navigation with arrow keys
-            // Only allow table navigation when table was recently clicked 
+            // Only allow table navigation when table was recently clicked
             if !self.show_command_palette
                 && !self.show_theme_selector
                 && self.selected_cell.is_some()
@@ -8402,10 +8560,14 @@ impl App for Tabular {
                     // Update selected_row when cell changes
                     if cell_changed && let Some((new_row, _)) = self.selected_cell {
                         self.selected_row = Some(new_row);
-                        if !shift { self.table_sel_anchor = None; }
+                        if !shift {
+                            self.table_sel_anchor = None;
+                        }
                     }
                 }
-                if consumed_arrow { self.suppress_editor_arrow_once = true; }
+                if consumed_arrow {
+                    self.suppress_editor_arrow_once = true;
+                }
             }
 
             // Handle Structure (Columns/Indexes) cell navigation with arrow keys
@@ -8421,11 +8583,19 @@ impl App for Tabular {
                     // Determine grid dimensions for current Structure subview
                     let (max_rows, max_cols) = match self.structure_sub_view {
                         models::structs::StructureSubView::Columns => {
-                            let cols = if self.structure_col_widths.is_empty() { 6 } else { self.structure_col_widths.len() };
+                            let cols = if self.structure_col_widths.is_empty() {
+                                6
+                            } else {
+                                self.structure_col_widths.len()
+                            };
                             (self.structure_columns.len(), cols)
                         }
                         models::structs::StructureSubView::Indexes => {
-                            let cols = if self.structure_idx_col_widths.is_empty() { 6 } else { self.structure_idx_col_widths.len() };
+                            let cols = if self.structure_idx_col_widths.is_empty() {
+                                6
+                            } else {
+                                self.structure_idx_col_widths.len()
+                            };
                             (self.structure_indexes.len(), cols)
                         }
                     };
@@ -8434,38 +8604,64 @@ impl App for Tabular {
                         self.structure_sel_anchor = Some((row, col));
                     }
                     if i.key_pressed(egui::Key::ArrowRight) {
-                        if col + 1 < max_cols { 
+                        if col + 1 < max_cols {
                             self.structure_selected_cell = Some((row, col + 1));
-                            cell_changed = true; consumed_arrow = true;
-                            log::debug!("➡️ Arrow Right (Structure): Moving to ({}, {})", row, col + 1);
+                            cell_changed = true;
+                            consumed_arrow = true;
+                            log::debug!(
+                                "➡️ Arrow Right (Structure): Moving to ({}, {})",
+                                row,
+                                col + 1
+                            );
                         }
                     } else if i.key_pressed(egui::Key::ArrowLeft) {
                         if col > 0 {
                             self.structure_selected_cell = Some((row, col - 1));
-                            cell_changed = true; consumed_arrow = true;
-                            log::debug!("⬅️ Arrow Left (Structure): Moving to ({}, {})", row, col - 1);
+                            cell_changed = true;
+                            consumed_arrow = true;
+                            log::debug!(
+                                "⬅️ Arrow Left (Structure): Moving to ({}, {})",
+                                row,
+                                col - 1
+                            );
                         }
                     } else if i.key_pressed(egui::Key::ArrowDown) {
                         if row + 1 < max_rows {
                             let target_col = col.min(max_cols.saturating_sub(1));
                             self.structure_selected_cell = Some((row + 1, target_col));
-                            cell_changed = true; consumed_arrow = true;
-                            log::debug!("⬇️ Arrow Down (Structure): Moving to ({}, {})", row + 1, target_col);
+                            cell_changed = true;
+                            consumed_arrow = true;
+                            log::debug!(
+                                "⬇️ Arrow Down (Structure): Moving to ({}, {})",
+                                row + 1,
+                                target_col
+                            );
                         }
                     } else if i.key_pressed(egui::Key::ArrowUp) && row > 0 {
-                            let target_col = col.min(max_cols.saturating_sub(1));
-                            self.structure_selected_cell = Some((row - 1, target_col));
-                            cell_changed = true; consumed_arrow = true;
-                            log::debug!("⬆️ Arrow Up (Structure): Moving to ({}, {})", row - 1, target_col);
-                        }
+                        let target_col = col.min(max_cols.saturating_sub(1));
+                        self.structure_selected_cell = Some((row - 1, target_col));
+                        cell_changed = true;
+                        consumed_arrow = true;
+                        log::debug!(
+                            "⬆️ Arrow Up (Structure): Moving to ({}, {})",
+                            row - 1,
+                            target_col
+                        );
+                    }
 
                     if cell_changed {
                         // On non-Shift navigation, collapse selection (clear anchor)
-                        if !shift { self.structure_sel_anchor = None; }
-                        if let Some((r, _)) = self.structure_selected_cell { self.structure_selected_row = Some(r); }
+                        if !shift {
+                            self.structure_sel_anchor = None;
+                        }
+                        if let Some((r, _)) = self.structure_selected_cell {
+                            self.structure_selected_row = Some(r);
+                        }
                     }
                 }
-                if consumed_arrow { self.suppress_editor_arrow_once = true; }
+                if consumed_arrow {
+                    self.suppress_editor_arrow_once = true;
+                }
             }
 
             // Handle command palette navigation
@@ -8578,11 +8774,19 @@ impl App for Tabular {
                     if let Some(csv) = snapshot_structure_csv {
                         ctx.copy_text(csv.clone());
                         // We don't track a separate list for Structure selection counts here, so log bounds if known
-                        if let (Some(a), Some(b)) = (self.structure_sel_anchor, self.structure_selected_cell) {
-                            let (ar, ac) = a; let (br, bc) = b;
+                        if let (Some(a), Some(b)) =
+                            (self.structure_sel_anchor, self.structure_selected_cell)
+                        {
+                            let (ar, ac) = a;
+                            let (br, bc) = b;
                             let rows = ar.abs_diff(br) + 1;
                             let cols = ac.abs_diff(bc) + 1;
-                            debug!("📋 Copied Structure block {}×{} ({} chars)", rows, cols, csv.len());
+                            debug!(
+                                "📋 Copied Structure block {}×{} ({} chars)",
+                                rows,
+                                cols,
+                                csv.len()
+                            );
                         } else {
                             debug!("📋 Copied Structure CSV ({} chars)", csv.len());
                         }
@@ -8592,10 +8796,16 @@ impl App for Tabular {
                     if let Some(csv) = snapshot_structure_csv.clone() {
                         ctx.copy_text(csv.clone());
                         if let (Some(a), Some(b)) = (self.table_sel_anchor, self.selected_cell) {
-                            let (ar, ac) = a; let (br, bc) = b;
+                            let (ar, ac) = a;
+                            let (br, bc) = b;
                             let rows = ar.abs_diff(br) + 1;
                             let cols = ac.abs_diff(bc) + 1;
-                            debug!("📋 Copied Data block {}×{} ({} chars)", rows, cols, csv.len());
+                            debug!(
+                                "📋 Copied Data block {}×{} ({} chars)",
+                                rows,
+                                cols,
+                                csv.len()
+                            );
                         } else {
                             debug!("📋 Copied Data block CSV ({} chars)", csv.len());
                         }
@@ -8904,14 +9114,19 @@ impl App for Tabular {
                                 "✅ Background refresh completed successfully for connection {}",
                                 connection_id
                             );
-                            
+
                             // Debug: log all connection nodes in tree
-                            info!("   🔍 Searching in items_tree with {} nodes", self.items_tree.len());
+                            info!(
+                                "   🔍 Searching in items_tree with {} nodes",
+                                self.items_tree.len()
+                            );
                             for (i, n) in self.items_tree.iter().enumerate() {
-                                info!("      Node {}: type={:?}, conn_id={:?}, name={}", 
-                                      i, n.node_type, n.connection_id, n.name);
+                                info!(
+                                    "      Node {}: type={:?}, conn_id={:?}, name={}",
+                                    i, n.node_type, n.connection_id, n.name
+                                );
                             }
-                            
+
                             // Re-expand connection node to show fresh data
                             let mut node_found = false;
                             for node in &mut self.items_tree {
@@ -8920,18 +9135,24 @@ impl App for Tabular {
                                 {
                                     node_found = true;
                                     info!("   ✅ Found connection node: {}", node.name);
-                                    
+
                                     // Restore expansion state if we have one pending
-                                    if let Some(expansion_state) = self.pending_expansion_restore.remove(&connection_id) {
-                                        info!("🔄 Restoring {} expansion states for connection {}", expansion_state.len(), connection_id);
-                                        
+                                    if let Some(expansion_state) =
+                                        self.pending_expansion_restore.remove(&connection_id)
+                                    {
+                                        info!(
+                                            "🔄 Restoring {} expansion states for connection {}",
+                                            expansion_state.len(),
+                                            connection_id
+                                        );
+
                                         // Force reload from cache
                                         node.is_loaded = false;
-                                        
+
                                         // Restore the expansion state
                                         Self::restore_expansion_state(node, &expansion_state);
                                         info!("   ✅ Expansion state restored");
-                                        
+
                                         // Mark expanded child nodes to reload from cache on next render
                                         Self::mark_expanded_nodes_loaded(node);
                                         info!("   ✅ Expanded nodes marked for loading");
@@ -8940,21 +9161,27 @@ impl App for Tabular {
                                         // No expansion state to restore, just mark as not loaded
                                         node.is_loaded = false;
                                     }
-                                    
+
                                     break;
                                 }
                             }
-                            
+
                             if !node_found {
                                 info!("   ❌ Connection node {} not found in tree!", connection_id);
                             }
-                            
+
                             // Mark this connection as needing auto-load
                             // Will be processed in the sidebar render where we have proper borrow access
                             self.pending_auto_load.insert(connection_id);
-                            info!("📂 Marked connection {} for auto-load after restore", connection_id);
-                            info!("   pending_auto_load size: {}", self.pending_auto_load.len());
-                            
+                            info!(
+                                "📂 Marked connection {} for auto-load after restore",
+                                connection_id
+                            );
+                            info!(
+                                "   pending_auto_load size: {}",
+                                self.pending_auto_load.len()
+                            );
+
                             // Request UI repaint to show updated data
                             ctx.request_repaint();
                         } else {
@@ -8969,7 +9196,8 @@ impl App for Tabular {
                         total,
                     } => {
                         // Update prefetch progress
-                        self.prefetch_progress.insert(connection_id, (completed, total));
+                        self.prefetch_progress
+                            .insert(connection_id, (completed, total));
                         ctx.request_repaint();
                     }
                     models::enums::BackgroundResult::PrefetchComplete { connection_id } => {

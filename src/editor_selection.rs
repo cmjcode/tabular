@@ -12,9 +12,13 @@ impl SelRegion {
         Self { anchor, head }
     }
     #[inline]
-    pub fn min(&self) -> usize { self.anchor.min(self.head) }
+    pub fn min(&self) -> usize {
+        self.anchor.min(self.head)
+    }
     #[inline]
-    pub fn max(&self) -> usize { self.anchor.max(self.head) }
+    pub fn max(&self) -> usize {
+        self.anchor.max(self.head)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +35,9 @@ impl Default for MultiSelection {
 
 impl MultiSelection {
     pub fn new() -> Self {
-        Self { regions: Vec::new() }
+        Self {
+            regions: Vec::new(),
+        }
     }
     pub fn clear(&mut self) {
         self.regions.clear();
@@ -62,8 +68,12 @@ impl MultiSelection {
         for r in regs {
             let mut a = r.min();
             let mut h = r.max();
-            if h >= at { h += len; }
-            if a >= at { a += len; }
+            if h >= at {
+                h += len;
+            }
+            if a >= at {
+                a += len;
+            }
             out.push(SelRegion::new(a, h, None));
         }
         self.regions = out;
@@ -75,21 +85,25 @@ impl MultiSelection {
         for r in regs {
             let mut a = r.min();
             let mut h = r.max();
-            if h >= at && h < end { h = at; }
-            if a >= at && a < end { a = at; }
-            if h >= end { h -= del_len; }
-            if a >= end { a -= del_len; }
+            if h >= at && h < end {
+                h = at;
+            }
+            if a >= at && a < end {
+                a = at;
+            }
+            if h >= end {
+                h -= del_len;
+            }
+            if a >= end {
+                a -= del_len;
+            }
             out.push(SelRegion::new(a, h, None));
         }
         self.regions = out;
     }
     /// Return a Vec of (anchor, head) sorted & deduped by the min position.
     pub fn ranges(&self) -> Vec<(usize, usize)> {
-        let mut v: Vec<(usize, usize)> = self
-            .regions
-            .iter()
-            .map(|r| (r.min(), r.max()))
-            .collect();
+        let mut v: Vec<(usize, usize)> = self.regions.iter().map(|r| (r.min(), r.max())).collect();
         v.sort_unstable();
         v.dedup();
         v
@@ -116,7 +130,9 @@ impl MultiSelection {
             }
         }
         // Update caret positions
-        for &pos in &positions { self.apply_simple_insert(pos, len); }
+        for &pos in &positions {
+            self.apply_simple_insert(pos, len);
+        }
     }
     /// Apply backspace (delete one char to the left) for each collapsed caret.
     pub fn apply_backspace(&mut self, text: &mut String) {
@@ -151,18 +167,22 @@ impl MultiSelection {
     }
 
     /// Simple helpers keeping compatibility with previous API surface
-    pub fn is_empty(&self) -> bool { self.regions.is_empty() }
-    pub fn len(&self) -> usize { self.regions.len() }
-    pub fn regions(&self) -> &[SelRegion] { &self.regions }
+    pub fn is_empty(&self) -> bool {
+        self.regions.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.regions.len()
+    }
+    pub fn regions(&self) -> &[SelRegion] {
+        &self.regions
+    }
 
     /// No-op in egui-only mode (kept for compatibility)
-    pub fn resync(&mut self) { }
+    pub fn resync(&mut self) {}
 
     /// Get the primary region's (anchor, head) as (min, max). Returns None if empty.
     pub fn primary_range(&self) -> Option<(usize, usize)> {
-        self.regions
-            .first()
-            .map(|r| (r.min(), r.max()))
+        self.regions.first().map(|r| (r.min(), r.max()))
     }
 
     /// Set the primary region's (anchor, head). If empty, creates it.

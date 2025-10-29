@@ -28,10 +28,10 @@ pub mod sidebar_history;
 pub mod sidebar_query;
 pub mod spreadsheet;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
-pub mod syntax_ts;
-pub mod window_egui; // re-enabled syntax highlighting helpers
 #[cfg(feature = "query_ast")]
 pub mod query_ast;
+pub mod syntax_ts;
+pub mod window_egui; // re-enabled syntax highlighting helpers
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {

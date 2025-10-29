@@ -97,8 +97,10 @@ pub(crate) async fn fetch_postgres_data(
         // Views (public)
         if let Ok(view_rows) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            sqlx::query("SELECT table_name FROM information_schema.views WHERE table_schema = 'public'")
-                .fetch_all(pool),
+            sqlx::query(
+                "SELECT table_name FROM information_schema.views WHERE table_schema = 'public'",
+            )
+            .fetch_all(pool),
         )
         .await
         .map_err(|_| sqlx::Error::PoolTimedOut)
