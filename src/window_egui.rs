@@ -9393,8 +9393,8 @@ impl App for Tabular {
         // Disable visual indicators for active/focused elements (but keep text selection visible)
         ctx.style_mut(|style| {
             // Keep text selection visible with a subtle highlight
-            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 60, 0);
-            style.visuals.selection.stroke.color = egui::Color32::from_rgb(0, 0, 0);
+            style.visuals.selection.bg_fill = egui::Color32::from_rgb(132, 33, 10); // rgba(132, 33, 3, 1);
+            style.visuals.selection.stroke.color = egui::Color32::BLACK;
 
             // Only disable other widget visual indicators
             style.visuals.widgets.active.bg_fill = egui::Color32::TRANSPARENT;

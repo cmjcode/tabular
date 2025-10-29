@@ -309,33 +309,33 @@ pub fn try_tree_sitter_sequel_highlight(text: &str, dark: bool) -> Option<Layout
         }
 
         // Debug: print parse tree for first 500 chars (helps diagnose grammar issues)
-        if text.len() < 500 {
-            eprintln!("=== Parse tree for query ===");
-            fn print_tree(node: Node, text: &str, indent: usize) {
-                let kind = node.kind();
-                let token_text = &text[node.start_byte()..node.end_byte().min(text.len())];
-                let display = if token_text.len() > 20 {
-                    format!("{}...", &token_text[..20])
-                } else {
-                    token_text.to_string()
-                };
-                eprintln!(
-                    "{:indent$}{} [{}] named={}",
-                    "",
-                    kind,
-                    display.replace('\n', "\\n"),
-                    node.is_named(),
-                    indent = indent * 2
-                );
-                for i in 0..node.child_count() {
-                    if let Some(ch) = node.child(i) {
-                        print_tree(ch, text, indent + 1);
-                    }
-                }
-            }
-            print_tree(root, text, 0);
-            eprintln!("=== End parse tree ===\n");
-        }
+        // if text.len() < 500 {
+        //     eprintln!("=== Parse tree for query ===");
+        //     fn print_tree(node: Node, text: &str, indent: usize) {
+        //         let kind = node.kind();
+        //         let token_text = &text[node.start_byte()..node.end_byte().min(text.len())];
+        //         let display = if token_text.len() > 20 {
+        //             format!("{}...", &token_text[..20])
+        //         } else {
+        //             token_text.to_string()
+        //         };
+        //         eprintln!(
+        //             "{:indent$}{} [{}] named={}",
+        //             "",
+        //             kind,
+        //             display.replace('\n', "\\n"),
+        //             node.is_named(),
+        //             indent = indent * 2
+        //         );
+        //         for i in 0..node.child_count() {
+        //             if let Some(ch) = node.child(i) {
+        //                 print_tree(ch, text, indent + 1);
+        //             }
+        //         }
+        //     }
+        //     print_tree(root, text, 0);
+        //     eprintln!("=== End parse tree ===\n");
+        // }
 
         // Depth-first traversal; skip large subtrees once classified (e.g., string, comment)
         let mut stack: Vec<Node> = vec![root];
