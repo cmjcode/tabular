@@ -34,7 +34,7 @@ pub(crate) fn create_new_tab(
         result_table_name: String::new(),
         is_table_browse_mode: false,
         current_page: 0,
-        page_size: 100, // default page size aligns with global default
+        page_size: 500, // default page size aligns with global default
         total_rows: 0,
         base_query: String::new(), // Empty base query initially
         dba_special_mode: None,

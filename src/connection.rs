@@ -122,6 +122,9 @@ fn clean_identifier(id: &str) -> String {
 
 // Helper function to add auto LIMIT if not present
 pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseType) -> String {
+
+    println!("Checking if auto LIMIT is needed for query: {}", query);
+
     let trimmed_query = query.trim();
 
     // Don't add LIMIT/TOP if the entire query already has LIMIT/TOP/OFFSET/FETCH
@@ -147,14 +150,14 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
             if upper_query.starts_with("SELECT") {
                 // Preserve casing after the SELECT keyword
                 if let Some(rest) = trimmed_query.get(6..) {
-                    return format!("SELECT TOP 1000{}", rest);
+                    return format!("SELECT TOP 5000{}", rest);
                 }
             }
             trimmed_query.to_string()
         }
         _ => {
-            // MySQL/PostgreSQL/SQLite/MongoDB/Redis: append LIMIT 1000
-            format!("{} LIMIT 1000", trimmed_query)
+            // MySQL/PostgreSQL/SQLite/MongoDB/Redis: append LIMIT 5000
+            format!("{} LIMIT 5000", trimmed_query)
         }
     }
 }

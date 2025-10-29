@@ -540,7 +540,7 @@ impl Tabular {
             current_table_name: String::new(),
             current_connection_id: None,
             current_page: 0,
-            page_size: 100, // Default 100 rows per page
+            page_size: 500, // Default 500 rows per page
             total_rows: 0,
             all_table_data: Vec::new(),
             // Server-side pagination
