@@ -724,6 +724,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut word_right_pressed = false;
     let mut multi_nav_left = false;
     let mut multi_nav_right = false;
+    let mut multi_nav_up = false;
+    let mut multi_nav_down = false;
     let mut word_nav_shift = false;
     let mut move_line_up = false;
     let mut move_line_down = false;
@@ -1407,6 +1409,34 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     pressed: true,
                     modifiers,
                     ..
+                }
+                    if tabular.multi_selection.len() > 1
+                        && !modifiers.shift
+                        && !modifiers.alt
+                        && !modifiers.ctrl
+                        && !modifiers.command =>
+                {
+                    multi_nav_up = true;
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    pressed: true,
+                    modifiers,
+                    ..
+                }
+                    if tabular.multi_selection.len() > 1
+                        && !modifiers.shift
+                        && !modifiers.alt
+                        && !modifiers.ctrl
+                        && !modifiers.command =>
+                {
+                    multi_nav_down = true;
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowUp,
+                    pressed: true,
+                    modifiers,
+                    ..
                 } if modifiers.alt && modifiers.shift => {
                     dup_line_up = true;
                 }
@@ -1469,7 +1499,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
         ui.memory_mut(|m| m.request_focus(id));
     }
-    if multi_nav_left || multi_nav_right {
+    if multi_nav_left || multi_nav_right || multi_nav_up || multi_nav_down {
         let id = egui::Id::new("sql_editor");
         if multi_nav_left {
             tabular
@@ -1479,10 +1509,16 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tabular
                 .multi_selection
                 .move_right(&tabular.editor.text);
+        } else if multi_nav_up {
+            tabular
+                .multi_selection
+                .move_up(&tabular.editor.text);
+        } else if multi_nav_down {
+            tabular
+                .multi_selection
+                .move_down(&tabular.editor.text);
         }
-        if let Some((start_b, end_b)) = tabular.multi_selection.primary_range() {
-            // Primary caret collapses to start on left, end on right (equal when collapsed)
-            let caret_b = if multi_nav_left { start_b } else { end_b };
+        if let Some((_, caret_b)) = tabular.multi_selection.primary_range() {
             let to_char_index = |s: &str, byte_idx: usize| -> usize {
                 let clamp = byte_idx.min(s.len());
                 s[..clamp].chars().count()
@@ -1879,9 +1915,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     
     // Clear multi-selection when user navigates with arrow keys (without Shift)
     // This gives natural single-cursor behavior when moving around
-    let navigation_clears = input_snapshot.key_pressed(egui::Key::ArrowUp)
-        || input_snapshot.key_pressed(egui::Key::ArrowDown)
-        || input_snapshot.key_pressed(egui::Key::Home)
+    let navigation_clears = input_snapshot.key_pressed(egui::Key::Home)
         || input_snapshot.key_pressed(egui::Key::End)
         || input_snapshot.key_pressed(egui::Key::PageUp)
         || input_snapshot.key_pressed(egui::Key::PageDown);

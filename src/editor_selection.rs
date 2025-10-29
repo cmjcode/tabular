@@ -51,9 +51,7 @@ impl MultiSelection {
     }
     pub fn add_collapsed(&mut self, pos: usize) {
         self.regions.push(SelRegion::new(pos, pos, None));
-        // keep a stable order and dedup exact duplicates
-        self.regions.sort_by_key(|r| (r.min(), r.max()));
-        self.regions.dedup();
+        sort_and_dedup(&mut self.regions);
     }
     pub fn collapse_all(&mut self) {
         let regs = self.regions.clone();
@@ -62,6 +60,7 @@ impl MultiSelection {
             let p = r.max();
             out.push(SelRegion::new(p, p, None));
         }
+        sort_and_dedup(&mut out);
         self.regions = out;
     }
     pub fn apply_simple_insert(&mut self, at: usize, len: usize) {
@@ -78,6 +77,7 @@ impl MultiSelection {
             }
             out.push(SelRegion::new(a, h, None));
         }
+        sort_and_dedup(&mut out);
         self.regions = out;
     }
     pub fn apply_simple_delete(&mut self, at: usize, del_len: usize) {
@@ -101,6 +101,7 @@ impl MultiSelection {
             }
             out.push(SelRegion::new(a, h, None));
         }
+        sort_and_dedup(&mut out);
         self.regions = out;
     }
     /// Return a Vec of (anchor, head) sorted & deduped by the min position.
@@ -154,6 +155,69 @@ impl MultiSelection {
                 anchor.max(head)
             };
             updated.push(SelRegion::new(target, target, None));
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
+    /// Move all carets one line up, clamping to the available column on the target line.
+    pub fn move_up(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let head = r.head.min(len);
+            let current_start = line_start(text, head);
+            let current_column = column_at(text, current_start, head);
+            if let Some(prev_start) = previous_line_start(text, current_start) {
+                let prev_end = line_end(text, prev_start);
+                let prev_len = text[prev_start..prev_end].chars().count();
+                let target_column = current_column.min(prev_len);
+                let target = column_to_byte(text, prev_start, prev_end, target_column);
+                updated.push(SelRegion::new(target, target, None));
+            } else {
+                // Already on first line; keep caret where it is
+                updated.push(SelRegion::new(head, head, None));
+            }
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
+    /// Move all carets one line down, clamping to the available column on the target line.
+    pub fn move_down(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let head = r.head.min(len);
+            let current_start = line_start(text, head);
+            let current_end = line_end(text, head);
+            let current_column = column_at(text, current_start, head);
+            if current_end >= len {
+                // Last line; keep caret where it is
+                updated.push(SelRegion::new(head, head, None));
+            } else {
+                // Skip the newline (if present) to reach the next line start
+                let mut next_start = current_end;
+                if next_start < len && text.as_bytes()[next_start] == b'\n' {
+                    next_start += 1;
+                }
+                if next_start > len {
+                    next_start = len;
+                }
+                if next_start >= len {
+                    updated.push(SelRegion::new(len, len, None));
+                } else {
+                    let next_end = line_end(text, next_start);
+                    let next_len = text[next_start..next_end].chars().count();
+                    let target_column = current_column.min(next_len);
+                    let target = column_to_byte(text, next_start, next_end, target_column);
+                    updated.push(SelRegion::new(target, target, None));
+                }
+            }
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
@@ -235,6 +299,7 @@ impl MultiSelection {
         } else {
             self.regions[0] = SelRegion::new(anchor, head, None);
         }
+        sort_and_dedup(&mut self.regions);
     }
 
     /// Find next occurrence of the given text starting from the specified position.
@@ -318,6 +383,51 @@ impl MultiSelection {
 fn sort_and_dedup(regions: &mut Vec<SelRegion>) {
     regions.sort_by_key(|r| (r.min(), r.max()));
     regions.dedup();
+}
+
+fn line_start(text: &str, pos: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut idx = pos.min(bytes.len());
+    while idx > 0 && bytes[idx - 1] != b'\n' {
+        idx -= 1;
+    }
+    idx
+}
+
+fn line_end(text: &str, pos: usize) -> usize {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut idx = pos.min(len);
+    while idx < len && bytes[idx] != b'\n' {
+        idx += 1;
+    }
+    idx
+}
+
+fn previous_line_start(text: &str, current_start: usize) -> Option<usize> {
+    if current_start == 0 {
+        return None;
+    }
+    let prev_end = current_start.saturating_sub(1);
+    Some(line_start(text, prev_end))
+}
+
+fn column_at(text: &str, line_start: usize, pos: usize) -> usize {
+    let clamp = pos.min(text.len());
+    let slice = &text[line_start..clamp];
+    slice.chars().take_while(|&ch| ch != '\n').count()
+}
+
+fn column_to_byte(text: &str, line_start: usize, line_end: usize, column: usize) -> usize {
+    let slice = &text[line_start..line_end];
+    let mut chars = 0usize;
+    for (offset, _) in slice.char_indices() {
+        if chars == column {
+            return line_start + offset;
+        }
+        chars += 1;
+    }
+    line_end
 }
 
 fn prev_grapheme_boundary(text: &str, pos: usize) -> usize {
