@@ -559,6 +559,28 @@ fn handle_add_next_occurrence(tabular: &mut window_egui::Tabular, ui: &egui::Ui)
     }
 }
 
+fn clear_multi_selection_state(tabular: &mut window_egui::Tabular, ui: &egui::Ui, reason: &str) {
+    tabular.multi_selection.clear();
+    tabular.clear_extra_cursors();
+    tabular.selected_text.clear();
+    let caret = tabular.cursor_position.min(tabular.editor.text.len());
+    tabular.cursor_position = caret;
+    tabular.selection_start = caret;
+    tabular.selection_end = caret;
+    tabular.selection_force_clear = true;
+    tabular.pending_cursor_set = Some(caret);
+    tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
+    tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
+
+    let id = egui::Id::new("sql_editor");
+    let s = &tabular.editor.text;
+    let caret_chars = s[..caret].chars().count();
+    crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, caret_chars);
+    ui.memory_mut(|m| m.request_focus(id));
+    ui.ctx().request_repaint();
+    log::debug!("🎯 Multi-selection cleared {reason}");
+}
+
 // Helper: Find word boundaries at the given position (for selecting word under cursor)
 fn find_word_boundaries(text: &str, pos: usize) -> (usize, usize) {
     use unicode_segmentation::UnicodeSegmentation;
@@ -2123,15 +2145,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     
     // Clear multi-selection on Escape
     if input_snapshot.key_pressed(egui::Key::Escape) && !tabular.multi_selection.is_empty() {
-        tabular.multi_selection.clear();
-        tabular.selected_text.clear();
-        // Reset selection to single cursor at current position
-        tabular.selection_start = tabular.cursor_position;
-        tabular.selection_end = tabular.cursor_position;
-        ui.ctx().request_repaint();
-        log::debug!("🎯 Multi-selection cleared via Escape");
+        clear_multi_selection_state(tabular, ui, "via Escape");
     }
-    
+
     // Clear multi-selection when user navigates with arrow keys (without Shift)
     // This gives natural single-cursor behavior when moving around
     let navigation_clears = input_snapshot.key_pressed(egui::Key::Home)
@@ -2143,10 +2159,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         && !input_snapshot.modifiers.alt // Don't clear on Alt+Arrow (word navigation)
         && navigation_clears
     {
-        tabular.multi_selection.clear();
-        tabular.selected_text.clear();
-        ui.ctx().request_repaint();
-        log::debug!("🎯 Multi-selection cleared due to navigation");
+        clear_multi_selection_state(tabular, ui, "due to navigation");
     }
     
     let cmd_or_ctrl = input_snapshot.modifiers.command || input_snapshot.modifiers.ctrl;
@@ -2154,12 +2167,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         && input_snapshot.key_pressed(egui::Key::Z)
         && !tabular.multi_selection.is_empty()
     {
-        tabular.multi_selection.clear();
-        tabular.selected_text.clear();
-        tabular.selection_start = tabular.cursor_position;
-        tabular.selection_end = tabular.cursor_position;
-        ui.ctx().request_repaint();
-        log::debug!("🎯 Multi-selection cleared due to Undo (Cmd/Ctrl+Z)");
+        clear_multi_selection_state(tabular, ui, "due to Undo (Cmd/Ctrl+Z)");
     }
     if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
         // CMD+D / CTRL+D: Add next occurrence to multi-selection
@@ -2358,6 +2366,37 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 selection_painter.rect_filled(caret_rect, 1.0, color);
             }
         }
+    } else {
+        // When no multi-selection is active, ensure a visible caret is painted as fallback.
+        let has_focus = response.has_focus()
+            || ui.ctx().memory(|m| m.has_focus(response.id));
+        if has_focus || tabular.editor_focus_boost_frames > 0 {
+            let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
+            let caret_char_idx = {
+                let s = &tabular.editor.text;
+                let clamp = caret_b.min(s.len());
+                s[..clamp].chars().count()
+            };
+            let caret_cursor = CCursor::new(caret_char_idx);
+            let caret_layout = galley.layout_from_cursor(caret_cursor);
+            let placed_row = &galley.rows[caret_layout.row];
+            let row = &placed_row.row;
+            let x_offset = row.x_offset(caret_layout.column);
+            let caret_x = galley_pos.x + placed_row.pos.x + x_offset;
+            let caret_top = galley_pos.y + placed_row.min_y();
+            let caret_bottom = galley_pos.y + placed_row.max_y();
+            let caret_width = 1.5;
+            let caret_shape = egui::Rect::from_min_max(
+                egui::pos2(caret_x, caret_top),
+                egui::pos2(caret_x + caret_width, caret_bottom),
+            )
+            .intersect(text_clip_rect);
+            if caret_shape.height() > 0.0 {
+                let single_painter = ui.painter().with_clip_rect(text_clip_rect);
+                let color = ui.visuals().strong_text_color();
+                single_painter.rect_filled(caret_shape, 0.0, color);
+            }
+        }
     }
 
     // After show(), apply any pending cursor via direct set_ccursor_range
@@ -2529,6 +2568,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Reset table focus flag when editor is interacted with
+    if response.clicked() {
+        ui.memory_mut(|m| m.request_focus(response.id));
+        tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
+        if tabular.multi_selection.is_empty() {
+            let caret = tabular.cursor_position.min(tabular.editor.text.len());
+            tabular.pending_cursor_set = Some(caret);
+        }
+    }
     if response.clicked() || response.has_focus() {
         tabular.table_recently_clicked = false;
     }
