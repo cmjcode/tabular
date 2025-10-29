@@ -2150,6 +2150,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     
     let cmd_or_ctrl = input_snapshot.modifiers.command || input_snapshot.modifiers.ctrl;
+    if cmd_or_ctrl
+        && input_snapshot.key_pressed(egui::Key::Z)
+        && !tabular.multi_selection.is_empty()
+    {
+        tabular.multi_selection.clear();
+        tabular.selected_text.clear();
+        tabular.selection_start = tabular.cursor_position;
+        tabular.selection_end = tabular.cursor_position;
+        ui.ctx().request_repaint();
+        log::debug!("🎯 Multi-selection cleared due to Undo (Cmd/Ctrl+Z)");
+    }
     if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
         // CMD+D / CTRL+D: Add next occurrence to multi-selection
         handle_add_next_occurrence(tabular, ui);
