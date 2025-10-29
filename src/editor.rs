@@ -986,16 +986,34 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         if do_delete_selection {
             let mut handled_multi_delete = false;
-            if tabular.multi_selection.len() > 1 && tabular.multi_selection.has_expanded_ranges()
-            {
-                log::debug!(
-                    "[multi] Deleting {} expanded selections via {} key",
-                    tabular.multi_selection.len(),
-                    if del_key_consumed { "Delete" } else { "Backspace" }
-                );
-                tabular
-                    .multi_selection
-                    .apply_replace_selected(&mut tabular.editor.text, "");
+            if tabular.multi_selection.len() > 1 {
+                if tabular.multi_selection.has_expanded_ranges() {
+                    log::debug!(
+                        "[multi] Deleting {} expanded selections via {} key",
+                        tabular.multi_selection.len(),
+                        if del_key_consumed { "Delete" } else { "Backspace" }
+                    );
+                    tabular
+                        .multi_selection
+                        .apply_replace_selected(&mut tabular.editor.text, "");
+                } else if pressed_del {
+                    log::debug!(
+                        "[multi] Forward delete across {} carets",
+                        tabular.multi_selection.len()
+                    );
+                    tabular
+                        .multi_selection
+                        .apply_delete_forward(&mut tabular.editor.text);
+                } else {
+                    log::debug!(
+                        "[multi] Backspace across {} carets",
+                        tabular.multi_selection.len()
+                    );
+                    tabular
+                        .multi_selection
+                        .apply_backspace(&mut tabular.editor.text);
+                }
+
                 if let Some((start, caret)) = tabular.multi_selection.primary_range() {
                     tabular.selection_start = start;
                     tabular.selection_end = caret;
@@ -1257,7 +1275,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     .multi_selection
                     .apply_backspace(&mut tabular.editor.text);
             }
-            intercept_multi_backspace = false;
             multi_applied_in_frame = true;
         }
         if intercept_multi_delete {
@@ -1270,7 +1287,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     .multi_selection
                     .apply_delete_forward(&mut tabular.editor.text);
             }
-            intercept_multi_delete = false;
             multi_applied_in_frame = true;
         }
 
