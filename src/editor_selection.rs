@@ -193,4 +193,81 @@ impl MultiSelection {
             self.regions[0] = SelRegion::new(anchor, head, None);
         }
     }
+
+    /// Find next occurrence of the given text starting from the specified position.
+    /// Returns Some((start, end)) if found, None otherwise.
+    pub fn find_next_occurrence(text: &str, search: &str, from_pos: usize) -> Option<(usize, usize)> {
+        if search.is_empty() {
+            return None;
+        }
+        
+        // Search from from_pos to end
+        if let Some(idx) = text[from_pos..].find(search) {
+            let start = from_pos + idx;
+            let end = start + search.len();
+            return Some((start, end));
+        }
+        
+        // Wrap around: search from beginning to from_pos
+        if let Some(idx) = text[..from_pos].find(search) {
+            let start = idx;
+            let end = start + search.len();
+            return Some((start, end));
+        }
+        
+        None
+    }
+
+    /// Add a new selection region for the next occurrence of the currently selected text.
+    /// This is the core logic for CMD+D / CTRL+D functionality.
+    /// Returns true if a new occurrence was found and added.
+    pub fn add_next_occurrence(&mut self, text: &str, selected_text: &str) -> bool {
+        if selected_text.is_empty() {
+            return false;
+        }
+
+        // Get the position to search from (after the last selection in sorted order)
+        // We need to search from the END of the last region
+        let search_from = if let Some(last) = self.regions.iter().max_by_key(|r| r.max()) {
+            last.max()
+        } else {
+            0
+        };
+
+        log::debug!("🔍 Searching for '{}' from position {}", selected_text, search_from);
+
+        // Find next occurrence
+        if let Some((start, end)) = Self::find_next_occurrence(text, selected_text, search_from) {
+            log::debug!("   Found at {}..{}", start, end);
+            
+            // Check if this range is already in our regions to avoid duplicates
+            let already_exists = self.regions.iter().any(|r| r.min() == start && r.max() == end);
+            
+            if !already_exists {
+                log::debug!("   Adding new region {}..{}", start, end);
+                self.regions.push(SelRegion::new(start, end, None));
+                // Keep regions sorted by position for consistent behavior
+                self.regions.sort_by_key(|r| r.min());
+                return true;
+            } else {
+                log::debug!("   Already exists, wrapping around to find next");
+                // If we found the same position, try searching from beginning to find next
+                // This handles the wrap-around case where we've circled back
+                return false;
+            }
+        }
+        
+        log::debug!("   No more occurrences found");
+        false
+    }
+
+    /// Get all selected text ranges as a vector of (start, end, is_primary) tuples.
+    /// The first region is marked as primary.
+    pub fn get_all_ranges_with_primary(&self) -> Vec<(usize, usize, bool)> {
+        self.regions
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.min(), r.max(), i == 0))
+            .collect()
+    }
 }

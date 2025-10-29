@@ -450,6 +450,141 @@ pub(crate) fn save_current_tab_with_name(
     }
 }
 
+// Helper function to handle CMD+D / CTRL+D - Add next occurrence to multi-selection
+// 
+// This implements VSCode-style multi-cursor behavior:
+// 1. First CMD+D: Select word under cursor (if no selection) or use current selection
+// 2. Subsequent CMD+D: Find and add next occurrence of the selected text
+// 3. All cursors stay active and typing applies to all positions
+// 4. Press Escape or navigate with arrow keys to clear multi-selection
+fn handle_add_next_occurrence(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
+    let id = egui::Id::new("sql_editor");
+    
+    // Get current selection or word under cursor
+    let (sel_start, sel_end) = if tabular.selection_start != tabular.selection_end {
+        // Use existing selection
+        (tabular.selection_start, tabular.selection_end)
+    } else {
+        // No selection: select word under cursor
+        let pos = tabular.cursor_position.min(tabular.editor.text.len());
+        let (word_start, word_end) = find_word_boundaries(&tabular.editor.text, pos);
+        if word_start < word_end {
+            // Update selection to the word
+            tabular.selection_start = word_start;
+            tabular.selection_end = word_end;
+            (word_start, word_end)
+        } else {
+            // No word found, do nothing
+            log::debug!("🎯 CMD+D: No word found under cursor");
+            return;
+        }
+    };
+    
+    let selected_text = if sel_start < sel_end && sel_end <= tabular.editor.text.len() {
+        tabular.editor.text[sel_start..sel_end].to_string()
+    } else {
+        return;
+    };
+    
+    if selected_text.is_empty() {
+        log::debug!("🎯 CMD+D: Empty selection, nothing to find");
+        return;
+    }
+    
+    log::debug!("🎯 CMD+D: Selected text='{}' at {}..{}", selected_text.escape_debug(), sel_start, sel_end);
+    
+    // Initialize multi-selection with current selection if it's the first occurrence
+    if tabular.multi_selection.is_empty() {
+        tabular.multi_selection.set_primary_range(sel_start, sel_end);
+        log::debug!("🎯 Initialized multi-selection with primary range: {}..{}", sel_start, sel_end);
+        
+        // Store the selected text for visual feedback
+        tabular.selected_text = selected_text.clone();
+        ui.ctx().request_repaint();
+        
+        // Don't search for next occurrence on first CMD+D, just initialize
+        return;
+    }
+    
+    // Debug: print all existing regions
+    log::debug!("🎯 Existing regions before add:");
+    for (i, r) in tabular.multi_selection.regions().iter().enumerate() {
+        let text_at_region = &tabular.editor.text[r.min()..r.max()];
+        log::debug!("   [{}] {}..{} = '{}'", i, r.min(), r.max(), text_at_region.escape_debug());
+    }
+    
+    // Add next occurrence
+    let found = tabular.multi_selection.add_next_occurrence(&tabular.editor.text, &selected_text);
+    
+    if found {
+        log::debug!("✅ Added next occurrence. Total selections: {}", tabular.multi_selection.len());
+        
+        // Debug: print all regions after add
+        log::debug!("🎯 All regions after add:");
+        for (i, r) in tabular.multi_selection.regions().iter().enumerate() {
+            let text_at_region = &tabular.editor.text[r.min()..r.max()];
+            log::debug!("   [{}] {}..{} = '{}'", i, r.min(), r.max(), text_at_region.escape_debug());
+        }
+        
+        // Update visual feedback
+        tabular.selected_text = selected_text.clone();
+        
+        // Get the last added selection to update cursor position
+        if let Some(last_region) = tabular.multi_selection.regions().last() {
+            let last_end = last_region.max();
+            tabular.cursor_position = last_end;
+            tabular.selection_start = last_region.min();
+            tabular.selection_end = last_end;
+            
+            // Sync with egui state
+            let to_char_index = |s: &str, byte_idx: usize| -> usize {
+                let b = byte_idx.min(s.len());
+                s[..b].chars().count()
+            };
+            
+            let start_ci = to_char_index(&tabular.editor.text, last_region.min());
+            let end_ci = to_char_index(&tabular.editor.text, last_end);
+            crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                ui.ctx(),
+                id,
+                start_ci,
+                end_ci,
+                end_ci,
+            );
+        }
+        
+        ui.ctx().request_repaint();
+    } else {
+        log::debug!("ℹ️ No more occurrences found for '{}'", selected_text.escape_debug());
+    }
+}
+
+// Helper: Find word boundaries at the given position (for selecting word under cursor)
+fn find_word_boundaries(text: &str, pos: usize) -> (usize, usize) {
+    use unicode_segmentation::UnicodeSegmentation;
+    
+    let pos = pos.min(text.len());
+    
+    // Find word boundaries using Unicode word segmentation
+    let mut word_start = pos;
+    let mut word_end = pos;
+    
+    // Find all word boundaries
+    for (idx, word) in text.unicode_word_indices() {
+        let start = idx;
+        let end = start + word.len();
+        
+        // Check if position is within this word
+        if pos >= start && pos <= end {
+            word_start = start;
+            word_end = end;
+            break;
+        }
+    }
+    
+    (word_start, word_end)
+}
+
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     // Find & Replace panel
     if tabular.advanced_editor.show_find_replace {
@@ -1560,27 +1695,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             )
         };
 
-    let text_edit = egui::TextEdit::multiline(&mut tabular.editor.text)
-        .font(egui::TextStyle::Monospace)
-        .desired_rows(rows)
-        .lock_focus(true)
-        .desired_width(f32::INFINITY)
-        .code_editor()
-        .id_source("sql_editor")
-        .layouter(&mut layouter);
-    // Add small horizontal padding so the editor doesn't get clipped on the right edge
-    // let response = egui::Frame::default()
-    //     // .inner_margin(egui::Margin::rightf(2.0.into()))
-    //     .show(ui, |ui| {
-    //         editor.show(ui, &mut tabular.editor_text)
-    //     })
-    //     .inner;
-    // Reserve gutter width if needed
-    // --- Layout & dynamic height calculation ---
-    // Masalah baris terakhir "tersembunyi" terjadi karena sebelumnya kita memakai available_rect_before_wrap()
-    // sebagai tinggi final editor lalu di-clip manual, sehingga konten yang lebih panjang tidak pernah
-    // menambah tinggi konten ScrollArea. Solusi: hitung tinggi yang dibutuhkan berdasarkan jumlah baris
-    // dan biarkan ScrollArea melakukan clipping/scroll otomatis (tidak pakai set_clip_rect sendiri).
+    // Calculate gutter width and editor rect
     let gutter_width = if tabular.advanced_editor.show_line_numbers {
         let digits = (pre_line_count as f32).log10().floor() as usize + 1;
         (digits as f32) * 8.0 + 16.0 // approximate monospace char width
@@ -1593,7 +1708,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let total_lines = total_lines_for_layout; // already computed before borrowing
     // Tinggi minimal mengikuti rows (tinggi viewport awal), tinggi maksimal mengikuti jumlah baris.
     // Tambahkan padding extra 3 * line_height agar baris terakhir tidak "nempel" pada panel bawah / handle.
-    let min_height = line_height * rows as f32 + 6.0;
+    let min_height = line_height * rows as f32;
     let needed_height = line_height * total_lines as f32 + line_height * 3.0;
     let desired_height = needed_height.max(min_height);
     // Editor rect (tanpa gutter) – biarkan lebar penuh.
@@ -1611,8 +1726,25 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.data_mut(|d| d.insert_temp::<egui::Rect>(egui::Id::new("gutter_rect"), gutter_rect));
     }
 
-    // Tidak lagi override clip_rect secara manual; biarkan ScrollArea mengatur viewport dan scrolling.
-    let response = ui.put(editor_rect, text_edit);
+    // Build TextEdit widget directly and capture full output (galley, clip rect, etc.)
+    let text_edit = egui::TextEdit::multiline(&mut tabular.editor.text)
+        .font(egui::TextStyle::Monospace)
+        .desired_rows(rows)
+        .lock_focus(true)
+        .desired_width(f32::INFINITY)
+        .code_editor()
+        .id_source("sql_editor")
+        .layouter(&mut layouter);
+
+    let egui::InnerResponse { inner: text_output, .. } =
+        ui.allocate_ui_at_rect(editor_rect, |ui| text_edit.show(ui));
+    let egui::text_edit::TextEditOutput {
+        response,
+        galley,
+        galley_pos,
+        text_clip_rect,
+        ..
+    } = text_output;
 
     // While focus boost is active, keep focus on the editor so typing works immediately after actions
     if tabular.editor_focus_boost_frames > 0 {
@@ -1634,8 +1766,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
             i += 1;
         }
-        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
-        let y_top = response.rect.top() + 6.0 + (line_no as f32) * line_height;
+    let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+    // Align with TextEdit internal top padding (approx. 6px)
+    let y_top = response.rect.top() + 6.0 + (line_no as f32) * line_height;
         let gutter_w = if tabular.advanced_editor.show_line_numbers {
             gutter_width
         } else {
@@ -1671,13 +1804,42 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
+    
+    // Clear multi-selection on Escape
     if input_snapshot.key_pressed(egui::Key::Escape) && !tabular.multi_selection.is_empty() {
         tabular.multi_selection.clear();
         tabular.selected_text.clear();
+        // Reset selection to single cursor at current position
+        tabular.selection_start = tabular.cursor_position;
+        tabular.selection_end = tabular.cursor_position;
+        ui.ctx().request_repaint();
+        log::debug!("🎯 Multi-selection cleared via Escape");
     }
+    
+    // Clear multi-selection when user navigates with arrow keys (without Shift)
+    // This gives natural single-cursor behavior when moving around
+    if !tabular.multi_selection.is_empty() 
+        && !input_snapshot.modifiers.shift
+        && !input_snapshot.modifiers.alt // Don't clear on Alt+Arrow (word navigation)
+        && (input_snapshot.key_pressed(egui::Key::ArrowLeft)
+            || input_snapshot.key_pressed(egui::Key::ArrowRight)
+            || input_snapshot.key_pressed(egui::Key::ArrowUp)
+            || input_snapshot.key_pressed(egui::Key::ArrowDown)
+            || input_snapshot.key_pressed(egui::Key::Home)
+            || input_snapshot.key_pressed(egui::Key::End)
+            || input_snapshot.key_pressed(egui::Key::PageUp)
+            || input_snapshot.key_pressed(egui::Key::PageDown))
+    {
+        tabular.multi_selection.clear();
+        tabular.selected_text.clear();
+        ui.ctx().request_repaint();
+        log::debug!("🎯 Multi-selection cleared due to navigation");
+    }
+    
     let cmd_or_ctrl = input_snapshot.modifiers.command || input_snapshot.modifiers.ctrl;
     if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
-        // tabular.add_next_occurrence_cursor(); // already mirrors into multi_selection
+        // CMD+D / CTRL+D: Add next occurrence to multi-selection
+        handle_add_next_occurrence(tabular, ui);
     }
 
     // Alt/Option + Click to add an extra caret (approximate hit-test on monospace grid)
@@ -1693,7 +1855,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let gutter_width = if tabular.advanced_editor.show_line_numbers {
             let total_lines = tabular.editor.text.lines().count().max(1);
             ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0'))
-                * (total_lines.to_string().len() as f32 + 1.0)
+                * (total_lines.to_string().len() as f32)
         } else {
             0.0
         };
@@ -1744,14 +1906,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let total_lines = tabular.editor.text.lines().count().max(1);
         let editor_height = response.rect.height();
-        let needed_height = line_height * total_lines as f32 + 8.0;
+        let needed_height = line_height * total_lines as f32;
         let final_rect = egui::Rect::from_min_size(
             gutter_rect.min,
             egui::vec2(gutter_rect.width(), editor_height.max(needed_height)),
         );
         let painter = ui.painter();
         painter.rect_filled(final_rect, 0.0, ui.visuals().faint_bg_color);
-        let mut y = final_rect.top() + 4.0;
+        
+        // CRITICAL: Use SAME coordinate system as text editor (response.rect.top() + 6.0)
+        // NOT final_rect.top() + 4.0!
+        let mut y = response.rect.top() + 6.0;
         for (i, _) in tabular.editor.text.lines().enumerate() {
             painter.text(
                 egui::pos2(final_rect.right() - 6.0, y),
@@ -1767,46 +1932,107 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
     }
 
-    // Paint extra cursors (after gutter so they appear above text) using approximate positioning
+    // Paint extra cursors and selection highlights (after gutter so they appear above text)
     if !tabular.multi_selection.is_empty() {
-        let painter = ui.painter();
-        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        let galley = galley.clone();
+        let selection_painter = ui.painter().with_clip_rect(text_clip_rect);
 
-        // Calculate gutter width
-        let gutter_width = if tabular.advanced_editor.show_line_numbers {
-            let total_lines = tabular.editor.text.lines().count().max(1);
-            ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0'))
-                * (total_lines.to_string().len() as f32 + 1.0)
-        } else {
-            0.0
+        log::debug!(
+            "🎨 Rendering multi-cursor highlights using galley_pos=({}, {})",
+            galley_pos.x, galley_pos.y
+        );
+
+        let to_char_index = |s: &str, byte_idx: usize| -> usize {
+            let clamped = byte_idx.min(s.len());
+            s[..clamped].chars().count()
         };
 
-        for r in tabular.multi_selection.regions() {
-            let cpos = r.max();
-            let mut line_start = 0usize;
-            let mut line_no = 0usize;
-            for (i, ch) in tabular.editor.text.char_indices() {
-                if i >= cpos {
-                    break;
-                }
-                if ch == '\n' {
-                    line_no += 1;
-                    line_start = i + 1;
+        // First pass: Draw selection highlights for all regions
+        for (idx, r) in tabular.multi_selection.regions().iter().enumerate() {
+            let start_pos = r.min();
+            let end_pos = r.max();
+
+            if start_pos < end_pos {
+                let start_ci = to_char_index(&tabular.editor.text, start_pos);
+                let end_ci = to_char_index(&tabular.editor.text, end_pos);
+                let start_cursor = CCursor::new(start_ci);
+                let end_cursor = CCursor::new(end_ci);
+                let range = CCursorRange::two(start_cursor, end_cursor);
+                let [min_cursor, max_cursor] = range.sorted_cursors();
+                let min_layout = galley.layout_from_cursor(min_cursor);
+                let max_layout = galley.layout_from_cursor(max_cursor);
+
+                let is_primary = idx == 0;
+                let highlight_color = if is_primary {
+                    egui::Color32::from_rgba_unmultiplied(70, 130, 180, 100)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(100, 150, 200, 80)
+                };
+
+                log::debug!(
+                    "   Region [{}]: bytes {}..{} -> rows {}..{} (cols {} -> {})",
+                    idx,
+                    start_pos,
+                    end_pos,
+                    min_layout.row,
+                    max_layout.row,
+                    min_layout.column,
+                    max_layout.column
+                );
+
+                for row_idx in min_layout.row..=max_layout.row {
+                    let placed_row = &galley.rows[row_idx];
+                    let row = &placed_row.row;
+
+                    let left_local = if row_idx == min_layout.row {
+                        row.x_offset(min_layout.column)
+                    } else {
+                        0.0
+                    };
+                    let right_local = if row_idx == max_layout.row {
+                        row.x_offset(max_layout.column)
+                    } else {
+                        let newline_size = if row.ends_with_newline {
+                            row.height() / 2.0
+                        } else {
+                            0.0
+                        };
+                        row.size.x + newline_size
+                    };
+
+                    let row_top = galley_pos.y + placed_row.min_y();
+                    let row_bottom = galley_pos.y + placed_row.max_y();
+                    let left = galley_pos.x + placed_row.pos.x + left_local;
+                    let right = galley_pos.x + placed_row.pos.x + right_local;
+
+                    let highlight_rect = egui::Rect::from_min_max(
+                        egui::pos2(left, row_top),
+                        egui::pos2(right, row_bottom),
+                    );
+
+                    if highlight_rect.is_positive() {
+                        selection_painter.rect_filled(highlight_rect, 2.0, highlight_color);
+                    }
                 }
             }
-            let column = cpos.saturating_sub(line_start);
-            let char_w =
-                ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
+        }
 
-            // Position cursor properly with better offset calculation
-            let x = response.rect.left() + gutter_width + 6.0 + (column as f32) * char_w;
-            let y_top = response.rect.top() + 6.0 + (line_no as f32) * line_height;
+        // Second pass: Draw cursors on top of highlights
+        for r in tabular.multi_selection.regions() {
+            let caret_char_idx = to_char_index(&tabular.editor.text, r.max());
+            let caret_cursor = CCursor::new(caret_char_idx);
+            let caret_line_rect = galley
+                .pos_from_cursor(caret_cursor)
+                .translate(galley_pos.to_vec2());
 
-            // Make cursor thinner and more subtle
-            let caret_rect =
-                egui::Rect::from_min_size(egui::pos2(x, y_top), egui::vec2(1.5, line_height - 2.0));
-            let color = egui::Color32::from_rgba_unmultiplied(100, 150, 255, 180); // Semi-transparent blue
-            painter.rect_filled(caret_rect, 1.0, color);
+            if caret_line_rect.height() > 0.0 {
+                let caret_rect = egui::Rect::from_min_max(
+                    egui::pos2(caret_line_rect.left(), caret_line_rect.top()),
+                    egui::pos2(caret_line_rect.left() + 2.0, caret_line_rect.bottom()),
+                );
+                let color = egui::Color32::from_rgba_unmultiplied(100, 150, 255, 220);
+                selection_painter.rect_filled(caret_rect, 1.0, color);
+            }
         }
     }
 
@@ -2089,6 +2315,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // (avoid interfering with normal single-caret Delete/Backspace behavior)
         {
             if tabular.multi_selection.len() > 1 {
+                // Multi-cursor mode is active: apply typing to all cursors
                 // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
                 if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(
                     ui.ctx(),
@@ -2097,26 +2324,53 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     // Convert char -> byte for comparisons and slicing
                     let new_primary_b = to_byte_index(&tabular.editor.text, rng.primary);
                     let old_primary = tabular.cursor_position;
+                    
+                    // Detect if this was a typing action (insertion)
                     if new_primary_b > old_primary {
                         if let Some(inserted_slice) =
                             tabular.editor.text.get(old_primary..new_primary_b)
                         {
                             let inserted = inserted_slice.to_string();
+                            log::debug!("🎯 Multi-cursor typing: inserting '{}' at {} cursors", 
+                                       inserted.escape_debug(), tabular.multi_selection.len());
+                            
+                            // Apply the insertion to all other cursors
                             tabular
                                 .multi_selection
                                 .apply_insert_text(&mut tabular.editor.text, &inserted);
                             tabular.cursor_position = new_primary_b;
                         }
-                    } else if new_primary_b < old_primary
+                    } 
+                    // Detect if this was a backspace action
+                    else if new_primary_b < old_primary
                         && old_primary.saturating_sub(new_primary_b) == 1
                     {
+                        log::debug!("🎯 Multi-cursor backspace at {} cursors", 
+                                   tabular.multi_selection.len());
                         tabular
                             .multi_selection
                             .apply_backspace(&mut tabular.editor.text);
                         tabular.cursor_position = new_primary_b;
                     }
                 }
+            } else if tabular.multi_selection.len() == 1 {
+                // User is typing with only one cursor active (after CMD+D once)
+                // Keep the multi-selection active for potential next CMD+D
+                // but update the primary cursor position
+                if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(
+                    ui.ctx(),
+                    response.id,
+                ) {
+                    let new_primary_b = to_byte_index(&tabular.editor.text, rng.primary);
+                    tabular.cursor_position = new_primary_b;
+                    
+                    // Update the selection range in multi_selection
+                    let start_b = to_byte_index(&tabular.editor.text, rng.start);
+                    let end_b = to_byte_index(&tabular.editor.text, rng.end);
+                    tabular.multi_selection.set_primary_range(start_b, end_b);
+                }
             } else {
+                // No multi-cursor active: normal single-caret behavior
                 // Skip multi-cursor compensation when only a single caret is active
                 // to avoid misinterpreting normal Delete/Backspace edits.
             }
@@ -2323,8 +2577,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let line_h = ui.text_style_height(&egui::TextStyle::Monospace);
         let editor_rect = response.rect; // basic TextEdit rect
         let mut pos = egui::pos2(
-            editor_rect.left() + 8.0 + (column as f32) * char_w,
-            editor_rect.top() + 4.0 + (line_no as f32 + 1.0) * line_h,
+            editor_rect.left() + (column as f32) * char_w,
+            editor_rect.top() + 4.0 + (line_no as f32) * line_h,
         );
         // Clamp horizontally inside editor area
         if pos.x > editor_rect.right() - 150.0 {
