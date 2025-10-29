@@ -342,6 +342,12 @@ impl Tabular {
                 .add_collapsed(self.cursor_position.min(self.editor.text.len()));
         }
         self.multi_selection.add_collapsed(p);
+        log::debug!(
+            "[multi] add_cursor pos={} extra_cursors={:?} regions={:?}",
+            p,
+            self.extra_cursors,
+            self.multi_selection.ranges()
+        );
     }
 
     pub fn clear_extra_cursors(&mut self) {

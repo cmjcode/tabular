@@ -118,6 +118,10 @@ impl MultiSelection {
         v.dedup();
         v
     }
+    /// Returns true when at least one selection spans more than a caret.
+    pub fn has_expanded_ranges(&self) -> bool {
+        self.regions.iter().any(|r| r.anchor != r.head)
+    }
     /// Move all carets one grapheme to the left (collapses selections first).
     pub fn move_left(&mut self, text: &str) {
         if self.regions.is_empty() {
@@ -228,8 +232,17 @@ impl MultiSelection {
         if insert.is_empty() {
             return;
         }
+        let before_len = text.len();
+        let insert_dbg = insert.escape_debug().to_string();
         let len = insert.len();
         let positions = self.caret_positions();
+        log::debug!(
+            "[multi] apply_insert_text start positions={:?} insert='{}' len={} text_len_before={}",
+            positions,
+            insert_dbg,
+            len,
+            before_len
+        );
         // process descending
         for &pos in positions.iter().rev() {
             if pos <= text.len() {
@@ -240,13 +253,27 @@ impl MultiSelection {
         for &pos in &positions {
             self.apply_simple_insert(pos, len);
         }
+        let after_len = text.len();
+        let caret_positions_after = self.caret_positions();
+        log::debug!(
+            "[multi] apply_insert_text done text_len_after={} delta={} positions_after={:?}",
+            after_len,
+            after_len.saturating_sub(before_len),
+            caret_positions_after
+        );
     }
     /// Apply backspace (delete one char to the left) for each collapsed caret.
     pub fn apply_backspace(&mut self, text: &mut String) {
+        let before_len = text.len();
         let mut positions = self.caret_positions();
         positions.sort_unstable();
+        log::debug!(
+            "[multi] apply_backspace start positions={:?} text_len_before={}",
+            positions,
+            before_len
+        );
         let mut performed: Vec<(usize, usize)> = Vec::new(); // (start,len)
-        for &pos in positions.iter() {
+        for &pos in positions.iter().rev() {
             if pos == 0 {
                 continue;
             }
@@ -262,14 +289,120 @@ impl MultiSelection {
                 while real_end < text.len() && !text.is_char_boundary(real_end) {
                     real_end += 1;
                 }
+                let removed_dbg = text[real_start..real_end].escape_debug().to_string();
+                log::debug!(
+                    "[multi] apply_backspace removing '{}' at {}..{}",
+                    removed_dbg,
+                    real_start,
+                    real_end
+                );
                 text.replace_range(real_start..real_end, "");
                 performed.push((real_start, real_end - real_start));
             }
         }
         // Apply selection updates from last deletion to first to avoid double shifting logic.
         performed.sort_by_key(|(s, _)| *s);
-        for (start, len) in performed.into_iter().rev() {
+        log::debug!(
+            "[multi] apply_backspace deletions={:?}",
+            performed
+        );
+        for &(start, len) in performed.iter().rev() {
             self.apply_simple_delete(start, len);
+        }
+        let after_len = text.len();
+        let caret_positions_after = self.caret_positions();
+        log::debug!(
+            "[multi] apply_backspace done text_len_after={} delta={} positions_after={:?}",
+            after_len,
+            before_len.saturating_sub(after_len),
+            caret_positions_after
+        );
+    }
+
+    /// Apply forward delete (Delete key) at each caret.
+    pub fn apply_delete_forward(&mut self, text: &mut String) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let before_len = text.len();
+        let mut positions = self.caret_positions();
+        positions.sort_unstable();
+        log::debug!(
+            "[multi] apply_delete_forward start positions={:?} text_len_before={}",
+            positions,
+            before_len
+        );
+        let mut performed: Vec<(usize, usize)> = Vec::new();
+        for &pos in positions.iter().rev() {
+            if pos >= text.len() {
+                continue;
+            }
+            let end = next_grapheme_boundary(text, pos);
+            if end > pos {
+                let removed_dbg = text[pos..end].escape_debug().to_string();
+                log::debug!(
+                    "[multi] apply_delete_forward removing '{}' at {}..{}",
+                    removed_dbg,
+                    pos,
+                    end
+                );
+                text.replace_range(pos..end, "");
+                performed.push((pos, end - pos));
+            }
+        }
+        performed.sort_by_key(|(s, _)| *s);
+        for &(start, len) in performed.iter().rev() {
+            self.apply_simple_delete(start, len);
+        }
+        let after_len = text.len();
+        let caret_positions_after = self.caret_positions();
+        log::debug!(
+            "[multi] apply_delete_forward done text_len_after={} delta={} positions_after={:?}",
+            after_len,
+            before_len.saturating_sub(after_len),
+            caret_positions_after
+        );
+    }
+
+    /// Replace every expanded selection with the same replacement string.
+    /// Passing an empty replacement behaves like multi-range deletion.
+    pub fn apply_replace_selected(&mut self, text: &mut String, replacement: &str) {
+        let mut ranges: Vec<(usize, usize)> = self
+            .regions
+            .iter()
+            .map(|r| (r.min(), r.max()))
+            .filter(|(s, e)| s < e)
+            .collect();
+        if ranges.is_empty() {
+            return;
+        }
+        ranges.sort_unstable();
+        let mut replaced: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+        for &(start, end) in ranges.iter().rev() {
+            if end > text.len() || start >= end {
+                continue;
+            }
+            let removed_dbg = text[start..end].escape_debug().to_string();
+            log::debug!(
+                "[multi] apply_replace_selected {}..{} removing '{}' -> inserting '{}'",
+                start,
+                end,
+                removed_dbg,
+                replacement.escape_debug()
+            );
+            text.replace_range(start..end, replacement);
+            replaced.push((start, end));
+        }
+        let repl_len = replacement.len();
+        for (start, end) in replaced.into_iter().rev() {
+            let del_len = end - start;
+            self.apply_simple_delete(start, del_len);
+            if repl_len > 0 {
+                self.apply_simple_insert(start, repl_len);
+            }
+        }
+        if repl_len == 0 {
+            self.collapse_all();
         }
     }
 

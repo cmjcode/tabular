@@ -731,6 +731,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut move_line_down = false;
     let mut dup_line_up = false;
     let mut dup_line_down = false;
+    let mut multi_edit_pre_applied = false;
+    let mut intercepted_multi_texts: Vec<String> = Vec::new();
+    let mut intercepted_multi_pastes: Vec<String> = Vec::new();
+    let mut intercept_multi_backspace = false;
+    let mut intercept_multi_delete = false;
     // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
     let mut arrow_down_pressed = false;
     let mut arrow_up_pressed = false;
@@ -980,82 +985,123 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
 
         if do_delete_selection {
-            let mut start_b = 0;
-            let mut end_b = 0;
-
-            // Try to get selection range from egui state first
-            if let Some(rng) =
-                crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
-                && rng.start != rng.end
+            let mut handled_multi_delete = false;
+            if tabular.multi_selection.len() > 1 && tabular.multi_selection.has_expanded_ranges()
             {
-                start_b = to_byte_index(&tabular.editor.text, rng.start);
-                end_b = to_byte_index(&tabular.editor.text, rng.end);
-            }
-
-            // Fallback to stored selection
-            if start_b == end_b {
-                start_b = tabular.selection_start;
-                end_b = tabular.selection_end;
-            }
-
-            if start_b < end_b && end_b <= tabular.editor.text.len() {
-                let selected_text = &tabular.editor.text[start_b..end_b];
                 log::debug!(
-                    "Deleting selection from {} to {}: '{}'",
-                    start_b,
-                    end_b,
-                    selected_text
+                    "[multi] Deleting {} expanded selections via {} key",
+                    tabular.multi_selection.len(),
+                    if del_key_consumed { "Delete" } else { "Backspace" }
                 );
-
-                tabular.editor.apply_single_replace(start_b..end_b, "");
-                tabular.cursor_position = start_b;
-                tabular.selection_start = start_b;
-                tabular.selection_end = start_b;
+                tabular
+                    .multi_selection
+                    .apply_replace_selected(&mut tabular.editor.text, "");
+                if let Some((start, caret)) = tabular.multi_selection.primary_range() {
+                    tabular.selection_start = start;
+                    tabular.selection_end = caret;
+                    tabular.cursor_position = caret;
+                } else {
+                    let caret = tabular.cursor_position.min(tabular.editor.text.len());
+                    tabular.selection_start = caret;
+                    tabular.selection_end = caret;
+                    tabular.cursor_position = caret;
+                }
                 tabular.selected_text.clear();
-                // Mark for hard selection clear enforcement next frame
                 tabular.selection_force_clear = true;
-
-                // Sync egui caret to collapsed at start
-                let ci = to_char_index(&tabular.editor.text, start_b);
+                let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
                 crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
-
-                // CRITICAL: Ensure editor maintains focus and cursor stays active for immediate typing
                 ui.memory_mut(|m| m.request_focus(id));
-
-                // Set focus boost to keep editor focused for several frames
                 tabular.editor_focus_boost_frames = 10;
-
-                // Mark tab as modified
                 if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                    tab.content = tabular.editor.text.clone();
+                    let new_owned = tabular.editor.text.clone();
+                    tabular.editor.set_text(new_owned.clone());
+                    tab.content = new_owned;
                     tab.is_modified = true;
+                } else {
+                    tabular.editor.mark_text_modified();
+                }
+                editor_autocomplete::update_autocomplete(tabular);
+                ui.ctx().request_repaint();
+                handled_multi_delete = true;
+                multi_edit_pre_applied = true;
+            } else {
+                let mut start_b = 0;
+                let mut end_b = 0;
+
+                // Try to get selection range from egui state first
+                if let Some(rng) =
+                    crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                    && rng.start != rng.end
+                {
+                    start_b = to_byte_index(&tabular.editor.text, rng.start);
+                    end_b = to_byte_index(&tabular.editor.text, rng.end);
                 }
 
-                log::debug!(
-                    "Selection deleted successfully, cursor now at {} with focus maintained",
-                    start_b
-                );
-                // Log remaining text preview
-                {
-                    let s = &tabular.editor.text;
-                    let mut end = s.len();
-                    for (count, (i, _)) in s.char_indices().enumerate() {
-                        if count >= 200 {
-                            end = i;
-                            break;
-                        }
+                // Fallback to stored selection
+                if start_b == end_b {
+                    start_b = tabular.selection_start;
+                    end_b = tabular.selection_end;
+                }
+
+                if start_b < end_b && end_b <= tabular.editor.text.len() {
+                    let selected_text = &tabular.editor.text[start_b..end_b];
+                    log::debug!(
+                        "Deleting selection from {} to {}: '{}'",
+                        start_b,
+                        end_b,
+                        selected_text
+                    );
+
+                    tabular.editor.apply_single_replace(start_b..end_b, "");
+                    tabular.cursor_position = start_b;
+                    tabular.selection_start = start_b;
+                    tabular.selection_end = start_b;
+                    tabular.selected_text.clear();
+                    // Mark for hard selection clear enforcement next frame
+                    tabular.selection_force_clear = true;
+
+                    // Sync egui caret to collapsed at start
+                    let ci = to_char_index(&tabular.editor.text, start_b);
+                    crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
+
+                    // CRITICAL: Ensure editor maintains focus and cursor stays active for immediate typing
+                    ui.memory_mut(|m| m.request_focus(id));
+
+                    // Set focus boost to keep editor focused for several frames
+                    tabular.editor_focus_boost_frames = 10;
+
+                    // Mark tab as modified
+                    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                        tab.content = tabular.editor.text.clone();
+                        tab.is_modified = true;
                     }
-                    let rem = if end < s.len() {
-                        format!("{}… (len={})", s[..end].escape_debug(), s.len())
-                    } else {
-                        s.escape_debug().to_string()
-                    };
-                    log::debug!("Remaining text after selection delete: {}", rem);
+
+                    log::debug!(
+                        "Selection deleted successfully, cursor now at {} with focus maintained",
+                        start_b
+                    );
+                    // Log remaining text preview
+                    {
+                        let s = &tabular.editor.text;
+                        let mut end = s.len();
+                        for (count, (i, _)) in s.char_indices().enumerate() {
+                            if count >= 200 {
+                                end = i;
+                                break;
+                            }
+                        }
+                        let rem = if end < s.len() {
+                            format!("{}… (len={})", s[..end].escape_debug(), s.len())
+                        } else {
+                            s.escape_debug().to_string()
+                        };
+                        log::debug!("Remaining text after selection delete: {}", rem);
+                    }
                 }
             }
 
             // If we consumed the key, request a repaint so UI reflects the change immediately
-            if del_key_consumed {
+            if del_key_consumed && !handled_multi_delete {
                 ui.ctx().request_repaint();
                 // Double focus request to ensure it sticks
                 ui.memory_mut(|m| m.request_focus(id));
@@ -1100,6 +1146,161 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     ui.ctx().request_repaint();
                 }
             }
+        }
+    }
+    // Capture multi-cursor typing/deletion events before TextEdit consumes them
+    if tabular.multi_selection.len() > 1 {
+        ui.ctx().input_mut(|ri| {
+            let mut kept_multi = Vec::with_capacity(ri.events.len());
+            for ev in ri.events.drain(..) {
+                match ev {
+                    egui::Event::Text(text) => {
+                        log::debug!(
+                            "[multi] queue text event '{}'",
+                            text.escape_debug()
+                        );
+                        intercepted_multi_texts.push(text);
+                    }
+                    egui::Event::Paste(text) => {
+                        log::debug!(
+                            "[multi] queue paste event len={}",
+                            text.len()
+                        );
+                        intercepted_multi_pastes.push(text);
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::Backspace,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if !tabular.multi_selection.has_expanded_ranges()
+                        && !modifiers.command
+                        && !modifiers.ctrl
+                        && !modifiers.alt =>
+                    {
+                        log::debug!("[multi] queue Backspace event");
+                        intercept_multi_backspace = true;
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::Delete,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if !tabular.multi_selection.has_expanded_ranges()
+                        && !modifiers.command
+                        && !modifiers.ctrl
+                        && !modifiers.alt =>
+                    {
+                        log::debug!("[multi] queue Delete event");
+                        intercept_multi_delete = true;
+                    }
+                    other => kept_multi.push(other),
+                }
+            }
+            ri.events = kept_multi;
+        });
+    } else {
+        intercepted_multi_texts.clear();
+        intercepted_multi_pastes.clear();
+        intercept_multi_backspace = false;
+        intercept_multi_delete = false;
+    }
+    // Apply queued multi-cursor edits immediately so TextEdit reflects the final state this frame
+    if tabular.multi_selection.len() > 1
+        && (!intercepted_multi_texts.is_empty()
+            || !intercepted_multi_pastes.is_empty()
+            || intercept_multi_backspace
+            || intercept_multi_delete)
+    {
+        let mut multi_applied_in_frame = false;
+        for text in intercepted_multi_texts.drain(..) {
+            if tabular.multi_selection.has_expanded_ranges() {
+                tabular
+                    .multi_selection
+                    .apply_replace_selected(&mut tabular.editor.text, &text);
+            } else {
+                tabular
+                    .multi_selection
+                    .apply_insert_text(&mut tabular.editor.text, &text);
+            }
+            log::debug!(
+                "[multi] applied text '{}' across {} carets",
+                text.escape_debug(),
+                tabular.multi_selection.len()
+            );
+            multi_applied_in_frame = true;
+        }
+        for text in intercepted_multi_pastes.drain(..) {
+            if tabular.multi_selection.has_expanded_ranges() {
+                tabular
+                    .multi_selection
+                    .apply_replace_selected(&mut tabular.editor.text, &text);
+            } else {
+                tabular
+                    .multi_selection
+                    .apply_insert_text(&mut tabular.editor.text, &text);
+            }
+            log::debug!(
+                "[multi] applied paste len={} across {} carets",
+                text.len(),
+                tabular.multi_selection.len()
+            );
+            multi_applied_in_frame = true;
+        }
+        if intercept_multi_backspace {
+            if tabular.multi_selection.has_expanded_ranges() {
+                tabular
+                    .multi_selection
+                    .apply_replace_selected(&mut tabular.editor.text, "");
+            } else {
+                tabular
+                    .multi_selection
+                    .apply_backspace(&mut tabular.editor.text);
+            }
+            intercept_multi_backspace = false;
+            multi_applied_in_frame = true;
+        }
+        if intercept_multi_delete {
+            if tabular.multi_selection.has_expanded_ranges() {
+                tabular
+                    .multi_selection
+                    .apply_replace_selected(&mut tabular.editor.text, "");
+            } else {
+                tabular
+                    .multi_selection
+                    .apply_delete_forward(&mut tabular.editor.text);
+            }
+            intercept_multi_delete = false;
+            multi_applied_in_frame = true;
+        }
+
+        if multi_applied_in_frame {
+            multi_edit_pre_applied = true;
+            if let Some((start, caret)) = tabular.multi_selection.primary_range() {
+                tabular.selection_start = start;
+                tabular.selection_end = caret;
+                tabular.cursor_position = caret;
+            } else {
+                let caret = tabular.cursor_position.min(tabular.editor.text.len());
+                tabular.selection_start = caret;
+                tabular.selection_end = caret;
+                tabular.cursor_position = caret;
+            }
+            tabular.selected_text.clear();
+            let id = egui::Id::new("sql_editor");
+            let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+            crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
+            tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
+            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                let new_owned = tabular.editor.text.clone();
+                tabular.editor.set_text(new_owned.clone());
+                tab.content = new_owned;
+                tab.is_modified = true;
+            } else {
+                tabular.editor.mark_text_modified();
+            }
+            editor_autocomplete::update_autocomplete(tabular);
+            ui.ctx().request_repaint();
         }
     }
     // Forward Delete (no selection): delete the next grapheme to the right of the caret
@@ -2407,8 +2608,30 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Apply multi-cursor editing only when there are truly multiple cursors
         // (avoid interfering with normal single-caret Delete/Backspace behavior)
-        {
-            if tabular.multi_selection.len() > 1 {
+        if !multi_edit_pre_applied {
+            let multi_len = tabular.multi_selection.len();
+            let caret_positions_snapshot = if multi_len > 0 {
+                Some(tabular.multi_selection.caret_positions())
+            } else {
+                None
+            };
+            log::debug!(
+                "[multi] response.changed multi_len={} caret_positions={:?} delete_dbg='{}' insert_dbg='{}'",
+                multi_len,
+                caret_positions_snapshot,
+                deleted_dbg,
+                inserted_dbg
+            );
+            let multi_count = tabular.multi_selection.len();
+            if multi_count > 1 {
+                let caret_positions_before = tabular.multi_selection.caret_positions();
+                let ranges_before = tabular.multi_selection.ranges();
+                log::debug!(
+                    "[multi] response.changed with {} carets positions={:?} ranges={:?}",
+                    multi_count,
+                    caret_positions_before,
+                    ranges_before
+                );
                 // Multi-cursor mode is active: apply typing to all cursors
                 // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
                 if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(
@@ -2418,6 +2641,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     // Convert char -> byte for comparisons and slicing
                     let new_primary_b = to_byte_index(&tabular.editor.text, rng.primary);
                     let old_primary = tabular.cursor_position;
+                    log::debug!(
+                        "[multi] primary cursor moved {} -> {} (delta={})",
+                        old_primary,
+                        new_primary_b,
+                        new_primary_b as isize - old_primary as isize
+                    );
                     
                     // Detect if this was a typing action (insertion)
                     if new_primary_b > old_primary {
@@ -2425,27 +2654,62 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             tabular.editor.text.get(old_primary..new_primary_b)
                         {
                             let inserted = inserted_slice.to_string();
-                            log::debug!("🎯 Multi-cursor typing: inserting '{}' at {} cursors", 
-                                       inserted.escape_debug(), tabular.multi_selection.len());
+                            log::debug!(
+                                "[multi] typing insert='{}' caret_count={} positions_before={:?}",
+                                inserted.escape_debug(),
+                                multi_count,
+                                caret_positions_before
+                            );
                             
                             // Apply the insertion to all other cursors
                             tabular
                                 .multi_selection
                                 .apply_insert_text(&mut tabular.editor.text, &inserted);
+                            let caret_positions_after = tabular.multi_selection.caret_positions();
+                            log::debug!(
+                                "[multi] insert applied text_len={} positions_after={:?}",
+                                tabular.editor.text.len(),
+                                caret_positions_after
+                            );
                             tabular.cursor_position = new_primary_b;
+                        } else {
+                            log::debug!(
+                                "[multi] insert range {}..{} not available in buffer",
+                                old_primary,
+                                new_primary_b
+                            );
                         }
                     } 
                     // Detect if this was a backspace action
                     else if new_primary_b < old_primary
                         && old_primary.saturating_sub(new_primary_b) == 1
                     {
-                        log::debug!("🎯 Multi-cursor backspace at {} cursors", 
-                                   tabular.multi_selection.len());
+                        log::debug!(
+                            "[multi] backspace caret_count={} positions_before={:?}",
+                            multi_count,
+                            caret_positions_before
+                        );
                         tabular
                             .multi_selection
                             .apply_backspace(&mut tabular.editor.text);
+                        let caret_positions_after = tabular.multi_selection.caret_positions();
+                        log::debug!(
+                            "[multi] backspace applied text_len={} positions_after={:?}",
+                            tabular.editor.text.len(),
+                            caret_positions_after
+                        );
                         tabular.cursor_position = new_primary_b;
+                    } else {
+                        log::debug!(
+                            "[multi] no multi-caret edit detected old={} new={} del='{}' ins='{}'",
+                            old_primary,
+                            new_primary_b,
+                            deleted_dbg,
+                            inserted_dbg
+                        );
                     }
+                } else {
+                    log::debug!("[multi] missing TextEdit range; skipping multi-caret sync");
                 }
             } else if tabular.multi_selection.len() == 1 {
                 // User is typing with only one cursor active (after CMD+D once)
@@ -2468,6 +2732,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 // Skip multi-cursor compensation when only a single caret is active
                 // to avoid misinterpreting normal Delete/Backspace edits.
             }
+        } else {
+            log::debug!("[multi] response.changed skipped (pre-applied this frame)");
         }
 
         // Rebuild autocomplete suggestions on text changes unless we're in the middle of accepting via Tab/Enter
