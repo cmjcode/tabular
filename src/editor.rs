@@ -1411,7 +1411,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
     if input_snapshot.key_pressed(egui::Key::Escape)
-        && !tabular.multi_selection.to_lapce_selection().is_empty() {
+        && !tabular.multi_selection.is_empty() {
             tabular.multi_selection.clear();
             tabular.selected_text.clear();
         }
@@ -1419,6 +1419,42 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     if cmd_or_ctrl && input_snapshot.key_pressed(egui::Key::D) {
         // tabular.add_next_occurrence_cursor(); // already mirrors into multi_selection
     }
+
+    // Alt/Option + Click to add an extra caret (approximate hit-test on monospace grid)
+    if input_snapshot.modifiers.alt
+        && let Some(pos) = input_snapshot.pointer.interact_pos()
+            && input_snapshot.pointer.primary_clicked()
+            && response.rect.contains(pos)
+        {
+            // Compute line/column based on painter metrics
+            let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+            let char_w = ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
+            let gutter_width = if tabular.advanced_editor.show_line_numbers {
+                let total_lines = tabular.editor.text.lines().count().max(1);
+                ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0'))
+                    * (total_lines.to_string().len() as f32 + 1.0)
+            } else { 0.0 };
+            let local = pos - response.rect.min;
+            let mut line = ((local.y - 6.0) / line_height).floor() as isize;
+            let mut col = ((local.x - gutter_width - 6.0) / char_w).floor() as isize;
+            if line < 0 { line = 0; }
+            if col < 0 { col = 0; }
+            let line = line as usize;
+            let col = col as usize;
+            let start = tabular.editor.line_start(line);
+            let end = if line + 1 < tabular.editor.line_count() { tabular.editor.line_start(line + 1).min(tabular.editor.text.len()) } else { tabular.editor.text.len() };
+            let slice = &tabular.editor.text[start..end];
+            let mut byte_off = start;
+            let mut chars = 0usize;
+            for (i, _) in slice.char_indices() {
+                if chars >= col { break; }
+                chars += 1; byte_off = start + i + 1;
+            }
+            // If requested column beyond line length, clamp to end
+            if chars < col { byte_off = end; }
+            tabular.add_cursor(byte_off);
+            ui.ctx().request_repaint();
+        }
 
     // Handle multi-cursor typing - apply changes to all cursors
     // Multi-selection typing compensations handled later in response.changed() branch now.
@@ -1453,7 +1489,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
 
     // Paint extra cursors (after gutter so they appear above text) using approximate positioning
-    if !tabular.multi_selection.to_lapce_selection().is_empty() {
+    if !tabular.multi_selection.is_empty() {
         let painter = ui.painter();
         let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
 
@@ -1466,8 +1502,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             0.0
         };
 
-        let regions = tabular.multi_selection.to_lapce_selection();
-        for r in regions.regions() {
+        for r in tabular.multi_selection.regions() {
             let cpos = r.max();
             let mut line_start = 0usize;
             let mut line_no = 0usize;
@@ -1761,8 +1796,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Apply multi-cursor editing only when there are truly multiple cursors
         // (avoid interfering with normal single-caret Delete/Backspace behavior)
         {
-            let sel = tabular.multi_selection.to_lapce_selection();
-            if sel.regions().len() > 1 {
+            if tabular.multi_selection.len() > 1 {
             // Use TextEditState to detect what got inserted (only handles uniform insert across collapsed carets)
             if let Some(rng) =
                 crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)

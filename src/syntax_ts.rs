@@ -33,7 +33,7 @@
 //! Rationale: Simplify codebase by removing duplicate modules while keeping an easy path
 //! to expand semantic features (folding, structure-aware autocomplete, etc.). The current
 //! tree-sitter integration is purposefully minimal: it parses and caches an incremental tree
-//! (when the `tree_sitter_sql` feature is enabled) but still falls back to the lightweight
+//! (when the `tree_sitter_sequel` feature is enabled) but still falls back to the lightweight
 //! heuristic colorizer for rendering.
 //!
 //! Future directions (planned):
@@ -64,7 +64,7 @@ pub fn detect_language_from_name(name: &str) -> LanguageKind {
     LanguageKind::Plain
 }
 
-#[cfg(feature = "tree_sitter_sql")]
+#[cfg(feature = "tree_sitter_sequel")]
 mod ts {
     use tree_sitter::{Parser, Tree};
     use once_cell::sync::OnceCell;
@@ -77,7 +77,9 @@ mod ts {
     impl TsSqlParser {
         pub fn new() -> anyhow::Result<Self> {
             let mut parser = Parser::new();
-            parser.set_language(tree_sitter_sql::language())?;
+            // tree-sitter-sequel exposes a LanguageFn; convert to tree_sitter::Language
+            let language = tree_sitter_sequel::LANGUAGE;
+            parser.set_language(&language.into())?;
             Ok(Self { parser, tree: None, last_hash: 0 })
         }
         fn hash(text: &str) -> u64 {
@@ -120,24 +122,21 @@ mod ts {
 /// Attempt tree-sitter based highlight. If it fails or yields nothing, return None
 /// so the legacy heuristic highlighter can run as fallback.
 #[allow(unused_variables)]
-pub fn try_tree_sitter_sql_highlight(text: &str, dark: bool) -> Option<LayoutJob> {
-    #[cfg(feature = "tree_sitter_sql")]
+pub fn try_tree_sitter_sequel_highlight(text: &str, dark: bool) -> Option<LayoutJob> {
+    #[cfg(feature = "tree_sitter_sequel")]
     {
-    use tree_sitter::Node;
-        use eframe::egui::{TextFormat};
+        use tree_sitter::Node;
+        use eframe::egui::TextFormat;
         use crate::syntax_ts::{keyword_color, string_color, comment_color, number_color, punctuation_color, normal_color};
 
-        // Parse (side effect warms incremental tree); we also need the actual tree.
-        let sexpr = ts::parse_sql(text)?; // returns root sexpr currently; we re-fetch parser tree via parse again
-        // Re-parse to access the tree via OnceCell. (Refactor later to return tree reference.)
-        // Acquire parser again to read its tree.
-        // Re-run a fresh parser (non-incremental) for highlight only (keeps logic simple for now)
-        let mut parser = tree_sitter::Parser::new();
-        if parser.set_language(tree_sitter_sql::language()).is_err() { return None; }
+        // Fresh parser (keeps logic simple and avoids global mutable state in UI thread)
+    let mut parser = tree_sitter::Parser::new();
+    let language = tree_sitter_sequel::LANGUAGE;
+    if parser.set_language(&language.into()).is_err() { return None; }
         let tree = parser.parse(text, None)?;
         let root = tree.root_node();
 
-        // Collect spans (start_byte, end_byte, type_index)
+        // Collect spans (start_byte, end_byte, kind)
         #[derive(Clone, Copy)]
         struct Span { s: usize, e: usize, kind: SpanKind }
         #[derive(Clone, Copy, PartialEq, Eq)]
@@ -147,26 +146,131 @@ pub fn try_tree_sitter_sql_highlight(text: &str, dark: bool) -> Option<LayoutJob
 
         fn classify(node: Node, text: &str) -> Option<SpanKind> {
             let kind = node.kind();
+            
+            // Grammar-based classification: tree-sitter-sql uses UPPERCASE for keyword node kinds
             match kind {
-                // Strings & comments
-                "string" | "quoted_text" => Some(SpanKind::String),
-                "comment" => Some(SpanKind::Comment),
-                // Numbers (integer / numeric literal kinds depend on grammar version)
-                "number" | "numeric_literal" => Some(SpanKind::Number),
-                // punctuation tokens are usually individual symbols; we skip letting them fallback to char loop
-                // Keywords: tree-sitter-sql marks many tokens simply as their text (e.g. select, from, where)
+                // Literals
+                "string" | "quoted_text" | "string_literal" => Some(SpanKind::String),
+                "number" | "numeric_literal" | "integer" => Some(SpanKind::Number),
+                
+                // Comments
+                "comment" | "line_comment" | "block_comment" => Some(SpanKind::Comment),
+                
+                // SQL Keywords - tree-sitter-sql grammar defines these as UPPERCASE node types
+                "SELECT" | "FROM" | "WHERE" | "INSERT" | "INTO" | "UPDATE" | "DELETE" |
+                "CREATE" | "ALTER" | "DROP" | "TABLE" | "VALUES" | "JOIN" | "LEFT" | "RIGHT" |
+                "INNER" | "OUTER" | "ON" | "GROUP" | "BY" | "HAVING" | "ORDER" | "LIMIT" |
+                "OFFSET" | "UNION" | "DISTINCT" | "ASC" | "DESC" | "AND" | "OR" | "NOT" |
+                "NULL" | "IS" | "SET" | "SHOW" | "START" | "STOP" | "RESET" | "CHANGE" | "PURGE" |
+                "AS" | "IN" | "EXISTS" | "CASE" | "WHEN" | "THEN" | "ELSE" | "END" |
+                "BETWEEN" | "LIKE" | "ALL" | "ANY" | "SOME" | "GLOBAL" | "BEFORE" | "TO" |
+                "ORDER BY" | "PRIMARY" | "KEY" | "USING" | "DEFAULT" | "ENGINE" | "CHARSET" |
+                "COLLATE" | "CHARACTER" | "AUTO_INCREMENT" | "CURRENT_TIMESTAMP" |
+                "ROW_FORMAT" | "DYNAMIC" => Some(SpanKind::Keyword),
+                
+                // Types
+                "INT" | "VARCHAR" | "TEXT" | "BIGINT" | "DATETIME" | "TIMESTAMP" | 
+                "BOOLEAN" | "DECIMAL" | "FLOAT" | "DOUBLE" | "CHAR" | "LONGTEXT" => Some(SpanKind::Keyword),
+                
+                // Statement types
+                "select_statement" | "insert_statement" | "update_statement" | "delete_statement" |
+                "create_statement" | "alter_statement" | "drop_statement" => None, // composite node, recurse
+                
+                // Clauses
+                "select_clause" | "from_clause" | "where_clause" | "order_by_clause" | 
+                "group_by_clause" | "having_clause" | "order_by_clause_body" => None, // composite, recurse
+                
+                // ERROR nodes - grammar doesn't recognize modern MySQL syntax
+                "ERROR" => None, // recurse into children to salvage what we can
+                
+                // Identifiers
+                "identifier" | "column_name" | "table_name" | "schema_name" => {
+                    let token_text = &text[node.start_byte()..node.end_byte()];
+                    
+                    // Check if it's actually a keyword that grammar missed (case-insensitive)
+                    if is_sql_keyword(token_text) {
+                        return Some(SpanKind::Keyword);
+                    }
+                    
+                    Some(SpanKind::Ident)
+                }
+                
+                // Operators & punctuation
+                "=" | ">" | "<" | ">=" | "<=" | "!=" | "<>" | "+" | "-" | "*" | "/" | "%" |
+                "(" | ")" | "," | ";" | "." | "`" => Some(SpanKind::Punctuation),
+                
+                // For unnamed nodes (anonymous tokens in grammar)
                 _ => {
-                    let txt = &text[node.start_byte()..node.end_byte()];
-                    let up = txt.to_ascii_uppercase();
-                    if SQL_KEYWORDS.binary_search(&up.as_str()).is_ok() { return Some(SpanKind::Keyword); }
-                    // simple identifier detection
-                    if kind == "identifier" { return Some(SpanKind::Ident); }
+                    if !node.is_named() {
+                        let token_text = &text[node.start_byte()..node.end_byte()];
+                        
+                        // Check if it's a keyword (case-insensitive match)
+                        if is_sql_keyword(token_text) {
+                            return Some(SpanKind::Keyword);
+                        }
+                        
+                        // Single-char punctuation
+                        if token_text.len() == 1 {
+                            let ch = token_text.chars().next().unwrap();
+                            if ch.is_ascii_punctuation() || ch == '`' {
+                                return Some(SpanKind::Punctuation);
+                            }
+                        }
+                    }
                     None
                 }
             }
         }
 
-    // Depth-first traversal; skip large subtrees once classified (e.g., string, comment)
+        // Check if token is a SQL keyword (case-insensitive)
+        fn is_sql_keyword(token: &str) -> bool {
+            let lower = token.to_ascii_lowercase();
+            matches!(lower.as_str(),
+                // Core SQL
+                "select" | "from" | "where" | "insert" | "into" | "update" | "delete" |
+                "create" | "alter" | "drop" | "table" | "values" | "join" | "left" | "right" |
+                "inner" | "outer" | "on" | "group" | "by" | "having" | "order" | "limit" |
+                "offset" | "union" | "distinct" | "asc" | "desc" | "and" | "or" | "not" |
+                "null" | "is" | "set" | "as" | "in" | "exists" | "case" | "when" | "then" |
+                "else" | "end" | "between" | "like" | "all" | "any" | "some" |
+                // MySQL specific
+                "show" | "start" | "stop" | "reset" | "change" | "purge" | "replica" | 
+                "master" | "slave" | "binary" | "logs" | "status" | "privileges" | "grants" |
+                "processlist" | "global" | "before" | "to" |
+                // Table definition
+                "primary" | "key" | "foreign" | "references" | "constraint" | "unique" |
+                "index" | "using" | "btree" | "hash" | "default" | "auto_increment" |
+                "current_timestamp" | "engine" | "innodb" | "myisam" | "charset" | "collate" |
+                "character" | "row_format" | "dynamic" | "compressed" | "redundant" | "compact" |
+                // Types
+                "int" | "varchar" | "text" | "bigint" | "datetime" | "timestamp" | 
+                "boolean" | "decimal" | "float" | "double" | "char" | "longtext" | "mediumtext" |
+                "tinytext" | "blob" | "longblob" | "mediumblob" | "tinyblob" | "enum" | 
+                "unsigned" | "signed" | "zerofill"
+            )
+        }
+
+        // Debug: print parse tree for first 500 chars (helps diagnose grammar issues)
+        if text.len() < 500 {
+            eprintln!("=== Parse tree for query ===");
+            fn print_tree(node: Node, text: &str, indent: usize) {
+                let kind = node.kind();
+                let token_text = &text[node.start_byte()..node.end_byte().min(text.len())];
+                let display = if token_text.len() > 20 { 
+                    format!("{}...", &token_text[..20]) 
+                } else { 
+                    token_text.to_string() 
+                };
+                eprintln!("{:indent$}{} [{}] named={}", "", kind, display.replace('\n', "\\n"), node.is_named(), indent=indent*2);
+                for i in 0..node.child_count() {
+                    if let Some(ch) = node.child(i) { print_tree(ch, text, indent + 1); }
+                }
+            }
+            print_tree(root, text, 0);
+            eprintln!("=== End parse tree ===\n");
+        }
+
+        // Depth-first traversal; skip large subtrees once classified (e.g., string, comment)
         let mut stack: Vec<Node> = vec![root];
         while let Some(node) = stack.pop() {
             if node.child_count() == 0 { // leaf
@@ -205,8 +309,13 @@ pub fn try_tree_sitter_sql_highlight(text: &str, dark: bool) -> Option<LayoutJob
             job.append(slice, 0.0, TextFormat { color, ..Default::default() });
             idx = span.e;
         }
-    if idx < text.len() { job.append(&text[idx..], 0.0, TextFormat { color: normal_color(dark), ..Default::default() }); }
-    Some(job)
+        if idx < text.len() { job.append(&text[idx..], 0.0, TextFormat { color: normal_color(dark), ..Default::default() }); }
+        Some(job)
+    }
+    #[cfg(not(feature = "tree_sitter_sequel"))]
+    {
+        let _ = (text, dark);
+        None
     }
 }
 
@@ -237,9 +346,9 @@ pub fn highlight_text_cached(
 /// Whole text highlighter (optionally tries tree-sitter for SQL; currently only for side effects)
 pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
     if matches!(lang, LanguageKind::Sql) {
-        #[cfg(feature = "tree_sitter_sql")]
+        #[cfg(feature = "tree_sitter_sequel")]
         {
-            if let Some(ts_job) = try_tree_sitter_sql_highlight(text, dark) && !ts_job.text.is_empty() { return ts_job; }
+            if let Some(ts_job) = try_tree_sitter_sequel_highlight(text, dark) && !ts_job.text.is_empty() { return ts_job; }
         }
     }
     let mut job = LayoutJob::default();
@@ -284,27 +393,62 @@ fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut L
     }
 }
 
-fn word_color(word: &str, lang: LanguageKind, dark: bool) -> Color32 {
-    let up = word.to_ascii_uppercase();
-    let keyword = match lang {
-        LanguageKind::Sql => SQL_KEYWORDS.binary_search(&up.as_str()).is_ok(),
-        LanguageKind::Redis => REDIS_CMDS.binary_search(&up.as_str()).is_ok(),
-        LanguageKind::Mongo => MONGO_CMDS.binary_search(&up.as_str()).is_ok(),
-        LanguageKind::Plain => false,
-    };
-    if keyword { return keyword_color(dark); }
-    if word.chars().all(|c| c.is_ascii_digit()) { return number_color(dark); }
+fn word_color(word: &str, _lang: LanguageKind, dark: bool) -> Color32 {
+    // Legacy fallback without static dictionaries: keep it conservative to avoid "ngaco".
+    // Only numbers get special color; everything else uses normal text color.
+    if word.chars().all(|c| c.is_ascii_digit()) {
+        return number_color(dark);
+    }
     normal_color(dark)
 }
 
-fn keyword_color(dark: bool) -> Color32 { if dark { Color32::from_rgb(220, 180, 90) } else { Color32::from_rgb(160, 60, 0) } }
-fn number_color(dark: bool) -> Color32 { if dark { Color32::from_rgb(120, 160, 255) } else { Color32::from_rgb(0, 90, 200) } }
-fn string_color(dark: bool) -> Color32 { if dark { Color32::from_rgb(200, 120, 160) } else { Color32::from_rgb(160, 0, 120) } }
-fn comment_color(dark: bool) -> Color32 { if dark { Color32::from_rgb(120, 120, 120) } else { Color32::from_rgb(100, 110, 120) } }
-fn punctuation_color(dark: bool) -> Color32 { if dark { Color32::from_rgb(180, 180, 180) } else { Color32::from_rgb(80, 80, 80) } }
-fn normal_color(dark: bool) -> Color32 { if dark { Color32::from_rgb(210, 210, 210) } else { Color32::from_rgb(30, 30, 30) } }
+fn keyword_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(220, 180, 90) // #DCA85A
+    } else {
+        Color32::from_rgb(160, 60, 0) // #A03C00
+    }
+}
 
-// Static keyword tables
-static SQL_KEYWORDS: &[&str] = &["ALL","ALTER","AND","AS","ASC","BY","CASE","CREATE","DELETE","DESC","DISTINCT","DROP","ELSE","END","EXISTS","FROM","GROUP","HAVING","IF", "FORCE", "EXPLAIN","INDEX","INNER","INSERT","INTO","IS","JOIN","LEFT","LIMIT","NOT","NULL","ON","OR","ORDER","OUTER","RIGHT","SELECT","SET","TABLE","THEN","UNION","UPDATE","VALUES","WHEN","WHERE", "."];
-static REDIS_CMDS: &[&str] = &["DEL","EXISTS","GET","HGETALL","INCR","LRANGE","RPUSH","SADD","SET","SMEMBERS","ZADD","ZRANGE"];
-static MONGO_CMDS: &[&str] = &["AGGREGATE","COUNT","DELETE","DISTINCT","FIND","INSERT","UPDATE"];
+fn number_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(120, 160, 255) // #78A0FF
+    } else {
+        Color32::from_rgb(0, 90, 200) // #005AC8
+    }
+}
+
+fn string_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(200, 120, 160) // #ff0000ff
+    } else {
+        Color32::from_rgb(160, 0, 120) // #A00078
+    }
+}
+
+fn comment_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(120, 120, 120) // #787878
+    } else {
+        Color32::from_rgb(100, 110, 120) // #646E78
+    }
+}
+
+fn punctuation_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(180, 180, 180) // #B4B4B4
+    } else {
+        Color32::from_rgb(80, 80, 80) // #505050
+    }
+}
+
+fn normal_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(210, 210, 210) // #D2D2D2
+    } else {
+        Color32::from_rgb(30, 30, 30) // #1E1E1E
+    }
+}
+
+// Static keyword tables removed: now using tree-sitter classification and
+// lightweight heuristics (uppercase words) for the legacy fallback.

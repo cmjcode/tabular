@@ -340,7 +340,7 @@ impl Tabular {
             self.extra_cursors.sort_unstable();
         }
         // Transitional mirror to structured selections
-    if self.multi_selection.to_lapce_selection().is_empty() {
+    if self.multi_selection.is_empty() {
             self.multi_selection
                 .add_collapsed(self.cursor_position.min(self.editor.text.len()));
         }

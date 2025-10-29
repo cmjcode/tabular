@@ -1,10 +1,26 @@
-//! Transitional multi-selection abstraction toward full lapce-core adoption.
-//! Now directly wraps `lapce_core::selection::Selection`.
+//! Lightweight multi-selection abstraction independent of lapce-core.
+//! Provides a minimal API used by the editor for multi-caret typing and backspace.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelRegion {
+    pub anchor: usize,
+    pub head: usize,
+}
+
+impl SelRegion {
+    pub fn new(anchor: usize, head: usize, _placeholder: Option<()>) -> Self {
+        Self { anchor, head }
+    }
+    #[inline]
+    pub fn min(&self) -> usize { self.anchor.min(self.head) }
+    #[inline]
+    pub fn max(&self) -> usize { self.anchor.max(self.head) }
+}
 
 #[derive(Debug, Clone)]
 pub struct MultiSelection {
-    /// Source of truth for multi-range selection
-    inner: lapce_core::selection::Selection,
+    /// Source of truth for multi-range selection (ordered, non-overlapping preferred but not enforced)
+    regions: Vec<SelRegion>,
 }
 
 impl Default for MultiSelection {
@@ -15,46 +31,47 @@ impl Default for MultiSelection {
 
 impl MultiSelection {
     pub fn new() -> Self {
-        Self { inner: lapce_core::selection::Selection::new() }
+        Self { regions: Vec::new() }
     }
     pub fn clear(&mut self) {
-        self.inner = lapce_core::selection::Selection::new();
+        self.regions.clear();
     }
     pub fn ensure_primary(&mut self, pos: usize) {
-        if self.inner.is_empty() {
-            self.inner
-                .add_region(lapce_core::selection::SelRegion::new(pos, pos, None));
+        if self.regions.is_empty() {
+            self.regions.push(SelRegion::new(pos, pos, None));
         }
     }
     pub fn add_collapsed(&mut self, pos: usize) {
-        self.inner
-            .add_region(lapce_core::selection::SelRegion::new(pos, pos, None));
+        self.regions.push(SelRegion::new(pos, pos, None));
+        // keep a stable order and dedup exact duplicates
+        self.regions.sort_by_key(|r| (r.min(), r.max()));
+        self.regions.dedup();
     }
     pub fn collapse_all(&mut self) {
-        let regs = self.inner.regions().to_vec();
-        let mut out = lapce_core::selection::Selection::new();
+        let regs = self.regions.clone();
+        let mut out: Vec<SelRegion> = Vec::with_capacity(regs.len());
         for r in regs {
             let p = r.max();
-            out.add_region(lapce_core::selection::SelRegion::new(p, p, None));
+            out.push(SelRegion::new(p, p, None));
         }
-        self.inner = out;
+        self.regions = out;
     }
     pub fn apply_simple_insert(&mut self, at: usize, len: usize) {
-        let regs = self.inner.regions().to_vec();
-        let mut out = lapce_core::selection::Selection::new();
+        let regs = self.regions.clone();
+        let mut out: Vec<SelRegion> = Vec::with_capacity(regs.len());
         for r in regs {
             let mut a = r.min();
             let mut h = r.max();
             if h >= at { h += len; }
             if a >= at { a += len; }
-            out.add_region(lapce_core::selection::SelRegion::new(a, h, None));
+            out.push(SelRegion::new(a, h, None));
         }
-        self.inner = out;
+        self.regions = out;
     }
     pub fn apply_simple_delete(&mut self, at: usize, del_len: usize) {
         let end = at + del_len;
-        let regs = self.inner.regions().to_vec();
-        let mut out = lapce_core::selection::Selection::new();
+        let regs = self.regions.clone();
+        let mut out: Vec<SelRegion> = Vec::with_capacity(regs.len());
         for r in regs {
             let mut a = r.min();
             let mut h = r.max();
@@ -62,21 +79,24 @@ impl MultiSelection {
             if a >= at && a < end { a = at; }
             if h >= end { h -= del_len; }
             if a >= end { a -= del_len; }
-            out.add_region(lapce_core::selection::SelRegion::new(a, h, None));
+            out.push(SelRegion::new(a, h, None));
         }
-        self.inner = out;
+        self.regions = out;
     }
     /// Return a Vec of (anchor, head) sorted & deduped by the min position.
     pub fn ranges(&self) -> Vec<(usize, usize)> {
-        self.inner
-            .regions()
+        let mut v: Vec<(usize, usize)> = self
+            .regions
             .iter()
             .map(|r| (r.min(), r.max()))
-            .collect()
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
     /// Return collapsed caret positions (head) deduped & sorted.
     pub fn caret_positions(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self.inner.regions().iter().map(|r| r.max()).collect();
+        let mut v: Vec<usize> = self.regions.iter().map(|r| r.max()).collect();
         v.sort_unstable();
         v.dedup();
         v
@@ -130,44 +150,27 @@ impl MultiSelection {
         }
     }
 
-    // --- Migration helpers to/from lapce_core::selection::Selection ---
-    pub fn to_lapce_selection(&self) -> lapce_core::selection::Selection {
-        self.inner.clone()
-    }
+    /// Simple helpers keeping compatibility with previous API surface
+    pub fn is_empty(&self) -> bool { self.regions.is_empty() }
+    pub fn len(&self) -> usize { self.regions.len() }
+    pub fn regions(&self) -> &[SelRegion] { &self.regions }
 
-    pub fn from_lapce_selection(sel: &lapce_core::selection::Selection) -> Self {
-        Self { inner: sel.clone() }
-    }
-
-    /// Replace current selection from a lapce-core Selection.
-    pub fn set_from_lapce_selection(&mut self, sel: lapce_core::selection::Selection) {
-        self.inner = sel;
-    }
-
-    /// Call after mutating `carets` directly to keep `inner` in sync.
-    pub fn resync(&mut self) {
-        // No-op: `inner` is the sole source of truth now.
-    }
+    /// No-op in egui-only mode (kept for compatibility)
+    pub fn resync(&mut self) { }
 
     /// Get the primary region's (anchor, head) as (min, max). Returns None if empty.
     pub fn primary_range(&self) -> Option<(usize, usize)> {
-        self.inner
-            .regions()
+        self.regions
             .first()
             .map(|r| (r.min(), r.max()))
     }
 
     /// Set the primary region's (anchor, head). If empty, creates it.
     pub fn set_primary_range(&mut self, anchor: usize, head: usize) {
-        let mut regs = self.inner.regions().to_vec();
-        let newr = lapce_core::selection::SelRegion::new(anchor, head, None);
-        if regs.is_empty() {
-            regs.push(newr);
+        if self.regions.is_empty() {
+            self.regions.push(SelRegion::new(anchor, head, None));
         } else {
-            regs[0] = newr;
+            self.regions[0] = SelRegion::new(anchor, head, None);
         }
-        let mut out = lapce_core::selection::Selection::new();
-        for r in regs { out.add_region(r); }
-        self.inner = out;
     }
 }
