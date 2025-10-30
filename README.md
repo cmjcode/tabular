@@ -6,6 +6,10 @@ Your fast, cross‑platform, multi‑database SQL & NoSQL client – built in Ru
 
 ![Main Window](screenshots/halaman-utama.jpg)
 
+Join us at Telegram
+
+![Main Window](screenshots/telegram.png)
+
 ## macOS Xcode Project (App Store)
 
 Now includes an Xcode project under `macos/Xcode/` so you can open, archive, and submit to the Mac App Store using native Xcode workflows (automatic signing, Organizer distribution). See `macos/Xcode/README.md` for detailed steps.
