@@ -302,10 +302,7 @@ impl MultiSelection {
         }
         // Apply selection updates from last deletion to first to avoid double shifting logic.
         performed.sort_by_key(|(s, _)| *s);
-        log::debug!(
-            "[multi] apply_backspace deletions={:?}",
-            performed
-        );
+        log::debug!("[multi] apply_backspace deletions={:?}", performed);
         for &(start, len) in performed.iter().rev() {
             self.apply_simple_delete(start, len);
         }
@@ -437,25 +434,29 @@ impl MultiSelection {
 
     /// Find next occurrence of the given text starting from the specified position.
     /// Returns Some((start, end)) if found, None otherwise.
-    pub fn find_next_occurrence(text: &str, search: &str, from_pos: usize) -> Option<(usize, usize)> {
+    pub fn find_next_occurrence(
+        text: &str,
+        search: &str,
+        from_pos: usize,
+    ) -> Option<(usize, usize)> {
         if search.is_empty() {
             return None;
         }
-        
+
         // Search from from_pos to end
         if let Some(idx) = text[from_pos..].find(search) {
             let start = from_pos + idx;
             let end = start + search.len();
             return Some((start, end));
         }
-        
+
         // Wrap around: search from beginning to from_pos
         if let Some(idx) = text[..from_pos].find(search) {
             let start = idx;
             let end = start + search.len();
             return Some((start, end));
         }
-        
+
         None
     }
 
@@ -475,15 +476,22 @@ impl MultiSelection {
             0
         };
 
-        log::debug!("🔍 Searching for '{}' from position {}", selected_text, search_from);
+        log::debug!(
+            "🔍 Searching for '{}' from position {}",
+            selected_text,
+            search_from
+        );
 
         // Find next occurrence
         if let Some((start, end)) = Self::find_next_occurrence(text, selected_text, search_from) {
             log::debug!("   Found at {}..{}", start, end);
-            
+
             // Check if this range is already in our regions to avoid duplicates
-            let already_exists = self.regions.iter().any(|r| r.min() == start && r.max() == end);
-            
+            let already_exists = self
+                .regions
+                .iter()
+                .any(|r| r.min() == start && r.max() == end);
+
             if !already_exists {
                 log::debug!("   Adding new region {}..{}", start, end);
                 self.regions.push(SelRegion::new(start, end, None));
@@ -497,7 +505,7 @@ impl MultiSelection {
                 return false;
             }
         }
-        
+
         log::debug!("   No more occurrences found");
         false
     }

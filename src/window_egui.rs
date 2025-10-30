@@ -9939,72 +9939,93 @@ impl App for Tabular {
                     // Table tabs: Direct Data/Structure view without query editor
                     ui.vertical(|ui| {
                         // Data/Structure toggle at the top
-                        ui.horizontal(|ui| {
-                            let is_data =
-                                self.table_bottom_view == models::structs::TableBottomView::Data;
-                            if ui.selectable_label(is_data, "📊 Data").clicked() {
-                                self.table_bottom_view = models::structs::TableBottomView::Data;
-                                // Ensure DATA view uses persisted cache when available.
-                                if self.current_table_headers.is_empty() {
-                                    if let Some(tab) = self.query_tabs.get(self.active_tab_index)
-                                        && let Some(conn_id) = tab.connection_id {
-                                            let db_name = tab.database_name.clone().unwrap_or_default();
-                                            let table = data_table::infer_current_table_name(self);
-                                            if !db_name.is_empty() && !table.is_empty()
-                                                && let Some((hdrs, rows)) = crate::cache_data::get_table_rows_from_cache(self, conn_id, &db_name, &table)
-                                                    && !hdrs.is_empty() {
-                                                        info!("📦 Showing cached data (toggle) for {}/{} ({} cols, {} rows)", db_name, table, hdrs.len(), rows.len());
-                                                        self.current_table_headers = hdrs.clone();
-                                                        self.current_table_data = rows.clone();
-                                                        self.all_table_data = rows;
-                                                        self.total_rows = self.all_table_data.len();
-                                                        self.current_page = 0;
-                                                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                                            active_tab.result_headers = self.current_table_headers.clone();
-                                                            active_tab.result_rows = self.current_table_data.clone();
-                                                            active_tab.result_all_rows = self.all_table_data.clone();
-                                                            active_tab.result_table_name = self.current_table_name.clone();
-                                                            active_tab.is_table_browse_mode = true;
-                                                            active_tab.current_page = self.current_page;
-                                                            active_tab.page_size = self.page_size;
-                                                            active_tab.total_rows = self.total_rows;
+                        ui.scope(|ui| {
+                            // Provide consistent active styling for the toggle buttons.
+                            let mut style = ui.style().as_ref().clone();
+                            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 13, 0);
+                            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 13, 0);
+                            ui.set_style(style);
+
+                            ui.horizontal(|ui| {
+                                let default_text = ui.visuals().widgets.inactive.fg_stroke.color;
+
+                                let is_data = self.table_bottom_view
+                                    == models::structs::TableBottomView::Data;
+                                let data_text = egui::RichText::new("📊 Data").color(if is_data {
+                                    egui::Color32::WHITE
+                                } else {
+                                    default_text
+                                });
+                                if ui.selectable_label(is_data, data_text).clicked() {
+                                    self.table_bottom_view =
+                                        models::structs::TableBottomView::Data;
+                                    // Ensure DATA view uses persisted cache when available.
+                                    if self.current_table_headers.is_empty() {
+                                        if let Some(tab) = self.query_tabs.get(self.active_tab_index)
+                                            && let Some(conn_id) = tab.connection_id {
+                                                let db_name = tab.database_name.clone().unwrap_or_default();
+                                                let table = data_table::infer_current_table_name(self);
+                                                if !db_name.is_empty() && !table.is_empty()
+                                                    && let Some((hdrs, rows)) = crate::cache_data::get_table_rows_from_cache(self, conn_id, &db_name, &table)
+                                                        && !hdrs.is_empty() {
+                                                            info!("📦 Showing cached data (toggle) for {}/{} ({} cols, {} rows)", db_name, table, hdrs.len(), rows.len());
+                                                            self.current_table_headers = hdrs.clone();
+                                                            self.current_table_data = rows.clone();
+                                                            self.all_table_data = rows;
+                                                            self.total_rows = self.all_table_data.len();
+                                                            self.current_page = 0;
+                                                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                                                active_tab.result_headers = self.current_table_headers.clone();
+                                                                active_tab.result_rows = self.current_table_data.clone();
+                                                                active_tab.result_all_rows = self.all_table_data.clone();
+                                                                active_tab.result_table_name = self.current_table_name.clone();
+                                                                active_tab.is_table_browse_mode = true;
+                                                                active_tab.current_page = self.current_page;
+                                                                active_tab.page_size = self.page_size;
+                                                                active_tab.total_rows = self.total_rows;
+                                                            }
                                                         }
-                                                    }
-                                        }
-                                } else {
-                                    // Data already present in memory; no need to hit persistent cache
-                                    debug!("✅ Using in-memory data for Data tab (no cached reload)");
-                                }
-                            }
-                            let is_struct = self.table_bottom_view
-                                == models::structs::TableBottomView::Structure;
-                            if ui.selectable_label(is_struct, "🏗 Structure").clicked() {
-                                self.table_bottom_view =
-                                    models::structs::TableBottomView::Structure;
-                                // Load structure only if target changed; otherwise keep in-memory (avoid repeated cache hits)
-                                if let Some(conn_id) = self.current_connection_id {
-                                    let db = self
-                                        .query_tabs
-                                        .get(self.active_tab_index)
-                                        .and_then(|t| t.database_name.clone())
-                                        .unwrap_or_default();
-                                    let table = data_table::infer_current_table_name(self);
-                                    let current_target = (conn_id, db.clone(), table.clone());
-                                    if self
-                                        .last_structure_target
-                                        .as_ref()
-                                        .map(|t| t != &current_target)
-                                        .unwrap_or(true)
-                                    {
-                                        data_table::load_structure_info_for_current_table(self);
+                                            }
                                     } else {
-                                        debug!("✅ Using in-memory structure for {}/{} (no reload)", db, table);
+                                        // Data already present in memory; no need to hit persistent cache
+                                        debug!("✅ Using in-memory data for Data tab (no cached reload)");
                                     }
-                                } else {
-                                    // No active connection, try load to ensure state sane
-                                    data_table::load_structure_info_for_current_table(self);
                                 }
-                            }
+                                let is_struct = self.table_bottom_view
+                                    == models::structs::TableBottomView::Structure;
+                                let struct_text = egui::RichText::new("📦 Structure").color(if is_struct {
+                                    egui::Color32::WHITE
+                                } else {
+                                    default_text
+                                });
+                                if ui.selectable_label(is_struct, struct_text).clicked() {
+                                    self.table_bottom_view =
+                                        models::structs::TableBottomView::Structure;
+                                    // Load structure only if target changed; otherwise keep in-memory (avoid repeated cache hits)
+                                    if let Some(conn_id) = self.current_connection_id {
+                                        let db = self
+                                            .query_tabs
+                                            .get(self.active_tab_index)
+                                            .and_then(|t| t.database_name.clone())
+                                            .unwrap_or_default();
+                                        let table = data_table::infer_current_table_name(self);
+                                        let current_target = (conn_id, db.clone(), table.clone());
+                                        if self
+                                            .last_structure_target
+                                            .as_ref()
+                                            .map(|t| t != &current_target)
+                                            .unwrap_or(true)
+                                        {
+                                            data_table::load_structure_info_for_current_table(self);
+                                        } else {
+                                            debug!("✅ Using in-memory structure for {}/{} (no reload)", db, table);
+                                        }
+                                    } else {
+                                        // No active connection, try load to ensure state sane
+                                        data_table::load_structure_info_for_current_table(self);
+                                    }
+                                }
+                            });
                         });
 
                         ui.separator();

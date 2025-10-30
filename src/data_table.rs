@@ -2083,23 +2083,46 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
     // Draw bottom bar (fixed) after scroll area so it stays at bottom.
     // Just create a horizontal layout now (will appear after scroll area visually at bottom of panel area)
     ui.separator();
-    ui.horizontal(|ui| {
-        let active_cols = tabular.structure_sub_view == models::structs::StructureSubView::Columns;
-        if ui.selectable_label(active_cols, "Columns").clicked() {
-            tabular.structure_sub_view = models::structs::StructureSubView::Columns;
-            tabular.structure_sel_anchor = None;
-            tabular.structure_selected_cell = None;
-            tabular.structure_selected_row = None;
-        }
-        let active_idx = tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
-        if ui.selectable_label(active_idx, "Indexes").clicked() {
-            tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
-            // Load using cache-first; if empty, live fetch inside the loader will populate and cache
-            load_structure_info_for_current_table(tabular);
-            tabular.structure_sel_anchor = None;
-            tabular.structure_selected_cell = None;
-            tabular.structure_selected_row = None;
-        }
+    ui.scope(|ui| {
+        // Force transparent highlight so active toggles do not show a filled background
+        let mut style = ui.style().as_ref().clone();
+        style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 13, 0); // rgba(255, 13, 0, 1)
+        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(255, 13, 0); // rgba(255, 13, 0, 1)
+        style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(255, 13, 0); // rgba(255, 13, 0, 1)
+        ui.set_style(style);
+
+        ui.horizontal(|ui| {
+            let default_text = ui.visuals().widgets.inactive.fg_stroke.color;
+
+            let active_cols =
+                tabular.structure_sub_view == models::structs::StructureSubView::Columns;
+            let cols_text = egui::RichText::new("Columns").color(if active_cols {
+                egui::Color32::WHITE
+            } else {
+                default_text
+            });
+            if ui.selectable_label(active_cols, cols_text).clicked() {
+                tabular.structure_sub_view = models::structs::StructureSubView::Columns;
+                tabular.structure_sel_anchor = None;
+                tabular.structure_selected_cell = None;
+                tabular.structure_selected_row = None;
+            }
+            let active_idx =
+                tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
+            let idx_text = egui::RichText::new("Indexes").color(if active_idx {
+                egui::Color32::WHITE
+            } else {
+                default_text
+            });
+            if ui.selectable_label(active_idx, idx_text).clicked() {
+                tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
+                // Load using cache-first; if empty, live fetch inside the loader will populate and cache
+                load_structure_info_for_current_table(tabular);
+                tabular.structure_sel_anchor = None;
+                tabular.structure_selected_cell = None;
+                tabular.structure_selected_row = None;
+            }
+        });
     });
 }
 

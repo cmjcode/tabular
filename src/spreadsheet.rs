@@ -361,20 +361,19 @@ pub trait SpreadsheetOperations {
             if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
                 let lower = first_header.to_lowercase();
                 if lower.contains("id") || lower.contains("recid") || lower == "pk" {
-                    let clause = if first_value.is_empty()
-                        || first_value.eq_ignore_ascii_case("null")
-                    {
-                        format!(
-                            "{} IS NULL",
-                            self.spreadsheet_quote_ident(conn, first_header)
-                        )
-                    } else {
-                        format!(
-                            "{} = {}",
-                            self.spreadsheet_quote_ident(conn, first_header),
-                            self.spreadsheet_quote_value(conn, first_value)
-                        )
-                    };
+                    let clause =
+                        if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
+                            format!(
+                                "{} IS NULL",
+                                self.spreadsheet_quote_ident(conn, first_header)
+                            )
+                        } else {
+                            format!(
+                                "{} = {}",
+                                self.spreadsheet_quote_ident(conn, first_header),
+                                self.spreadsheet_quote_value(conn, first_value)
+                            )
+                        };
                     return Some(clause);
                 }
             }
@@ -612,11 +611,7 @@ pub trait SpreadsheetOperations {
                     };
                     let overrides = pk_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn,
-                        row_data,
-                        headers,
-                        pk_columns,
-                        overrides,
+                        &conn, row_data, headers, pk_columns, overrides,
                     ) {
                         Some(clause) => clause,
                         None => {
@@ -659,20 +654,13 @@ pub trait SpreadsheetOperations {
                     );
                     stmts.push(sql);
                 }
-                crate::models::structs::CellEditOperation::DeleteRow {
-                    row_index,
-                    values,
-                } => {
+                crate::models::structs::CellEditOperation::DeleteRow { row_index, values } => {
                     if values.is_empty() || headers.is_empty() {
                         continue;
                     }
                     let overrides = pk_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn,
-                        values,
-                        headers,
-                        pk_columns,
-                        overrides,
+                        &conn, values, headers, pk_columns, overrides,
                     ) {
                         Some(clause) => clause,
                         None => {
@@ -1285,20 +1273,19 @@ impl SpreadsheetOperations for Tabular {
             if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
                 let lower = first_header.to_lowercase();
                 if lower.contains("id") || lower.contains("recid") || lower == "pk" {
-                    let clause = if first_value.is_empty()
-                        || first_value.eq_ignore_ascii_case("null")
-                    {
-                        std::format!(
-                            "{} IS NULL",
-                            self.spreadsheet_quote_ident(conn, first_header)
-                        )
-                    } else {
-                        std::format!(
-                            "{} = {}",
-                            self.spreadsheet_quote_ident(conn, first_header),
-                            self.spreadsheet_quote_value(conn, first_value)
-                        )
-                    };
+                    let clause =
+                        if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
+                            std::format!(
+                                "{} IS NULL",
+                                self.spreadsheet_quote_ident(conn, first_header)
+                            )
+                        } else {
+                            std::format!(
+                                "{} = {}",
+                                self.spreadsheet_quote_ident(conn, first_header),
+                                self.spreadsheet_quote_value(conn, first_value)
+                            )
+                        };
                     return Some(clause);
                 }
             }
@@ -1502,10 +1489,7 @@ impl SpreadsheetOperations for Tabular {
                     let col = match headers.get(*col_index) {
                         Some(name) => name,
                         None => {
-                            std::println!(
-                                "🔥 Missing header for column index {}",
-                                col_index
-                            );
+                            std::println!("🔥 Missing header for column index {}", col_index);
                             continue;
                         }
                     };
@@ -1521,18 +1505,11 @@ impl SpreadsheetOperations for Tabular {
                     };
                     let overrides = pk_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn,
-                        row_data,
-                        headers,
-                        pk_columns,
-                        overrides,
+                        &conn, row_data, headers, pk_columns, overrides,
                     ) {
                         Some(clause) => clause,
                         None => {
-                            std::println!(
-                                "🔥 Unable to build WHERE clause for row {}",
-                                row_index
-                            );
+                            std::println!("🔥 Unable to build WHERE clause for row {}", row_index);
                             continue;
                         }
                     };
@@ -1571,20 +1548,13 @@ impl SpreadsheetOperations for Tabular {
                     );
                     stmts.push(sql);
                 }
-                crate::models::structs::CellEditOperation::DeleteRow {
-                    row_index,
-                    values,
-                } => {
+                crate::models::structs::CellEditOperation::DeleteRow { row_index, values } => {
                     if values.is_empty() || headers.is_empty() {
                         continue;
                     }
                     let overrides = pk_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn,
-                        values,
-                        headers,
-                        pk_columns,
-                        overrides,
+                        &conn, values, headers, pk_columns, overrides,
                     ) {
                         Some(clause) => clause,
                         None => {
@@ -1595,11 +1565,8 @@ impl SpreadsheetOperations for Tabular {
                             continue;
                         }
                     };
-                    let sql = std::format!(
-                        "DELETE FROM {} WHERE {}",
-                        qt_table(&table),
-                        where_clause
-                    );
+                    let sql =
+                        std::format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
                     std::println!("🔥 Using DELETE WHERE clause: {}", where_clause);
                     stmts.push(sql);
                 }
