@@ -1866,7 +1866,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
     let avail = ui.available_size();
 
     ui.horizontal(|ui| {
-        let toggle_width = 120.0;
+    let toggle_width = 20.0;
+    let toggle_height = 80.0;
+
+    ui.add_space(4.0);
 
         ui.scope(|ui| {
             let mut style = ui.style().as_ref().clone();
@@ -1878,18 +1881,16 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
             ui.set_min_width(toggle_width);
             ui.set_min_height(avail.y);
-
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                ui.add_space(6.0);
                 let default_text = ui.visuals().widgets.inactive.fg_stroke.color;
 
                 let active_cols =
                     tabular.structure_sub_view == models::structs::StructureSubView::Columns;
-                let draw_vertical_toggle = |ui: &mut egui::Ui,
-                                             label: &str,
-                                             active: bool|
-                 -> egui::Response {
-                    let button_size = egui::vec2(toggle_width, toggle_width);
+                     let draw_vertical_toggle = |ui: &mut egui::Ui,
+                                                            label: &str,
+                                                            active: bool|
+                      -> egui::Response {
+                          let button_size = egui::vec2(toggle_width, toggle_height);
                     let (rect, response) =
                         ui.allocate_exact_size(button_size, egui::Sense::click());
 
@@ -1910,7 +1911,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                     let stroke = egui::Stroke::new(1.0, stroke_color);
 
                     let painter = ui.painter();
-                    let rounding = 6.0;
+                    let rounding = 2.0;
                     painter.rect_filled(rect, rounding, bg);
                     painter.rect_stroke(rect, rounding, stroke, egui::StrokeKind::Outside);
 
@@ -1931,7 +1932,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                     response
                 };
 
-                let cols_resp = draw_vertical_toggle(ui, "Columns", active_cols);
+                let cols_resp = draw_vertical_toggle(ui, "☰ Columns", active_cols);
                 if cols_resp.clicked() {
                     tabular.structure_sub_view = models::structs::StructureSubView::Columns;
                     tabular.structure_sel_anchor = None;
@@ -1943,7 +1944,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
                 let active_idx =
                     tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
-                let idx_resp = draw_vertical_toggle(ui, "Indexes", active_idx);
+                let idx_resp = draw_vertical_toggle(ui, "📈 Indexes", active_idx);
                 if idx_resp.clicked() {
                     tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
                     load_structure_info_for_current_table(tabular);
@@ -1955,8 +1956,6 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 ui.add_space(ui.available_height());
             });
         });
-
-        ui.separator();
 
         let remaining = ui.available_size();
         let content_size = egui::vec2(remaining.x.max(0.0), avail.y);
