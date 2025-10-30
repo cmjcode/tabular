@@ -10110,6 +10110,86 @@ impl App for Tabular {
                                     // Always render legacy editor
                                     editor::render_advanced_editor(self, ui);
                                 });
+
+                            // Floating execute button anchored to the query editor's top-right corner
+                            let button_margin = 4.0;
+                            let button_size = egui::vec2(32.0, 32.0);
+                            let button_pos = egui::pos2(
+                                rect.max.x - button_size.x - button_margin,
+                                rect.min.y + button_margin,
+                            );
+                            let play_fill = egui::Color32::TRANSPARENT;
+                            let play_border = egui::Color32::from_rgb(255, 60, 0);
+                            let play_text = egui::RichText::new("▶")
+                                .color(egui::Color32::GREEN)
+                                .size(25.0);
+                            let button_corner =
+                                (button_size.y / 2.0).round().clamp(2.0, u8::MAX as f32) as u8;
+
+                            let previous_selection = if self.selection_start < self.selection_end {
+                                Some((
+                                    self.selection_start,
+                                    self.selection_end,
+                                    self.cursor_position,
+                                ))
+                            } else {
+                                None
+                            };
+                            let mut execute_clicked = false;
+                            egui::Area::new(egui::Id::new(("floating_execute_button", self.active_tab_index)))
+                                .order(egui::Order::Foreground)
+                                .fixed_pos(button_pos)
+                                .show(ui.ctx(), |area_ui| {
+                                    let response = area_ui
+                                        .add_sized(
+                                            button_size,
+                                            egui::Button::new(play_text.clone())
+                                                .fill(play_fill)
+                                                .stroke(egui::Stroke::new(1.5, play_border))
+                                                .corner_radius(egui::CornerRadius::same(button_corner)),
+                                        )
+                                        .on_hover_text("CMD+Enter to execute");
+                                    if response.clicked() {
+                                        execute_clicked = true;
+                                    }
+                                });
+                            if execute_clicked {
+                                editor::execute_query(self);
+                                if let Some((start_b, end_b, primary_b)) = previous_selection {
+                                    let clamp = |value: usize| value.min(self.editor.text.len());
+                                    let start_b = clamp(start_b);
+                                    let end_b = clamp(end_b);
+                                    let primary_b = clamp(primary_b);
+                                    self.selection_start = start_b;
+                                    self.selection_end = end_b;
+                                    self.cursor_position = primary_b;
+                                    self.selected_text = if start_b < end_b {
+                                        self.editor.text[start_b..end_b].to_string()
+                                    } else {
+                                        String::new()
+                                    };
+                                    self.selection_force_clear = false;
+                                    self.pending_cursor_set = None;
+                                    let to_char_index = |s: &str, byte_idx: usize| -> usize {
+                                        let b = byte_idx.min(s.len());
+                                        s[..b].chars().count()
+                                    };
+                                    let start_c = to_char_index(&self.editor.text, start_b);
+                                    let end_c = to_char_index(&self.editor.text, end_b);
+                                    let primary_c = to_char_index(&self.editor.text, primary_b);
+                                    crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                                        ui.ctx(),
+                                        egui::Id::new("sql_editor"),
+                                        start_c,
+                                        end_c,
+                                        primary_c,
+                                    );
+                                    self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(6);
+                                }
+                                ui.ctx()
+                                    .memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                                ui.ctx().request_repaint();
+                            }
                             
                             // Key shortcut check
                             if ui.input(|i| {
