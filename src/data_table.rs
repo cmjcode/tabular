@@ -21,6 +21,26 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         egui::TextEdit::singleline(&mut tabular.sql_filter_text)
                             .hint_text("column = 'value' AND col2 > 0"),
                     );
+
+                    if filter_response.clicked() {
+                        filter_response.request_focus();
+                    }
+                    if filter_response.has_focus() || filter_response.hovered() {
+                        let visuals = ui.visuals();
+                        let accent = if filter_response.has_focus() {
+                            visuals.selection.stroke.color
+                        } else {
+                            visuals.widgets.hovered.bg_stroke.color
+                        };
+                        let rect = filter_response.rect.expand(2.0);
+                        ui.painter().rect_stroke(
+                            rect,
+                            4.0,
+                            egui::Stroke::new(1.6, accent),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+
                     // Apply filter when:
                     // - Enter is pressed while the field has focus, or
                     // - The field loses focus (more forgiving than requiring `changed()`)
