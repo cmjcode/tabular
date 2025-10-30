@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use eframe::egui;
 use log::{debug, error, info, warn};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 use crate::{connection, directory, models, modules, sidebar_history, window_egui};
 
@@ -256,6 +256,10 @@ pub(crate) fn render_connection_dialog(
                             });
                         ui.end_row();
 
+                        if connection_data.connection_type == models::enums::DatabaseType::SQLite {
+                            connection_data.ssh_enabled = false;
+                        }
+
                         ui.label("Host:");
                         ui.text_edit_singleline(&mut connection_data.host);
                         ui.end_row();
@@ -395,6 +399,94 @@ pub(crate) fn render_connection_dialog(
                             connection_data.database = parsed.database;
                         }
                         ui.end_row();
+
+                        let ssh_supported = connection_data.connection_type
+                            != models::enums::DatabaseType::SQLite;
+
+                        ui.label("SSH Tunnel:");
+                        let mut ssh_checkbox_value = connection_data.ssh_enabled;
+                        let ssh_checkbox = ui.add_enabled(
+                            ssh_supported,
+                            egui::Checkbox::new(&mut ssh_checkbox_value, "Enable SSH tunnel"),
+                        );
+                        if ssh_checkbox.changed() {
+                            connection_data.ssh_enabled = ssh_checkbox_value;
+                        }
+                        if !ssh_supported {
+                            if connection_data.ssh_enabled {
+                                connection_data.ssh_enabled = false;
+                            }
+                            ui.add_enabled(false, egui::Label::new("Not available for SQLite"));
+                        }
+                        ui.end_row();
+
+                        if connection_data.ssh_enabled {
+                            ui.label("SSH Host:");
+                            ui.text_edit_singleline(&mut connection_data.ssh_host);
+                            ui.end_row();
+
+                            ui.label("SSH Port:");
+                            ui.text_edit_singleline(&mut connection_data.ssh_port);
+                            ui.end_row();
+
+                            ui.label("SSH Username:");
+                            ui.text_edit_singleline(&mut connection_data.ssh_username);
+                            ui.end_row();
+
+                            ui.label("SSH Auth Method:");
+                            egui::ComboBox::from_id_source("ssh_auth_method_combo")
+                                .selected_text(match connection_data.ssh_auth_method {
+                                    models::enums::SshAuthMethod::Key => "Private key",
+                                    models::enums::SshAuthMethod::Password => "Password",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut connection_data.ssh_auth_method,
+                                        models::enums::SshAuthMethod::Key,
+                                        "Private key",
+                                    );
+                                    ui.selectable_value(
+                                        &mut connection_data.ssh_auth_method,
+                                        models::enums::SshAuthMethod::Password,
+                                        "Password",
+                                    );
+                                });
+                            ui.end_row();
+
+                            match connection_data.ssh_auth_method {
+                                models::enums::SshAuthMethod::Key => {
+                                    ui.label("SSH Key Path:");
+                                    ui.text_edit_singleline(&mut connection_data.ssh_private_key);
+                                    ui.end_row();
+                                }
+                                models::enums::SshAuthMethod::Password => {
+                                    ui.label("SSH Password:");
+                                    ui.add(
+                                        egui::TextEdit::singleline(
+                                            &mut connection_data.ssh_password,
+                                        )
+                                        .password(true),
+                                    );
+                                    ui.end_row();
+                                }
+                            }
+
+                            ui.label("SSH Options:");
+                            ui.checkbox(
+                                &mut connection_data.ssh_accept_unknown_host_keys,
+                                "Allow unknown host keys",
+                            );
+                            ui.end_row();
+
+                            ui.label("");
+                            ui.label(
+                                egui::RichText::new(
+                                    "Requires local ssh binary. Password mode expects sshpass to be installed.",
+                                )
+                                .italics(),
+                            );
+                            ui.end_row();
+                        }
                     });
 
                 ui.separator();
@@ -548,48 +640,74 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let connections_result = rt.block_on(async {
-              sqlx::query_as::<_, (i64, String, String, String, String, String, String, String, Option<String>)>(
-              "SELECT id, name, host, port, username, password, database_name, connection_type, folder FROM connections"
-              )
-              .fetch_all(pool_clone.as_ref())
-              .await
-       });
+        sqlx::query(
+            "SELECT id, name, host, port, username, password, database_name, connection_type, folder, \
+             COALESCE(ssh_enabled, 0) AS ssh_enabled, \
+             COALESCE(ssh_host, '') AS ssh_host, \
+             COALESCE(ssh_port, '22') AS ssh_port, \
+             COALESCE(ssh_username, '') AS ssh_username, \
+             COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
+             COALESCE(ssh_private_key, '') AS ssh_private_key, \
+             COALESCE(ssh_password, '') AS ssh_password, \
+             COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+         FROM connections",
+        )
+        .fetch_all(pool_clone.as_ref())
+        .await
+    });
 
         if let Ok(rows) = connections_result {
             tabular.connections = rows
                 .into_iter()
-                .map(
-                    |(
-                        id,
+                .filter_map(|row| {
+                    let id = row.try_get::<i64, _>("id").ok()?;
+                    let name = row.try_get::<String, _>("name").ok()?;
+                    let host = row.try_get::<String, _>("host").ok()?;
+                    let port = row.try_get::<String, _>("port").ok()?;
+                    let username = row.try_get::<String, _>("username").ok()?;
+                    let password = row.try_get::<String, _>("password").ok()?;
+                    let database_name = row.try_get::<String, _>("database_name").ok()?;
+                    let connection_type = row.try_get::<String, _>("connection_type").ok()?;
+                    let folder = row.try_get::<Option<String>, _>("folder").ok()?;
+                    let ssh_enabled = row.try_get::<i64, _>("ssh_enabled").ok()?;
+                    let ssh_host = row.try_get::<String, _>("ssh_host").ok()?;
+                    let ssh_port = row.try_get::<String, _>("ssh_port").ok()?;
+                    let ssh_username = row.try_get::<String, _>("ssh_username").ok()?;
+                    let ssh_auth_method = row.try_get::<String, _>("ssh_auth_method").ok()?;
+                    let ssh_private_key = row.try_get::<String, _>("ssh_private_key").ok()?;
+                    let ssh_password = row.try_get::<String, _>("ssh_password").ok()?;
+                    let ssh_accept_unknown_host_keys =
+                        row.try_get::<i64, _>("ssh_accept_unknown_host_keys").ok()?;
+
+                    Some(models::structs::ConnectionConfig {
+                        id: Some(id),
                         name,
                         host,
                         port,
                         username,
                         password,
-                        database_name,
-                        connection_type,
+                        database: database_name,
+                        connection_type: match connection_type.as_str() {
+                            "MySQL" => models::enums::DatabaseType::MySQL,
+                            "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
+                            "Redis" => models::enums::DatabaseType::Redis,
+                            "MsSQL" => models::enums::DatabaseType::MsSQL,
+                            "MongoDB" => models::enums::DatabaseType::MongoDB,
+                            _ => models::enums::DatabaseType::SQLite,
+                        },
                         folder,
-                    )| {
-                        models::structs::ConnectionConfig {
-                            id: Some(id),
-                            name,
-                            host,
-                            port,
-                            username,
-                            password,
-                            database: database_name,
-                            connection_type: match connection_type.as_str() {
-                                "MySQL" => models::enums::DatabaseType::MySQL,
-                                "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                                "Redis" => models::enums::DatabaseType::Redis,
-                                "MsSQL" => models::enums::DatabaseType::MsSQL,
-                                "MongoDB" => models::enums::DatabaseType::MongoDB,
-                                _ => models::enums::DatabaseType::SQLite,
-                            },
-                            folder,
-                        }
-                    },
-                )
+                        ssh_enabled: ssh_enabled != 0,
+                        ssh_host,
+                        ssh_port,
+                        ssh_username,
+                        ssh_auth_method: models::enums::SshAuthMethod::from_db_value(
+                            &ssh_auth_method,
+                        ),
+                        ssh_private_key,
+                        ssh_password,
+                        ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+                    })
+                })
                 .collect();
         }
     }
@@ -608,20 +726,28 @@ pub(crate) fn save_connection_to_database(
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let result = rt.block_on(async {
-              sqlx::query(
-              "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-              )
-              .bind(connection.name)
-              .bind(connection.host)
-              .bind(connection.port)
-              .bind(connection.username)
-              .bind(connection.password)
-              .bind(connection.database)
-              .bind(format!("{:?}", connection.connection_type))
-              .bind(connection.folder)
-              .execute(pool_clone.as_ref())
-              .await
-       });
+          sqlx::query(
+          "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          )
+          .bind(connection.name)
+          .bind(connection.host)
+          .bind(connection.port)
+          .bind(connection.username)
+          .bind(connection.password)
+          .bind(connection.database)
+          .bind(format!("{:?}", connection.connection_type))
+          .bind(connection.folder)
+          .bind(if connection.ssh_enabled { 1 } else { 0 })
+          .bind(connection.ssh_host)
+          .bind(connection.ssh_port)
+          .bind(connection.ssh_username)
+          .bind(connection.ssh_auth_method.as_db_value())
+          .bind(connection.ssh_private_key)
+          .bind(connection.ssh_password)
+          .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
+          .execute(pool_clone.as_ref())
+          .await
+     });
 
         result.is_ok()
     } else {
@@ -737,7 +863,15 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                             password TEXT NOT NULL,
                             database_name TEXT NOT NULL,
                             connection_type TEXT NOT NULL,
-                            folder TEXT DEFAULT NULL
+                            folder TEXT DEFAULT NULL,
+                            ssh_enabled INTEGER NOT NULL DEFAULT 0,
+                            ssh_host TEXT NOT NULL DEFAULT '',
+                            ssh_port TEXT NOT NULL DEFAULT '22',
+                            ssh_username TEXT NOT NULL DEFAULT '',
+                            ssh_auth_method TEXT NOT NULL DEFAULT 'key',
+                            ssh_private_key TEXT NOT NULL DEFAULT '',
+                            ssh_password TEXT NOT NULL DEFAULT '',
+                            ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0
                         )
                         "#
                     )
@@ -747,6 +881,54 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     // Add folder column if it doesn't exist (for existing databases)
                     let _ = sqlx::query(
                         "ALTER TABLE connections ADD COLUMN folder TEXT DEFAULT NULL"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_enabled INTEGER NOT NULL DEFAULT 0"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_host TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_port TEXT NOT NULL DEFAULT '22'"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_username TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_auth_method TEXT NOT NULL DEFAULT 'key'"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_private_key TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_password TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0"
                     )
                     .execute(&pool)
                     .await;

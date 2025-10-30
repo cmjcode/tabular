@@ -121,6 +121,29 @@ pub enum AutocompleteKind {
     Syntax,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SshAuthMethod {
+    #[default]
+    Key,
+    Password,
+}
+
+impl SshAuthMethod {
+    pub fn as_db_value(&self) -> &'static str {
+        match self {
+            SshAuthMethod::Key => "key",
+            SshAuthMethod::Password => "password",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "password" => SshAuthMethod::Password,
+            _ => SshAuthMethod::Key,
+        }
+    }
+}
+
 // Enum untuk berbagai jenis database pool - sqlx pools are already thread-safe
 #[derive(Clone)]
 pub enum DatabasePool {

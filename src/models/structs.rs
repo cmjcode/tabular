@@ -152,6 +152,14 @@ pub struct ConnectionConfig {
     pub database: String,
     pub connection_type: models::enums::DatabaseType,
     pub folder: Option<String>, // Custom folder name
+    pub ssh_enabled: bool,
+    pub ssh_host: String,
+    pub ssh_port: String,
+    pub ssh_username: String,
+    pub ssh_auth_method: models::enums::SshAuthMethod,
+    pub ssh_private_key: String,
+    pub ssh_password: String,
+    pub ssh_accept_unknown_host_keys: bool,
 }
 
 impl Default for ConnectionConfig {
@@ -166,6 +174,14 @@ impl Default for ConnectionConfig {
             database: String::new(),
             connection_type: models::enums::DatabaseType::MySQL,
             folder: None, // No custom folder by default
+            ssh_enabled: false,
+            ssh_host: String::new(),
+            ssh_port: "22".to_string(),
+            ssh_username: String::new(),
+            ssh_auth_method: models::enums::SshAuthMethod::Key,
+            ssh_private_key: String::new(),
+            ssh_password: String::new(),
+            ssh_accept_unknown_host_keys: false,
         }
     }
 }

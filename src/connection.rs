@@ -1,6 +1,6 @@
 use crate::{
     connection, driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models,
-    modules,
+    modules, ssh_tunnel,
     window_egui::{self, Tabular},
 };
 use eframe::egui;
@@ -19,6 +19,24 @@ use std::sync::Arc;
 
 // Limit concurrent prefetch tasks to avoid overwhelming servers and local machine
 const PREFETCH_CONCURRENCY: usize = 6;
+
+fn resolve_connection_target(
+    connection: &models::structs::ConnectionConfig,
+) -> Result<(String, String), String> {
+    if connection.ssh_enabled {
+        match connection.connection_type {
+            models::enums::DatabaseType::SQLite => {
+                return Err("SSH tunnel is not supported for SQLite connections".to_string());
+            }
+            _ => {
+                let local_port = ssh_tunnel::ensure_tunnel(connection)?;
+                Ok(("127.0.0.1".to_string(), local_port.to_string()))
+            }
+        }
+    } else {
+        Ok((connection.host.clone(), connection.port.clone()))
+    }
+}
 
 // Infer column headers from a SELECT statement when no rows are returned.
 // This is a best-effort parser handling simple SELECT lists (supports aliases, functions, qualified names).
@@ -289,6 +307,19 @@ pub(crate) fn execute_table_query_sync(
                     models::enums::DatabasePool::MySQL(_mysql_pool) => {
                         debug!("Executing MySQL query: {}", query);
 
+                        let (target_host, target_port) = match resolve_connection_target(&connection) {
+                            Ok(tuple) => tuple,
+                            Err(err) => {
+                                return Some((
+                                    vec!["Error".to_string()],
+                                    vec![vec![format!(
+                                        "Failed to resolve MySQL connection target: {}",
+                                        err
+                                    )]],
+                                ));
+                            }
+                        };
+
                         // Split into statements
                         let statements: Vec<&str> = query
                             .split(';')
@@ -344,7 +375,7 @@ pub(crate) fn execute_table_query_sync(
                             let encoded_password = modules::url_encode(&connection.password);
                             let dsn = format!(
                                 "mysql://{}:{}@{}:{}/{}",
-                                encoded_username, encoded_password, connection.host, connection.port, connection.database
+                                encoded_username, encoded_password, target_host, target_port, connection.database
                             );
                             let mut conn = match MySqlConnection::connect(&dsn).await {
                                 Ok(c) => c,
@@ -392,7 +423,7 @@ pub(crate) fn execute_table_query_sync(
                                             debug!("⚠️ USE statement failed, falling back to reconnection...");
                                             let new_dsn = format!(
                                                 "mysql://{}:{}@{}:{}/{}",
-                                                encoded_username, encoded_password, connection.host, connection.port, db_name
+                                                encoded_username, encoded_password, target_host, target_port, db_name
                                             );
                                             match MySqlConnection::connect(&new_dsn).await {
                                                 Ok(new_conn) => {
@@ -1375,17 +1406,23 @@ async fn create_connection_pool_for_config(
 ) -> Option<models::enums::DatabasePool> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for MySQL connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             let _encoded_username = modules::url_encode(&connection.username);
             let _encoded_password = modules::url_encode(&connection.password);
             // Reintroduce connection_string (previously removed) because it's still needed below
             // for establishing the MySQL pool. Use URL-encoded credentials to be safe with special chars.
             let connection_string = format!(
                 "mysql://{}:{}@{}:{}/{}",
-                _encoded_username,
-                _encoded_password,
-                connection.host,
-                connection.port,
-                connection.database
+                _encoded_username, _encoded_password, target_host, target_port, connection.database
             );
 
             // Don't block on ICMP ping (often disabled on Windows firewalls). Attempt direct connect.
@@ -1480,12 +1517,22 @@ async fn create_connection_pool_for_config(
             None
         }
         models::enums::DatabaseType::PostgreSQL => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for PostgreSQL connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             let connection_string = format!(
                 "postgresql://{}:{}@{}:{}/{}",
                 connection.username,
                 connection.password,
-                connection.host,
-                connection.port,
+                target_host,
+                target_port,
                 connection.database
             );
 
@@ -1537,12 +1584,22 @@ async fn create_connection_pool_for_config(
             }
         }
         models::enums::DatabaseType::Redis => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for Redis connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             let connection_string = if connection.password.is_empty() {
-                format!("redis://{}:{}", connection.host, connection.port)
+                format!("redis://{}:{}", target_host, target_port)
             } else {
                 format!(
                     "redis://{}:{}@{}:{}",
-                    connection.username, connection.password, connection.host, connection.port
+                    connection.username, connection.password, target_host, target_port
                 )
             };
 
@@ -1568,20 +1625,30 @@ async fn create_connection_pool_for_config(
             }
         }
         models::enums::DatabaseType::MongoDB => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for MongoDB connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             // Build MongoDB connection string
             let uri = if connection.username.is_empty() {
-                format!("mongodb://{}:{}", connection.host, connection.port)
+                format!("mongodb://{}:{}", target_host, target_port)
             } else if connection.password.is_empty() {
                 format!(
                     "mongodb://{}@{}:{}",
-                    connection.username, connection.host, connection.port
+                    connection.username, target_host, target_port
                 )
             } else {
                 let enc_user = modules::url_encode(&connection.username);
                 let enc_pass = modules::url_encode(&connection.password);
                 format!(
                     "mongodb://{}:{}@{}:{}",
-                    enc_user, enc_pass, connection.host, connection.port
+                    enc_user, enc_pass, target_host, target_port
                 )
             };
             debug!("Creating MongoDB client for URI: {}", uri);
@@ -1602,9 +1669,19 @@ async fn create_connection_pool_for_config(
             }
         }
         models::enums::DatabaseType::MsSQL => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for MsSQL connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             let cfg = driver_mssql::MssqlConfigWrapper::new(
-                connection.host.clone(),
-                connection.port.clone(),
+                target_host,
+                target_port,
                 connection.database.clone(),
                 connection.username.clone(),
                 connection.password.clone(),
@@ -1746,6 +1823,8 @@ pub(crate) fn cleanup_connection_pool(tabular: &mut Tabular, connection_id: i64)
     if let Ok(mut shared_pools) = tabular.shared_connection_pools.lock() {
         shared_pools.remove(&connection_id);
     }
+
+    ssh_tunnel::shutdown_by_id(connection_id);
 }
 
 #[allow(dead_code)]
@@ -1757,24 +1836,55 @@ pub(crate) async fn refresh_connection_background_async(
 
     // Get connection from database
     if let Some(cache_pool_arc) = db_pool {
-        let connection_result = sqlx::query_as::<_, (i64, String, String, String, String, String, String, String)>(
-            "SELECT id, name, host, port, username, password, database_name, connection_type FROM connections WHERE id = ?"
+        let connection_result = sqlx::query(
+            "SELECT id, name, host, port, username, password, database_name, connection_type, folder, \
+                    COALESCE(ssh_enabled, 0) AS ssh_enabled, \
+                    COALESCE(ssh_host, '') AS ssh_host, \
+                    COALESCE(ssh_port, '22') AS ssh_port, \
+                    COALESCE(ssh_username, '') AS ssh_username, \
+                    COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
+                    COALESCE(ssh_private_key, '') AS ssh_private_key, \
+                    COALESCE(ssh_password, '') AS ssh_password, \
+                    COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+             FROM connections WHERE id = ?"
         )
             .bind(connection_id)
             .fetch_optional(cache_pool_arc.as_ref())
             .await;
 
-        if let Ok(Some((
-            id,
-            name,
-            host,
-            port,
-            username,
-            password,
-            database_name,
-            connection_type,
-        ))) = connection_result
-        {
+        if let Ok(Some(row)) = connection_result {
+            let id = row.try_get::<i64, _>("id").unwrap_or(connection_id);
+            let name = row.try_get::<String, _>("name").unwrap_or_default();
+            let host = row.try_get::<String, _>("host").unwrap_or_default();
+            let port = row
+                .try_get::<String, _>("port")
+                .unwrap_or_else(|_| "3306".to_string());
+            let username = row.try_get::<String, _>("username").unwrap_or_default();
+            let password = row.try_get::<String, _>("password").unwrap_or_default();
+            let database_name = row
+                .try_get::<String, _>("database_name")
+                .unwrap_or_default();
+            let connection_type = row
+                .try_get::<String, _>("connection_type")
+                .unwrap_or_else(|_| "SQLite".to_string());
+            let folder = row.try_get::<Option<String>, _>("folder").unwrap_or(None);
+            let ssh_enabled = row.try_get::<i64, _>("ssh_enabled").unwrap_or(0);
+            let ssh_host = row.try_get::<String, _>("ssh_host").unwrap_or_default();
+            let ssh_port = row
+                .try_get::<String, _>("ssh_port")
+                .unwrap_or_else(|_| "22".to_string());
+            let ssh_username = row.try_get::<String, _>("ssh_username").unwrap_or_default();
+            let ssh_auth_method = row
+                .try_get::<String, _>("ssh_auth_method")
+                .unwrap_or_else(|_| "key".to_string());
+            let ssh_private_key = row
+                .try_get::<String, _>("ssh_private_key")
+                .unwrap_or_default();
+            let ssh_password = row.try_get::<String, _>("ssh_password").unwrap_or_default();
+            let ssh_accept_unknown_host_keys = row
+                .try_get::<i64, _>("ssh_accept_unknown_host_keys")
+                .unwrap_or(0);
+
             let connection = models::structs::ConnectionConfig {
                 id: Some(id),
                 name,
@@ -1788,9 +1898,18 @@ pub(crate) async fn refresh_connection_background_async(
                     "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
                     "Redis" => models::enums::DatabaseType::Redis,
                     "MsSQL" => models::enums::DatabaseType::MsSQL,
+                    "MongoDB" => models::enums::DatabaseType::MongoDB,
                     _ => models::enums::DatabaseType::SQLite,
                 },
-                folder: None, // Will be loaded from database later
+                folder,
+                ssh_enabled: ssh_enabled != 0,
+                ssh_host,
+                ssh_port,
+                ssh_username,
+                ssh_auth_method: models::enums::SshAuthMethod::from_db_value(&ssh_auth_method),
+                ssh_private_key,
+                ssh_password,
+                ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
             };
 
             // Clear cache
@@ -1867,12 +1986,22 @@ pub(crate) async fn create_database_pool(
             return create_connection_pool_for_config(connection).await;
         }
         models::enums::DatabaseType::PostgreSQL => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for PostgreSQL connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             let connection_string = format!(
                 "postgresql://{}:{}@{}:{}/{}",
                 connection.username,
                 connection.password,
-                connection.host,
-                connection.port,
+                target_host,
+                target_port,
                 connection.database
             );
 
@@ -1904,12 +2033,22 @@ pub(crate) async fn create_database_pool(
             }
         }
         models::enums::DatabaseType::Redis => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for Redis connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             let connection_string = if connection.password.is_empty() {
-                format!("redis://{}:{}", connection.host, connection.port)
+                format!("redis://{}:{}", target_host, target_port)
             } else {
                 format!(
                     "redis://{}:{}@{}:{}",
-                    connection.username, connection.password, connection.host, connection.port
+                    connection.username, connection.password, target_host, target_port
                 )
             };
 
@@ -1922,9 +2061,19 @@ pub(crate) async fn create_database_pool(
             }
         }
         models::enums::DatabaseType::MsSQL => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for MsSQL connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             let cfg = driver_mssql::MssqlConfigWrapper::new(
-                connection.host.clone(),
-                connection.port.clone(),
+                target_host,
+                target_port,
                 connection.database.clone(),
                 connection.username.clone(),
                 connection.password.clone(),
@@ -1932,19 +2081,29 @@ pub(crate) async fn create_database_pool(
             Some(models::enums::DatabasePool::MsSQL(Arc::new(cfg)))
         }
         models::enums::DatabaseType::MongoDB => {
+            let (target_host, target_port) = match resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(err) => {
+                    debug!(
+                        "Failed to resolve connection target for MongoDB connection {:?}: {}",
+                        connection.id, err
+                    );
+                    return None;
+                }
+            };
             let uri = if connection.username.is_empty() {
-                format!("mongodb://{}:{}", connection.host, connection.port)
+                format!("mongodb://{}:{}", target_host, target_port)
             } else if connection.password.is_empty() {
                 format!(
                     "mongodb://{}@{}:{}",
-                    connection.username, connection.host, connection.port
+                    connection.username, target_host, target_port
                 )
             } else {
                 let enc_user = modules::url_encode(&connection.username);
                 let enc_pass = modules::url_encode(&connection.password);
                 format!(
                     "mongodb://{}:{}@{}:{}",
-                    enc_user, enc_pass, connection.host, connection.port
+                    enc_user, enc_pass, target_host, target_port
                 )
             };
             match tokio::time::timeout(
@@ -2865,9 +3024,12 @@ pub(crate) fn update_connection_in_database(
             let connection = connection.clone();
             let rt = tokio::runtime::Runtime::new().unwrap();
 
+            // Ensure any existing tunnel for this connection is restarted with new settings
+            ssh_tunnel::shutdown_for_connection(&connection);
+
             let result = rt.block_on(async {
                 sqlx::query(
-                    "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ? WHERE id = ?"
+                    "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ? WHERE id = ?"
                 )
                     .bind(connection.name)
                     .bind(connection.host)
@@ -2877,6 +3039,14 @@ pub(crate) fn update_connection_in_database(
                     .bind(connection.database)
                     .bind(format!("{:?}", connection.connection_type))
                     .bind(connection.folder)
+                    .bind(if connection.ssh_enabled { 1 } else { 0 })
+                    .bind(connection.ssh_host)
+                    .bind(connection.ssh_port)
+                    .bind(connection.ssh_username)
+                    .bind(connection.ssh_auth_method.as_db_value())
+                    .bind(connection.ssh_private_key)
+                    .bind(connection.ssh_password)
+                    .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
                     .bind(id)
                     .execute(pool_clone.as_ref())
                     .await
@@ -2961,6 +3131,8 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
     tabular.connections.retain(|c| c.id != Some(connection_id));
     // Remove from connection pool cache
     tabular.connection_pools.remove(&connection_id);
+    tabular.pending_connection_pools.remove(&connection_id);
+    ssh_tunnel::shutdown_by_id(connection_id);
 
     // Use incremental update instead of full refresh
     crate::sidebar_database::remove_connection_from_tree(tabular, connection_id);
@@ -2978,14 +3150,18 @@ pub(crate) fn test_database_connection(
     rt.block_on(async {
         match connection.connection_type {
             models::enums::DatabaseType::MySQL => {
+                let (target_host, target_port) = match resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(err) => return (false, err),
+                };
                 let encoded_username = modules::url_encode(&connection.username);
                 let encoded_password = modules::url_encode(&connection.password);
                 let connection_string = format!(
                     "mysql://{}:{}@{}:{}/{}",
                     encoded_username,
                     encoded_password,
-                    connection.host,
-                    connection.port,
+                    target_host,
+                    target_port,
                     connection.database
                 );
 
@@ -3006,12 +3182,16 @@ pub(crate) fn test_database_connection(
                 }
             }
             models::enums::DatabaseType::PostgreSQL => {
+                let (target_host, target_port) = match resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(err) => return (false, err),
+                };
                 let connection_string = format!(
                     "postgresql://{}:{}@{}:{}/{}",
                     connection.username,
                     connection.password,
-                    connection.host,
-                    connection.port,
+                    target_host,
+                    target_port,
                     connection.database
                 );
 
@@ -3051,20 +3231,24 @@ pub(crate) fn test_database_connection(
                 }
             }
             models::enums::DatabaseType::MongoDB => {
+                let (target_host, target_port) = match resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(err) => return (false, err),
+                };
                 // Build URI and ping
                 let uri = if connection.username.is_empty() {
-                    format!("mongodb://{}:{}", connection.host, connection.port)
+                    format!("mongodb://{}:{}", target_host, target_port)
                 } else if connection.password.is_empty() {
                     format!(
                         "mongodb://{}@{}:{}",
-                        connection.username, connection.host, connection.port
+                        connection.username, target_host, target_port
                     )
                 } else {
                     let enc_user = modules::url_encode(&connection.username);
                     let enc_pass = modules::url_encode(&connection.password);
                     format!(
                         "mongodb://{}:{}@{}:{}",
-                        enc_user, enc_pass, connection.host, connection.port
+                        enc_user, enc_pass, target_host, target_port
                     )
                 };
                 match MongoClient::with_uri_str(uri).await {
@@ -3079,12 +3263,16 @@ pub(crate) fn test_database_connection(
                 }
             }
             models::enums::DatabaseType::Redis => {
+                let (target_host, target_port) = match resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(err) => return (false, err),
+                };
                 let connection_string = if connection.password.is_empty() {
-                    format!("redis://{}:{}", connection.host, connection.port)
+                    format!("redis://{}:{}", target_host, target_port)
                 } else {
                     format!(
                         "redis://{}:{}@{}:{}",
-                        connection.username, connection.password, connection.host, connection.port
+                        connection.username, connection.password, target_host, target_port
                     )
                 };
 
@@ -3116,8 +3304,12 @@ pub(crate) fn test_database_connection(
             }
             models::enums::DatabaseType::MsSQL => {
                 // Simple test using tiberius
-                let host = connection.host.clone();
-                let port: u16 = connection.port.parse().unwrap_or(1433);
+                let (target_host, target_port) = match resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(err) => return (false, err),
+                };
+                let host = target_host.clone();
+                let port: u16 = target_port.parse().unwrap_or(1433);
                 let db = connection.database.clone();
                 let user = connection.username.clone();
                 let pass = connection.password.clone();
