@@ -25,6 +25,7 @@ fn load_logo_texture(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
         tabular.logo_texture = Some(ctx.load_texture("logo", color_image, Default::default()));
     }
 }
+
 pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if tabular.show_about_dialog {
         // Load logo texture if not already loaded
@@ -74,7 +75,9 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                         )
                         .size(14.0),
                     );
-                    ui.label("Credit : Pamungkas Jayuda (https://github.com/Jayuda), Mualip Suhal (https://github.com/msuhal),  Davin Adesta Putra (https://github.com/Davin-adesta), Mohamad Ardiansah Pratama (https://github.com/ardiansyah20007) ");
+                    ui.label(
+                        "Credit : Pamungkas Jayuda (https://github.com/Jayuda), Mualip Suhal (https://github.com/msuhal),  Davin Adesta Putra (https://github.com/Davin-adesta), Mohamad Ardiansah Pratama (https://github.com/ardiansyah20007) ",
+                    );
                     ui.add_space(10.0);
 
                     // Update check button
@@ -201,266 +204,294 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
 
     let mut should_close = false;
     egui::Window::new("Generate Query Index")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .default_width(450.0)
-            .max_height(150.0)
-            .open(&mut open_flag)
-            .show(ctx, |ui| {
-                ui.vertical(|ui| {
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(450.0)
+        .max_height(150.0)
+        .open(&mut open_flag)
+        .show(ctx, |ui| {
+            ui.vertical(|ui| {
+                // Fields - aligned using a two-column Grid
+                ui.add_space(4.0);
+                egui::Grid::new("index_form_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                    ui.label("Index name");
+                    ui.add(egui::TextEdit::singleline(&mut working.index_name).desired_width(360.0));
+                    ui.end_row();
 
-                    // Fields - aligned using a two-column Grid
-                    ui.add_space(4.0);
-                    egui::Grid::new("index_form_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                        ui.label("Index name");
-                        ui.add(egui::TextEdit::singleline(&mut working.index_name).desired_width(360.0));
-                        ui.end_row();
+                    ui.label("Columns");
+                    ui.add(egui::TextEdit::singleline(&mut working.columns).desired_width(360.0));
+                    ui.end_row();
 
-                        ui.label("Columns");
-                        ui.add(egui::TextEdit::singleline(&mut working.columns).desired_width(360.0));
-                        ui.end_row();
+                    ui.label("Unique");
+                    ui.checkbox(&mut working.unique, "");
+                    ui.end_row();
 
-                        ui.label("Unique");
-                        ui.checkbox(&mut working.unique, "");
-                        ui.end_row();
+                    ui.label("Method");
+                    // Determine db type for appropriate method options
+                    let db_type = tabular
+                        .connections
+                        .iter()
+                        .find(|c| c.id == Some(working.connection_id))
+                        .map(|c| c.connection_type.clone())
+                        .unwrap_or(working.db_type.clone());
+                    match db_type {
+                        crate::models::enums::DatabaseType::SQLite
+                        | crate::models::enums::DatabaseType::Redis => {
+                            ui.label(egui::RichText::new("N/A").italics().color(egui::Color32::GRAY));
+                            working.method = None;
+                        }
+                        crate::models::enums::DatabaseType::MySQL => {
+                            let options = ["BTREE", "HASH"];
+                            let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                            egui::ComboBox::from_label("")
+                                .selected_text(selected.clone())
+                                .show_ui(ui, |ui| {
+                                    for opt in options.iter() {
+                                        ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                    }
+                                });
+                            working.method = Some(selected);
+                        }
+                        crate::models::enums::DatabaseType::PostgreSQL => {
+                            let options = ["btree", "hash", "gist", "gin", "spgist", "brin"];
+                            let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                            egui::ComboBox::from_label("")
+                                .selected_text(selected.clone())
+                                .show_ui(ui, |ui| {
+                                    for opt in options.iter() {
+                                        ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                    }
+                                });
+                            working.method = Some(selected);
+                        }
+                        crate::models::enums::DatabaseType::MsSQL => {
+                            let options = ["NONCLUSTERED", "CLUSTERED"];
+                            let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
+                            egui::ComboBox::from_label("")
+                                .selected_text(selected.clone())
+                                .show_ui(ui, |ui| {
+                                    for opt in options.iter() {
+                                        ui.selectable_value(&mut selected, opt.to_string(), *opt);
+                                    }
+                                });
+                            working.method = Some(selected);
+                        }
+                        crate::models::enums::DatabaseType::MongoDB => {
+                            // MongoDB index "method" is the key spec (1/-1 per field), handled via Columns text.
+                            // Show a small hint instead of an algorithm picker.
+                            ui.label("Use Columns as 'field1:1, field2:-1'");
+                        }
+                    }
+                    ui.end_row();
+                });
 
-                        ui.label("Method");
-                        // Determine db type for appropriate method options
-                        let db_type = tabular
-                            .connections
-                            .iter()
-                            .find(|c| c.id == Some(working.connection_id))
-                            .map(|c| c.connection_type.clone())
-                            .unwrap_or(working.db_type.clone());
-                        match db_type {
-                            crate::models::enums::DatabaseType::SQLite | crate::models::enums::DatabaseType::Redis => {
-                                                        ui.label(egui::RichText::new("N/A").italics().color(egui::Color32::GRAY));
-                                                        working.method = None;
-                                                    }
-                            crate::models::enums::DatabaseType::MySQL => {
-                                                        let options = ["BTREE", "HASH"];
-                                                        let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
-                                                        egui::ComboBox::from_label("")
-                                                            .selected_text(selected.clone())
-                                                            .show_ui(ui, |ui| {
-                                                                for opt in options.iter() {
-                                                                    ui.selectable_value(&mut selected, opt.to_string(), *opt);
-                                                                }
-                                                            });
-                                                        working.method = Some(selected);
-                                                    }
-                            crate::models::enums::DatabaseType::PostgreSQL => {
-                                                        let options = ["btree", "hash", "gist", "gin", "spgist", "brin"];
-                                                        let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
-                                                        egui::ComboBox::from_label("")
-                                                            .selected_text(selected.clone())
-                                                            .show_ui(ui, |ui| {
-                                                                for opt in options.iter() {
-                                                                    ui.selectable_value(&mut selected, opt.to_string(), *opt);
-                                                                }
-                                                            });
-                                                        working.method = Some(selected);
-                                                    }
-                            crate::models::enums::DatabaseType::MsSQL => {
-                                                        let options = ["NONCLUSTERED", "CLUSTERED"];
-                                                        let mut selected = working.method.clone().unwrap_or_else(|| options[0].to_string());
-                                                        egui::ComboBox::from_label("")
-                                                            .selected_text(selected.clone())
-                                                            .show_ui(ui, |ui| {
-                                                                for opt in options.iter() {
-                                                                    ui.selectable_value(&mut selected, opt.to_string(), *opt);
-                                                                }
-                                                            });
-                                                        working.method = Some(selected);
-                                                    }
-                            crate::models::enums::DatabaseType::MongoDB => {
-                                // MongoDB index "method" is the key spec (1/-1 per field), handled via Columns text.
-                                // Show a small hint instead of an algorithm picker.
-                                ui.label("Use Columns as 'field1:1, field2:-1'");
+                ui.add_space(8.0);
+
+                // Build SQL preview string depending on the connection type.
+                let sql_preview = {
+                    let conn = tabular
+                        .connections
+                        .iter()
+                        .find(|c| c.id == Some(working.connection_id));
+                    if let Some(conn) = conn {
+                        use crate::models::enums::DatabaseType;
+                        match (working.mode.clone(), conn.connection_type.clone()) {
+                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::MySQL) => {
+                                let method = working.method.clone().unwrap_or("BTREE".to_string());
+                                format!(
+                                    "CREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
+                                    unique = if working.unique { "UNIQUE" } else { "" },
+                                    name = working.index_name,
+                                    table = working.table_name,
+                                    cols = working.columns,
+                                    method = method
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::PostgreSQL) => {
+                                let schema = working.database_name.clone().unwrap_or_else(|| "public".to_string());
+                                let method = working.method.clone().unwrap_or("btree".to_string());
+                                format!(
+                                    "CREATE {unique} INDEX {name} ON \"{schema}\".\"{table}\" USING {method} ({cols});",
+                                    unique = if working.unique { "UNIQUE" } else { "" },
+                                    name = working.index_name,
+                                    schema = schema,
+                                    table = working.table_name,
+                                    cols = working.columns,
+                                    method = method
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::SQLite) => {
+                                format!(
+                                    "CREATE {unique} INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({cols});",
+                                    unique = if working.unique { "UNIQUE" } else { "" },
+                                    name = working.index_name,
+                                    table = working.table_name,
+                                    cols = working.columns,
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::MsSQL) => {
+                                let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
+                                let clustered = working.method.clone().unwrap_or("NONCLUSTERED".to_string());
+                                format!(
+                                    "USE [{db}];\nCREATE {unique} {clustered} INDEX [{name}] ON [dbo].[{table}] ({cols});",
+                                    unique = if working.unique { "UNIQUE" } else { "" },
+                                    name = working.index_name,
+                                    db = db,
+                                    clustered = clustered,
+                                    table = working.table_name,
+                                    cols = working.columns,
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::Redis) => {
+                                "-- Not applicable for Redis".to_string()
+                            }
+                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MySQL) => {
+                                let idx = working
+                                    .existing_index_name
+                                    .clone()
+                                    .unwrap_or(working.index_name.clone());
+                                let method = working.method.clone().unwrap_or("BTREE".to_string());
+                                format!(
+                                    "-- MySQL has no ALTER INDEX; typically DROP then CREATE\nALTER TABLE `{table}` DROP INDEX `{idx}`;\nCREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
+                                    unique = if working.unique { "UNIQUE" } else { "" },
+                                    name = working.index_name,
+                                    table = working.table_name,
+                                    cols = working.columns,
+                                    method = method,
+                                    idx = idx,
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::PostgreSQL) => {
+                                let idx = working
+                                    .existing_index_name
+                                    .clone()
+                                    .unwrap_or(working.index_name.clone());
+                                format!(
+                                    "-- PostgreSQL example edits\nALTER INDEX IF EXISTS \"{idx}\" RENAME TO \"{new}\";\n-- or REBUILD/SET options\n-- ALTER INDEX IF EXISTS \"{new}\" SET (fillfactor = 90);",
+                                    idx = idx,
+                                    new = working.index_name,
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::SQLite) => {
+                                let idx = working
+                                    .existing_index_name
+                                    .clone()
+                                    .unwrap_or(working.index_name.clone());
+                                format!(
+                                    "-- SQLite has no ALTER INDEX; DROP and CREATE\nDROP INDEX IF EXISTS \"{idx}\";\nCREATE {unique} INDEX \"{name}\" ON \"{table}\"({cols});",
+                                    unique = if working.unique { "UNIQUE" } else { "" },
+                                    name = working.index_name,
+                                    table = working.table_name,
+                                    cols = working.columns,
+                                    idx = idx,
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MsSQL) => {
+                                let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
+                                let idx = working
+                                    .existing_index_name
+                                    .clone()
+                                    .unwrap_or(working.index_name.clone());
+                                format!(
+                                    "USE [{db}];\nALTER INDEX [{idx}] ON [dbo].[{table}] REBUILD;\n-- To rename: EXEC sp_rename N'[dbo].[{idx}]', N'{new}', N'INDEX';",
+                                    db = db,
+                                    idx = idx,
+                                    table = working.table_name,
+                                    new = working.index_name,
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::Redis) => {
+                                "-- Not applicable for Redis".to_string()
+                            }
+                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::MongoDB) => {
+                                // Build MongoDB createIndex JavaScript snippet
+                                let db = working
+                                    .database_name
+                                    .clone()
+                                    .unwrap_or_else(|| conn.database.clone());
+                                // Parse columns into key doc: "a:1, b:-1" or plain "a,b" => "a:1,b:1"
+                                let cols_raw = working.columns.clone();
+                                let keys: Vec<String> = cols_raw
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
+                                    .collect();
+                                let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
+                                format!(
+                                    "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
+                                    db,
+                                    working.table_name,
+                                    keys_doc,
+                                    working.index_name,
+                                    if working.unique { "true" } else { "false" }
+                                )
+                            }
+                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MongoDB) => {
+                                let db = working
+                                    .database_name
+                                    .clone()
+                                    .unwrap_or_else(|| conn.database.clone());
+                                let target_idx = working
+                                    .existing_index_name
+                                    .clone()
+                                    .unwrap_or_else(|| working.index_name.clone());
+                                let cols_raw = working.columns.clone();
+                                let keys: Vec<String> = cols_raw
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
+                                    .collect();
+                                let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
+                                let drop_cmd = format!(
+                                    "db.{}.{}.dropIndex(\"{}\");",
+                                    db, working.table_name, target_idx
+                                );
+                                let create_cmd = format!(
+                                    "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
+                                    db,
+                                    working.table_name,
+                                    keys_doc,
+                                    working.index_name,
+                                    if working.unique { "true" } else { "false" }
+                                );
+                                format!(
+                                    "// MongoDB has no ALTER INDEX; typically drop and recreate\n{}\n{}",
+                                    drop_cmd,
+                                    create_cmd
+                                )
                             }
                         }
-                        ui.end_row();
-                    });
+                    } else {
+                        "-- No connection selected".to_string()
+                    }
+                };
 
-                    ui.add_space(8.0);
+                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    ui.code(sql_preview.clone());
+                });
 
-
-                    // Build SQL preview string depending on the connection type.
-                    let sql_preview = {
-                        let conn = tabular.connections.iter().find(|c| c.id == Some(working.connection_id));
-                        if let Some(conn) = conn {
-                            use crate::models::enums::DatabaseType;
-                            match (working.mode.clone(), conn.connection_type.clone()) {
-                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MySQL) => {
-                                                                let method = working.method.clone().unwrap_or("BTREE".to_string());
-                                                                format!("CREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
-                                                                    unique = if working.unique {"UNIQUE"} else {""},
-                                                                    name = working.index_name,
-                                                                    table = working.table_name,
-                                                                    cols = working.columns,
-                                                                    method = method
-                                                                )
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::PostgreSQL) => {
-                                                                let schema = working.database_name.clone().unwrap_or_else(|| "public".to_string());
-                                                                let method = working.method.clone().unwrap_or("btree".to_string());
-                                                                format!("CREATE {unique} INDEX {name} ON \"{schema}\".\"{table}\" USING {method} ({cols});",
-                                                                    unique = if working.unique {"UNIQUE"} else {""},
-                                                                    name = working.index_name,
-                                                                    schema = schema,
-                                                                    table = working.table_name,
-                                                                    cols = working.columns,
-                                                                    method = method
-                                                                )
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::SQLite) => {
-                                                                format!("CREATE {unique} INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({cols});",
-                                                                    unique = if working.unique {"UNIQUE"} else {""},
-                                                                    name = working.index_name,
-                                                                    table = working.table_name,
-                                                                    cols = working.columns,
-                                                                )
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MsSQL) => {
-                                                                let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
-                                                                let clustered = working.method.clone().unwrap_or("NONCLUSTERED".to_string());
-                                                                format!("USE [{db}];\nCREATE {unique} {clustered} INDEX [{name}] ON [dbo].[{table}] ({cols});",
-                                                                    unique = if working.unique {"UNIQUE"} else {""},
-                                                                    name = working.index_name,
-                                                                    db = db,
-                                                                    clustered = clustered,
-                                                                    table = working.table_name,
-                                                                    cols = working.columns,
-                                                                )
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::Redis) => {
-                                                                "-- Not applicable for Redis".to_string()
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MySQL) => {
-                                                                let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
-                                                                let method = working.method.clone().unwrap_or("BTREE".to_string());
-                                                                format!("-- MySQL has no ALTER INDEX; typically DROP then CREATE\nALTER TABLE `{table}` DROP INDEX `{idx}`;\nCREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
-                                                                    unique = if working.unique {"UNIQUE"} else {""},
-                                                                    name = working.index_name,
-                                                                    table = working.table_name,
-                                                                    cols = working.columns,
-                                                                    method = method,
-                                                                    idx = idx,
-                                                                )
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::PostgreSQL) => {
-                                                                let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
-                                                                format!("-- PostgreSQL example edits\nALTER INDEX IF EXISTS \"{idx}\" RENAME TO \"{new}\";\n-- or REBUILD/SET options\n-- ALTER INDEX IF EXISTS \"{new}\" SET (fillfactor = 90);",
-                                                                    idx = idx,
-                                                                    new = working.index_name,
-                                                                )
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::SQLite) => {
-                                                                let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
-                                                                format!("-- SQLite has no ALTER INDEX; DROP and CREATE\nDROP INDEX IF EXISTS \"{idx}\";\nCREATE {unique} INDEX \"{name}\" ON \"{table}\"({cols});",
-                                                                    unique = if working.unique {"UNIQUE"} else {""},
-                                                                    name = working.index_name,
-                                                                    table = working.table_name,
-                                                                    cols = working.columns,
-                                                                    idx = idx,
-                                                                )
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MsSQL) => {
-                                                                let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
-                                                                let idx = working.existing_index_name.clone().unwrap_or(working.index_name.clone());
-                                                                format!("USE [{db}];\nALTER INDEX [{idx}] ON [dbo].[{table}] REBUILD;\n-- To rename: EXEC sp_rename N'[dbo].[{idx}]', N'{new}', N'INDEX';",
-                                                                    db = db,
-                                                                    idx = idx,
-                                                                    table = working.table_name,
-                                                                    new = working.index_name,
-                                                                )
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::Redis) => {
-                                                                "-- Not applicable for Redis".to_string()
-                                                            }
-                                (crate::models::structs::IndexDialogMode::Create, DatabaseType::MongoDB) => {
-                                    // Build MongoDB createIndex JavaScript snippet
-                                    let db = working
-                                        .database_name
-                                        .clone()
-                                        .unwrap_or_else(|| conn.database.clone());
-                                    // Parse columns into key doc: "a:1, b:-1" or plain "a,b" => "a:1,b:1"
-                                    let cols_raw = working.columns.clone();
-                                    let keys: Vec<String> = cols_raw
-                                        .split(',')
-                                        .map(|s| s.trim())
-                                        .filter(|s| !s.is_empty())
-                                        .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
-                                        .collect();
-                                    let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
-                                    format!(
-                                        "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
-                                        db,
-                                        working.table_name,
-                                        keys_doc,
-                                        working.index_name,
-                                        if working.unique { "true" } else { "false" }
-                                    )
-                                }
-                                (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MongoDB) => {
-                                    let db = working
-                                        .database_name
-                                        .clone()
-                                        .unwrap_or_else(|| conn.database.clone());
-                                    let target_idx = working
-                                        .existing_index_name
-                                        .clone()
-                                        .unwrap_or_else(|| working.index_name.clone());
-                                    let cols_raw = working.columns.clone();
-                                    let keys: Vec<String> = cols_raw
-                                        .split(',')
-                                        .map(|s| s.trim())
-                                        .filter(|s| !s.is_empty())
-                                        .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
-                                        .collect();
-                                    let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
-                                    let drop_cmd = format!(
-                                        "db.{}.{}.dropIndex(\"{}\");",
-                                        db, working.table_name, target_idx
-                                    );
-                                    let create_cmd = format!(
-                                        "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
-                                        db,
-                                        working.table_name,
-                                        keys_doc,
-                                        working.index_name,
-                                        if working.unique { "true" } else { "false" }
-                                    );
-                                    format!(
-                                        "// MongoDB has no ALTER INDEX; typically drop and recreate\n{}\n{}",
-                                        drop_cmd,
-                                        create_cmd
-                                    )
-                                }
+                ui.add_space(10.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let big_btn = egui::Button::new(egui::RichText::new("Open in Editor").strong())
+                        .min_size(egui::vec2(150.0, 30.0));
+                    if ui.add(big_btn).clicked() {
+                        let title = match working.mode {
+                            crate::models::structs::IndexDialogMode::Create => {
+                                format!("Create Index on {}", working.table_name)
                             }
-                        } else {
-                            "-- No connection selected".to_string()
-                        }
-                    };
-
-                    egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| { ui.code(sql_preview.clone()); });
-
-                    ui.add_space(10.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let big_btn = egui::Button::new(egui::RichText::new("Open in Editor").strong())
-                            .min_size(egui::vec2(150.0, 30.0));
-                        if ui.add(big_btn).clicked() {
-                            let title = match working.mode {
-                                crate::models::structs::IndexDialogMode::Create => format!("Create Index on {}", working.table_name),
-                                crate::models::structs::IndexDialogMode::Edit => format!("Edit Index {}", working.index_name),
-                            };
-                            open_tab_request = Some((title, sql_preview.clone()));
-                            should_close = true; // close dialog after UI
-                        }
-                    });
+                            crate::models::structs::IndexDialogMode::Edit => {
+                                format!("Edit Index {}", working.index_name)
+                            }
+                        };
+                        open_tab_request = Some((title, sql_preview.clone()));
+                        should_close = true; // close dialog after UI
+                    }
                 });
             });
+        });
     // Persist user edits back into app state
     tabular.index_dialog = Some(working);
     // Update dialog visibility from open_flag set in UI
@@ -482,10 +513,7 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
     }
 }
 
-pub(crate) fn render_create_table_dialog(
-    tabular: &mut window_egui::Tabular,
-    ctx: &egui::Context,
-) {
+pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if !tabular.show_create_table_dialog {
         return;
     }
@@ -505,17 +533,14 @@ pub(crate) fn render_create_table_dialog(
         Create,
     }
 
-    let preview_result = tabular
-        .create_table_wizard
-        .as_ref()
-        .and_then(|state| {
-            if state.current_step == models::structs::CreateTableWizardStep::Review {
-                let state_clone = state.clone();
-                Some(tabular.generate_create_table_sql(&state_clone))
-            } else {
-                None
-            }
-        });
+    let preview_result = tabular.create_table_wizard.as_ref().and_then(|state| {
+        if state.current_step == models::structs::CreateTableWizardStep::Review {
+            let state_clone = state.clone();
+            Some(tabular.generate_create_table_sql(&state_clone))
+        } else {
+            None
+        }
+    });
 
     let connection_caption = tabular
         .create_table_wizard
@@ -536,9 +561,9 @@ pub(crate) fn render_create_table_dialog(
     egui::Window::new("Create Table Wizard")
         .collapsible(false)
         .resizable(true)
-        .default_width(560.0)
-        .min_width(520.0)
-        .min_height(380.0)
+        .default_width(680.0)
+        .min_width(640.0)
+        .min_height(420.0)
         .open(&mut keep_open)
         .show(ctx, |ui| {
             let Some(state) = tabular.create_table_wizard.as_mut() else {
@@ -548,155 +573,248 @@ pub(crate) fn render_create_table_dialog(
             };
 
             let current_step = state.current_step;
+            let steps = models::structs::CreateTableWizardStep::all_steps();
+            let Some(active_index) = steps.iter().position(|s| *s == current_step) else {
+                return;
+            };
+            let total_steps = steps.len().max(1);
+            let progress_fraction = (active_index + 1) as f32 / total_steps as f32;
 
-            ui.horizontal(|ui| {
-                for step in models::structs::CreateTableWizardStep::all_steps() {
-                    let active = step == current_step;
-                    let bullet = if active { "●" } else { "○" };
-                    ui.label(
-                        egui::RichText::new(format!("{} {}", bullet, step.title()))
-                            .color(if active {
-                                ui.visuals().strong_text_color()
-                            } else {
-                                ui.visuals().weak_text_color()
-                            })
-                            .strong(),
-                    );
-                }
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    for (idx, step) in steps.iter().enumerate() {
+                        let active = idx == active_index;
+                        let bullet = if active { "●" } else { "○" };
+                        let label = format!("{} {}", bullet, step.title());
+                        ui.label(egui::RichText::new(label).strong().color(if active {
+                            ui.visuals().strong_text_color()
+                        } else {
+                            ui.visuals().weak_text_color()
+                        }));
+                    }
+                });
+                ui.add(
+                    egui::ProgressBar::new(progress_fraction).desired_width(ui.available_width()),
+                );
             });
-            ui.separator();
 
-            // Connection summary
-            ui.label(
-                egui::RichText::new(format!("Connection: {}", connection_caption.clone()))
-                    .strong(),
-            );
-            if let Some(db_name) = state.database_name.as_ref() {
-                ui.label(format!("Target: {}", db_name));
-            } else {
-                ui.label("Target: connection default database/schema");
-            }
-            ui.add_space(6.0);
+            ui.add_space(8.0);
+
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Vec2::new(12.0, 10.0))
+                .corner_radius(egui::CornerRadius::same(8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Connection").strong());
+                        ui.separator();
+                        ui.label(connection_caption.clone());
+                    });
+                    ui.add_space(4.0);
+                    let target_text = state
+                        .database_name
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("[default schema]");
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Target").strong());
+                        ui.separator();
+                        ui.label(target_text);
+                    });
+                });
+
+            ui.add_space(12.0);
 
             match current_step {
                 models::structs::CreateTableWizardStep::Basics => {
-                    ui.heading("Basics");
-                    ui.label("Name the table and optional schema/database context.");
-                    ui.add_space(6.0);
-
-                    let response = ui.text_edit_singleline(&mut state.table_name);
-                    if response.changed() {
-                        tabular.create_table_error = None;
-                    }
-
-                    let mut target_text = state.database_name.clone().unwrap_or_default();
-                    let target_label = match state.db_type {
-                        models::enums::DatabaseType::PostgreSQL => "Schema (optional)",
-                        models::enums::DatabaseType::SQLite => "Database (read-only)",
-                        models::enums::DatabaseType::MySQL
-                        | models::enums::DatabaseType::MsSQL => "Database (optional)",
-                        models::enums::DatabaseType::Redis
-                        | models::enums::DatabaseType::MongoDB => "Database",
-                    };
-
-                    ui.add_space(4.0);
-                    ui.label(target_label);
-                    match state.db_type {
-                        models::enums::DatabaseType::SQLite => {
-                            let display = if target_text.is_empty() {
-                                "[using connection default]"
-                            } else {
-                                target_text.as_str()
-                            };
-                            ui.label(display);
-                        }
-                        models::enums::DatabaseType::Redis
-                        | models::enums::DatabaseType::MongoDB => {
-                            // Nothing to edit; keep info only
-                            let display = if target_text.is_empty() {
-                                "[not applicable]"
-                            } else {
-                                target_text.as_str()
-                            };
-                            ui.label(display);
-                        }
-                        _ => {
-                            if ui.text_edit_singleline(&mut target_text).changed() {
-                                tabular.create_table_error = None;
-                            }
-                            let normalized = target_text.trim();
-                            state.database_name = if normalized.is_empty() {
-                                None
-                            } else {
-                                Some(normalized.to_string())
-                            };
-                        }
-                    }
-
-                    ui.add_space(6.0);
-                    ui.label("Tip: names are quoted automatically when needed.");
-                }
-                models::structs::CreateTableWizardStep::Columns => {
-                    ui.heading("Columns");
-                    ui.label("Define each column, including data type and primary key settings.");
-                    ui.add_space(4.0);
-
-                    let mut remove_idx: Option<usize> = None;
-                    egui::ScrollArea::vertical()
-                        .max_height(260.0)
+                    egui::Frame::group(ui.style())
+                        .inner_margin(egui::Vec2::new(16.0, 14.0))
+                        .corner_radius(egui::CornerRadius::same(10))
                         .show(ui, |ui| {
-                            egui::Grid::new("create_table_columns_grid")
-                                .striped(true)
-                                .num_columns(6)
-                                .spacing([12.0, 6.0])
+                            ui.label(egui::RichText::new("Table identity").strong().size(16.0));
+                            ui.add_space(8.0);
+                            egui::Grid::new("create_table_basics_grid")
+                                .num_columns(2)
+                                .spacing([18.0, 12.0])
+                                .striped(false)
                                 .show(ui, |ui| {
-                                    ui.label(egui::RichText::new("Name").strong());
-                                    ui.label(egui::RichText::new("Type").strong());
-                                    ui.label(egui::RichText::new("Allow NULL").strong());
-                                    ui.label(egui::RichText::new("Default").strong());
-                                    ui.label(egui::RichText::new("Primary Key").strong());
-                                    ui.label(egui::RichText::new(" ").strong());
+                                    ui.label("Table name");
+                                    let response = ui.text_edit_singleline(&mut state.table_name);
+                                    if response.changed() {
+                                        tabular.create_table_error = None;
+                                    }
                                     ui.end_row();
 
-                                    for (idx, column) in state.columns.iter_mut().enumerate() {
-                                        if ui.text_edit_singleline(&mut column.name).changed() {
-                                            tabular.create_table_error = None;
+                                    let mut target_text =
+                                        state.database_name.clone().unwrap_or_default();
+                                    let target_label = match state.db_type {
+                                        models::enums::DatabaseType::PostgreSQL => {
+                                            "Schema (optional)"
                                         }
-                                        if ui
-                                            .text_edit_singleline(&mut column.data_type)
-                                            .changed()
-                                        {
-                                            tabular.create_table_error = None;
+                                        models::enums::DatabaseType::SQLite => {
+                                            "Database (read-only)"
                                         }
-
-                                        if ui.checkbox(&mut column.allow_null, "").changed() {
-                                            if column.is_primary_key {
-                                                column.allow_null = false;
+                                        models::enums::DatabaseType::MySQL
+                                        | models::enums::DatabaseType::MsSQL => {
+                                            "Database (optional)"
+                                        }
+                                        models::enums::DatabaseType::Redis
+                                        | models::enums::DatabaseType::MongoDB => "Database",
+                                    };
+                                    ui.label(target_label);
+                                    match state.db_type {
+                                        models::enums::DatabaseType::SQLite => {
+                                            let display = if target_text.is_empty() {
+                                                "[using connection default]".to_string()
+                                            } else {
+                                                target_text.clone()
+                                            };
+                                            ui.label(display);
+                                        }
+                                        models::enums::DatabaseType::Redis
+                                        | models::enums::DatabaseType::MongoDB => {
+                                            let display = if target_text.is_empty() {
+                                                "[not applicable]".to_string()
+                                            } else {
+                                                target_text.clone()
+                                            };
+                                            ui.label(display);
+                                        }
+                                        _ => {
+                                            if ui.text_edit_singleline(&mut target_text).changed() {
+                                                tabular.create_table_error = None;
                                             }
-                                            tabular.create_table_error = None;
+                                            let normalized = target_text.trim();
+                                            state.database_name = if normalized.is_empty() {
+                                                None
+                                            } else {
+                                                Some(normalized.to_string())
+                                            };
                                         }
-
-                                        if ui
-                                            .text_edit_singleline(&mut column.default_value)
-                                            .changed()
-                                        {
-                                            tabular.create_table_error = None;
-                                        }
-
-                                        if ui.checkbox(&mut column.is_primary_key, "").changed() {
-                                            column.allow_null = false;
-                                            tabular.create_table_error = None;
-                                        }
-
-                                        if idx > 0 {
-                                            if ui.button("🗑").clicked() {
-                                                remove_idx = Some(idx);
-                                            }
-                                        } else {
-                                            ui.label(" ");
-                                        }
-                                        ui.end_row();
                                     }
+                                    ui.end_row();
+
+                                    ui.label("Notes");
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Names are quoted automatically when required.",
+                                        )
+                                        .color(ui.visuals().weak_text_color()),
+                                    );
+                                    ui.end_row();
+                                });
+                        });
+                }
+                models::structs::CreateTableWizardStep::Columns => {
+                    ui.label(
+                        egui::RichText::new("Define the structure of the table")
+                            .strong()
+                            .size(16.0),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Set column data types, defaults and primary key flags.",
+                        )
+                        .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(12.0);
+
+                    let mut remove_idx: Option<usize> = None;
+                    let frame_width = ui.available_width();
+                    let name_width = frame_width * 0.24;
+                    let type_width = frame_width * 0.2;
+                    let default_width = frame_width * 0.26;
+
+                    egui::Frame::group(ui.style())
+                        .corner_radius(egui::CornerRadius::same(10))
+                        .inner_margin(egui::Vec2::new(12.0, 10.0))
+                        .show(ui, |ui| {
+                            let inner_width = ui.available_width();
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .max_height(260.0)
+                                .show(ui, |ui| {
+                                    ui.set_width(inner_width - 8.0);
+                                    egui::Grid::new("create_table_columns_grid")
+                                        .striped(true)
+                                        .num_columns(6)
+                                        .spacing([20.0, 12.0])
+                                        .min_row_height(28.0)
+                                        .show(ui, |ui| {
+                                            ui.label(egui::RichText::new("Name").strong());
+                                            ui.label(egui::RichText::new("Type").strong());
+                                            ui.label(egui::RichText::new("Allow NULL").strong());
+                                            ui.label(egui::RichText::new("Default").strong());
+                                            ui.label(egui::RichText::new("Primary Key").strong());
+                                            ui.label(egui::RichText::new(" ").strong());
+                                            ui.end_row();
+
+                                            for (idx, column) in
+                                                state.columns.iter_mut().enumerate()
+                                            {
+                                                let name_resp = ui.add_sized(
+                                                    [name_width, 0.0],
+                                                    egui::TextEdit::singleline(&mut column.name),
+                                                );
+                                                if name_resp.clicked() {
+                                                    name_resp.request_focus();
+                                                }
+                                                if name_resp.changed() {
+                                                    tabular.create_table_error = None;
+                                                }
+
+                                                let type_resp = ui.add_sized(
+                                                    [type_width, 0.0],
+                                                    egui::TextEdit::singleline(
+                                                        &mut column.data_type,
+                                                    ),
+                                                );
+                                                if type_resp.clicked() {
+                                                    type_resp.request_focus();
+                                                }
+                                                if type_resp.changed() {
+                                                    tabular.create_table_error = None;
+                                                }
+
+                                                if ui.checkbox(&mut column.allow_null, "").changed()
+                                                {
+                                                    if column.is_primary_key {
+                                                        column.allow_null = false;
+                                                    }
+                                                    tabular.create_table_error = None;
+                                                }
+
+                                                let default_resp = ui.add_sized(
+                                                    [default_width, 0.0],
+                                                    egui::TextEdit::singleline(
+                                                        &mut column.default_value,
+                                                    ),
+                                                );
+                                                if default_resp.clicked() {
+                                                    default_resp.request_focus();
+                                                }
+                                                if default_resp.changed() {
+                                                    tabular.create_table_error = None;
+                                                }
+
+                                                if ui
+                                                    .checkbox(&mut column.is_primary_key, "")
+                                                    .changed()
+                                                {
+                                                    column.allow_null = false;
+                                                    tabular.create_table_error = None;
+                                                }
+
+                                                if idx > 0 {
+                                                    if ui.button("🗑").clicked() {
+                                                        remove_idx = Some(idx);
+                                                    }
+                                                } else {
+                                                    ui.label(" ");
+                                                }
+                                                ui.end_row();
+                                            }
+                                        });
                                 });
                         });
 
@@ -705,61 +823,93 @@ pub(crate) fn render_create_table_dialog(
                         tabular.create_table_error = None;
                     }
 
-                    ui.add_space(6.0);
-                    if ui.button("➕ Add Column").clicked() {
-                        let new_col = models::structs::TableColumnDefinition::blank(state.columns.len());
+                    ui.add_space(10.0);
+                    if ui
+                        .add_sized(egui::vec2(160.0, 32.0), egui::Button::new("➕ Add Column"))
+                        .clicked()
+                    {
+                        let new_col =
+                            models::structs::TableColumnDefinition::blank(state.columns.len());
                         state.columns.push(new_col);
                         tabular.create_table_error = None;
                     }
                 }
                 models::structs::CreateTableWizardStep::Indexes => {
-                    ui.heading("Indexes");
-                    ui.label("Optionally add secondary indexes.");
+                    ui.label(
+                        egui::RichText::new("Optimize lookups with optional indexes")
+                            .strong()
+                            .size(16.0),
+                    );
                     ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Specify additional indexes to speed up reads.")
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(12.0);
 
                     let mut remove_idx: Option<usize> = None;
-                    if state.indexes.is_empty() {
-                        ui.label("No indexes defined.");
-                    } else {
-                        egui::Grid::new("create_table_indexes_grid")
-                            .striped(true)
-                            .num_columns(4)
-                            .spacing([12.0, 6.0])
-                            .show(ui, |ui| {
-                                ui.label(egui::RichText::new("Name").strong());
-                                ui.label(egui::RichText::new("Columns (comma-separated)").strong());
-                                ui.label(egui::RichText::new("Unique").strong());
-                                ui.label(egui::RichText::new(" ").strong());
-                                ui.end_row();
+                    egui::Frame::group(ui.style())
+                        .corner_radius(egui::CornerRadius::same(10))
+                        .inner_margin(egui::Vec2::new(12.0, 10.0))
+                        .show(ui, |ui| {
+                            if state.indexes.is_empty() {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("No secondary indexes defined yet.")
+                                            .color(ui.visuals().weak_text_color()),
+                                    );
+                                });
+                            } else {
+                                egui::Grid::new("create_table_indexes_grid")
+                                    .striped(true)
+                                    .num_columns(4)
+                                    .spacing([16.0, 10.0])
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new("Name").strong());
+                                        ui.label(
+                                            egui::RichText::new("Columns (comma-separated)")
+                                                .strong(),
+                                        );
+                                        ui.label(egui::RichText::new("Unique").strong());
+                                        ui.label(egui::RichText::new(" ").strong());
+                                        ui.end_row();
 
-                                for (idx, index_def) in state.indexes.iter_mut().enumerate() {
-                                    if ui.text_edit_singleline(&mut index_def.name).changed() {
-                                        tabular.create_table_error = None;
-                                    }
-                                    if ui
-                                        .text_edit_singleline(&mut index_def.columns)
-                                        .changed()
-                                    {
-                                        tabular.create_table_error = None;
-                                    }
-                                    if ui.checkbox(&mut index_def.unique, "").changed() {
-                                        tabular.create_table_error = None;
-                                    }
-                                    if ui.button("🗑").clicked() {
-                                        remove_idx = Some(idx);
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                    }
+                                        for (idx, index_def) in state.indexes.iter_mut().enumerate()
+                                        {
+                                            if ui
+                                                .text_edit_singleline(&mut index_def.name)
+                                                .changed()
+                                            {
+                                                tabular.create_table_error = None;
+                                            }
+                                            if ui
+                                                .text_edit_singleline(&mut index_def.columns)
+                                                .changed()
+                                            {
+                                                tabular.create_table_error = None;
+                                            }
+                                            if ui.checkbox(&mut index_def.unique, "").changed() {
+                                                tabular.create_table_error = None;
+                                            }
+                                            if ui.button("🗑").clicked() {
+                                                remove_idx = Some(idx);
+                                            }
+                                            ui.end_row();
+                                        }
+                                    });
+                            }
+                        });
 
                     if let Some(idx) = remove_idx {
                         state.indexes.remove(idx);
                         tabular.create_table_error = None;
                     }
 
-                    ui.add_space(6.0);
-                    if ui.button("➕ Add Index").clicked() {
+                    ui.add_space(10.0);
+                    if ui
+                        .add_sized(egui::vec2(160.0, 32.0), egui::Button::new("➕ Add Index"))
+                        .clicked()
+                    {
                         let new_index =
                             models::structs::TableIndexDefinition::blank(state.indexes.len());
                         state.indexes.push(new_index);
@@ -767,70 +917,109 @@ pub(crate) fn render_create_table_dialog(
                     }
                 }
                 models::structs::CreateTableWizardStep::Review => {
-                    ui.heading("Review");
-                    ui.label("Preview the generated SQL before creating the table.");
+                    ui.label(egui::RichText::new("Final review").strong().size(16.0));
                     ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Confirm the generated SQL before creating the table.")
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(12.0);
 
-                    match preview_result.as_ref() {
-                        Some(Ok(sql)) => {
-                            let mut preview_text = sql.clone();
-                            ui.add(
-                                egui::TextEdit::multiline(&mut preview_text)
-                                    .font(egui::TextStyle::Monospace)
-                                    .desired_rows(12)
-                                    .interactive(false),
-                            );
-                        }
-                        Some(Err(err)) => {
-                            ui.colored_label(egui::Color32::from_rgb(192, 57, 43), err);
-                        }
-                        None => {
-                            ui.label("SQL preview will appear after completing the previous steps.");
-                        }
-                    }
+                    egui::Frame::group(ui.style())
+                        .corner_radius(egui::CornerRadius::same(10))
+                        .inner_margin(egui::Vec2::new(12.0, 10.0))
+                        .show(ui, |ui| match preview_result.as_ref() {
+                            Some(Ok(sql)) => {
+                                let mut preview_text = sql.clone();
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut preview_text)
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_rows(14)
+                                        .interactive(false),
+                                );
+                            }
+                            Some(Err(err)) => {
+                                ui.colored_label(egui::Color32::from_rgb(192, 57, 43), err);
+                            }
+                            None => {
+                                ui.label(
+                                    "SQL preview will appear after completing the previous steps.",
+                                );
+                            }
+                        });
                 }
             }
 
             if let Some(err) = tabular.create_table_error.as_ref() {
-                ui.add_space(6.0);
-                ui.colored_label(egui::Color32::from_rgb(192, 57, 43), err);
+                ui.add_space(10.0);
+                egui::Frame::group(ui.style())
+                    .fill(egui::Color32::from_rgb(255, 235, 238))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(214, 48, 49)))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Vec2::new(10.0, 8.0))
+                    .show(ui, |ui| {
+                        ui.colored_label(egui::Color32::from_rgb(192, 57, 43), err);
+                    });
             }
 
-            ui.add_space(8.0);
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    action = WizardAction::Cancel;
-                }
-
-                if current_step.previous().is_some() {
-                    if ui.button("Back").clicked() {
-                        action = WizardAction::Back;
-                    }
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if current_step == models::structs::CreateTableWizardStep::Review {
-                        let create_enabled = preview_result
-                            .as_ref()
-                            .map(|res| res.is_ok())
-                            .unwrap_or(false);
+            ui.add_space(12.0);
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Vec2::new(14.0, 12.0))
+                .corner_radius(egui::CornerRadius::same(10))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(create_enabled, egui::Button::new("Create Table"))
+                            .add_sized(egui::vec2(110.0, 32.0), egui::Button::new("Cancel"))
                             .clicked()
                         {
-                            action = WizardAction::Create;
+                            action = WizardAction::Cancel;
                         }
-                        if let Some(Ok(sql)) = preview_result.as_ref() {
-                            if ui.button("Copy SQL").clicked() {
-                                copy_preview = Some(sql.clone());
+
+                        if current_step.previous().is_some()
+                            && ui
+                                .add_sized(egui::vec2(110.0, 32.0), egui::Button::new("Back"))
+                                .clicked()
+                        {
+                            action = WizardAction::Back;
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if current_step == models::structs::CreateTableWizardStep::Review {
+                                let create_enabled = preview_result
+                                    .as_ref()
+                                    .map(|res| res.is_ok())
+                                    .unwrap_or(false);
+                                if ui
+                                    .add_enabled(
+                                        create_enabled,
+                                        egui::Button::new(
+                                            egui::RichText::new("Create Table").strong(),
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    action = WizardAction::Create;
+                                }
+                                if let Some(Ok(sql)) = preview_result.as_ref() {
+                                    if ui
+                                        .add_sized(
+                                            egui::vec2(110.0, 32.0),
+                                            egui::Button::new("Copy SQL"),
+                                        )
+                                        .clicked()
+                                    {
+                                        copy_preview = Some(sql.clone());
+                                    }
+                                }
+                            } else if ui
+                                .add_sized(egui::vec2(110.0, 32.0), egui::Button::new("Next"))
+                                .clicked()
+                            {
+                                action = WizardAction::Next;
                             }
-                        }
-                    } else if ui.button("Next").clicked() {
-                        action = WizardAction::Next;
-                    }
+                        });
+                    });
                 });
-            });
         });
 
     if let Some(sql) = copy_preview {

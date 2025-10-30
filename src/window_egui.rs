@@ -885,11 +885,7 @@ impl Tabular {
         }
     }
 
-    fn open_create_table_wizard(
-        &mut self,
-        connection_id: i64,
-        database_name: Option<String>,
-    ) {
+    fn open_create_table_wizard(&mut self, connection_id: i64, database_name: Option<String>) {
         let connection = match self
             .connections
             .iter()
@@ -949,11 +945,7 @@ impl Tabular {
         self.show_create_table_dialog = true;
     }
 
-    fn quote_identifier(
-        &self,
-        ident: &str,
-        db_type: &models::enums::DatabaseType,
-    ) -> String {
+    fn quote_identifier(&self, ident: &str, db_type: &models::enums::DatabaseType) -> String {
         let mut parts: Vec<String> = Vec::new();
         for part in ident.split('.') {
             let trimmed = part.trim();
@@ -968,8 +960,7 @@ impl Tabular {
                         format!("`{}`", trimmed.replace('`', "``"))
                     }
                 }
-                models::enums::DatabaseType::PostgreSQL
-                | models::enums::DatabaseType::SQLite => {
+                models::enums::DatabaseType::PostgreSQL | models::enums::DatabaseType::SQLite => {
                     if trimmed.starts_with('"') && trimmed.ends_with('"') {
                         trimmed.to_string()
                     } else {
@@ -1062,9 +1053,7 @@ impl Tabular {
                     self.quote_identifier(state.table_name.trim(), &state.db_type)
                 )
             }
-            DatabaseType::SQLite => {
-                self.quote_identifier(state.table_name.trim(), &state.db_type)
-            }
+            DatabaseType::SQLite => self.quote_identifier(state.table_name.trim(), &state.db_type),
             DatabaseType::MySQL => {
                 if let Some(db) = state
                     .database_name
@@ -1148,7 +1137,9 @@ impl Tabular {
                     state.db_type,
                     models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB
                 ) {
-                    return Some("Create table tidak tersedia untuk jenis database ini.".to_string());
+                    return Some(
+                        "Create table tidak tersedia untuk jenis database ini.".to_string(),
+                    );
                 }
                 None
             }
@@ -1178,10 +1169,7 @@ impl Tabular {
             Step::Indexes => {
                 for (idx, index) in state.indexes.iter().enumerate() {
                     let name_trim = index.name.trim();
-                    let has_columns = index
-                        .columns
-                        .split(',')
-                        .any(|c| !c.trim().is_empty());
+                    let has_columns = index.columns.split(',').any(|c| !c.trim().is_empty());
                     if name_trim.is_empty() && has_columns {
                         return Some(format!("Index ke-{} memerlukan nama.", idx + 1));
                     }
@@ -1195,20 +1183,17 @@ impl Tabular {
         }
     }
 
-    pub fn submit_create_table_wizard(
-        &mut self,
-        state: models::structs::CreateTableWizardState,
-    ) {
+    pub fn submit_create_table_wizard(&mut self, state: models::structs::CreateTableWizardState) {
         match self.generate_create_table_sql(&state) {
             Ok(sql) => {
-                let execution =
-                    crate::connection::execute_query_with_connection(self, state.connection_id, sql);
+                let execution = crate::connection::execute_query_with_connection(
+                    self,
+                    state.connection_id,
+                    sql,
+                );
                 let (success, message) = match execution {
                     Some((headers, rows)) => {
-                        let is_error = headers
-                            .first()
-                            .map(|h| h == "Error")
-                            .unwrap_or(false);
+                        let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
                         if is_error {
                             let msg = rows
                                 .first()
@@ -1220,17 +1205,18 @@ impl Tabular {
                             (true, None)
                         }
                     }
-                    None => (false, Some("Gagal mengeksekusi perintah CREATE TABLE.".to_string())),
+                    None => (
+                        false,
+                        Some("Gagal mengeksekusi perintah CREATE TABLE.".to_string()),
+                    ),
                 };
 
                 if success {
                     self.create_table_error = None;
                     self.create_table_wizard = None;
                     self.show_create_table_dialog = false;
-                    self.error_message = format!(
-                        "Tabel '{}' berhasil dibuat.",
-                        state.table_name.trim()
-                    );
+                    self.error_message =
+                        format!("Tabel '{}' berhasil dibuat.", state.table_name.trim());
                     self.show_error_message = true;
                     self.refresh_connection(state.connection_id);
                 } else {
@@ -2610,7 +2596,7 @@ impl Tabular {
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
         let mut drop_collection_request: Option<(i64, String, String)> = None;
         let mut drop_table_request: Option<(i64, String, String, String)> = None;
-    let mut create_table_request: Option<(i64, Option<String>)> = None;
+        let mut create_table_request: Option<(i64, Option<String>)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -4795,7 +4781,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                             // Create folder structure but don't load content yet
                             let mut tables_folder = models::structs::TreeNode::new(
                                 "Tables".to_string(),
-                                models::enums::NodeType::TablesFolder, 
+                                models::enums::NodeType::TablesFolder,
                             );
                             tables_folder.connection_id = Some(connection_id);
                             tables_folder.database_name = Some(db_name.clone());
@@ -9858,7 +9844,7 @@ impl App for Tabular {
         dialog::render_about_dialog(self, ctx);
         // Index create/edit dialog
         dialog::render_index_dialog(self, ctx);
-    dialog::render_create_table_dialog(self, ctx);
+        dialog::render_create_table_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
         // Update dialog
@@ -11015,8 +11001,7 @@ impl Tabular {
     }
 
     pub(crate) fn extend_query_icon_hold(&mut self) {
-        self.query_icon_hold_until = Some(
-            std::time::Instant::now() + std::time::Duration::from_millis(900),
-        );
+        self.query_icon_hold_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(900));
     }
 }

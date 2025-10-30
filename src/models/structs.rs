@@ -348,12 +348,7 @@ pub enum CreateTableWizardStep {
 
 impl CreateTableWizardStep {
     pub fn all_steps() -> [Self; 4] {
-        [
-            Self::Basics,
-            Self::Columns,
-            Self::Indexes,
-            Self::Review,
-        ]
+        [Self::Basics, Self::Columns, Self::Indexes, Self::Review]
     }
 
     pub fn title(self) -> &'static str {
