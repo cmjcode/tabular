@@ -591,7 +591,7 @@ fn number_color(dark: bool) -> Color32 {
 
 fn string_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(200, 120, 160) // #ff0000ff
+        Color32::from_rgb(255, 21, 160) // #ff0000ff
     } else {
         Color32::from_rgb(160, 0, 120) // #A00078
     }

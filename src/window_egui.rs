@@ -927,8 +927,8 @@ impl Tabular {
             target_db,
         );
 
-        if let Some(first_column) = state.columns.first_mut() {
-            if first_column.data_type.is_empty() {
+        if let Some(first_column) = state.columns.first_mut()
+            && first_column.data_type.is_empty() {
                 first_column.data_type = match connection.connection_type {
                     models::enums::DatabaseType::PostgreSQL => "SERIAL".to_string(),
                     models::enums::DatabaseType::SQLite => "INTEGER".to_string(),
@@ -937,7 +937,6 @@ impl Tabular {
                     _ => String::new(),
                 };
             }
-        }
 
         self.current_connection_id = Some(connection_id);
         self.create_table_wizard = Some(state);

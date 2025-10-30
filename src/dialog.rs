@@ -584,7 +584,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                 ui.horizontal(|ui| {
                     for (idx, step) in steps.iter().enumerate() {
                         let active = idx == active_index;
-                        let bullet = if active { "●" } else { "○" };
+                        let bullet = if active { "✓" } else { "○" };
                         let label = format!("{} {}", bullet, step.title());
                         ui.label(egui::RichText::new(label).strong().color(if active {
                             ui.visuals().strong_text_color()
@@ -594,7 +594,9 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                     }
                 });
                 ui.add(
-                    egui::ProgressBar::new(progress_fraction).desired_width(ui.available_width()),
+                    egui::ProgressBar::new(progress_fraction)
+                        .desired_width(ui.available_width())
+                        .fill(egui::Color32::from_rgb(255, 21, 0)), // rgba(255, 21, 0, 1)
                 );
             });
 
@@ -611,9 +613,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                     });
                     ui.add_space(4.0);
                     let target_text = state
-                        .database_name
-                        .as_ref()
-                        .map(|s| s.as_str())
+                        .database_name.as_deref()
                         .unwrap_or("[default schema]");
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Target").strong());
@@ -638,7 +638,14 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                 .striped(false)
                                 .show(ui, |ui| {
                                     ui.label("Table name");
-                                    let response = ui.text_edit_singleline(&mut state.table_name);
+                                    let field_width = ui.available_width();
+                                    let response = ui.add_sized(
+                                        [field_width, 0.0],
+                                        egui::TextEdit::singleline(&mut state.table_name),
+                                    );
+                                    if response.clicked() {
+                                        response.request_focus();
+                                    }
                                     if response.changed() {
                                         tabular.create_table_error = None;
                                     }
@@ -680,7 +687,15 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                             ui.label(display);
                                         }
                                         _ => {
-                                            if ui.text_edit_singleline(&mut target_text).changed() {
+                                            let db_field_width = ui.available_width();
+                                            let db_response = ui.add_sized(
+                                                [db_field_width, 0.0],
+                                                egui::TextEdit::singleline(&mut target_text),
+                                            );
+                                            if db_response.clicked() {
+                                                db_response.request_focus();
+                                            }
+                                            if db_response.changed() {
                                                 tabular.create_table_error = None;
                                             }
                                             let normalized = target_text.trim();
@@ -860,10 +875,15 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                     );
                                 });
                             } else {
+                                let row_width = ui.available_width();
+                                let name_width = row_width * 0.35;
+                                let cols_width = row_width * 0.5;
+
                                 egui::Grid::new("create_table_indexes_grid")
                                     .striped(true)
                                     .num_columns(4)
                                     .spacing([16.0, 10.0])
+                                    .min_row_height(28.0)
                                     .show(ui, |ui| {
                                         ui.label(egui::RichText::new("Name").strong());
                                         ui.label(
@@ -876,24 +896,37 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
 
                                         for (idx, index_def) in state.indexes.iter_mut().enumerate()
                                         {
-                                            if ui
-                                                .text_edit_singleline(&mut index_def.name)
-                                                .changed()
-                                            {
+                                            let name_resp = ui.add_sized(
+                                                [name_width, 0.0],
+                                                egui::TextEdit::singleline(&mut index_def.name),
+                                            );
+                                            if name_resp.clicked() {
+                                                name_resp.request_focus();
+                                            }
+                                            if name_resp.changed() {
                                                 tabular.create_table_error = None;
                                             }
-                                            if ui
-                                                .text_edit_singleline(&mut index_def.columns)
-                                                .changed()
-                                            {
+
+                                            let cols_resp = ui.add_sized(
+                                                [cols_width, 0.0],
+                                                egui::TextEdit::singleline(
+                                                    &mut index_def.columns,
+                                                ),
+                                            );
+                                            if cols_resp.clicked() {
+                                                cols_resp.request_focus();
+                                            }
+                                            if cols_resp.changed() {
                                                 tabular.create_table_error = None;
                                             }
                                             if ui.checkbox(&mut index_def.unique, "").changed() {
                                                 tabular.create_table_error = None;
                                             }
+
                                             if ui.button("🗑").clicked() {
                                                 remove_idx = Some(idx);
                                             }
+
                                             ui.end_row();
                                         }
                                     });
@@ -989,19 +1022,15 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                     .as_ref()
                                     .map(|res| res.is_ok())
                                     .unwrap_or(false);
-                                if ui
-                                    .add_enabled(
-                                        create_enabled,
-                                        egui::Button::new(
-                                            egui::RichText::new("Create Table").strong(),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
+                                let create_button = egui::Button::new(
+                                    egui::RichText::new("Create Table").strong(),
+                                )
+                                .min_size(egui::vec2(110.0, 32.0));
+                                if ui.add_enabled(create_enabled, create_button).clicked() {
                                     action = WizardAction::Create;
                                 }
-                                if let Some(Ok(sql)) = preview_result.as_ref() {
-                                    if ui
+                                if let Some(Ok(sql)) = preview_result.as_ref()
+                                    && ui
                                         .add_sized(
                                             egui::vec2(110.0, 32.0),
                                             egui::Button::new("Copy SQL"),
@@ -1010,7 +1039,6 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                     {
                                         copy_preview = Some(sql.clone());
                                     }
-                                }
                             } else if ui
                                 .add_sized(egui::vec2(110.0, 32.0), egui::Button::new("Next"))
                                 .clicked()
@@ -1037,11 +1065,10 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
             tabular.show_create_table_dialog = false;
         }
         WizardAction::Back => {
-            if let Some(state) = tabular.create_table_wizard.as_mut() {
-                if let Some(prev) = state.current_step.previous() {
+            if let Some(state) = tabular.create_table_wizard.as_mut()
+                && let Some(prev) = state.current_step.previous() {
                     state.current_step = prev;
                 }
-            }
             tabular.create_table_error = None;
             tabular.show_create_table_dialog = true;
         }
