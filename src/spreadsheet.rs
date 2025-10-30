@@ -286,24 +286,24 @@ pub trait SpreadsheetOperations {
     }
 
     fn spreadsheet_extract_database_name(&self) -> Option<String> {
-        if self.get_current_table_name().contains("(Database:") {
-            if let Some(start) = self.get_current_table_name().find("(Database:") {
-                let after = &self.get_current_table_name()[start + "(Database:".len()..];
-                if let Some(end) = after.find(')') {
-                    let name = after[..end].trim();
-                    if !name.is_empty() && !name.eq_ignore_ascii_case("unknown") {
-                        return Some(name.to_string());
-                    }
+        if self.get_current_table_name().contains("(Database:")
+            && let Some(start) = self.get_current_table_name().find("(Database:")
+        {
+            let after = &self.get_current_table_name()[start + "(Database:".len()..];
+            if let Some(end) = after.find(')') {
+                let name = after[..end].trim();
+                if !name.is_empty() && !name.eq_ignore_ascii_case("unknown") {
+                    return Some(name.to_string());
                 }
             }
         }
 
-        if let Some(tab) = self.get_query_tabs().get(self.get_active_tab_index()) {
-            if let Some(db) = tab.database_name.clone() {
-                if !db.is_empty() && !db.eq_ignore_ascii_case("unknown") {
-                    return Some(db);
-                }
-            }
+        if let Some(tab) = self.get_query_tabs().get(self.get_active_tab_index())
+            && let Some(db) = tab.database_name.clone()
+            && !db.is_empty()
+            && !db.eq_ignore_ascii_case("unknown")
+        {
+            return Some(db);
         }
 
         None
@@ -357,25 +357,24 @@ pub trait SpreadsheetOperations {
             }
         }
 
-        if primary_keys.is_empty() {
-            if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
-                let lower = first_header.to_lowercase();
-                if lower.contains("id") || lower.contains("recid") || lower == "pk" {
-                    let clause =
-                        if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
-                            format!(
-                                "{} IS NULL",
-                                self.spreadsheet_quote_ident(conn, first_header)
-                            )
-                        } else {
-                            format!(
-                                "{} = {}",
-                                self.spreadsheet_quote_ident(conn, first_header),
-                                self.spreadsheet_quote_value(conn, first_value)
-                            )
-                        };
-                    return Some(clause);
-                }
+        if primary_keys.is_empty()
+            && let (Some(first_header), Some(first_value)) = (headers.first(), values.first())
+        {
+            let lower = first_header.to_lowercase();
+            if lower.contains("id") || lower.contains("recid") || lower == "pk" {
+                let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
+                    format!(
+                        "{} IS NULL",
+                        self.spreadsheet_quote_ident(conn, first_header)
+                    )
+                } else {
+                    format!(
+                        "{} = {}",
+                        self.spreadsheet_quote_ident(conn, first_header),
+                        self.spreadsheet_quote_value(conn, first_value)
+                    )
+                };
+                return Some(clause);
             }
         }
 
@@ -563,18 +562,15 @@ pub trait SpreadsheetOperations {
                     old_value,
                     ..
                 } = op
+                    && let Some(col_name) = headers.get(*col_index)
+                    && pk_columns
+                        .iter()
+                        .any(|pk| pk.eq_ignore_ascii_case(col_name))
                 {
-                    if let Some(col_name) = headers.get(*col_index) {
-                        if pk_columns
-                            .iter()
-                            .any(|pk| pk.eq_ignore_ascii_case(col_name))
-                        {
-                            pk_overrides
-                                .entry(*row_index)
-                                .or_insert_with(HashMap::new)
-                                .insert(col_name.to_lowercase(), old_value.clone());
-                        }
-                    }
+                    pk_overrides
+                        .entry(*row_index)
+                        .or_default()
+                        .insert(col_name.to_lowercase(), old_value.clone());
                 }
             }
         }
@@ -1198,24 +1194,24 @@ impl SpreadsheetOperations for Tabular {
     }
 
     fn spreadsheet_extract_database_name(&self) -> Option<String> {
-        if self.get_current_table_name().contains("(Database:") {
-            if let Some(start) = self.get_current_table_name().find("(Database:") {
-                let after = &self.get_current_table_name()[start + "(Database:".len()..];
-                if let Some(end) = after.find(')') {
-                    let name = after[..end].trim();
-                    if !name.is_empty() && !name.eq_ignore_ascii_case("unknown") {
-                        return Some(name.to_string());
-                    }
+        if self.get_current_table_name().contains("(Database:")
+            && let Some(start) = self.get_current_table_name().find("(Database:")
+        {
+            let after = &self.get_current_table_name()[start + "(Database:".len()..];
+            if let Some(end) = after.find(')') {
+                let name = after[..end].trim();
+                if !name.is_empty() && !name.eq_ignore_ascii_case("unknown") {
+                    return Some(name.to_string());
                 }
             }
         }
 
-        if let Some(tab) = self.get_query_tabs().get(self.get_active_tab_index()) {
-            if let Some(db) = tab.database_name.clone() {
-                if !db.is_empty() && !db.eq_ignore_ascii_case("unknown") {
-                    return Some(db);
-                }
-            }
+        if let Some(tab) = self.get_query_tabs().get(self.get_active_tab_index())
+            && let Some(db) = tab.database_name.clone()
+            && !db.is_empty()
+            && !db.eq_ignore_ascii_case("unknown")
+        {
+            return Some(db);
         }
 
         None
@@ -1269,25 +1265,24 @@ impl SpreadsheetOperations for Tabular {
             }
         }
 
-        if primary_keys.is_empty() {
-            if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
-                let lower = first_header.to_lowercase();
-                if lower.contains("id") || lower.contains("recid") || lower == "pk" {
-                    let clause =
-                        if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
-                            std::format!(
-                                "{} IS NULL",
-                                self.spreadsheet_quote_ident(conn, first_header)
-                            )
-                        } else {
-                            std::format!(
-                                "{} = {}",
-                                self.spreadsheet_quote_ident(conn, first_header),
-                                self.spreadsheet_quote_value(conn, first_value)
-                            )
-                        };
-                    return Some(clause);
-                }
+        if primary_keys.is_empty()
+            && let (Some(first_header), Some(first_value)) = (headers.first(), values.first())
+        {
+            let lower = first_header.to_lowercase();
+            if lower.contains("id") || lower.contains("recid") || lower == "pk" {
+                let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
+                    std::format!(
+                        "{} IS NULL",
+                        self.spreadsheet_quote_ident(conn, first_header)
+                    )
+                } else {
+                    std::format!(
+                        "{} = {}",
+                        self.spreadsheet_quote_ident(conn, first_header),
+                        self.spreadsheet_quote_value(conn, first_value)
+                    )
+                };
+                return Some(clause);
             }
         }
 
@@ -1457,18 +1452,15 @@ impl SpreadsheetOperations for Tabular {
                     old_value,
                     ..
                 } = op
+                    && let Some(col_name) = headers.get(*col_index)
+                    && pk_columns
+                        .iter()
+                        .any(|pk| pk.eq_ignore_ascii_case(col_name))
                 {
-                    if let Some(col_name) = headers.get(*col_index) {
-                        if pk_columns
-                            .iter()
-                            .any(|pk| pk.eq_ignore_ascii_case(col_name))
-                        {
-                            pk_overrides
-                                .entry(*row_index)
-                                .or_insert_with(HashMap::new)
-                                .insert(col_name.to_lowercase(), old_value.clone());
-                        }
-                    }
+                    pk_overrides
+                        .entry(*row_index)
+                        .or_default()
+                        .insert(col_name.to_lowercase(), old_value.clone());
                 }
             }
         }

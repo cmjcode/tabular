@@ -434,7 +434,7 @@ pub(crate) fn render_connection_dialog(
                             ui.end_row();
 
                             ui.label("SSH Auth Method:");
-                            egui::ComboBox::from_id_source("ssh_auth_method_combo")
+                            egui::ComboBox::from_id_salt("ssh_auth_method_combo")
                                 .selected_text(match connection_data.ssh_auth_method {
                                     models::enums::SshAuthMethod::Key => "Private key",
                                     models::enums::SshAuthMethod::Password => "Password",

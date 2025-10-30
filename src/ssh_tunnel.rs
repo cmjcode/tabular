@@ -12,7 +12,6 @@ struct TunnelProcess {
     child: Child,
     stderr: Option<ChildStderr>,
     local_port: u16,
-    created_at: Instant,
     last_used: Instant,
 }
 
@@ -22,7 +21,6 @@ impl TunnelProcess {
             child,
             stderr,
             local_port,
-            created_at: Instant::now(),
             last_used: Instant::now(),
         }
     }
@@ -59,7 +57,7 @@ impl TunnelProcess {
 
     fn terminate(mut self) {
         match self.child.try_wait() {
-            Ok(Some(_)) => return,
+            Ok(Some(_)) => (),
             Ok(None) => {
                 let _ = self.child.kill();
                 let _ = self.child.wait();
@@ -286,24 +284,29 @@ pub fn ensure_tunnel(connection: &models::structs::ConnectionConfig) -> Result<u
 }
 
 pub fn shutdown_for_connection(connection: &models::structs::ConnectionConfig) {
-    if let Ok(mut registry) = TUNNELS.lock() {
-        if let Some(key) = make_key(connection).ok() {
-            if let Some(process) = registry.remove(&key) {
-                debug!("Shutting down SSH tunnel for key {}", key);
-                process.terminate();
-            }
-        }
-    }
+    let Ok(mut registry) = TUNNELS.lock() else {
+        return;
+    };
+    let Ok(key) = make_key(connection) else {
+        return;
+    };
+    let Some(process) = registry.remove(&key) else {
+        return;
+    };
+    debug!("Shutting down SSH tunnel for key {}", key);
+    process.terminate();
 }
 
 pub fn shutdown_by_id(connection_id: i64) {
     let key = format!("id:{connection_id}");
-    if let Ok(mut registry) = TUNNELS.lock() {
-        if let Some(process) = registry.remove(&key) {
-            debug!("Shutting down SSH tunnel for key {}", key);
-            process.terminate();
-        }
-    }
+    let Ok(mut registry) = TUNNELS.lock() else {
+        return;
+    };
+    let Some(process) = registry.remove(&key) else {
+        return;
+    };
+    debug!("Shutting down SSH tunnel for key {}", key);
+    process.terminate();
 }
 
 pub fn active_local_port(connection: &models::structs::ConnectionConfig) -> Option<u16> {

@@ -26,7 +26,7 @@ fn resolve_connection_target(
     if connection.ssh_enabled {
         match connection.connection_type {
             models::enums::DatabaseType::SQLite => {
-                return Err("SSH tunnel is not supported for SQLite connections".to_string());
+                Err("SSH tunnel is not supported for SQLite connections".to_string())
             }
             _ => {
                 let local_port = ssh_tunnel::ensure_tunnel(connection)?;
@@ -307,7 +307,7 @@ pub(crate) fn execute_table_query_sync(
                     models::enums::DatabasePool::MySQL(_mysql_pool) => {
                         debug!("Executing MySQL query: {}", query);
 
-                        let (target_host, target_port) = match resolve_connection_target(&connection) {
+                        let (target_host, target_port) = match resolve_connection_target(connection) {
                             Ok(tuple) => tuple,
                             Err(err) => {
                                 return Some((
