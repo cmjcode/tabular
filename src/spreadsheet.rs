@@ -521,9 +521,9 @@ pub trait SpreadsheetOperations {
         row_index: usize,
     ) -> Option<String> {
         let row = self
-            .get_all_table_data()
+            .get_current_table_data()
             .get(row_index)
-            .or_else(|| self.get_current_table_data().get(row_index))?;
+            .or_else(|| self.get_all_table_data().get(row_index))?;
         let headers = self.get_current_table_headers();
         let pk_columns = &self.get_spreadsheet_state().primary_key_columns;
         self.spreadsheet_build_where_clause(conn, row, headers, pk_columns, None)
@@ -599,9 +599,9 @@ pub trait SpreadsheetOperations {
                             continue;
                         }
                     };
-                    let row_data = all_rows
+                    let row_data = current_rows
                         .get(*row_index)
-                        .or_else(|| current_rows.get(*row_index));
+                        .or_else(|| all_rows.get(*row_index));
                     let row_data = match row_data {
                         Some(r) => r,
                         None => {
@@ -637,9 +637,9 @@ pub trait SpreadsheetOperations {
                     let cols: Vec<String> = headers.iter().map(|c| qt(c)).collect();
                     // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
                     let latest_vals_src: Option<&Vec<String>> = self
-                        .get_all_table_data()
+                        .get_current_table_data()
                         .get(*row_index)
-                        .or_else(|| self.get_current_table_data().get(*row_index));
+                        .or_else(|| self.get_all_table_data().get(*row_index));
                     let vals_vec: Vec<String> = if let Some(src) = latest_vals_src {
                         src.clone()
                     } else {
@@ -1493,9 +1493,9 @@ impl SpreadsheetOperations for Tabular {
                             continue;
                         }
                     };
-                    let row_data = all_rows
+                    let row_data = current_rows
                         .get(*row_index)
-                        .or_else(|| current_rows.get(*row_index));
+                        .or_else(|| all_rows.get(*row_index));
                     let row_data = match row_data {
                         Some(r) => r,
                         None => {
@@ -1531,9 +1531,9 @@ impl SpreadsheetOperations for Tabular {
                     let cols: Vec<String> = headers.iter().map(|c| qt(c)).collect();
                     // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
                     let latest_vals_src: Option<&Vec<String>> = self
-                        .get_all_table_data()
+                        .get_current_table_data()
                         .get(*row_index)
-                        .or_else(|| self.get_current_table_data().get(*row_index));
+                        .or_else(|| self.get_all_table_data().get(*row_index));
                     let vals_vec: Vec<String> = if let Some(src) = latest_vals_src {
                         src.clone()
                     } else {
@@ -1625,9 +1625,9 @@ impl SpreadsheetOperations for Tabular {
         row_index: usize,
     ) -> Option<String> {
         let row = self
-            .get_all_table_data()
+            .get_current_table_data()
             .get(row_index)
-            .or_else(|| self.get_current_table_data().get(row_index))?;
+            .or_else(|| self.get_all_table_data().get(row_index))?;
         let headers = self.get_current_table_headers();
         let pk_columns = &self.get_spreadsheet_state().primary_key_columns;
         self.spreadsheet_build_where_clause(conn, row, headers, pk_columns, None)
