@@ -6,9 +6,6 @@ Your fast, cross‑platform, multi‑database SQL & NoSQL client – built in Ru
 
 ![Main Window](screenshots/halaman-utama.jpg)
 
-Join us at Telegram
-
-![Telegram Group](screenshots/telegram.png)
 
 ## macOS Xcode Project (App Store)
 
@@ -1299,3 +1296,8 @@ ls -la dist/
 ```
 
 This will create distribution-ready packages for macOS, Linux, and Windows.
+
+
+Join us at Telegram
+
+![Telegram Group](screenshots/telegram.png)
