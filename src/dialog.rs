@@ -1,7 +1,7 @@
 use eframe::egui;
 use log::error;
 
-use crate::{editor, window_egui};
+use crate::{editor, models, window_egui};
 
 fn load_logo_texture(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if tabular.logo_texture.is_some() {
@@ -479,5 +479,406 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
             Some(state.connection_id),
             state.database_name.clone(),
         );
+    }
+}
+
+pub(crate) fn render_create_table_dialog(
+    tabular: &mut window_egui::Tabular,
+    ctx: &egui::Context,
+) {
+    if !tabular.show_create_table_dialog {
+        return;
+    }
+
+    if tabular.create_table_wizard.is_none() {
+        tabular.show_create_table_dialog = false;
+        tabular.create_table_error = None;
+        return;
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum WizardAction {
+        None,
+        Cancel,
+        Back,
+        Next,
+        Create,
+    }
+
+    let preview_result = tabular
+        .create_table_wizard
+        .as_ref()
+        .and_then(|state| {
+            if state.current_step == models::structs::CreateTableWizardStep::Review {
+                let state_clone = state.clone();
+                Some(tabular.generate_create_table_sql(&state_clone))
+            } else {
+                None
+            }
+        });
+
+    let connection_caption = tabular
+        .create_table_wizard
+        .as_ref()
+        .and_then(|state| {
+            tabular
+                .connections
+                .iter()
+                .find(|c| c.id == Some(state.connection_id))
+                .map(|conn| conn.name.clone())
+        })
+        .unwrap_or_else(|| "Selected connection".to_string());
+
+    let mut action = WizardAction::None;
+    let mut copy_preview: Option<String> = None;
+    let mut keep_open = tabular.show_create_table_dialog;
+
+    egui::Window::new("Create Table Wizard")
+        .collapsible(false)
+        .resizable(true)
+        .default_width(560.0)
+        .min_width(520.0)
+        .min_height(380.0)
+        .open(&mut keep_open)
+        .show(ctx, |ui| {
+            let Some(state) = tabular.create_table_wizard.as_mut() else {
+                action = WizardAction::Cancel;
+                ui.label("Wizard state unavailable.");
+                return;
+            };
+
+            let current_step = state.current_step;
+
+            ui.horizontal(|ui| {
+                for step in models::structs::CreateTableWizardStep::all_steps() {
+                    let active = step == current_step;
+                    let bullet = if active { "●" } else { "○" };
+                    ui.label(
+                        egui::RichText::new(format!("{} {}", bullet, step.title()))
+                            .color(if active {
+                                ui.visuals().strong_text_color()
+                            } else {
+                                ui.visuals().weak_text_color()
+                            })
+                            .strong(),
+                    );
+                }
+            });
+            ui.separator();
+
+            // Connection summary
+            ui.label(
+                egui::RichText::new(format!("Connection: {}", connection_caption.clone()))
+                    .strong(),
+            );
+            if let Some(db_name) = state.database_name.as_ref() {
+                ui.label(format!("Target: {}", db_name));
+            } else {
+                ui.label("Target: connection default database/schema");
+            }
+            ui.add_space(6.0);
+
+            match current_step {
+                models::structs::CreateTableWizardStep::Basics => {
+                    ui.heading("Basics");
+                    ui.label("Name the table and optional schema/database context.");
+                    ui.add_space(6.0);
+
+                    let response = ui.text_edit_singleline(&mut state.table_name);
+                    if response.changed() {
+                        tabular.create_table_error = None;
+                    }
+
+                    let mut target_text = state.database_name.clone().unwrap_or_default();
+                    let target_label = match state.db_type {
+                        models::enums::DatabaseType::PostgreSQL => "Schema (optional)",
+                        models::enums::DatabaseType::SQLite => "Database (read-only)",
+                        models::enums::DatabaseType::MySQL
+                        | models::enums::DatabaseType::MsSQL => "Database (optional)",
+                        models::enums::DatabaseType::Redis
+                        | models::enums::DatabaseType::MongoDB => "Database",
+                    };
+
+                    ui.add_space(4.0);
+                    ui.label(target_label);
+                    match state.db_type {
+                        models::enums::DatabaseType::SQLite => {
+                            let display = if target_text.is_empty() {
+                                "[using connection default]"
+                            } else {
+                                target_text.as_str()
+                            };
+                            ui.label(display);
+                        }
+                        models::enums::DatabaseType::Redis
+                        | models::enums::DatabaseType::MongoDB => {
+                            // Nothing to edit; keep info only
+                            let display = if target_text.is_empty() {
+                                "[not applicable]"
+                            } else {
+                                target_text.as_str()
+                            };
+                            ui.label(display);
+                        }
+                        _ => {
+                            if ui.text_edit_singleline(&mut target_text).changed() {
+                                tabular.create_table_error = None;
+                            }
+                            let normalized = target_text.trim();
+                            state.database_name = if normalized.is_empty() {
+                                None
+                            } else {
+                                Some(normalized.to_string())
+                            };
+                        }
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label("Tip: names are quoted automatically when needed.");
+                }
+                models::structs::CreateTableWizardStep::Columns => {
+                    ui.heading("Columns");
+                    ui.label("Define each column, including data type and primary key settings.");
+                    ui.add_space(4.0);
+
+                    let mut remove_idx: Option<usize> = None;
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new("create_table_columns_grid")
+                                .striped(true)
+                                .num_columns(6)
+                                .spacing([12.0, 6.0])
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new("Name").strong());
+                                    ui.label(egui::RichText::new("Type").strong());
+                                    ui.label(egui::RichText::new("Allow NULL").strong());
+                                    ui.label(egui::RichText::new("Default").strong());
+                                    ui.label(egui::RichText::new("Primary Key").strong());
+                                    ui.label(egui::RichText::new(" ").strong());
+                                    ui.end_row();
+
+                                    for (idx, column) in state.columns.iter_mut().enumerate() {
+                                        if ui.text_edit_singleline(&mut column.name).changed() {
+                                            tabular.create_table_error = None;
+                                        }
+                                        if ui
+                                            .text_edit_singleline(&mut column.data_type)
+                                            .changed()
+                                        {
+                                            tabular.create_table_error = None;
+                                        }
+
+                                        if ui.checkbox(&mut column.allow_null, "").changed() {
+                                            if column.is_primary_key {
+                                                column.allow_null = false;
+                                            }
+                                            tabular.create_table_error = None;
+                                        }
+
+                                        if ui
+                                            .text_edit_singleline(&mut column.default_value)
+                                            .changed()
+                                        {
+                                            tabular.create_table_error = None;
+                                        }
+
+                                        if ui.checkbox(&mut column.is_primary_key, "").changed() {
+                                            column.allow_null = false;
+                                            tabular.create_table_error = None;
+                                        }
+
+                                        if idx > 0 {
+                                            if ui.button("🗑").clicked() {
+                                                remove_idx = Some(idx);
+                                            }
+                                        } else {
+                                            ui.label(" ");
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+
+                    if let Some(idx) = remove_idx {
+                        state.columns.remove(idx);
+                        tabular.create_table_error = None;
+                    }
+
+                    ui.add_space(6.0);
+                    if ui.button("➕ Add Column").clicked() {
+                        let new_col = models::structs::TableColumnDefinition::blank(state.columns.len());
+                        state.columns.push(new_col);
+                        tabular.create_table_error = None;
+                    }
+                }
+                models::structs::CreateTableWizardStep::Indexes => {
+                    ui.heading("Indexes");
+                    ui.label("Optionally add secondary indexes.");
+                    ui.add_space(4.0);
+
+                    let mut remove_idx: Option<usize> = None;
+                    if state.indexes.is_empty() {
+                        ui.label("No indexes defined.");
+                    } else {
+                        egui::Grid::new("create_table_indexes_grid")
+                            .striped(true)
+                            .num_columns(4)
+                            .spacing([12.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Name").strong());
+                                ui.label(egui::RichText::new("Columns (comma-separated)").strong());
+                                ui.label(egui::RichText::new("Unique").strong());
+                                ui.label(egui::RichText::new(" ").strong());
+                                ui.end_row();
+
+                                for (idx, index_def) in state.indexes.iter_mut().enumerate() {
+                                    if ui.text_edit_singleline(&mut index_def.name).changed() {
+                                        tabular.create_table_error = None;
+                                    }
+                                    if ui
+                                        .text_edit_singleline(&mut index_def.columns)
+                                        .changed()
+                                    {
+                                        tabular.create_table_error = None;
+                                    }
+                                    if ui.checkbox(&mut index_def.unique, "").changed() {
+                                        tabular.create_table_error = None;
+                                    }
+                                    if ui.button("🗑").clicked() {
+                                        remove_idx = Some(idx);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    }
+
+                    if let Some(idx) = remove_idx {
+                        state.indexes.remove(idx);
+                        tabular.create_table_error = None;
+                    }
+
+                    ui.add_space(6.0);
+                    if ui.button("➕ Add Index").clicked() {
+                        let new_index =
+                            models::structs::TableIndexDefinition::blank(state.indexes.len());
+                        state.indexes.push(new_index);
+                        tabular.create_table_error = None;
+                    }
+                }
+                models::structs::CreateTableWizardStep::Review => {
+                    ui.heading("Review");
+                    ui.label("Preview the generated SQL before creating the table.");
+                    ui.add_space(4.0);
+
+                    match preview_result.as_ref() {
+                        Some(Ok(sql)) => {
+                            let mut preview_text = sql.clone();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut preview_text)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_rows(12)
+                                    .interactive(false),
+                            );
+                        }
+                        Some(Err(err)) => {
+                            ui.colored_label(egui::Color32::from_rgb(192, 57, 43), err);
+                        }
+                        None => {
+                            ui.label("SQL preview will appear after completing the previous steps.");
+                        }
+                    }
+                }
+            }
+
+            if let Some(err) = tabular.create_table_error.as_ref() {
+                ui.add_space(6.0);
+                ui.colored_label(egui::Color32::from_rgb(192, 57, 43), err);
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    action = WizardAction::Cancel;
+                }
+
+                if current_step.previous().is_some() {
+                    if ui.button("Back").clicked() {
+                        action = WizardAction::Back;
+                    }
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if current_step == models::structs::CreateTableWizardStep::Review {
+                        let create_enabled = preview_result
+                            .as_ref()
+                            .map(|res| res.is_ok())
+                            .unwrap_or(false);
+                        if ui
+                            .add_enabled(create_enabled, egui::Button::new("Create Table"))
+                            .clicked()
+                        {
+                            action = WizardAction::Create;
+                        }
+                        if let Some(Ok(sql)) = preview_result.as_ref() {
+                            if ui.button("Copy SQL").clicked() {
+                                copy_preview = Some(sql.clone());
+                            }
+                        }
+                    } else if ui.button("Next").clicked() {
+                        action = WizardAction::Next;
+                    }
+                });
+            });
+        });
+
+    if let Some(sql) = copy_preview {
+        ctx.copy_text(sql);
+    }
+
+    if !keep_open {
+        action = WizardAction::Cancel;
+    }
+
+    match action {
+        WizardAction::Cancel => {
+            tabular.create_table_wizard = None;
+            tabular.create_table_error = None;
+            tabular.show_create_table_dialog = false;
+        }
+        WizardAction::Back => {
+            if let Some(state) = tabular.create_table_wizard.as_mut() {
+                if let Some(prev) = state.current_step.previous() {
+                    state.current_step = prev;
+                }
+            }
+            tabular.create_table_error = None;
+            tabular.show_create_table_dialog = true;
+        }
+        WizardAction::Next => {
+            if let Some(mut state) = tabular.create_table_wizard.take() {
+                let current_step = state.current_step;
+                if let Some(err) = tabular.validate_create_table_step(&mut state, current_step) {
+                    tabular.create_table_error = Some(err);
+                } else {
+                    tabular.create_table_error = None;
+                    if let Some(next) = state.current_step.next() {
+                        state.current_step = next;
+                    }
+                }
+                tabular.create_table_wizard = Some(state);
+            }
+            tabular.show_create_table_dialog = true;
+        }
+        WizardAction::Create => {
+            if let Some(state) = tabular.create_table_wizard.clone() {
+                tabular.create_table_error = None;
+                tabular.submit_create_table_wizard(state);
+            }
+        }
+        WizardAction::None => {
+            tabular.show_create_table_dialog = true;
+        }
     }
 }

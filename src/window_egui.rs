@@ -146,6 +146,10 @@ pub struct Tabular {
     pub parent_folder_for_creation: Option<String>,
     pub selected_folder_for_removal: Option<String>,
     pub folder_removal_map: std::collections::HashMap<i64, String>, // Map hash to folder path
+    // Create Table wizard state
+    pub show_create_table_dialog: bool,
+    pub create_table_wizard: Option<models::structs::CreateTableWizardState>,
+    pub create_table_error: Option<String>,
     // Connection pool cleanup tracking
     pub last_cleanup_time: std::time::Instant,
     // Table selection tracking
@@ -611,6 +615,9 @@ impl Tabular {
             parent_folder_for_creation: None,
             selected_folder_for_removal: None,
             folder_removal_map: std::collections::HashMap::new(),
+            show_create_table_dialog: false,
+            create_table_wizard: None,
+            create_table_error: None,
             last_cleanup_time: std::time::Instant::now(),
             selected_row: None,
             selected_cell: None,
@@ -878,6 +885,371 @@ impl Tabular {
         }
     }
 
+    fn open_create_table_wizard(
+        &mut self,
+        connection_id: i64,
+        database_name: Option<String>,
+    ) {
+        let connection = match self
+            .connections
+            .iter()
+            .find(|conn| conn.id == Some(connection_id))
+            .cloned()
+        {
+            Some(conn) => conn,
+            None => {
+                self.error_message = format!(
+                    "Connection {} tidak ditemukan untuk Create Table.",
+                    connection_id
+                );
+                self.show_error_message = true;
+                return;
+            }
+        };
+
+        match connection.connection_type {
+            models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB => {
+                self.error_message =
+                    "Create Table tidak tersedia untuk jenis database ini.".to_string();
+                self.show_error_message = true;
+                return;
+            }
+            _ => {}
+        }
+
+        let mut target_db = database_name.filter(|s| !s.trim().is_empty());
+        if target_db.is_none() {
+            let trimmed = connection.database.trim();
+            if !trimmed.is_empty() {
+                target_db = Some(trimmed.to_string());
+            }
+        }
+
+        let mut state = models::structs::CreateTableWizardState::new(
+            connection_id,
+            connection.connection_type.clone(),
+            target_db,
+        );
+
+        if let Some(first_column) = state.columns.first_mut() {
+            if first_column.data_type.is_empty() {
+                first_column.data_type = match connection.connection_type {
+                    models::enums::DatabaseType::PostgreSQL => "SERIAL".to_string(),
+                    models::enums::DatabaseType::SQLite => "INTEGER".to_string(),
+                    models::enums::DatabaseType::MySQL => "INT".to_string(),
+                    models::enums::DatabaseType::MsSQL => "INT".to_string(),
+                    _ => String::new(),
+                };
+            }
+        }
+
+        self.current_connection_id = Some(connection_id);
+        self.create_table_wizard = Some(state);
+        self.create_table_error = None;
+        self.show_create_table_dialog = true;
+    }
+
+    fn quote_identifier(
+        &self,
+        ident: &str,
+        db_type: &models::enums::DatabaseType,
+    ) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for part in ident.split('.') {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let quoted = match db_type {
+                models::enums::DatabaseType::MySQL => {
+                    if trimmed.starts_with('`') && trimmed.ends_with('`') {
+                        trimmed.to_string()
+                    } else {
+                        format!("`{}`", trimmed.replace('`', "``"))
+                    }
+                }
+                models::enums::DatabaseType::PostgreSQL
+                | models::enums::DatabaseType::SQLite => {
+                    if trimmed.starts_with('"') && trimmed.ends_with('"') {
+                        trimmed.to_string()
+                    } else {
+                        format!("\"{}\"", trimmed.replace('"', "\"\""))
+                    }
+                }
+                models::enums::DatabaseType::MsSQL => {
+                    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                        trimmed.to_string()
+                    } else {
+                        format!("[{}]", trimmed.replace(']', "]]"))
+                    }
+                }
+                _ => trimmed.to_string(),
+            };
+            parts.push(quoted);
+        }
+
+        if parts.is_empty() {
+            ident.trim().to_string()
+        } else {
+            parts.join(".")
+        }
+    }
+
+    pub fn generate_create_table_sql(
+        &self,
+        state: &models::structs::CreateTableWizardState,
+    ) -> Result<String, String> {
+        use models::enums::DatabaseType;
+
+        if state.table_name.trim().is_empty() {
+            return Err("Nama tabel harus diisi.".to_string());
+        }
+
+        if matches!(state.db_type, DatabaseType::Redis | DatabaseType::MongoDB) {
+            return Err("Create table tidak tersedia untuk jenis database ini.".to_string());
+        }
+
+        if state.columns.is_empty() {
+            return Err("Tambahkan minimal satu kolom.".to_string());
+        }
+
+        let mut column_defs: Vec<String> = Vec::new();
+        let mut pk_columns: Vec<String> = Vec::new();
+
+        for column in &state.columns {
+            let name_trim = column.name.trim();
+            if name_trim.is_empty() {
+                return Err("Setiap kolom harus memiliki nama.".to_string());
+            }
+            if column.data_type.trim().is_empty() {
+                return Err(format!("Kolom '{}' belum memiliki tipe data.", name_trim));
+            }
+
+            let mut pieces = vec![
+                self.quote_identifier(name_trim, &state.db_type),
+                column.data_type.trim().to_string(),
+            ];
+
+            if !column.allow_null {
+                pieces.push("NOT NULL".to_string());
+            }
+            if !column.default_value.trim().is_empty() {
+                pieces.push(format!("DEFAULT {}", column.default_value.trim()));
+            }
+
+            column_defs.push(pieces.join(" "));
+
+            if column.is_primary_key {
+                pk_columns.push(self.quote_identifier(name_trim, &state.db_type));
+            }
+        }
+
+        if !pk_columns.is_empty() {
+            column_defs.push(format!("PRIMARY KEY ({})", pk_columns.join(", ")));
+        }
+
+        let mut statements: Vec<String> = Vec::new();
+        let table_identifier = match state.db_type {
+            DatabaseType::PostgreSQL => {
+                let schema = state
+                    .database_name
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("public");
+                format!(
+                    "{}.{}",
+                    self.quote_identifier(schema, &state.db_type),
+                    self.quote_identifier(state.table_name.trim(), &state.db_type)
+                )
+            }
+            DatabaseType::SQLite => {
+                self.quote_identifier(state.table_name.trim(), &state.db_type)
+            }
+            DatabaseType::MySQL => {
+                if let Some(db) = state
+                    .database_name
+                    .as_ref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                {
+                    statements.push(format!("USE `{}`;", db));
+                }
+                self.quote_identifier(state.table_name.trim(), &state.db_type)
+            }
+            DatabaseType::MsSQL => {
+                if let Some(db) = state
+                    .database_name
+                    .as_ref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                {
+                    statements.push(format!("USE [{}];", db));
+                }
+                self.quote_identifier(state.table_name.trim(), &state.db_type)
+            }
+            DatabaseType::Redis | DatabaseType::MongoDB => {
+                return Err("Create table tidak tersedia untuk jenis database ini.".to_string());
+            }
+        };
+
+        let create_stmt = format!(
+            "CREATE TABLE {} (\n    {}\n);",
+            table_identifier,
+            column_defs.join(",\n    ")
+        );
+        statements.push(create_stmt);
+
+        for index in &state.indexes {
+            let name_trim = index.name.trim();
+            if name_trim.is_empty() {
+                continue;
+            }
+            let columns: Vec<&str> = index
+                .columns
+                .split(',')
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .collect();
+            if columns.is_empty() {
+                continue;
+            }
+            if matches!(state.db_type, DatabaseType::Redis | DatabaseType::MongoDB) {
+                continue;
+            }
+
+            let quoted_cols = columns
+                .iter()
+                .map(|c| self.quote_identifier(c, &state.db_type))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let quoted_index_name = self.quote_identifier(name_trim, &state.db_type);
+            let prefix = if index.unique { "UNIQUE " } else { "" };
+            statements.push(format!(
+                "CREATE {}INDEX {} ON {} ({});",
+                prefix, quoted_index_name, table_identifier, quoted_cols
+            ));
+        }
+
+        Ok(statements.join("\n"))
+    }
+
+    pub fn validate_create_table_step(
+        &self,
+        state: &mut models::structs::CreateTableWizardState,
+        step: models::structs::CreateTableWizardStep,
+    ) -> Option<String> {
+        use models::structs::CreateTableWizardStep as Step;
+        match step {
+            Step::Basics => {
+                if state.table_name.trim().is_empty() {
+                    return Some("Nama tabel harus diisi.".to_string());
+                }
+                if matches!(
+                    state.db_type,
+                    models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB
+                ) {
+                    return Some("Create table tidak tersedia untuk jenis database ini.".to_string());
+                }
+                None
+            }
+            Step::Columns => {
+                if state.columns.is_empty() {
+                    return Some("Tambahkan minimal satu kolom.".to_string());
+                }
+                let mut seen = std::collections::HashSet::new();
+                for (idx, column) in state.columns.iter_mut().enumerate() {
+                    let name_trim = column.name.trim();
+                    if name_trim.is_empty() {
+                        return Some(format!("Kolom ke-{} belum memiliki nama.", idx + 1));
+                    }
+                    let key = name_trim.to_lowercase();
+                    if !seen.insert(key) {
+                        return Some(format!("Nama kolom '{}' duplikat.", name_trim));
+                    }
+                    if column.data_type.trim().is_empty() {
+                        return Some(format!("Kolom '{}' belum memiliki tipe data.", name_trim));
+                    }
+                    if column.is_primary_key {
+                        column.allow_null = false;
+                    }
+                }
+                None
+            }
+            Step::Indexes => {
+                for (idx, index) in state.indexes.iter().enumerate() {
+                    let name_trim = index.name.trim();
+                    let has_columns = index
+                        .columns
+                        .split(',')
+                        .any(|c| !c.trim().is_empty());
+                    if name_trim.is_empty() && has_columns {
+                        return Some(format!("Index ke-{} memerlukan nama.", idx + 1));
+                    }
+                    if !name_trim.is_empty() && !has_columns {
+                        return Some(format!("Index '{}' memerlukan kolom.", name_trim));
+                    }
+                }
+                None
+            }
+            Step::Review => self.generate_create_table_sql(state).err(),
+        }
+    }
+
+    pub fn submit_create_table_wizard(
+        &mut self,
+        state: models::structs::CreateTableWizardState,
+    ) {
+        match self.generate_create_table_sql(&state) {
+            Ok(sql) => {
+                let execution =
+                    crate::connection::execute_query_with_connection(self, state.connection_id, sql);
+                let (success, message) = match execution {
+                    Some((headers, rows)) => {
+                        let is_error = headers
+                            .first()
+                            .map(|h| h == "Error")
+                            .unwrap_or(false);
+                        if is_error {
+                            let msg = rows
+                                .first()
+                                .and_then(|row| row.first())
+                                .cloned()
+                                .unwrap_or_else(|| "Gagal membuat tabel.".to_string());
+                            (false, Some(msg))
+                        } else {
+                            (true, None)
+                        }
+                    }
+                    None => (false, Some("Gagal mengeksekusi perintah CREATE TABLE.".to_string())),
+                };
+
+                if success {
+                    self.create_table_error = None;
+                    self.create_table_wizard = None;
+                    self.show_create_table_dialog = false;
+                    self.error_message = format!(
+                        "Tabel '{}' berhasil dibuat.",
+                        state.table_name.trim()
+                    );
+                    self.show_error_message = true;
+                    self.refresh_connection(state.connection_id);
+                } else {
+                    let msg = message.unwrap_or_else(|| "Gagal membuat tabel.".to_string());
+                    self.create_table_error = Some(msg.clone());
+                    self.error_message = msg;
+                    self.show_error_message = true;
+                    self.create_table_wizard = Some(state);
+                    self.show_create_table_dialog = true;
+                }
+            }
+            Err(err) => {
+                self.create_table_error = Some(err.clone());
+                self.create_table_wizard = Some(state);
+                self.show_create_table_dialog = true;
+            }
+        }
+    }
+
     fn get_connection_name(&self, connection_id: i64) -> Option<String> {
         self.connections
             .iter()
@@ -937,6 +1309,7 @@ impl Tabular {
             Vec::new();
         let mut create_index_requests: Vec<(i64, Option<String>, Option<String>)> = Vec::new();
         let mut query_files_to_open = Vec::new();
+        let mut create_table_requests: Vec<(i64, Option<String>)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -954,6 +1327,7 @@ impl Tabular {
                 create_index_request,
                 drop_collection_request,
                 drop_table_request,
+                create_table_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -1066,6 +1440,13 @@ impl Tabular {
                 // Store pending state for confirmation window outside the loop
                 self.pending_drop_table = Some((conn_id, db, table, stmt));
             }
+            if let Some((conn_id, db_name)) = create_table_request {
+                create_table_requests.push((conn_id, db_name));
+            }
+        }
+
+        for (conn_id, db_name) in create_table_requests {
+            self.open_create_table_wizard(conn_id, db_name);
         }
 
         // Handle connection clicks (create new tab with that connection)
@@ -2229,6 +2610,7 @@ impl Tabular {
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
         let mut drop_collection_request: Option<(i64, String, String)> = None;
         let mut drop_table_request: Option<(i64, String, String, String)> = None;
+    let mut create_table_request: Option<(i64, Option<String>)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -2605,6 +2987,32 @@ impl Tabular {
                     });
                 }
 
+                if node.node_type == models::enums::NodeType::TablesFolder {
+                    response.context_menu(|ui| {
+                        if let Some(conn_id) = node.connection_id {
+                            let db_type = params.connection_types.get(&conn_id);
+                            let supported = matches!(
+                                db_type,
+                                Some(models::enums::DatabaseType::MySQL)
+                                    | Some(models::enums::DatabaseType::PostgreSQL)
+                                    | Some(models::enums::DatabaseType::SQLite)
+                                    | Some(models::enums::DatabaseType::MsSQL)
+                            );
+                            if supported {
+                                if ui.button("➕ Create New Table").clicked() {
+                                    create_table_request = Some((
+                                        conn_id,
+                                        node.database_name.clone(),
+                                    ));
+                                    ui.close();
+                                }
+                            } else {
+                                ui.label("Create table not supported for this database");
+                            }
+                        }
+                    });
+                }
+
                 // Add context menu for table nodes
                 if node.node_type == models::enums::NodeType::Table {
                     response.context_menu(|ui| {
@@ -2817,6 +3225,7 @@ impl Tabular {
                             child_create_index_request,
                             _child_drop_collection_request,
                             _child_drop_table_request,
+                            child_create_table_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -2863,6 +3272,9 @@ impl Tabular {
                         if let Some(v) = child_create_index_request {
                             create_index_request = Some(v);
                         }
+                        if let Some(v) = child_create_table_request {
+                            create_table_request = Some(v);
+                        }
                         if let Some(child_context_id) = child_context {
                             context_menu_request = Some(child_context_id);
                         }
@@ -2889,6 +3301,7 @@ impl Tabular {
                                 child_create_index_request,
                                 _child_drop_collection_request,
                                 _child_drop_table_request,
+                                child_create_table_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -2945,6 +3358,9 @@ impl Tabular {
                             }
                             if let Some(v) = child_create_index_request {
                                 create_index_request = Some(v);
+                            }
+                            if let Some(v) = child_create_table_request {
+                                create_table_request = Some(v);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -3249,6 +3665,7 @@ impl Tabular {
             create_index_request,
             drop_collection_request,
             drop_table_request,
+            create_table_request,
         )
     }
 
@@ -4378,7 +4795,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                             // Create folder structure but don't load content yet
                             let mut tables_folder = models::structs::TreeNode::new(
                                 "Tables".to_string(),
-                                models::enums::NodeType::TablesFolder,
+                                models::enums::NodeType::TablesFolder, 
                             );
                             tables_folder.connection_id = Some(connection_id);
                             tables_folder.database_name = Some(db_name.clone());
@@ -9441,6 +9858,7 @@ impl App for Tabular {
         dialog::render_about_dialog(self, ctx);
         // Index create/edit dialog
         dialog::render_index_dialog(self, ctx);
+    dialog::render_create_table_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
         // Update dialog

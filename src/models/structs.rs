@@ -295,6 +295,135 @@ pub struct SpreadsheetState {
     pub primary_key_columns: Vec<String>,     // Primary key column names for generating SQL
 }
 
+#[derive(Clone, Debug)]
+pub struct TableColumnDefinition {
+    pub name: String,
+    pub data_type: String,
+    pub allow_null: bool,
+    pub default_value: String,
+    pub is_primary_key: bool,
+}
+
+impl TableColumnDefinition {
+    pub fn blank(index: usize) -> Self {
+        let base_name = if index == 0 {
+            "id".to_string()
+        } else {
+            format!("column_{}", index + 1)
+        };
+        Self {
+            name: base_name,
+            data_type: String::new(),
+            allow_null: true,
+            default_value: String::new(),
+            is_primary_key: index == 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TableIndexDefinition {
+    pub name: String,
+    pub columns: String,
+    pub unique: bool,
+}
+
+impl TableIndexDefinition {
+    pub fn blank(index: usize) -> Self {
+        Self {
+            name: format!("idx_{}", index + 1),
+            columns: String::new(),
+            unique: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateTableWizardStep {
+    Basics,
+    Columns,
+    Indexes,
+    Review,
+}
+
+impl CreateTableWizardStep {
+    pub fn all_steps() -> [Self; 4] {
+        [
+            Self::Basics,
+            Self::Columns,
+            Self::Indexes,
+            Self::Review,
+        ]
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Basics => "Basics",
+            Self::Columns => "Columns",
+            Self::Indexes => "Indexes",
+            Self::Review => "Review",
+        }
+    }
+
+    pub fn next(self) -> Option<Self> {
+        match self {
+            Self::Basics => Some(Self::Columns),
+            Self::Columns => Some(Self::Indexes),
+            Self::Indexes => Some(Self::Review),
+            Self::Review => None,
+        }
+    }
+
+    pub fn previous(self) -> Option<Self> {
+        match self {
+            Self::Basics => None,
+            Self::Columns => Some(Self::Basics),
+            Self::Indexes => Some(Self::Columns),
+            Self::Review => Some(Self::Indexes),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateTableWizardState {
+    pub connection_id: i64,
+    pub db_type: models::enums::DatabaseType,
+    pub database_name: Option<String>,
+    pub table_name: String,
+    pub columns: Vec<TableColumnDefinition>,
+    pub indexes: Vec<TableIndexDefinition>,
+    pub current_step: CreateTableWizardStep,
+}
+
+impl CreateTableWizardState {
+    pub fn new(
+        connection_id: i64,
+        db_type: models::enums::DatabaseType,
+        database_name: Option<String>,
+    ) -> Self {
+        let mut first_column = TableColumnDefinition::blank(0);
+        first_column.data_type = match db_type {
+            models::enums::DatabaseType::PostgreSQL => "SERIAL".to_string(),
+            models::enums::DatabaseType::SQLite => "INTEGER".to_string(),
+            models::enums::DatabaseType::MySQL => "INT".to_string(),
+            models::enums::DatabaseType::MsSQL => "INT".to_string(),
+            _ => String::new(),
+        };
+        first_column.allow_null = false;
+        first_column.is_primary_key = true;
+
+        Self {
+            connection_id,
+            db_type,
+            database_name,
+            table_name: String::new(),
+            columns: vec![first_column],
+            indexes: Vec::new(),
+            current_step: CreateTableWizardStep::Basics,
+        }
+    }
+}
+
 /// Type alias for the complex tuple returned by render_tree_node_with_table_expansion
 pub type RenderTreeNodeResult = (
     Option<models::structs::ExpansionRequest>,
@@ -313,4 +442,6 @@ pub type RenderTreeNodeResult = (
     Option<(i64, String, String)>,
     // New: request to drop a table (connection_id, database_name, table_name, stmt)
     Option<(i64, String, String, String)>,
+    // New: request to open Create Table wizard (connection_id, optional database/schema)
+    Option<(i64, Option<String>)>,
 );
