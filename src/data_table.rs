@@ -1863,265 +1863,707 @@ fn fetch_index_details_for_table(
 }
 
 pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    // We want a fixed bottom bar with the Columns / Indexes toggle.
-    // Compute available height and reserve space for bottom bar (e.g. 34px including separator).
-    let bottom_bar_height = 34.0f32; // content + padding
     let avail = ui.available_size();
-    let scroll_height = (avail.y - bottom_bar_height).max(0.0);
 
-    egui::ScrollArea::both().id_salt("structure_scroll").max_height(scroll_height).show(ui, |ui| {
-            match tabular.structure_sub_view {
-                models::structs::StructureSubView::Columns => {
-                    render_structure_columns_editor(tabular, ui);
-                },
-                models::structs::StructureSubView::Indexes => {
-                // Headers: No | index_name | algorithm | unique | columns | actions
-                let headers = ["#", "index_name", "algorithm", "unique", "columns", "actions"];
-                if tabular.structure_idx_col_widths.len() != headers.len() { tabular.structure_idx_col_widths = vec![40.0, 200.0, 120.0, 70.0, 260.0, 120.0]; }
-                let mut widths = tabular.structure_idx_col_widths.clone();
-                for w in widths.iter_mut() { *w = w.clamp(40.0, 800.0); }
-                let dark = ui.visuals().dark_mode;
-                let border = if dark { egui::Color32::from_gray(55) } else { egui::Color32::from_gray(190) };
-                let stroke = egui::Stroke::new(0.5, border);
-                let header_text_col = if dark { egui::Color32::from_rgb(220,220,255) } else { egui::Color32::from_rgb(60,60,120) };
-                let header_bg = if dark { egui::Color32::from_rgb(30,30,30) } else { egui::Color32::from_gray(240) };
-                let row_h = 26.0f32; let header_h = 30.0f32;
-                egui::ScrollArea::both().id_salt("struct_idx_inline").auto_shrink([false,false]).show(ui, |ui| {
-                    // Header
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        for (i,h) in headers.iter().enumerate() {
-                            let w = widths[i];
-                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::click());
-                            ui.painter().rect_filled(rect,0.0,header_bg);
-                            ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
-                            ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, *h, egui::FontId::proportional(13.0), header_text_col);
-                            let handle = egui::Rect::from_min_max(egui::pos2(rect.max.x - 4.0, rect.min.y), rect.max);
-                            let rh = ui.interact(handle, egui::Id::new(("struct_idx_inline","resize",i)), egui::Sense::drag());
-                            if rh.dragged() { widths[i] = (widths[i] + rh.drag_delta().x).clamp(40.0, 800.0); ui.ctx().request_repaint(); }
-                            if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
-                            resp.context_menu(|ui| {
-                                if ui.button("➕ Add Index").clicked() {
-                                    if !tabular.adding_index { start_inline_add_index(tabular); }
-                                    ui.close();
-                                }
-                                if ui.button("🔄 Refresh").clicked() { tabular.request_structure_refresh = true; load_structure_info_for_current_table(tabular); ui.close(); }
-                            });
-                        }
-                    });
-                    ui.add_space(2.0);
-                    // Existing indexes rows
-                    let existing_indexes = tabular.structure_indexes.clone();
-                    for (idx, ix) in existing_indexes.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            let values = [
-                                (idx+1).to_string(),
-                                ix.name.clone(),
-                                ix.method.clone().unwrap_or_default(),
-                                if ix.unique { "YES".to_string() } else { "NO".to_string() },
-                                if ix.columns.is_empty() { String::new() } else { ix.columns.join(",") },
-                                String::new(), // actions placeholder
-                            ];
-                            // Defer selected cell border, and draw multi-selection overlay per cell
-                            let mut selected_cell_rect: Option<egui::Rect> = None;
-                            for (i,val) in values.iter().enumerate() {
-                                let w = widths[i];
-                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click_and_drag());
-                                // Alternating row bg
-                                if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}    
-                                // Selection highlight (row / cell)
-                                let is_row_selected = tabular.structure_selected_row == Some(idx);
-                                let is_cell_selected = tabular.structure_selected_cell == Some((idx, i));
-                                if let (Some(a), Some(b)) = (tabular.structure_sel_anchor, tabular.structure_selected_cell) { let (ar, ac) = a; let (br, bc) = b; let rmin=ar.min(br); let rmax=ar.max(br); let cmin=ac.min(bc); let cmax=ac.max(bc); if idx>=rmin && idx<=rmax && i>=cmin && i<=cmax { let sel = if dark { egui::Color32::from_rgba_unmultiplied(255,80,20,28) } else { egui::Color32::from_rgba_unmultiplied(255,120,40,60) }; ui.painter().rect_filled(rect,0.0,sel);} }
-                                if is_row_selected {
-                                    let sel = if dark { egui::Color32::from_rgba_unmultiplied(100,150,255,30) } else { egui::Color32::from_rgba_unmultiplied(200,220,255,80) };
-                                    ui.painter().rect_filled(rect, 0.0, sel);
-                                }
-                                // Base grid stroke first, so the selected outline can be drawn last
-                                ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
-                                if is_cell_selected { selected_cell_rect = Some(rect); }
-                                let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
-                                ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
-                                if resp.clicked() {
-                                    let shift = ui.input(|i| i.modifiers.shift);
-                                    tabular.structure_selected_row = Some(idx);
-                                    tabular.structure_selected_cell = Some((idx, i));
-                                    if !shift || tabular.structure_sel_anchor.is_none() { tabular.structure_sel_anchor = Some((idx, i)); }
-                                    // use same focus flag so global arrow handling prefers tables/structure over editor
-                                    tabular.table_recently_clicked = true;
-                                }
-                                if resp.drag_started() {
-                                    tabular.structure_dragging = true;
-                                    if tabular.structure_sel_anchor.is_none() { tabular.structure_sel_anchor = Some((idx, i)); }
-                                    tabular.structure_selected_row = Some(idx);
-                                    tabular.structure_selected_cell = Some((idx, i));
-                                }
-                                if tabular.structure_dragging && ui.input(|inp| inp.pointer.primary_down()) && resp.hovered() {
-                                    tabular.structure_selected_row = Some(idx);
-                                    tabular.structure_selected_cell = Some((idx, i));
-                                }
-                                if tabular.structure_dragging && !ui.input(|inp| inp.pointer.primary_down()) { tabular.structure_dragging = false; }
-                                resp.context_menu(|ui| {
-                                    // Copy helpers
-                                    if ui.button("📋 Copy Cell Value").clicked() {
-                                        ui.ctx().copy_text(val.clone());
-                                        ui.close();
-                                    }
-                                    if ui.button("📄 Copy Selection as CSV").clicked() {
-                                        if let (Some(a), Some(b)) = (tabular.structure_sel_anchor, tabular.structure_selected_cell) {
-                                            let (ar, ac) = a; let (br, bc) = b; let rmin=ar.min(br); let rmax=ar.max(br); let cmin=ac.min(bc); let cmax=ac.max(bc);
-                                            let mut out = String::new();
-                                            for r in rmin..=rmax { if let Some(row) = tabular.structure_indexes.get(r) {
-                                                let rowvals = [ (r+1).to_string(), row.name.clone(), row.method.clone().unwrap_or_default(), if row.unique {"YES".to_string()} else {"NO".to_string()}, if row.columns.is_empty(){String::new()} else {row.columns.join(",")}, String::new() ];
-                                                let mut fields: Vec<String> = Vec::new();
-                                                for c in cmin..=cmax { let v = rowvals.get(c).cloned().unwrap_or_default(); let q = if v.contains(',')||v.contains('"')||v.contains('\n'){ format!("\"{}\"", v.replace('"',"\"\"")) } else { v }; fields.push(q); }
-                                                out.push_str(&fields.join(",")); out.push('\n'); }
-                                            }
-                                            if !out.is_empty() { ui.ctx().copy_text(out); }
-                                        }
-                                        ui.close();
-                                    }
-                                    if ui.button("📄 Copy Row as CSV").clicked() {
-                                        let csv_row = values.iter().map(|v| {
-                                            if v.contains(',') || v.contains('"') || v.contains('\n') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v.clone() }
-                                        }).collect::<Vec<_>>().join(",");
-                                        ui.ctx().copy_text(csv_row);
-                                        ui.close();
-                                    }
-                                    ui.separator();
-                                    if ui.button("➕ Add Index").clicked() { if !tabular.adding_index { start_inline_add_index(tabular); } ui.close(); }
-                                    if ui.button("🔄 Refresh").clicked() { tabular.request_structure_refresh = true; load_structure_info_for_current_table(tabular); ui.close(); }
-                                    if ui.button("❌ Drop Index").clicked() {
-                                        if let Some(conn_id) = tabular.current_connection_id && let Some(conn) = tabular.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
-                                            let table_name = infer_current_table_name(tabular);
-                                            let drop_stmt = match conn.connection_type {
-                                                models::enums::DatabaseType::MySQL => format!("ALTER TABLE `{}` DROP INDEX `{}`;", table_name, ix.name),
-                                                models::enums::DatabaseType::MsSQL => format!("DROP INDEX [{}] ON [{}];", ix.name, table_name),
-                                                models::enums::DatabaseType::PostgreSQL => format!("DROP INDEX IF EXISTS \"{}\";", ix.name),
-                                                models::enums::DatabaseType::SQLite => format!("DROP INDEX IF EXISTS `{}`;", ix.name),
-                                                models::enums::DatabaseType::MongoDB => format!("-- MongoDB drop index '{}' (executed via driver)", ix.name),
-                                                _ => "-- Drop index not supported for this database type".to_string()
-                                            };
-                                            tabular.pending_drop_index_name = Some(ix.name.clone());
-                                            tabular.pending_drop_index_stmt = Some(drop_stmt.clone());
-                                            // Append the generated SQL to the editor via rope edit
-                                            let insertion = format!("\n{}", drop_stmt);
-                                            let pos = tabular.editor.text.len();
-                                            tabular.editor.apply_single_replace(pos..pos, &insertion);
-                                            tabular.cursor_position = pos + insertion.len();
-                                            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                                                tab.content = tabular.editor.text.clone();
-                                                tab.is_modified = true;
-                                            }
-                                        }
-                                        ui.close();
-                                    }
-                                });
-                            }
-                            // Paint selected cell border last to ensure right edge stays visible
-                            if let Some(rect) = selected_cell_rect {
-                                let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 0));
-                                ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
-                            }
-                        });
+    ui.horizontal(|ui| {
+        let toggle_width = 120.0;
+
+        ui.scope(|ui| {
+            let mut style = ui.style().as_ref().clone();
+            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 13, 0);
+            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 13, 0);
+            style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(255, 13, 0);
+            style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(255, 13, 0);
+            ui.set_style(style);
+
+            ui.set_min_width(toggle_width);
+            ui.set_min_height(avail.y);
+
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ui.add_space(6.0);
+                let default_text = ui.visuals().widgets.inactive.fg_stroke.color;
+
+                let active_cols =
+                    tabular.structure_sub_view == models::structs::StructureSubView::Columns;
+                let draw_vertical_toggle = |ui: &mut egui::Ui,
+                                             label: &str,
+                                             active: bool|
+                 -> egui::Response {
+                    let button_size = egui::vec2(toggle_width, toggle_width);
+                    let (rect, response) =
+                        ui.allocate_exact_size(button_size, egui::Sense::click());
+
+                    let mut bg = if active {
+                        egui::Color32::from_rgb(255, 13, 0)
+                    } else {
+                        ui.visuals().widgets.inactive.bg_fill
+                    };
+                    if response.hovered() && !active {
+                        bg = bg.gamma_multiply(1.12);
                     }
-                    // Inline add new index row (editable fields like add column)
-                    if tabular.adding_index {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            // #
-                            let (rect_no,_) = ui.allocate_exact_size(egui::vec2(widths[0], row_h), egui::Sense::hover());
-                            ui.painter().rect_stroke(rect_no,0.0,stroke, egui::StrokeKind::Outside);
-                            let idx_txt = format!("{}", tabular.structure_indexes.len()+1);
-                            let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; ui.painter().text(rect_no.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, idx_txt, egui::FontId::proportional(13.0), txt_col);
-                            // index_name
-                            let w_name = widths[1];
-                            ui.allocate_ui_with_layout(egui::vec2(w_name,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                ui.set_min_width(w_name-8.0); ui.add_space(4.0);
-                                if tabular.new_index_name.is_empty() { tabular.new_index_name = format!("idx_{}_col", infer_current_table_name(tabular)); }
-                                ui.text_edit_singleline(&mut tabular.new_index_name);
-                            });
-                            // algorithm
-                            let w_alg = widths[2];
-                            ui.allocate_ui_with_layout(egui::vec2(w_alg,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                let algos = ["", "btree", "hash", "gin", "gist"]; // union superset
-                                egui::ComboBox::from_id_salt("new_index_algo").selected_text(if tabular.new_index_method.is_empty(){"(auto)"} else { &tabular.new_index_method }).show_ui(ui, |ui| {
-                                    for a in algos { if ui.selectable_label(tabular.new_index_method==a, if a.is_empty(){"(auto)"} else {a}).clicked() { tabular.new_index_method = a.to_string(); } }
-                                });
-                            });
-                            // unique
-                            let w_unique = widths[3];
-                            ui.allocate_ui_with_layout(egui::vec2(w_unique,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                egui::ComboBox::from_id_salt("new_index_unique").selected_text(if tabular.new_index_unique {"YES"} else {"NO"}).show_ui(ui, |ui| {
-                                    if ui.selectable_label(tabular.new_index_unique, "YES").clicked() { tabular.new_index_unique = true; }
-                                    if ui.selectable_label(!tabular.new_index_unique, "NO").clicked() { tabular.new_index_unique = false; }
-                                });
-                            });
-                            // columns
-                            let w_cols = widths[4];
-                            ui.allocate_ui_with_layout(egui::vec2(w_cols,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                ui.set_min_width(w_cols-8.0); ui.add_space(4.0);
-                                if tabular.new_index_columns.is_empty() { tabular.new_index_columns = "col1".to_string(); }
-                                ui.text_edit_singleline(&mut tabular.new_index_columns);
-                            });
-                            // actions
-                            let w_act = widths[5];
-                            ui.allocate_ui_with_layout(egui::vec2(w_act,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                let save_enabled = !tabular.new_index_name.trim().is_empty() && !tabular.new_index_columns.trim().is_empty();
-                                if ui.add_enabled(save_enabled, egui::Button::new("Save")).clicked() { commit_new_index(tabular); }
-                                if ui.button("Cancel").clicked() { tabular.adding_index=false; }
-                            });
-                        });
-                    }
-                });
-                    tabular.structure_idx_col_widths = widths;
+
+                    let stroke_color = if active {
+                        egui::Color32::from_rgb(255, 13, 0)
+                    } else {
+                        ui.visuals().widgets.inactive.bg_stroke.color
+                    };
+                    let stroke = egui::Stroke::new(1.0, stroke_color);
+
+                    let painter = ui.painter();
+                    let rounding = 6.0;
+                    painter.rect_filled(rect, rounding, bg);
+                    painter.rect_stroke(rect, rounding, stroke, egui::StrokeKind::Outside);
+
+                    let text_color = if active {
+                        egui::Color32::WHITE
+                    } else {
+                        default_text
+                    };
+                    let font_id = ui.style().text_styles[&egui::TextStyle::Button].clone();
+                    let galley = painter.layout_no_wrap(label.to_owned(), font_id, text_color);
+                    let size = galley.rect.size();
+                    let pos =
+                        rect.center() + egui::vec2(-size.y * 0.5, size.x * 0.5);
+                    let mut text_shape = egui::epaint::TextShape::new(pos, galley, text_color);
+                    text_shape.angle = -std::f32::consts::FRAC_PI_2;
+                    painter.add(text_shape);
+
+                    response
+                };
+
+                let cols_resp = draw_vertical_toggle(ui, "Columns", active_cols);
+                if cols_resp.clicked() {
+                    tabular.structure_sub_view = models::structs::StructureSubView::Columns;
+                    tabular.structure_sel_anchor = None;
+                    tabular.structure_selected_cell = None;
+                    tabular.structure_selected_row = None;
                 }
-            }
+
+                ui.add_space(4.0);
+
+                let active_idx =
+                    tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
+                let idx_resp = draw_vertical_toggle(ui, "Indexes", active_idx);
+                if idx_resp.clicked() {
+                    tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
+                    load_structure_info_for_current_table(tabular);
+                    tabular.structure_sel_anchor = None;
+                    tabular.structure_selected_cell = None;
+                    tabular.structure_selected_row = None;
+                }
+
+                ui.add_space(ui.available_height());
+            });
         });
 
-    // Draw bottom bar (fixed) after scroll area so it stays at bottom.
-    // Just create a horizontal layout now (will appear after scroll area visually at bottom of panel area)
-    ui.separator();
-    ui.scope(|ui| {
-        // Force transparent highlight so active toggles do not show a filled background
-        let mut style = ui.style().as_ref().clone();
-        style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 13, 0); // rgba(255, 13, 0, 1)
-        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(255, 13, 0); // rgba(255, 13, 0, 1)
-        style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(255, 13, 0); // rgba(255, 13, 0, 1)
-        ui.set_style(style);
+        ui.separator();
 
-        ui.horizontal(|ui| {
-            let default_text = ui.visuals().widgets.inactive.fg_stroke.color;
-
-            let active_cols =
-                tabular.structure_sub_view == models::structs::StructureSubView::Columns;
-            let cols_text = egui::RichText::new("Columns").color(if active_cols {
-                egui::Color32::WHITE
-            } else {
-                default_text
-            });
-            if ui.selectable_label(active_cols, cols_text).clicked() {
-                tabular.structure_sub_view = models::structs::StructureSubView::Columns;
-                tabular.structure_sel_anchor = None;
-                tabular.structure_selected_cell = None;
-                tabular.structure_selected_row = None;
-            }
-            let active_idx =
-                tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
-            let idx_text = egui::RichText::new("Indexes").color(if active_idx {
-                egui::Color32::WHITE
-            } else {
-                default_text
-            });
-            if ui.selectable_label(active_idx, idx_text).clicked() {
-                tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
-                // Load using cache-first; if empty, live fetch inside the loader will populate and cache
-                load_structure_info_for_current_table(tabular);
-                tabular.structure_sel_anchor = None;
-                tabular.structure_selected_cell = None;
-                tabular.structure_selected_row = None;
-            }
+        let remaining = ui.available_size();
+        let content_size = egui::vec2(remaining.x.max(0.0), avail.y);
+        ui.allocate_ui_with_layout(content_size, egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            egui::ScrollArea::both()
+                .id_salt("structure_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    match tabular.structure_sub_view {
+                        models::structs::StructureSubView::Columns => {
+                            render_structure_columns_editor(tabular, ui);
+                        }
+                        models::structs::StructureSubView::Indexes => {
+                            // Headers: No | index_name | algorithm | unique | columns | actions
+                            let headers = [
+                                "#",
+                                "index_name",
+                                "algorithm",
+                                "unique",
+                                "columns",
+                                "actions",
+                            ];
+                            if tabular.structure_idx_col_widths.len() != headers.len() {
+                                tabular.structure_idx_col_widths =
+                                    vec![40.0, 200.0, 120.0, 70.0, 260.0, 120.0];
+                            }
+                            let mut widths = tabular.structure_idx_col_widths.clone();
+                            for w in widths.iter_mut() {
+                                *w = w.clamp(40.0, 800.0);
+                            }
+                            let dark = ui.visuals().dark_mode;
+                            let border = if dark {
+                                egui::Color32::from_gray(55)
+                            } else {
+                                egui::Color32::from_gray(190)
+                            };
+                            let stroke = egui::Stroke::new(0.5, border);
+                            let header_text_col = if dark {
+                                egui::Color32::from_rgb(220, 220, 255)
+                            } else {
+                                egui::Color32::from_rgb(60, 60, 120)
+                            };
+                            let header_bg = if dark {
+                                egui::Color32::from_rgb(30, 30, 30)
+                            } else {
+                                egui::Color32::from_gray(240)
+                            };
+                            let row_h = 26.0f32;
+                            let header_h = 30.0f32;
+                            egui::ScrollArea::both()
+                                .id_salt("struct_idx_inline")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    // Header
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                        for (i, h) in headers.iter().enumerate() {
+                                            let w = widths[i];
+                                            let (rect, resp) = ui.allocate_exact_size(
+                                                egui::vec2(w, header_h),
+                                                egui::Sense::click(),
+                                            );
+                                            ui.painter().rect_filled(rect, 0.0, header_bg);
+                                            ui.painter().rect_stroke(
+                                                rect,
+                                                0.0,
+                                                stroke,
+                                                egui::StrokeKind::Outside,
+                                            );
+                                            ui.painter().text(
+                                                rect.left_center() + egui::vec2(6.0, 0.0),
+                                                egui::Align2::LEFT_CENTER,
+                                                *h,
+                                                egui::FontId::proportional(13.0),
+                                                header_text_col,
+                                            );
+                                            let handle = egui::Rect::from_min_max(
+                                                egui::pos2(rect.max.x - 4.0, rect.min.y),
+                                                rect.max,
+                                            );
+                                            let rh = ui.interact(
+                                                handle,
+                                                egui::Id::new(("struct_idx_inline", "resize", i)),
+                                                egui::Sense::drag(),
+                                            );
+                                            if rh.dragged() {
+                                                widths[i] =
+                                                    (widths[i] + rh.drag_delta().x).clamp(40.0, 800.0);
+                                                ui.ctx().request_repaint();
+                                            }
+                                            if rh.hovered() {
+                                                ui.painter().rect_filled(
+                                                    handle,
+                                                    0.0,
+                                                    egui::Color32::from_gray(80),
+                                                );
+                                            }
+                                            resp.context_menu(|ui| {
+                                                if ui.button("➕ Add Index").clicked() {
+                                                    if !tabular.adding_index {
+                                                        start_inline_add_index(tabular);
+                                                    }
+                                                    ui.close();
+                                                }
+                                                if ui.button("🔄 Refresh").clicked() {
+                                                    tabular.request_structure_refresh = true;
+                                                    load_structure_info_for_current_table(tabular);
+                                                    ui.close();
+                                                }
+                                            });
+                                        }
+                                    });
+                                    ui.add_space(2.0);
+                                    // Existing indexes rows
+                                    let existing_indexes = tabular.structure_indexes.clone();
+                                    for (idx, ix) in existing_indexes.iter().enumerate() {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            let values = [
+                                                (idx + 1).to_string(),
+                                                ix.name.clone(),
+                                                ix.method.clone().unwrap_or_default(),
+                                                if ix.unique {
+                                                    "YES".to_string()
+                                                } else {
+                                                    "NO".to_string()
+                                                },
+                                                if ix.columns.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    ix.columns.join(",")
+                                                },
+                                                String::new(), // actions placeholder
+                                            ];
+                                            // Defer selected cell border, and draw multi-selection overlay per cell
+                                            let mut selected_cell_rect: Option<egui::Rect> = None;
+                                            for (i, val) in values.iter().enumerate() {
+                                                let w = widths[i];
+                                                let (rect, resp) = ui.allocate_exact_size(
+                                                    egui::vec2(w, row_h),
+                                                    egui::Sense::click_and_drag(),
+                                                );
+                                                // Alternating row bg
+                                                if idx % 2 == 1 {
+                                                    let bg = if dark {
+                                                        egui::Color32::from_rgb(40, 40, 40)
+                                                    } else {
+                                                        egui::Color32::from_rgb(250, 250, 250)
+                                                    };
+                                                    ui.painter().rect_filled(rect, 0.0, bg);
+                                                }
+                                                // Selection highlight (row / cell)
+                                                let is_row_selected =
+                                                    tabular.structure_selected_row == Some(idx);
+                                                let is_cell_selected = tabular
+                                                    .structure_selected_cell
+                                                    == Some((idx, i));
+                                                if let (Some(a), Some(b)) = (
+                                                    tabular.structure_sel_anchor,
+                                                    tabular.structure_selected_cell,
+                                                ) {
+                                                    let (ar, ac) = a;
+                                                    let (br, bc) = b;
+                                                    let rmin = ar.min(br);
+                                                    let rmax = ar.max(br);
+                                                    let cmin = ac.min(bc);
+                                                    let cmax = ac.max(bc);
+                                                    if idx >= rmin
+                                                        && idx <= rmax
+                                                        && i >= cmin
+                                                        && i <= cmax
+                                                    {
+                                                        let sel = if dark {
+                                                            egui::Color32::from_rgba_unmultiplied(
+                                                                255, 80, 20, 28,
+                                                            )
+                                                        } else {
+                                                            egui::Color32::from_rgba_unmultiplied(
+                                                                255, 120, 40, 60,
+                                                            )
+                                                        };
+                                                        ui.painter().rect_filled(rect, 0.0, sel);
+                                                    }
+                                                }
+                                                if is_row_selected {
+                                                    let sel = if dark {
+                                                        egui::Color32::from_rgba_unmultiplied(
+                                                            100, 150, 255, 30,
+                                                        )
+                                                    } else {
+                                                        egui::Color32::from_rgba_unmultiplied(
+                                                            200, 220, 255, 80,
+                                                        )
+                                                    };
+                                                    ui.painter().rect_filled(rect, 0.0, sel);
+                                                }
+                                                // Base grid stroke first, so the selected outline can be drawn last
+                                                ui.painter().rect_stroke(
+                                                    rect,
+                                                    0.0,
+                                                    stroke,
+                                                    egui::StrokeKind::Outside,
+                                                );
+                                                if is_cell_selected {
+                                                    selected_cell_rect = Some(rect);
+                                                }
+                                                let txt_col = if dark {
+                                                    egui::Color32::LIGHT_GRAY
+                                                } else {
+                                                    egui::Color32::BLACK
+                                                };
+                                                ui.painter().text(
+                                                    rect.left_center() + egui::vec2(6.0, 0.0),
+                                                    egui::Align2::LEFT_CENTER,
+                                                    val,
+                                                    egui::FontId::proportional(13.0),
+                                                    txt_col,
+                                                );
+                                                if resp.clicked() {
+                                                    let shift = ui.input(|i| i.modifiers.shift);
+                                                    tabular.structure_selected_row = Some(idx);
+                                                    tabular.structure_selected_cell = Some((idx, i));
+                                                    if !shift || tabular.structure_sel_anchor.is_none()
+                                                    {
+                                                        tabular.structure_sel_anchor = Some((idx, i));
+                                                    }
+                                                    // use same focus flag so global arrow handling prefers tables/structure over editor
+                                                    tabular.table_recently_clicked = true;
+                                                }
+                                                if resp.drag_started() {
+                                                    tabular.structure_dragging = true;
+                                                    if tabular.structure_sel_anchor.is_none() {
+                                                        tabular.structure_sel_anchor = Some((idx, i));
+                                                    }
+                                                    tabular.structure_selected_row = Some(idx);
+                                                    tabular.structure_selected_cell = Some((idx, i));
+                                                }
+                                                if tabular.structure_dragging
+                                                    && ui.input(|inp| inp.pointer.primary_down())
+                                                    && resp.hovered()
+                                                {
+                                                    tabular.structure_selected_row = Some(idx);
+                                                    tabular.structure_selected_cell = Some((idx, i));
+                                                }
+                                                if tabular.structure_dragging
+                                                    && !ui.input(|inp| inp.pointer.primary_down())
+                                                {
+                                                    tabular.structure_dragging = false;
+                                                }
+                                                resp.context_menu(|ui| {
+                                                    // Copy helpers
+                                                    if ui.button("📋 Copy Cell Value").clicked() {
+                                                        ui.ctx().copy_text(val.clone());
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("📄 Copy Selection as CSV").clicked()
+                                                    {
+                                                        if let (Some(a), Some(b)) = (
+                                                            tabular.structure_sel_anchor,
+                                                            tabular.structure_selected_cell,
+                                                        ) {
+                                                            let (ar, ac) = a;
+                                                            let (br, bc) = b;
+                                                            let rmin = ar.min(br);
+                                                            let rmax = ar.max(br);
+                                                            let cmin = ac.min(bc);
+                                                            let cmax = ac.max(bc);
+                                                            let mut out = String::new();
+                                                            for r in rmin..=rmax {
+                                                                if let Some(row) =
+                                                                    tabular.structure_indexes.get(r)
+                                                                {
+                                                                    let rowvals = [
+                                                                        (r + 1).to_string(),
+                                                                        row.name.clone(),
+                                                                        row.method.clone().unwrap_or_default(),
+                                                                        if row.unique {
+                                                                            "YES".to_string()
+                                                                        } else {
+                                                                            "NO".to_string()
+                                                                        },
+                                                                        if row.columns.is_empty() {
+                                                                            String::new()
+                                                                        } else {
+                                                                            row.columns.join(",")
+                                                                        },
+                                                                        String::new(),
+                                                                    ];
+                                                                    let mut fields: Vec<String> = Vec::new();
+                                                                    for c in cmin..=cmax {
+                                                                        let v = rowvals
+                                                                            .get(c)
+                                                                            .cloned()
+                                                                            .unwrap_or_default();
+                                                                        let q = if v.contains(',')
+                                                                            || v.contains('"')
+                                                                            || v.contains('\n')
+                                                                        {
+                                                                            format!(
+                                                                                "\"{}\"",
+                                                                                v.replace(
+                                                                                    '"',
+                                                                                    "\"\"",
+                                                                                )
+                                                                            )
+                                                                        } else {
+                                                                            v
+                                                                        };
+                                                                        fields.push(q);
+                                                                    }
+                                                                    out.push_str(&fields.join(","));
+                                                                    out.push('\n');
+                                                                }
+                                                            }
+                                                            if !out.is_empty() {
+                                                                ui.ctx().copy_text(out);
+                                                            }
+                                                        }
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("📄 Copy Row as CSV").clicked() {
+                                                        let csv_row = values
+                                                            .iter()
+                                                            .map(|v| {
+                                                                if v.contains(',')
+                                                                    || v.contains('"')
+                                                                    || v.contains('\n')
+                                                                {
+                                                                    format!(
+                                                                        "\"{}\"",
+                                                                        v.replace(
+                                                                            '"',
+                                                                            "\"\"",
+                                                                        ),
+                                                                    )
+                                                                } else {
+                                                                    v.clone()
+                                                                }
+                                                            })
+                                                            .collect::<Vec<_>>()
+                                                            .join(",");
+                                                        ui.ctx().copy_text(csv_row);
+                                                        ui.close();
+                                                    }
+                                                    ui.separator();
+                                                    if ui.button("➕ Add Index").clicked() {
+                                                        if !tabular.adding_index {
+                                                            start_inline_add_index(tabular);
+                                                        }
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("🔄 Refresh").clicked() {
+                                                        tabular.request_structure_refresh = true;
+                                                        load_structure_info_for_current_table(tabular);
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("❌ Drop Index").clicked() {
+                                                        if let Some(conn_id) =
+                                                            tabular.current_connection_id
+                                                            && let Some(conn) = tabular
+                                                                .connections
+                                                                .iter()
+                                                                .find(|c| c.id == Some(conn_id))
+                                                                .cloned()
+                                                        {
+                                                            let table_name =
+                                                                infer_current_table_name(tabular);
+                                                            let drop_stmt = match conn.connection_type
+                                                            {
+                                                                models::enums::DatabaseType::MySQL => {
+                                                                    format!(
+                                                                        "ALTER TABLE `{}` DROP INDEX `{}`;",
+                                                                        table_name, ix.name
+                                                                    )
+                                                                }
+                                                                models::enums::DatabaseType::MsSQL => {
+                                                                    format!(
+                                                                        "DROP INDEX [{}] ON [{}];",
+                                                                        ix.name, table_name
+                                                                    )
+                                                                }
+                                                                models::enums::DatabaseType::PostgreSQL => {
+                                                                    format!(
+                                                                        "DROP INDEX IF EXISTS \"{}\";",
+                                                                        ix.name
+                                                                    )
+                                                                }
+                                                                models::enums::DatabaseType::SQLite => {
+                                                                    format!(
+                                                                        "DROP INDEX IF EXISTS `{}`;",
+                                                                        ix.name
+                                                                    )
+                                                                }
+                                                                models::enums::DatabaseType::MongoDB => {
+                                                                    format!(
+                                                                        "-- MongoDB drop index '{}' (executed via driver)",
+                                                                        ix.name
+                                                                    )
+                                                                }
+                                                                _ => {
+                                                                    "-- Drop index not supported for this database type"
+                                                                        .to_string()
+                                                                }
+                                                            };
+                                                            tabular.pending_drop_index_name =
+                                                                Some(ix.name.clone());
+                                                            tabular.pending_drop_index_stmt =
+                                                                Some(drop_stmt.clone());
+                                                            // Append the generated SQL to the editor via rope edit
+                                                            let insertion =
+                                                                format!("\n{}", drop_stmt);
+                                                            let pos = tabular.editor.text.len();
+                                                            tabular.editor.apply_single_replace(
+                                                                pos..pos,
+                                                                &insertion,
+                                                            );
+                                                            tabular.cursor_position =
+                                                                pos + insertion.len();
+                                                            if let Some(tab) = tabular
+                                                                .query_tabs
+                                                                .get_mut(tabular.active_tab_index)
+                                                            {
+                                                                tab.content =
+                                                                    tabular.editor.text.clone();
+                                                                tab.is_modified = true;
+                                                            }
+                                                        }
+                                                        ui.close();
+                                                    }
+                                                });
+                                            }
+                                            // Paint selected cell border last to ensure right edge stays visible
+                                            if let Some(rect) = selected_cell_rect {
+                                                let stroke =
+                                                    egui::Stroke::new(
+                                                        2.0,
+                                                        egui::Color32::from_rgb(255, 60, 0),
+                                                    );
+                                                ui.painter().rect_stroke(
+                                                    rect,
+                                                    0.0,
+                                                    stroke,
+                                                    egui::StrokeKind::Outside,
+                                                );
+                                            }
+                                        });
+                                    }
+                                    // Inline add new index row (editable fields like add column)
+                                    if tabular.adding_index {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            // #
+                                            let (rect_no, _) = ui.allocate_exact_size(
+                                                egui::vec2(widths[0], row_h),
+                                                egui::Sense::hover(),
+                                            );
+                                            ui.painter().rect_stroke(
+                                                rect_no,
+                                                0.0,
+                                                stroke,
+                                                egui::StrokeKind::Outside,
+                                            );
+                                            let idx_txt =
+                                                format!("{}", tabular.structure_indexes.len() + 1);
+                                            let txt_col = if dark {
+                                                egui::Color32::LIGHT_GRAY
+                                            } else {
+                                                egui::Color32::BLACK
+                                            };
+                                            ui.painter().text(
+                                                rect_no.left_center() + egui::vec2(6.0, 0.0),
+                                                egui::Align2::LEFT_CENTER,
+                                                idx_txt,
+                                                egui::FontId::proportional(13.0),
+                                                txt_col,
+                                            );
+                                            // index_name
+                                            let w_name = widths[1];
+                                            ui.allocate_ui_with_layout(
+                                                egui::vec2(w_name, row_h),
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    ui.set_min_width(w_name - 8.0);
+                                                    ui.add_space(4.0);
+                                                    if tabular.new_index_name.is_empty() {
+                                                        tabular.new_index_name = format!(
+                                                            "idx_{}_col",
+                                                            infer_current_table_name(tabular)
+                                                        );
+                                                    }
+                                                    ui.text_edit_singleline(&mut tabular.new_index_name);
+                                                },
+                                            );
+                                            // algorithm
+                                            let w_alg = widths[2];
+                                            ui.allocate_ui_with_layout(
+                                                egui::vec2(w_alg, row_h),
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    let algos = ["", "btree", "hash", "gin", "gist"];
+                                                    egui::ComboBox::from_id_salt("new_index_algo")
+                                                        .selected_text(if tabular
+                                                            .new_index_method
+                                                            .is_empty()
+                                                        {
+                                                            "(auto)"
+                                                        } else {
+                                                            &tabular.new_index_method
+                                                        })
+                                                        .show_ui(ui, |ui| {
+                                                            for a in algos {
+                                                                if ui
+                                                                    .selectable_label(
+                                                                        tabular.new_index_method == a,
+                                                                        if a.is_empty() {
+                                                                            "(auto)"
+                                                                        } else {
+                                                                            a
+                                                                        },
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    tabular.new_index_method =
+                                                                        a.to_string();
+                                                                }
+                                                            }
+                                                        });
+                                                },
+                                            );
+                                            // unique
+                                            let w_unique = widths[3];
+                                            ui.allocate_ui_with_layout(
+                                                egui::vec2(w_unique, row_h),
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    egui::ComboBox::from_id_salt("new_index_unique")
+                                                        .selected_text(if tabular.new_index_unique {
+                                                            "YES"
+                                                        } else {
+                                                            "NO"
+                                                        })
+                                                        .show_ui(ui, |ui| {
+                                                            if ui
+                                                                .selectable_label(
+                                                                    tabular.new_index_unique,
+                                                                    "YES",
+                                                                )
+                                                                .clicked()
+                                                            {
+                                                                tabular.new_index_unique = true;
+                                                            }
+                                                            if ui
+                                                                .selectable_label(
+                                                                    !tabular.new_index_unique,
+                                                                    "NO",
+                                                                )
+                                                                .clicked()
+                                                            {
+                                                                tabular.new_index_unique = false;
+                                                            }
+                                                        });
+                                                },
+                                            );
+                                            // columns
+                                            let w_cols = widths[4];
+                                            ui.allocate_ui_with_layout(
+                                                egui::vec2(w_cols, row_h),
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    ui.set_min_width(w_cols - 8.0);
+                                                    ui.add_space(4.0);
+                                                    if tabular.new_index_columns.is_empty() {
+                                                        tabular.new_index_columns = "col1".to_string();
+                                                    }
+                                                    ui.text_edit_singleline(&mut tabular.new_index_columns);
+                                                },
+                                            );
+                                            // actions
+                                            let w_act = widths[5];
+                                            ui.allocate_ui_with_layout(
+                                                egui::vec2(w_act, row_h),
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    let save_enabled =
+                                                        !tabular.new_index_name.trim().is_empty()
+                                                            && !tabular.new_index_columns.trim().is_empty();
+                                                    if ui
+                                                        .add_enabled(
+                                                            save_enabled,
+                                                            egui::Button::new("Save"),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        commit_new_index(tabular);
+                                                    }
+                                                    if ui.button("Cancel").clicked() {
+                                                        tabular.adding_index = false;
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    }
+                                });
+                            tabular.structure_idx_col_widths = widths;
+                        }
+                    }
+                });
         });
     });
 }
