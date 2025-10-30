@@ -3431,6 +3431,7 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
 
 pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
     tabular.is_table_browse_mode = false;
+    tabular.extend_query_icon_hold();
     // Priority: 1) Selected text, 2) Query from cursor position, 3) Full editor text
     let query = if !tabular.selected_text.trim().is_empty() {
         tabular.selected_text.trim().to_string()
@@ -3444,6 +3445,8 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
     };
 
     if query.is_empty() {
+        tabular.query_execution_in_progress = false;
+        tabular.extend_query_icon_hold();
         tabular.current_table_name = "No query to execute".to_string();
         tabular.current_table_headers.clear();
         tabular.current_table_data.clear();
@@ -3464,11 +3467,14 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
         tabular.pending_query = query;
         tabular.auto_execute_after_connection = true;
         tabular.show_connection_selector = true;
+        tabular.query_execution_in_progress = false;
+        tabular.extend_query_icon_hold();
         return;
     }
 
     // Check if we have an active connection
     if let Some(connection_id) = connection_id {
+        tabular.query_execution_in_progress = true;
         // If a pool creation is already in progress for this connection, show loading and queue the query
         if tabular.pending_connection_pools.contains(&connection_id) {
             log::debug!(
@@ -3685,6 +3691,9 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
                 tab.base_query.clear(); // Clear base query on failure
             }
         }
+
+        tabular.query_execution_in_progress = false;
+        tabular.extend_query_icon_hold();
     }
 }
 

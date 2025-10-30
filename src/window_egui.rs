@@ -106,6 +106,8 @@ pub struct Tabular {
     pub show_connection_selector: bool,
     pub pending_query: String, // Store query to execute after connection is selected
     pub auto_execute_after_connection: bool, // Flag to auto-execute after connection selected
+    pub query_execution_in_progress: bool,
+    pub query_icon_hold_until: Option<std::time::Instant>,
     // Error message display
     pub error_message: String,
     pub show_error_message: bool,
@@ -576,6 +578,8 @@ impl Tabular {
             show_connection_selector: false,
             pending_query: String::new(),
             auto_execute_after_connection: false,
+            query_execution_in_progress: false,
+            query_icon_hold_until: None,
             error_message: String::new(),
             show_error_message: false,
             advanced_editor: models::structs::AdvancedEditor::default(),
@@ -6686,6 +6690,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
 
     pub fn execute_paginated_query(&mut self) {
         debug!("🔥 Starting execute_paginated_query()");
+        self.query_execution_in_progress = true;
+        self.extend_query_icon_hold();
         // Ensure UI honors table browse semantics (enables spreadsheet editing shortcuts)
         self.is_table_browse_mode = true;
         // Use connection from active tab, not global current_connection_id
@@ -6706,6 +6712,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     "⏳ Connection pool creation in progress for connection {}, skipping pagination for now",
                     connection_id
                 );
+                self.query_execution_in_progress = false;
+                self.extend_query_icon_hold();
                 return;
             }
 
@@ -6743,6 +6751,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                         // Keep previous headers and data (do not overwrite)
                         self.current_table_headers = prev_headers;
                         // No further sync needed
+                        self.query_execution_in_progress = false;
+                        self.extend_query_icon_hold();
                         return;
                     }
                 }
@@ -6802,6 +6812,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         } else {
             debug!("🔥 No connection_id available in active tab for paginated query");
         }
+
+        self.query_execution_in_progress = false;
+        self.extend_query_icon_hold();
     }
 
     fn build_paginated_query(&self, offset: usize, limit: usize) -> String {
@@ -10119,10 +10132,38 @@ impl App for Tabular {
                                 rect.min.y + button_margin,
                             );
                             let play_fill = egui::Color32::TRANSPARENT;
-                            let play_border = egui::Color32::from_rgb(255, 60, 0);
-                            let play_text = egui::RichText::new("▶")
-                                .color(egui::Color32::GREEN)
-                                .size(25.0);
+                            let hold_active = if let Some(deadline) = self.query_icon_hold_until {
+                                if deadline > std::time::Instant::now() {
+                                    true
+                                } else {
+                                    self.query_icon_hold_until = None;
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            let is_loading = self.query_execution_in_progress
+                                || self.pool_wait_in_progress
+                                || hold_active;
+                            let (play_icon, play_color, play_border, tooltip_text) =
+                                if is_loading {
+                                    (
+                                        "⏳",
+                                        egui::Color32::WHITE, 
+                                        egui::Color32::TRANSPARENT,
+                                        "Executing query…",
+                                    )
+                                } else {
+                                    (
+                                        "▶",
+                                        egui::Color32::GREEN,
+                                        egui::Color32::TRANSPARENT,
+                                        "CMD+Enter to execute",
+                                    )
+                                };
+                            let play_text = egui::RichText::new(play_icon)
+                                .color(play_color)
+                                .size(18.0);
                             let button_corner =
                                 (button_size.y / 2.0).round().clamp(2.0, u8::MAX as f32) as u8;
 
@@ -10140,20 +10181,24 @@ impl App for Tabular {
                                 .order(egui::Order::Foreground)
                                 .fixed_pos(button_pos)
                                 .show(ui.ctx(), |area_ui| {
+                                    let mut button = egui::Button::new(play_text.clone())
+                                        .fill(play_fill)
+                                        .stroke(egui::Stroke::new(1.5, play_border))
+                                        .corner_radius(egui::CornerRadius::same(button_corner));
+                                    if is_loading {
+                                        button = button.sense(egui::Sense::hover());
+                                    }
                                     let response = area_ui
-                                        .add_sized(
-                                            button_size,
-                                            egui::Button::new(play_text.clone())
-                                                .fill(play_fill)
-                                                .stroke(egui::Stroke::new(1.5, play_border))
-                                                .corner_radius(egui::CornerRadius::same(button_corner)),
-                                        )
-                                        .on_hover_text("CMD+Enter to execute");
-                                    if response.clicked() {
+                                        .add_sized(button_size, button)
+                                        .on_hover_text(tooltip_text);
+                                    if !is_loading && response.clicked() {
+                                        self.query_execution_in_progress = true;
                                         execute_clicked = true;
                                     }
                                 });
                             if execute_clicked {
+                                self.query_execution_in_progress = true;
+                                self.extend_query_icon_hold();
                                 editor::execute_query(self);
                                 if let Some((start_b, end_b, primary_b)) = previous_selection {
                                     let clamp = |value: usize| value.min(self.editor.text.len());
@@ -10203,6 +10248,7 @@ impl App for Tabular {
                                     !cq.trim().is_empty() || !self.editor.text.trim().is_empty()
                                 };
                                 if has_q {
+                                    self.extend_query_icon_hold();
                                     editor::execute_query(self);
                                 }
                             }
@@ -10468,6 +10514,8 @@ impl Tabular {
         query: String,
         result: Option<(Vec<String>, Vec<Vec<String>>)>,
     ) {
+        self.query_execution_in_progress = false;
+        self.extend_query_icon_hold();
         // Mark active tab as executed
         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
             tab.has_executed_query = true;
@@ -10546,5 +10594,11 @@ impl Tabular {
                 tab.base_query.clear();
             }
         }
+    }
+
+    pub(crate) fn extend_query_icon_hold(&mut self) {
+        self.query_icon_hold_until = Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(900),
+        );
     }
 }
