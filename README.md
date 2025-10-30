@@ -8,7 +8,7 @@ Your fast, cross‑platform, multi‑database SQL & NoSQL client – built in Ru
 
 Join us at Telegram
 
-![Main Window](screenshots/telegram.png)
+![Telegram Group](screenshots/telegram.png)
 
 ## macOS Xcode Project (App Store)
 
