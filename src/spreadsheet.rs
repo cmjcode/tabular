@@ -1,5 +1,6 @@
 use crate::{connection, models, window_egui::Tabular};
 use log::debug;
+use std::collections::HashMap;
 
 // This trait provides spreadsheet functionality that can be implemented by any struct
 // that has the necessary data fields to support spreadsheet operations
@@ -284,6 +285,141 @@ pub trait SpreadsheetOperations {
         }
     }
 
+    fn spreadsheet_extract_database_name(&self) -> Option<String> {
+        if self.get_current_table_name().contains("(Database:") {
+            if let Some(start) = self.get_current_table_name().find("(Database:") {
+                let after = &self.get_current_table_name()[start + "(Database:".len()..];
+                if let Some(end) = after.find(')') {
+                    let name = after[..end].trim();
+                    if !name.is_empty() && !name.eq_ignore_ascii_case("unknown") {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+
+        if let Some(tab) = self.get_query_tabs().get(self.get_active_tab_index()) {
+            if let Some(db) = tab.database_name.clone() {
+                if !db.is_empty() && !db.eq_ignore_ascii_case("unknown") {
+                    return Some(db);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn spreadsheet_build_where_clause(
+        &self,
+        conn: &crate::models::structs::ConnectionConfig,
+        values: &[String],
+        headers: &[String],
+        primary_keys: &[String],
+        pk_overrides: Option<&HashMap<String, String>>,
+    ) -> Option<String> {
+        if headers.is_empty() || values.is_empty() {
+            return None;
+        }
+
+        if !primary_keys.is_empty() {
+            let mut clauses = Vec::new();
+            for pk in primary_keys {
+                if let Some((idx, header_name)) = headers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, h)| h.as_str() == pk.as_str() || h.eq_ignore_ascii_case(pk))
+                {
+                    if idx >= values.len() {
+                        continue;
+                    }
+                    let key_lower = header_name.to_lowercase();
+                    let raw_value = pk_overrides
+                        .and_then(|m| m.get(&key_lower))
+                        .map(|s| s.as_str())
+                        .unwrap_or_else(|| values[idx].as_str());
+                    let clause = if raw_value.is_empty() || raw_value.eq_ignore_ascii_case("null") {
+                        format!(
+                            "{} IS NULL",
+                            self.spreadsheet_quote_ident(conn, header_name)
+                        )
+                    } else {
+                        format!(
+                            "{} = {}",
+                            self.spreadsheet_quote_ident(conn, header_name),
+                            self.spreadsheet_quote_value(conn, raw_value)
+                        )
+                    };
+                    clauses.push(clause);
+                }
+            }
+            if !clauses.is_empty() {
+                return Some(clauses.join(" AND "));
+            }
+        }
+
+        if primary_keys.is_empty() {
+            if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
+                let lower = first_header.to_lowercase();
+                if lower.contains("id") || lower.contains("recid") || lower == "pk" {
+                    let clause = if first_value.is_empty()
+                        || first_value.eq_ignore_ascii_case("null")
+                    {
+                        format!(
+                            "{} IS NULL",
+                            self.spreadsheet_quote_ident(conn, first_header)
+                        )
+                    } else {
+                        format!(
+                            "{} = {}",
+                            self.spreadsheet_quote_ident(conn, first_header),
+                            self.spreadsheet_quote_value(conn, first_value)
+                        )
+                    };
+                    return Some(clause);
+                }
+            }
+        }
+
+        if headers.len() == values.len() {
+            let parts: Vec<String> = headers
+                .iter()
+                .zip(values.iter())
+                .map(|(col, v)| {
+                    if v.is_empty() || v.eq_ignore_ascii_case("null") {
+                        format!("{} IS NULL", self.spreadsheet_quote_ident(conn, col))
+                    } else {
+                        format!(
+                            "{} = {}",
+                            self.spreadsheet_quote_ident(conn, col),
+                            self.spreadsheet_quote_value(conn, v)
+                        )
+                    }
+                })
+                .collect();
+            if !parts.is_empty() {
+                return Some(parts.join(" AND "));
+            }
+        }
+
+        if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
+            let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
+                format!(
+                    "{} IS NULL",
+                    self.spreadsheet_quote_ident(conn, first_header)
+                )
+            } else {
+                format!(
+                    "{} = {}",
+                    self.spreadsheet_quote_ident(conn, first_header),
+                    self.spreadsheet_quote_value(conn, first_value)
+                )
+            };
+            return Some(clause);
+        }
+
+        None
+    }
+
     fn spreadsheet_quote_ident(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
@@ -385,19 +521,13 @@ pub trait SpreadsheetOperations {
         conn: &crate::models::structs::ConnectionConfig,
         row_index: usize,
     ) -> Option<String> {
-        let row = self.get_current_table_data().get(row_index)?;
+        let row = self
+            .get_all_table_data()
+            .get(row_index)
+            .or_else(|| self.get_current_table_data().get(row_index))?;
         let headers = self.get_current_table_headers();
-
-        // This method needs to be implemented by the parent struct to access cache
-        // For now, fall back to first column if not overridden
-        // Use only the first column (usually primary key like RecID) for WHERE clause
-        if let (Some(first_header), Some(first_value)) = (headers.first(), row.first()) {
-            let lhs = self.spreadsheet_quote_ident(conn, first_header);
-            let rhs = self.spreadsheet_quote_value(conn, first_value);
-            Some(format!("{} = {}", lhs, rhs))
-        } else {
-            None
-        }
+        let pk_columns = &self.get_spreadsheet_state().primary_key_columns;
+        self.spreadsheet_build_where_clause(conn, row, headers, pk_columns, None)
     }
 
     fn spreadsheet_generate_sql(&self) -> Option<String> {
@@ -420,12 +550,42 @@ pub trait SpreadsheetOperations {
         let qt_table = |s: &str| self.spreadsheet_quote_table_ident(&conn, s);
         let qv = |s: &str| self.spreadsheet_quote_value(&conn, s);
 
+        let headers = self.get_current_table_headers();
+        let all_rows = self.get_all_table_data();
+        let current_rows = self.get_current_table_data();
+        let state = self.get_spreadsheet_state();
+        let pk_columns = &state.primary_key_columns;
+        let mut pk_overrides: HashMap<usize, HashMap<String, String>> = HashMap::new();
+        if !pk_columns.is_empty() {
+            for op in &state.pending_operations {
+                if let crate::models::structs::CellEditOperation::Update {
+                    row_index,
+                    col_index,
+                    old_value,
+                    ..
+                } = op
+                {
+                    if let Some(col_name) = headers.get(*col_index) {
+                        if pk_columns
+                            .iter()
+                            .any(|pk| pk.eq_ignore_ascii_case(col_name))
+                        {
+                            pk_overrides
+                                .entry(*row_index)
+                                .or_insert_with(HashMap::new)
+                                .insert(col_name.to_lowercase(), old_value.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         let mut stmts: Vec<String> = Vec::new();
         println!(
             "🔥 Processing {} operations",
-            self.get_spreadsheet_state().pending_operations.len()
+            state.pending_operations.len()
         );
-        for op in &self.get_spreadsheet_state().pending_operations {
+        for op in &state.pending_operations {
             match op {
                 crate::models::structs::CellEditOperation::Update {
                     row_index,
@@ -433,8 +593,37 @@ pub trait SpreadsheetOperations {
                     old_value: _,
                     new_value,
                 } => {
-                    let col = self.get_current_table_headers().get(*col_index)?;
-                    let where_clause = self.spreadsheet_row_where_all_columns(&conn, *row_index)?;
+                    let col = match headers.get(*col_index) {
+                        Some(name) => name,
+                        None => {
+                            println!("🔥 Missing header for column index {}", col_index);
+                            continue;
+                        }
+                    };
+                    let row_data = all_rows
+                        .get(*row_index)
+                        .or_else(|| current_rows.get(*row_index));
+                    let row_data = match row_data {
+                        Some(r) => r,
+                        None => {
+                            println!("🔥 Missing row data at index {}", row_index);
+                            continue;
+                        }
+                    };
+                    let overrides = pk_overrides.get(row_index);
+                    let where_clause = match self.spreadsheet_build_where_clause(
+                        &conn,
+                        row_data,
+                        headers,
+                        pk_columns,
+                        overrides,
+                    ) {
+                        Some(clause) => clause,
+                        None => {
+                            println!("🔥 Unable to build WHERE clause for row {}", row_index);
+                            continue;
+                        }
+                    };
                     let sql = format!(
                         "UPDATE {} SET {} = {} WHERE {}",
                         qt_table(&table),
@@ -446,11 +635,11 @@ pub trait SpreadsheetOperations {
                 }
 
                 crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
-                    let cols: Vec<String> = self
-                        .get_current_table_headers()
-                        .iter()
-                        .map(|c| qt(c))
-                        .collect();
+                    if headers.is_empty() {
+                        println!("🔥 Skipping insert: no headers available");
+                        continue;
+                    }
+                    let cols: Vec<String> = headers.iter().map(|c| qt(c)).collect();
                     // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
                     let latest_vals_src: Option<&Vec<String>> = self
                         .get_all_table_data()
@@ -471,47 +660,32 @@ pub trait SpreadsheetOperations {
                     stmts.push(sql);
                 }
                 crate::models::structs::CellEditOperation::DeleteRow {
-                    row_index: _,
+                    row_index,
                     values,
                 } => {
-                    // Use a smarter WHERE clause - prefer just the first column if it looks like a primary key
-                    if values.is_empty() || self.get_current_table_headers().is_empty() {
+                    if values.is_empty() || headers.is_empty() {
                         continue;
                     }
-
-                    let first_header = &self.get_current_table_headers()[0];
-                    let first_value = &values[0];
-
-                    // If the first column looks like a primary key (RecID, ID, etc.), use just that
-                    if first_header.to_lowercase().contains("id")
-                        || first_header.to_lowercase().contains("recid")
-                        || first_header.to_lowercase() == "pk"
-                    {
-                        let where_clause = format!("{} = {}", qt(first_header), qv(first_value));
-                        let sql =
-                            format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                        println!("🔥 Using primary key WHERE: {}", where_clause);
-                        stmts.push(sql);
-                    } else {
-                        // Fallback to all columns if no obvious primary key
-                        if values.len() != self.get_current_table_headers().len() {
+                    let overrides = pk_overrides.get(row_index);
+                    let where_clause = match self.spreadsheet_build_where_clause(
+                        &conn,
+                        values,
+                        headers,
+                        pk_columns,
+                        overrides,
+                    ) {
+                        Some(clause) => clause,
+                        None => {
+                            println!(
+                                "🔥 Unable to build DELETE WHERE clause for row {}",
+                                row_index
+                            );
                             continue;
                         }
-                        let parts: Vec<String> = self
-                            .get_current_table_headers()
-                            .iter()
-                            .zip(values.iter())
-                            .map(|(col, v)| format!("{} = {}", qt(col), qv(v)))
-                            .collect();
-                        let where_clause = parts.join(" AND ");
-                        let sql =
-                            format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                        println!(
-                            "🔥 Using full row WHERE (no obvious PK): {} columns",
-                            parts.len()
-                        );
-                        stmts.push(sql);
-                    }
+                    };
+                    let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
+                    println!("🔥 Using DELETE WHERE clause: {}", where_clause);
+                    stmts.push(sql);
                 }
             }
         }
@@ -1035,6 +1209,141 @@ impl SpreadsheetOperations for Tabular {
         }
     }
 
+    fn spreadsheet_extract_database_name(&self) -> Option<String> {
+        if self.get_current_table_name().contains("(Database:") {
+            if let Some(start) = self.get_current_table_name().find("(Database:") {
+                let after = &self.get_current_table_name()[start + "(Database:".len()..];
+                if let Some(end) = after.find(')') {
+                    let name = after[..end].trim();
+                    if !name.is_empty() && !name.eq_ignore_ascii_case("unknown") {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+
+        if let Some(tab) = self.get_query_tabs().get(self.get_active_tab_index()) {
+            if let Some(db) = tab.database_name.clone() {
+                if !db.is_empty() && !db.eq_ignore_ascii_case("unknown") {
+                    return Some(db);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn spreadsheet_build_where_clause(
+        &self,
+        conn: &crate::models::structs::ConnectionConfig,
+        values: &[String],
+        headers: &[String],
+        primary_keys: &[String],
+        pk_overrides: Option<&HashMap<String, String>>,
+    ) -> Option<String> {
+        if headers.is_empty() || values.is_empty() {
+            return None;
+        }
+
+        if !primary_keys.is_empty() {
+            let mut clauses = Vec::new();
+            for pk in primary_keys {
+                if let Some((idx, header_name)) = headers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, h)| h.as_str() == pk.as_str() || h.eq_ignore_ascii_case(pk))
+                {
+                    if idx >= values.len() {
+                        continue;
+                    }
+                    let key_lower = header_name.to_lowercase();
+                    let raw_value = pk_overrides
+                        .and_then(|m| m.get(&key_lower))
+                        .map(|s| s.as_str())
+                        .unwrap_or_else(|| values[idx].as_str());
+                    let clause = if raw_value.is_empty() || raw_value.eq_ignore_ascii_case("null") {
+                        std::format!(
+                            "{} IS NULL",
+                            self.spreadsheet_quote_ident(conn, header_name)
+                        )
+                    } else {
+                        std::format!(
+                            "{} = {}",
+                            self.spreadsheet_quote_ident(conn, header_name),
+                            self.spreadsheet_quote_value(conn, raw_value)
+                        )
+                    };
+                    clauses.push(clause);
+                }
+            }
+            if !clauses.is_empty() {
+                return Some(clauses.join(" AND "));
+            }
+        }
+
+        if primary_keys.is_empty() {
+            if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
+                let lower = first_header.to_lowercase();
+                if lower.contains("id") || lower.contains("recid") || lower == "pk" {
+                    let clause = if first_value.is_empty()
+                        || first_value.eq_ignore_ascii_case("null")
+                    {
+                        std::format!(
+                            "{} IS NULL",
+                            self.spreadsheet_quote_ident(conn, first_header)
+                        )
+                    } else {
+                        std::format!(
+                            "{} = {}",
+                            self.spreadsheet_quote_ident(conn, first_header),
+                            self.spreadsheet_quote_value(conn, first_value)
+                        )
+                    };
+                    return Some(clause);
+                }
+            }
+        }
+
+        if headers.len() == values.len() {
+            let parts: Vec<String> = headers
+                .iter()
+                .zip(values.iter())
+                .map(|(col, v)| {
+                    if v.is_empty() || v.eq_ignore_ascii_case("null") {
+                        std::format!("{} IS NULL", self.spreadsheet_quote_ident(conn, col))
+                    } else {
+                        std::format!(
+                            "{} = {}",
+                            self.spreadsheet_quote_ident(conn, col),
+                            self.spreadsheet_quote_value(conn, v)
+                        )
+                    }
+                })
+                .collect();
+            if !parts.is_empty() {
+                return Some(parts.join(" AND "));
+            }
+        }
+
+        if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
+            let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
+                std::format!(
+                    "{} IS NULL",
+                    self.spreadsheet_quote_ident(conn, first_header)
+                )
+            } else {
+                std::format!(
+                    "{} = {}",
+                    self.spreadsheet_quote_ident(conn, first_header),
+                    self.spreadsheet_quote_value(conn, first_value)
+                )
+            };
+            return Some(clause);
+        }
+
+        None
+    }
+
     fn spreadsheet_quote_ident(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
@@ -1147,12 +1456,42 @@ impl SpreadsheetOperations for Tabular {
         let qt_table = |s: &str| self.spreadsheet_quote_table_ident(&conn, s);
         let qv = |s: &str| self.spreadsheet_quote_value(&conn, s);
 
+        let headers = self.get_current_table_headers();
+        let all_rows = self.get_all_table_data();
+        let current_rows = self.get_current_table_data();
+        let state = self.get_spreadsheet_state();
+        let pk_columns = &state.primary_key_columns;
+        let mut pk_overrides: HashMap<usize, HashMap<String, String>> = HashMap::new();
+        if !pk_columns.is_empty() {
+            for op in &state.pending_operations {
+                if let crate::models::structs::CellEditOperation::Update {
+                    row_index,
+                    col_index,
+                    old_value,
+                    ..
+                } = op
+                {
+                    if let Some(col_name) = headers.get(*col_index) {
+                        if pk_columns
+                            .iter()
+                            .any(|pk| pk.eq_ignore_ascii_case(col_name))
+                        {
+                            pk_overrides
+                                .entry(*row_index)
+                                .or_insert_with(HashMap::new)
+                                .insert(col_name.to_lowercase(), old_value.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         let mut stmts: Vec<String> = Vec::new();
         std::println!(
             "🔥 Processing {} operations",
-            self.get_spreadsheet_state().pending_operations.len()
+            state.pending_operations.len()
         );
-        for op in &self.get_spreadsheet_state().pending_operations {
+        for op in &state.pending_operations {
             match op {
                 crate::models::structs::CellEditOperation::Update {
                     row_index,
@@ -1160,8 +1499,43 @@ impl SpreadsheetOperations for Tabular {
                     old_value: _,
                     new_value,
                 } => {
-                    let col = self.get_current_table_headers().get(*col_index)?;
-                    let where_clause = self.spreadsheet_row_where_all_columns(&conn, *row_index)?;
+                    let col = match headers.get(*col_index) {
+                        Some(name) => name,
+                        None => {
+                            std::println!(
+                                "🔥 Missing header for column index {}",
+                                col_index
+                            );
+                            continue;
+                        }
+                    };
+                    let row_data = all_rows
+                        .get(*row_index)
+                        .or_else(|| current_rows.get(*row_index));
+                    let row_data = match row_data {
+                        Some(r) => r,
+                        None => {
+                            std::println!("🔥 Missing row data at index {}", row_index);
+                            continue;
+                        }
+                    };
+                    let overrides = pk_overrides.get(row_index);
+                    let where_clause = match self.spreadsheet_build_where_clause(
+                        &conn,
+                        row_data,
+                        headers,
+                        pk_columns,
+                        overrides,
+                    ) {
+                        Some(clause) => clause,
+                        None => {
+                            std::println!(
+                                "🔥 Unable to build WHERE clause for row {}",
+                                row_index
+                            );
+                            continue;
+                        }
+                    };
                     let sql = std::format!(
                         "UPDATE {} SET {} = {} WHERE {}",
                         qt_table(&table),
@@ -1173,11 +1547,11 @@ impl SpreadsheetOperations for Tabular {
                 }
 
                 crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
-                    let cols: Vec<String> = self
-                        .get_current_table_headers()
-                        .iter()
-                        .map(|c| qt(c))
-                        .collect();
+                    if headers.is_empty() {
+                        std::println!("🔥 Skipping insert: no headers available");
+                        continue;
+                    }
+                    let cols: Vec<String> = headers.iter().map(|c| qt(c)).collect();
                     // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
                     let latest_vals_src: Option<&Vec<String>> = self
                         .get_all_table_data()
@@ -1198,48 +1572,36 @@ impl SpreadsheetOperations for Tabular {
                     stmts.push(sql);
                 }
                 crate::models::structs::CellEditOperation::DeleteRow {
-                    row_index: _,
+                    row_index,
                     values,
                 } => {
-                    // Use a smarter WHERE clause - prefer just the first column if it looks like a primary key
-                    if values.is_empty() || self.get_current_table_headers().is_empty() {
+                    if values.is_empty() || headers.is_empty() {
                         continue;
                     }
-
-                    let first_header = &self.get_current_table_headers()[0];
-                    let first_value = &values[0];
-
-                    // If the first column looks like a primary key (RecID, ID, etc.), use just that
-                    if first_header.to_lowercase().contains("id")
-                        || first_header.to_lowercase().contains("recid")
-                        || first_header.to_lowercase() == "pk"
-                    {
-                        let where_clause =
-                            std::format!("{} = {}", qt(first_header), qv(first_value));
-                        let sql =
-                            std::format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                        std::println!("🔥 Using primary key WHERE: {}", where_clause);
-                        stmts.push(sql);
-                    } else {
-                        // Fallback to all columns if no obvious primary key
-                        if values.len() != self.get_current_table_headers().len() {
+                    let overrides = pk_overrides.get(row_index);
+                    let where_clause = match self.spreadsheet_build_where_clause(
+                        &conn,
+                        values,
+                        headers,
+                        pk_columns,
+                        overrides,
+                    ) {
+                        Some(clause) => clause,
+                        None => {
+                            std::println!(
+                                "🔥 Unable to build DELETE WHERE clause for row {}",
+                                row_index
+                            );
                             continue;
                         }
-                        let parts: Vec<String> = self
-                            .get_current_table_headers()
-                            .iter()
-                            .zip(values.iter())
-                            .map(|(col, v)| std::format!("{} = {}", qt(col), qv(v)))
-                            .collect();
-                        let where_clause = parts.join(" AND ");
-                        let sql =
-                            std::format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                        std::println!(
-                            "🔥 Using full row WHERE (no obvious PK): {} columns",
-                            parts.len()
-                        );
-                        stmts.push(sql);
-                    }
+                    };
+                    let sql = std::format!(
+                        "DELETE FROM {} WHERE {}",
+                        qt_table(&table),
+                        where_clause
+                    );
+                    std::println!("🔥 Using DELETE WHERE clause: {}", where_clause);
+                    stmts.push(sql);
                 }
             }
         }
@@ -1295,84 +1657,12 @@ impl SpreadsheetOperations for Tabular {
         conn: &crate::models::structs::ConnectionConfig,
         row_index: usize,
     ) -> Option<String> {
-        let row = self.get_current_table_data().get(row_index)?;
+        let row = self
+            .get_all_table_data()
+            .get(row_index)
+            .or_else(|| self.get_current_table_data().get(row_index))?;
         let headers = self.get_current_table_headers();
-
-        // Try to get primary keys from cache
-        let conn_id = conn.id?;
-        let database_name = self
-            .query_tabs
-            .get(self.active_tab_index)?
-            .database_name
-            .as_ref()?;
-
-        // Extract clean table name (without "Table: " prefix)
-        let table_name = self.spreadsheet_extract_table_name()?;
-
-        // Get primary keys from cache using the trait method
-        let primary_keys = self.get_primary_keys_for_table(conn_id, database_name, &table_name);
-
-        debug!(
-            "🔍 Primary keys from cache for table {}: {:?}",
-            table_name, primary_keys
-        );
-
-        if let Some(pk_cols) = primary_keys {
-            if !pk_cols.is_empty() {
-                // Build WHERE clause using all primary key columns
-                let mut conditions = Vec::new();
-                for pk_col in &pk_cols {
-                    if let Some(col_idx) = headers.iter().position(|h| h == pk_col)
-                        && let Some(value) = row.get(col_idx)
-                    {
-                        let lhs = self.spreadsheet_quote_ident(conn, pk_col);
-                        let rhs = self.spreadsheet_quote_value(conn, value);
-                        conditions.push(std::format!("{} = {}", lhs, rhs));
-                    }
-                }
-
-                if !conditions.is_empty() {
-                    debug!(
-                        "✅ Using primary key WHERE clause: {}",
-                        conditions.join(" AND ")
-                    );
-                    return Some(conditions.join(" AND "));
-                } else {
-                    debug!("⚠️ Primary keys found but no matching columns in headers");
-                }
-            }
-        } else {
-            debug!("⚠️ No primary keys found in cache for table {}", table_name);
-        }
-
-        // Fallback: use first column if it looks like an ID
-        if let (Some(first_header), Some(first_value)) = (headers.first(), row.first())
-            && first_header.to_lowercase().contains("id")
-        {
-            debug!(
-                "⚠️ Falling back to first column (looks like ID): {}",
-                first_header
-            );
-            let lhs = self.spreadsheet_quote_ident(conn, first_header);
-            let rhs = self.spreadsheet_quote_value(conn, first_value);
-            return Some(std::format!("{} = {}", lhs, rhs));
-        }
-
-        // Last resort: use all columns for WHERE clause
-        debug!("⚠️ No primary key found, using all columns for WHERE clause");
-        let mut conditions = Vec::new();
-        for (idx, header) in headers.iter().enumerate() {
-            if let Some(value) = row.get(idx) {
-                let lhs = self.spreadsheet_quote_ident(conn, header);
-                let rhs = self.spreadsheet_quote_value(conn, value);
-                conditions.push(std::format!("{} = {}", lhs, rhs));
-            }
-        }
-
-        if !conditions.is_empty() {
-            Some(conditions.join(" AND "))
-        } else {
-            None
-        }
+        let pk_columns = &self.get_spreadsheet_state().primary_key_columns;
+        self.spreadsheet_build_where_clause(conn, row, headers, pk_columns, None)
     }
 }

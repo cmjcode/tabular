@@ -6686,6 +6686,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
 
     pub fn execute_paginated_query(&mut self) {
         debug!("🔥 Starting execute_paginated_query()");
+        // Ensure UI honors table browse semantics (enables spreadsheet editing shortcuts)
+        self.is_table_browse_mode = true;
         // Use connection from active tab, not global current_connection_id
         let connection_id = self
             .query_tabs

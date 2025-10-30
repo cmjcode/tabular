@@ -1617,6 +1617,8 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
 
 // Execute a manual data refresh for current table and update row cache
 pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
+    // Stay in browse mode so spreadsheet shortcuts remain enabled after refreshes
+    tabular.is_table_browse_mode = true;
     if tabular.use_server_pagination && !tabular.current_base_query.is_empty() {
         tabular.current_page = 0;
         info!("🔄 Manual refresh: server pagination first page reloaded");
