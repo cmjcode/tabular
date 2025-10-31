@@ -992,15 +992,15 @@ impl Tabular {
         use models::enums::DatabaseType;
 
         if state.table_name.trim().is_empty() {
-            return Err("Nama tabel harus diisi.".to_string());
+            return Err("Please describe the table name.".to_string());
         }
 
         if matches!(state.db_type, DatabaseType::Redis | DatabaseType::MongoDB) {
-            return Err("Create table tidak tersedia untuk jenis database ini.".to_string());
+            return Err("Create table is not available for this database type.".to_string());
         }
 
         if state.columns.is_empty() {
-            return Err("Tambahkan minimal satu kolom.".to_string());
+            return Err("Please add at least one column.".to_string());
         }
 
         let mut column_defs: Vec<String> = Vec::new();
@@ -1009,10 +1009,10 @@ impl Tabular {
         for column in &state.columns {
             let name_trim = column.name.trim();
             if name_trim.is_empty() {
-                return Err("Setiap kolom harus memiliki nama.".to_string());
+                return Err("Each column must have a name.".to_string());
             }
             if column.data_type.trim().is_empty() {
-                return Err(format!("Kolom '{}' belum memiliki tipe data.", name_trim));
+                return Err(format!("Column '{}' does not have a data type.", name_trim));
             }
 
             let mut pieces = vec![
@@ -1076,7 +1076,7 @@ impl Tabular {
                 self.quote_identifier(state.table_name.trim(), &state.db_type)
             }
             DatabaseType::Redis | DatabaseType::MongoDB => {
-                return Err("Create table tidak tersedia untuk jenis database ini.".to_string());
+                return Err("Create table is not available for this database type.".to_string());
             }
         };
 
@@ -1130,34 +1130,34 @@ impl Tabular {
         match step {
             Step::Basics => {
                 if state.table_name.trim().is_empty() {
-                    return Some("Nama tabel harus diisi.".to_string());
+                    return Some("Table name must be provided.".to_string());
                 }
                 if matches!(
                     state.db_type,
                     models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB
                 ) {
                     return Some(
-                        "Create table tidak tersedia untuk jenis database ini.".to_string(),
+                        "Create table is not available for this database type.".to_string(),
                     );
                 }
                 None
             }
             Step::Columns => {
                 if state.columns.is_empty() {
-                    return Some("Tambahkan minimal satu kolom.".to_string());
+                    return Some("Please add at least one column.".to_string());
                 }
                 let mut seen = std::collections::HashSet::new();
                 for (idx, column) in state.columns.iter_mut().enumerate() {
                     let name_trim = column.name.trim();
                     if name_trim.is_empty() {
-                        return Some(format!("Kolom ke-{} belum memiliki nama.", idx + 1));
+                        return Some(format!("Column {} does not have a name.", idx + 1));
                     }
                     let key = name_trim.to_lowercase();
                     if !seen.insert(key) {
-                        return Some(format!("Nama kolom '{}' duplikat.", name_trim));
+                        return Some(format!("Column name '{}' is duplicated.", name_trim));
                     }
                     if column.data_type.trim().is_empty() {
-                        return Some(format!("Kolom '{}' belum memiliki tipe data.", name_trim));
+                        return Some(format!("Column '{}' does not have a data type.", name_trim));
                     }
                     if column.is_primary_key {
                         column.allow_null = false;
@@ -1170,10 +1170,10 @@ impl Tabular {
                     let name_trim = index.name.trim();
                     let has_columns = index.columns.split(',').any(|c| !c.trim().is_empty());
                     if name_trim.is_empty() && has_columns {
-                        return Some(format!("Index ke-{} memerlukan nama.", idx + 1));
+                        return Some(format!("Index {} requires a name.", idx + 1));
                     }
                     if !name_trim.is_empty() && !has_columns {
-                        return Some(format!("Index '{}' memerlukan kolom.", name_trim));
+                        return Some(format!("Index '{}' requires columns.", name_trim));
                     }
                 }
                 None
@@ -1198,7 +1198,7 @@ impl Tabular {
                                 .first()
                                 .and_then(|row| row.first())
                                 .cloned()
-                                .unwrap_or_else(|| "Gagal membuat tabel.".to_string());
+                                .unwrap_or_else(|| "Failed to create table.".to_string());
                             (false, Some(msg))
                         } else {
                             (true, None)
@@ -1206,7 +1206,7 @@ impl Tabular {
                     }
                     None => (
                         false,
-                        Some("Gagal mengeksekusi perintah CREATE TABLE.".to_string()),
+                        Some("Failed to execute CREATE TABLE command.".to_string()),
                     ),
                 };
 
@@ -1214,12 +1214,11 @@ impl Tabular {
                     self.create_table_error = None;
                     self.create_table_wizard = None;
                     self.show_create_table_dialog = false;
-                    self.error_message =
-                        format!("Tabel '{}' berhasil dibuat.", state.table_name.trim());
+                    self.error_message = format!("Table '{}' has been created successfully.", state.table_name.trim());
                     self.show_error_message = true;
                     self.refresh_connection(state.connection_id);
                 } else {
-                    let msg = message.unwrap_or_else(|| "Gagal membuat tabel.".to_string());
+                    let msg = message.unwrap_or_else(|| "Failed to create table.".to_string());
                     self.create_table_error = Some(msg.clone());
                     self.error_message = msg;
                     self.show_error_message = true;
