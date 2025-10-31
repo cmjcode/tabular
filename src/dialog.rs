@@ -670,36 +670,57 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                             .id(text_edit_id),
                                     );
                                     
-                                    // Debug: log field state every frame when focused
-                                    if response.has_focus() {
-                                        if let Some(state_inner) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
-                                            if let Some(cursor_range) = state_inner.cursor.char_range() {
-                                                log::debug!("📝 Table name field: has_focus=true, cursor_primary={}, text_len={}", 
-                                                    cursor_range.primary.index, state.table_name.len());
-                                            } else {
-                                                log::debug!("📝 Table name field: has_focus=true, NO cursor_range!");
-                                            }
-                                        } else {
-                                            log::debug!("📝 Table name field: has_focus=true, NO state!");
-                                        }
-                                    }
-                                    
                                     if response.clicked() || response.gained_focus() {
-                                        log::debug!("🖱️ Table name clicked! clicked={}, gained_focus={}, has_focus={}", 
-                                            response.clicked(), response.gained_focus(), response.has_focus());
-                                        response.request_focus();
-                                        // Force cursor to beginning when first clicked
+                                        ui.memory_mut(|mem| mem.request_focus(text_edit_id));
                                         if let Some(mut state_inner) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
                                             use egui::text::{CCursor, CCursorRange};
-                                            let before = state_inner.cursor.char_range();
                                             state_inner.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(0))));
                                             state_inner.store(ui.ctx(), text_edit_id);
-                                            log::debug!("✅ Forced cursor from {:?} to pos 0", before);
-                                        } else {
-                                            log::debug!("⚠️ Could not load TextEdit state for table_name!");
                                         }
                                         ui.ctx().request_repaint();
                                     }
+                                    
+                                    // CUSTOM CURSOR PAINTING - measure actual text width
+                                    if let Some(text_state) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
+                                        if let Some(cursor_range) = text_state.cursor.char_range() {
+                                            let cursor_pos = cursor_range.primary.index;
+                                            
+                                            // Calculate cursor X position from ACTUAL text width
+                                            let text_before_cursor = if cursor_pos <= state.table_name.len() {
+                                                &state.table_name[..cursor_pos]
+                                            } else {
+                                                &state.table_name
+                                            };
+                                            
+                                            let font_id = egui::TextStyle::Body.resolve(ui.style());
+                                            // Use layout_no_wrap to get REAL text width
+                                            let galley = ui.fonts(|f| f.layout_no_wrap(
+                                                text_before_cursor.to_string(),
+                                                font_id,
+                                                ui.visuals().text_color(),
+                                            ));
+                                            let text_width = galley.rect.width();
+                                            
+                                            // Position cursor in response rect - minimal padding to match text position
+                                            let text_margin = 4.0; // TextEdit internal margin
+                                            let caret_x = response.rect.min.x + text_margin + text_width;
+                                            let caret_top = response.rect.min.y + 2.0;
+                                            let caret_bottom = response.rect.max.y - 2.0;
+                                            
+                                            // Paint visible cursor
+                                            let cursor_color = ui.visuals().text_cursor.stroke.color;
+                                            let cursor_width = 2.0;
+                                            ui.painter().rect_filled(
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(caret_x - cursor_width / 2.0, caret_top),
+                                                    egui::pos2(caret_x + cursor_width / 2.0, caret_bottom),
+                                                ),
+                                                0.0,
+                                                cursor_color,
+                                            );
+                                        }
+                                    }
+                                    
                                     if response.changed() {
                                         tabular.create_table_error = None;
                                     }
