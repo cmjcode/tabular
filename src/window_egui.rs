@@ -2182,13 +2182,8 @@ impl Tabular {
                                 // New table opened; structure target should refresh on demand
                                 self.last_structure_target = None;
                             } else {
-                                println!("================== A ============================ ");
-                                debug!("🚀 Taking server-side pagination path");
-                                info!(
-                                    "🌐 Loading live data from server for table {}/{} (server pagination)",
-                                    database_name.clone().unwrap_or_default(),
-                                    table_name
-                                );
+                                // Set browse mode when opening table via sidebar click
+                                self.is_table_browse_mode = true;
                                 // If the pool is not ready, queue the first-page query; otherwise execute.
                                 let mut pool_ready = true;
                                 if self.pending_connection_pools.contains(&connection_id) {
@@ -2241,6 +2236,8 @@ impl Tabular {
                         } else {
                             // Client-side path (rare). Only run live query if no cache.
                             if !had_cache {
+                                // Set browse mode when opening table via sidebar click
+                                self.is_table_browse_mode = true;
                                 println!("================== 1 ============================ ");
                                 debug!("🔄 Taking client-side pagination fallback path");
                                 info!(

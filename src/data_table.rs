@@ -19,12 +19,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     let filter_response = ui.add_sized(
                         [ui.available_width() * 0.8, 25.0],
                         egui::TextEdit::singleline(&mut tabular.sql_filter_text)
-                            .hint_text("column = 'value' AND col2 > 0"),
+                            .hint_text("column = 'value' AND col2 > 0")
+                            .interactive(true),
                     );
 
-                    if filter_response.clicked() {
-                        filter_response.request_focus();
-                    }
                     if filter_response.has_focus() || filter_response.hovered() {
                         let visuals = ui.visuals();
                         let accent = if filter_response.has_focus() {
