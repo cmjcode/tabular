@@ -158,7 +158,14 @@ pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui:
 
                     // Filename input
                     ui.label("Enter filename:");
-                    ui.text_edit_singleline(&mut tabular.save_filename);
+                    let filename_resp = ui.add(
+                        egui::TextEdit::singleline(&mut tabular.save_filename)
+                            .cursor_at_end(false)
+                    );
+                    if filename_resp.clicked() || filename_resp.gained_focus() {
+                        filename_resp.request_focus();
+                        ui.ctx().request_repaint();
+                    }
 
                     ui.add_space(10.0);
 
@@ -216,11 +223,27 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                 ui.add_space(4.0);
                 egui::Grid::new("index_form_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     ui.label("Index name");
-                    ui.add(egui::TextEdit::singleline(&mut working.index_name).desired_width(360.0));
+                    let name_resp = ui.add(
+                        egui::TextEdit::singleline(&mut working.index_name)
+                            .desired_width(360.0)
+                            .cursor_at_end(false)
+                    );
+                    if name_resp.clicked() || name_resp.gained_focus() {
+                        name_resp.request_focus();
+                        ui.ctx().request_repaint();
+                    }
                     ui.end_row();
 
                     ui.label("Columns");
-                    ui.add(egui::TextEdit::singleline(&mut working.columns).desired_width(360.0));
+                    let cols_resp = ui.add(
+                        egui::TextEdit::singleline(&mut working.columns)
+                            .desired_width(360.0)
+                            .cursor_at_end(false)
+                    );
+                    if cols_resp.clicked() || cols_resp.gained_focus() {
+                        cols_resp.request_focus();
+                        ui.ctx().request_repaint();
+                    }
                     ui.end_row();
 
                     ui.label("Unique");
@@ -639,12 +662,43 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                 .show(ui, |ui| {
                                     ui.label("Table name");
                                     let field_width = ui.available_width();
+                                    let text_edit_id = ui.id().with("table_name_field");
                                     let response = ui.add_sized(
                                         [field_width, 0.0],
-                                        egui::TextEdit::singleline(&mut state.table_name),
+                                        egui::TextEdit::singleline(&mut state.table_name)
+                                            .cursor_at_end(false)
+                                            .id(text_edit_id),
                                     );
-                                    if response.clicked() {
+                                    
+                                    // Debug: log field state every frame when focused
+                                    if response.has_focus() {
+                                        if let Some(state_inner) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
+                                            if let Some(cursor_range) = state_inner.cursor.char_range() {
+                                                log::debug!("📝 Table name field: has_focus=true, cursor_primary={}, text_len={}", 
+                                                    cursor_range.primary.index, state.table_name.len());
+                                            } else {
+                                                log::debug!("📝 Table name field: has_focus=true, NO cursor_range!");
+                                            }
+                                        } else {
+                                            log::debug!("📝 Table name field: has_focus=true, NO state!");
+                                        }
+                                    }
+                                    
+                                    if response.clicked() || response.gained_focus() {
+                                        log::debug!("🖱️ Table name clicked! clicked={}, gained_focus={}, has_focus={}", 
+                                            response.clicked(), response.gained_focus(), response.has_focus());
                                         response.request_focus();
+                                        // Force cursor to beginning when first clicked
+                                        if let Some(mut state_inner) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
+                                            use egui::text::{CCursor, CCursorRange};
+                                            let before = state_inner.cursor.char_range();
+                                            state_inner.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(0))));
+                                            state_inner.store(ui.ctx(), text_edit_id);
+                                            log::debug!("✅ Forced cursor from {:?} to pos 0", before);
+                                        } else {
+                                            log::debug!("⚠️ Could not load TextEdit state for table_name!");
+                                        }
+                                        ui.ctx().request_repaint();
                                     }
                                     if response.changed() {
                                         tabular.create_table_error = None;
@@ -690,10 +744,12 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                             let db_field_width = ui.available_width();
                                             let db_response = ui.add_sized(
                                                 [db_field_width, 0.0],
-                                                egui::TextEdit::singleline(&mut target_text),
+                                                egui::TextEdit::singleline(&mut target_text)
+                                                    .cursor_at_end(false),
                                             );
-                                            if db_response.clicked() {
+                                            if db_response.clicked() || db_response.gained_focus() {
                                                 db_response.request_focus();
+                                                ui.ctx().request_repaint();
                                             }
                                             if db_response.changed() {
                                                 tabular.create_table_error = None;
@@ -769,10 +825,12 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                             {
                                                 let name_resp = ui.add_sized(
                                                     [name_width, 0.0],
-                                                    egui::TextEdit::singleline(&mut column.name),
+                                                    egui::TextEdit::singleline(&mut column.name)
+                                                        .cursor_at_end(false),
                                                 );
-                                                if name_resp.clicked() {
+                                                if name_resp.clicked() || name_resp.gained_focus() {
                                                     name_resp.request_focus();
+                                                    ui.ctx().request_repaint();
                                                 }
                                                 if name_resp.changed() {
                                                     tabular.create_table_error = None;
@@ -782,10 +840,12 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                                     [type_width, 0.0],
                                                     egui::TextEdit::singleline(
                                                         &mut column.data_type,
-                                                    ),
+                                                    )
+                                                    .cursor_at_end(false),
                                                 );
-                                                if type_resp.clicked() {
+                                                if type_resp.clicked() || type_resp.gained_focus() {
                                                     type_resp.request_focus();
+                                                    ui.ctx().request_repaint();
                                                 }
                                                 if type_resp.changed() {
                                                     tabular.create_table_error = None;
@@ -803,10 +863,12 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                                     [default_width, 0.0],
                                                     egui::TextEdit::singleline(
                                                         &mut column.default_value,
-                                                    ),
+                                                    )
+                                                    .cursor_at_end(false),
                                                 );
-                                                if default_resp.clicked() {
+                                                if default_resp.clicked() || default_resp.gained_focus() {
                                                     default_resp.request_focus();
+                                                    ui.ctx().request_repaint();
                                                 }
                                                 if default_resp.changed() {
                                                     tabular.create_table_error = None;
@@ -898,10 +960,12 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                         {
                                             let name_resp = ui.add_sized(
                                                 [name_width, 0.0],
-                                                egui::TextEdit::singleline(&mut index_def.name),
+                                                egui::TextEdit::singleline(&mut index_def.name)
+                                                    .cursor_at_end(false),
                                             );
-                                            if name_resp.clicked() {
+                                            if name_resp.clicked() || name_resp.gained_focus() {
                                                 name_resp.request_focus();
+                                                ui.ctx().request_repaint();
                                             }
                                             if name_resp.changed() {
                                                 tabular.create_table_error = None;
@@ -911,10 +975,12 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                                 [cols_width, 0.0],
                                                 egui::TextEdit::singleline(
                                                     &mut index_def.columns,
-                                                ),
+                                                )
+                                                .cursor_at_end(false),
                                             );
-                                            if cols_resp.clicked() {
+                                            if cols_resp.clicked() || cols_resp.gained_focus() {
                                                 cols_resp.request_focus();
+                                                ui.ctx().request_repaint();
                                             }
                                             if cols_resp.changed() {
                                                 tabular.create_table_error = None;
