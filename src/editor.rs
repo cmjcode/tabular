@@ -2080,12 +2080,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Build TextEdit widget directly and capture full output (galley, clip rect, etc.)
+    // NOTE: Removed .code_editor() as it may interfere with cursor rendering
     let text_edit = egui::TextEdit::multiline(&mut tabular.editor.text)
         .font(egui::TextStyle::Monospace)
         .desired_rows(rows)
-        .lock_focus(true)
         .desired_width(f32::INFINITY)
-        .code_editor()
+        .cursor_at_end(false) // Allow cursor to be positioned anywhere
         .id_source("sql_editor")
         .layouter(&mut layouter);
 
@@ -2102,12 +2102,23 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ..
     } = text_output;
 
+    // CRITICAL: Ensure focus and cursor visibility on interaction
+    if response.clicked() || response.gained_focus() {
+        response.request_focus();
+        tabular.editor_focus_boost_frames = 10;
+        ui.ctx().request_repaint();
+        log::debug!("⚡ Editor clicked/focused - requesting caret visibility, focus={}", response.has_focus());
+    }
+
     // While focus boost is active, keep focus on the editor so typing works immediately after actions
     if tabular.editor_focus_boost_frames > 0 {
         ui.memory_mut(|m| m.request_focus(response.id));
+        let has_focus = response.has_focus() || ui.ctx().memory(|m| m.has_focus(response.id));
         log::debug!(
-            "Focus boost active: {} frames remaining",
-            tabular.editor_focus_boost_frames
+            "⏰ Focus boost active: {} frames remaining, has_focus={}, cursor_pos={}",
+            tabular.editor_focus_boost_frames,
+            has_focus,
+            tabular.cursor_position
         );
     }
     // VSCode-like: subtle current line highlight
@@ -2385,9 +2396,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 selection_painter.rect_filled(caret_rect, 1.0, color);
             }
         }
-    } else {
-        // When no multi-selection is active, ensure a visible caret is painted as fallback.
+    }
+    
+    // ALWAYS paint cursor when no multi-selection - fallback for egui's built-in cursor
+    if tabular.multi_selection.is_empty() {
         let has_focus = response.has_focus() || ui.ctx().memory(|m| m.has_focus(response.id));
+        
+        // Only paint when editor has focus or during focus boost window
         if has_focus || tabular.editor_focus_boost_frames > 0 {
             let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
             let caret_char_idx = {
@@ -2397,22 +2412,67 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             };
             let caret_cursor = CCursor::new(caret_char_idx);
             let caret_layout = galley.layout_from_cursor(caret_cursor);
-            let placed_row = &galley.rows[caret_layout.row];
-            let row = &placed_row.row;
-            let x_offset = row.x_offset(caret_layout.column);
-            let caret_x = galley_pos.x + placed_row.pos.x + x_offset;
-            let caret_top = galley_pos.y + placed_row.min_y();
-            let caret_bottom = galley_pos.y + placed_row.max_y();
-            let caret_width = 1.5;
-            let caret_shape = egui::Rect::from_min_max(
-                egui::pos2(caret_x, caret_top),
-                egui::pos2(caret_x + caret_width, caret_bottom),
-            )
-            .intersect(text_clip_rect);
-            if caret_shape.height() > 0.0 {
-                let single_painter = ui.painter().with_clip_rect(text_clip_rect);
-                let color = ui.visuals().strong_text_color();
-                single_painter.rect_filled(caret_shape, 0.0, color);
+            
+            // Debug: log why cursor might not paint
+            if tabular.editor_focus_boost_frames > 0 {
+                log::debug!("🔍 Cursor check: row={}/{} char_idx={} has_focus={}", 
+                    caret_layout.row, galley.rows.len(), caret_char_idx, has_focus);
+            }
+            
+            // Use simple fallback if galley layout fails - paint at top-left as last resort
+            if caret_layout.row < galley.rows.len() && !galley.rows.is_empty() {
+                let placed_row = &galley.rows[caret_layout.row];
+                let row = &placed_row.row;
+                let x_offset = row.x_offset(caret_layout.column);
+                let caret_x = galley_pos.x + placed_row.pos.x + x_offset;
+                let mut caret_top = galley_pos.y + placed_row.min_y();
+                let mut caret_bottom = galley_pos.y + placed_row.max_y();
+                
+                // FIX: If galley gives zero height, use text style height as fallback
+                if (caret_bottom - caret_top).abs() < 1.0 {
+                    let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+                    caret_bottom = caret_top + line_height;
+                    if tabular.editor_focus_boost_frames > 0 {
+                        log::debug!("🔧 Fixed zero-height cursor: using fallback height={:.1}", line_height);
+                    }
+                }
+                
+                let caret_width = 2.0;
+                let caret_shape = egui::Rect::from_min_max(
+                    egui::pos2(caret_x, caret_top),
+                    egui::pos2(caret_x + caret_width, caret_bottom),
+                );
+                
+                // Paint cursor regardless of height (we already fixed it above)
+                let painter = ui.painter();
+                let color = if ui.visuals().dark_mode {
+                    egui::Color32::WHITE
+                } else {
+                    egui::Color32::BLACK
+                };
+                painter.rect_filled(caret_shape, 0.0, color);
+                
+                if tabular.editor_focus_boost_frames > 0 {
+                    log::debug!("✏️ Painted cursor at byte={} char={} x={:.1} height={:.1}", 
+                        caret_b, caret_char_idx, caret_x, caret_shape.height());
+                }
+            } else {
+                // Fallback: paint cursor at editor top-left corner when layout unavailable
+                if tabular.editor_focus_boost_frames > 0 {
+                    log::debug!("⚠️ Galley layout unavailable, painting fallback cursor");
+                }
+                let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+                let caret_rect = egui::Rect::from_min_max(
+                    egui::pos2(response.rect.left() + 6.0, response.rect.top() + 6.0),
+                    egui::pos2(response.rect.left() + 8.0, response.rect.top() + 6.0 + line_height),
+                );
+                let color = if ui.visuals().dark_mode {
+                    egui::Color32::WHITE
+                } else {
+                    egui::Color32::BLACK
+                };
+                ui.painter().rect_filled(caret_rect, 0.0, color);
+                log::debug!("✏️ Painted FALLBACK cursor at editor top");
             }
         }
     }
@@ -2586,9 +2646,25 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Reset table focus flag when editor is interacted with
-    if response.clicked() {
+    if response.clicked() || response.gained_focus() {
         ui.memory_mut(|m| m.request_focus(response.id));
-        tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
+        tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(10);
+        
+        // CRITICAL: Force read cursor position from egui state immediately on click
+        if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id) {
+            let primary_b = to_byte_index(&tabular.editor.text, rng.primary);
+            tabular.cursor_position = primary_b;
+            tabular.selection_start = to_byte_index(&tabular.editor.text, rng.start);
+            tabular.selection_end = to_byte_index(&tabular.editor.text, rng.end);
+            log::debug!(
+                "🖱️ Click detected! Updated cursor_position to {} (char index {})",
+                primary_b, rng.primary
+            );
+        }
+        
+        // Request repaint to ensure caret appears immediately
+        ui.ctx().request_repaint();
+        
         if tabular.multi_selection.is_empty() {
             let caret = tabular.cursor_position.min(tabular.editor.text.len());
             tabular.pending_cursor_set = Some(caret);
