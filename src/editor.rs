@@ -2425,7 +2425,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let row = &placed_row.row;
                 let x_offset = row.x_offset(caret_layout.column);
                 let caret_x = galley_pos.x + placed_row.pos.x + x_offset;
-                let mut caret_top = galley_pos.y + placed_row.min_y();
+                let caret_top = galley_pos.y + placed_row.min_y();
                 let mut caret_bottom = galley_pos.y + placed_row.max_y();
                 
                 // FIX: If galley gives zero height, use text style height as fallback
