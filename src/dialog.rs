@@ -655,7 +655,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                 ui.horizontal(|ui| {
                     for (idx, step) in steps.iter().enumerate() {
                         let active = idx == active_index;
-                        let bullet = if active { "✓" } else { "○" };
+                        let bullet = if active { "🔥" } else { "○" };
                         let label = format!("{} {}", bullet, step.title());
                         ui.label(egui::RichText::new(label).strong().color(if active {
                             ui.visuals().strong_text_color()
