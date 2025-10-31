@@ -2107,20 +2107,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         response.request_focus();
         tabular.editor_focus_boost_frames = 10;
         ui.ctx().request_repaint();
-        log::debug!("⚡ Editor clicked/focused - requesting caret visibility, focus={}", response.has_focus());
     }
 
-    // While focus boost is active, keep focus on the editor so typing works immediately after actions
-    if tabular.editor_focus_boost_frames > 0 {
-        ui.memory_mut(|m| m.request_focus(response.id));
-        let has_focus = response.has_focus() || ui.ctx().memory(|m| m.has_focus(response.id));
-        log::debug!(
-            "⏰ Focus boost active: {} frames remaining, has_focus={}, cursor_pos={}",
-            tabular.editor_focus_boost_frames,
-            has_focus,
-            tabular.cursor_position
-        );
-    }
     // VSCode-like: subtle current line highlight
     if response.has_focus() {
         let cur = tabular.cursor_position.min(tabular.editor.text.len());
@@ -2164,10 +2152,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
         state.store(ui.ctx(), id);
         ui.ctx().request_repaint();
-        log::debug!(
-            "Autocomplete accepted via {} (rope edit, post-render)",
-            if accept_via_tab_pre { "Tab" } else { "Enter" }
-        );
     }
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
@@ -2413,11 +2397,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let caret_cursor = CCursor::new(caret_char_idx);
             let caret_layout = galley.layout_from_cursor(caret_cursor);
             
-            // Debug: log why cursor might not paint
-            if tabular.editor_focus_boost_frames > 0 {
-                log::debug!("🔍 Cursor check: row={}/{} char_idx={} has_focus={}", 
-                    caret_layout.row, galley.rows.len(), caret_char_idx, has_focus);
-            }
             
             // Use simple fallback if galley layout fails - paint at top-left as last resort
             if caret_layout.row < galley.rows.len() && !galley.rows.is_empty() {
@@ -2432,9 +2411,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 if (caret_bottom - caret_top).abs() < 1.0 {
                     let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
                     caret_bottom = caret_top + line_height;
-                    if tabular.editor_focus_boost_frames > 0 {
-                        log::debug!("🔧 Fixed zero-height cursor: using fallback height={:.1}", line_height);
-                    }
                 }
                 
                 let caret_width = 2.0;
@@ -2452,15 +2428,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 };
                 painter.rect_filled(caret_shape, 0.0, color);
                 
-                if tabular.editor_focus_boost_frames > 0 {
-                    log::debug!("✏️ Painted cursor at byte={} char={} x={:.1} height={:.1}", 
-                        caret_b, caret_char_idx, caret_x, caret_shape.height());
-                }
             } else {
-                // Fallback: paint cursor at editor top-left corner when layout unavailable
-                if tabular.editor_focus_boost_frames > 0 {
-                    log::debug!("⚠️ Galley layout unavailable, painting fallback cursor");
-                }
                 let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
                 let caret_rect = egui::Rect::from_min_max(
                     egui::pos2(response.rect.left() + 6.0, response.rect.top() + 6.0),
@@ -2489,7 +2457,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
         state.store(ui.ctx(), id);
         // Verify and re-assert if needed in the same frame
-        let mut reapplied = false;
         if let Some(s2) = TextEditState::load(ui.ctx(), id)
             && let Some(rng) = s2.cursor.char_range()
             && rng.primary.index != ci
@@ -2498,7 +2465,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             s3.cursor
                 .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
             s3.store(ui.ctx(), id);
-            reapplied = true;
         }
         tabular.cursor_position = clamped;
         tabular.pending_cursor_set = None;
@@ -2508,11 +2474,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Keep focus and repaint so the caret moves visually this frame
         ui.memory_mut(|m| m.request_focus(id));
         ui.ctx().request_repaint();
-        debug!(
-            "Applied pending cursor position {}{}",
-            clamped,
-            if reapplied { " (reapplied)" } else { "" }
-        );
         // One more hard set right after the log to absolutely force the caret position in this frame
         if let Some(state_now) = TextEditState::load(ui.ctx(), id) {
             let mut st = state_now;
@@ -2522,7 +2483,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             st.store(ui.ctx(), id);
             ui.memory_mut(|m| m.request_focus(id));
             ui.ctx().request_repaint();
-            debug!("Forced caret to {} after pending apply log", clamped);
         }
     }
     // Enforce expected caret for a short window after autocomplete accept
