@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Tabular
+GenericName=Database Client
+Comment=Connect, query, and visualize your data with Tabular
+TryExec=/usr/bin/tabular
+Exec=/usr/bin/tabular
+Icon=tabular
+Terminal=false
+Categories=Development;Database;
+StartupWMClass=tabular
+Keywords=database;sql;mongodb;postgres;mysql;redis;sqlite;
