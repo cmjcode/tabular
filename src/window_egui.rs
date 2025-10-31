@@ -7093,8 +7093,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         debug!("🔥 Starting execute_paginated_query()");
         self.query_execution_in_progress = true;
         self.extend_query_icon_hold();
-        // Ensure UI honors table browse semantics (enables spreadsheet editing shortcuts)
-        self.is_table_browse_mode = true;
+        // Note: is_table_browse_mode is NOT set here - it should only be true when browsing tables via sidebar
         // Use connection from active tab, not global current_connection_id
         let connection_id = self
             .query_tabs
@@ -7179,7 +7178,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
                     active_tab.current_page = self.current_page;
                     active_tab.page_size = self.page_size;
-                    active_tab.is_table_browse_mode = true;
+                    // Note: is_table_browse_mode is not forced here - it inherits from self
+                    active_tab.is_table_browse_mode = self.is_table_browse_mode;
                 }
 
                 // Save this first page into row cache (only when on first page)
@@ -10599,6 +10599,7 @@ impl App for Tabular {
                                     }
                                 });
                             if execute_clicked {
+                                self.is_table_browse_mode = false;
                                 self.query_execution_in_progress = true;
                                 self.extend_query_icon_hold();
                                 editor::execute_query(self);

@@ -3197,6 +3197,7 @@ pub(crate) fn navigate_command_palette(tabular: &mut window_egui::Tabular, direc
 }
 
 pub(crate) fn execute_selected_command(tabular: &mut window_egui::Tabular) {
+    tabular.is_table_browse_mode = false;
     // Filter commands based on current input
     let filtered_commands: Vec<String> = if tabular.command_palette_input.is_empty() {
         tabular.command_palette_items.clone()
