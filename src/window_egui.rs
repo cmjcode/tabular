@@ -2747,10 +2747,10 @@ impl Tabular {
                         } else if params.pending_connection_pools.contains(&conn_id) {
                             (egui::Color32::from_rgb(241, 196, 15), "Connecting") // yellow
                         } else {
-                            (egui::Color32::from_rgb(231, 76, 60), "Disconnected") // red
+                            (egui::Color32::from_rgb(255, 30, 0), "Disconnected") // red
                         }
                     } else {
-                        (egui::Color32::from_rgb(231, 76, 60), "Disconnected")
+                        (egui::Color32::from_rgb(255, 30, 0), "Disconnected")
                     }
                 } else { (ui.visuals().text_color(), "") };
 
@@ -7989,7 +7989,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         };
 
         let keyword_color = egui::Color32::from_rgb(86, 156, 214); // Blue - SQL keywords
-        let string_color = egui::Color32::from_rgb(255, 60, 0); // Orange - strings
+        let string_color = egui::Color32::from_rgb(255, 30, 0); // Orange - strings
         let comment_color = egui::Color32::from_rgb(106, 153, 85); // Green - comments
         let number_color = egui::Color32::from_rgb(181, 206, 168); // Light green - numbers
         let function_color = egui::Color32::from_rgb(255, 206, 84); // Yellow - functions
@@ -8202,7 +8202,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                         ui.label("Checking for updates...");
                     });
                 } else if let Some(error) = &self.update_check_error {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+                    ui.colored_label(egui::Color32::from_rgb(255, 30, 0), format!("Error: {}", error));
                     ui.separator();
                     if ui.button("Close").clicked() {
                         self.show_update_dialog = false;
@@ -9303,7 +9303,7 @@ impl App for Tabular {
                     // Tab bar
                     ui.horizontal(|ui| {
                         // Accent color (red) can adapt for light/dark if needed
-                        let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 60, 0) } else { egui::Color32::from_rgb(180,30,30) };
+                        let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 30, 0) } else { egui::Color32::from_rgb(180,30,30) };
                         let inactive_fg = ui.visuals().text_color();
                         let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
                             let selected = *current == me;
@@ -9817,9 +9817,9 @@ impl App for Tabular {
         ctx.style_mut(|style| {
             // Keep text selection visible with a subtle highlight
             if self.is_dark_mode {
-                style.visuals.selection.bg_fill = egui::Color32::from_rgb(132, 33, 10); // rgba(132, 33, 3, 1);
+                style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 30, 0); // rgba(132, 33, 3, 1);
             } else {
-                style.visuals.selection.bg_fill = egui::Color32::from_rgb(218, 168, 168); // rgba(218, 168, 168, 1);
+                style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 30, 0); // rgba(218, 168, 168, 1);
             }
             style.visuals.selection.stroke.color = egui::Color32::BLACK;
 
@@ -9875,7 +9875,7 @@ impl App for Tabular {
                                     .color(egui::Color32::WHITE)
                                     .text_style(egui::TextStyle::Body),
                             )
-                            .fill(egui::Color32::from_rgb(255, 60, 0))
+                            .fill(egui::Color32::from_rgb(255, 30, 0))
                         } else {
                             egui::Button::new("Database").fill(egui::Color32::TRANSPARENT)
                         };
@@ -9893,7 +9893,7 @@ impl App for Tabular {
                                     .color(egui::Color32::WHITE)
                                     .text_style(egui::TextStyle::Body),
                             )
-                            .fill(egui::Color32::from_rgb(255, 60, 0)) // Orange fill for active
+                            .fill(egui::Color32::from_rgb(255, 30, 0)) // Orange fill for active
                         } else {
                             egui::Button::new("Queries").fill(egui::Color32::TRANSPARENT)
                         };
@@ -9911,7 +9911,7 @@ impl App for Tabular {
                                     .color(egui::Color32::WHITE)
                                     .text_style(egui::TextStyle::Body),
                             )
-                            .fill(egui::Color32::from_rgb(255, 60, 0)) // Orange fill for active
+                            .fill(egui::Color32::from_rgb(255, 30, 0)) // Orange fill for active
                         } else {
                             egui::Button::new("History").fill(egui::Color32::TRANSPARENT)
                         };
@@ -10024,7 +10024,7 @@ impl App for Tabular {
                                 if ui
                                     .add_sized(
                                         [24.0, 24.0], // Small square button
-                                        egui::Button::new("➕").fill(egui::Color32::RED),
+                                        egui::Button::new("➕").fill(egui::Color32::from_rgb(255, 30, 0)),
                                     )
                                     .on_hover_text("Add New Database Connection")
                                     .clicked()
@@ -10039,7 +10039,7 @@ impl App for Tabular {
                             //     if ui.add_sized(
                             //         [24.0, 24.0], // Small square button
                             //         egui::Button::new("➕")
-                            //             .fill(egui::Color32::RED)
+                            //             .fill(egui::Color32::from_rgb(255, 30, 0))
                             //     ).on_hover_text("New Query File").clicked() {
                             //         // Create new tab instead of clearing editor
                             //         editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
@@ -10110,7 +10110,7 @@ impl App for Tabular {
                         for (i, tab) in self.query_tabs.iter().enumerate() {
                             let active = i == self.active_tab_index;
                             let color = if active {
-                                egui::Color32::from_rgb(255, 60, 0)
+                                egui::Color32::from_rgb(255, 30, 0)
                             } else {
                                 ui.visuals().text_color()
                             };
@@ -10358,8 +10358,8 @@ impl App for Tabular {
                         ui.scope(|ui| {
                             // Provide consistent active styling for the toggle buttons.
                             let mut style = ui.style().as_ref().clone();
-                            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 13, 0);
-                            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 13, 0);
+                            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 30, 0);
+                            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 30, 0);
                             ui.set_style(style);
 
                             ui.horizontal(|ui| {
@@ -10763,7 +10763,7 @@ impl App for Tabular {
                                     self.pending_drop_collection = None;
                                 }
                                 if ui
-                                    .button(egui::RichText::new("Confirm").color(egui::Color32::RED))
+                                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)))
                                     .clicked()
                                 {
                                     // Execute drop via Mongo driver
@@ -10813,7 +10813,7 @@ impl App for Tabular {
                                     self.pending_drop_table = None;
                                 }
                                 if ui
-                                    .button(egui::RichText::new("Confirm").color(egui::Color32::RED))
+                                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)))
                                     .clicked()
                                 {
                                     use log::{info, error};

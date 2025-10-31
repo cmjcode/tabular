@@ -447,7 +447,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
             let translucent = egui::Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 210);
             egui::Frame::popup(ui.style())
                 .fill(translucent)
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 40, 40)))
+                .stroke(egui::Stroke::new(0.5, egui::Color32::from_rgb(255, 30, 0))) // rgba(255, 30, 0, 1)
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {

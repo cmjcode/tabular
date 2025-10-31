@@ -57,7 +57,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     }
                     if tabular.spreadsheet_state.is_dirty {
                         ui.separator();
-                        ui.colored_label(egui::Color32::RED, "Unsaved changes (⌘S)");
+                        ui.colored_label(egui::Color32::from_rgb(255, 30, 0), "Unsaved changes (⌘S)");
                     }
                 });
                 ui.separator();
@@ -515,7 +515,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             if is_selected_cell {
                                                 let stroke = egui::Stroke::new(
                                                     2.0,
-                                                    egui::Color32::from_rgb(255, 60, 0),
+                                                    egui::Color32::from_rgb(255, 30, 0),
                                                 );
                                                 ui.painter().rect_filled(
                                                     rect,
@@ -1029,7 +1029,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // (Pagination dipindahkan & kini dirender terpisah secara universal di akhir fungsi)
         } else if tabular.current_table_name.starts_with("Failed") {
-            ui.colored_label(egui::Color32::RED, &tabular.current_table_name);
+            ui.colored_label(egui::Color32::from_rgb(255, 30, 0), &tabular.current_table_name);
         } else {
             // Tampilkan header & pagination walaupun tidak ada data
             // Ambil header dari tab aktif bila current_table_headers kosong
@@ -1893,10 +1893,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
         ui.scope(|ui| {
             let mut style = ui.style().as_ref().clone();
-            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 13, 0);
-            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 13, 0);
-            style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(255, 13, 0);
-            style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(255, 13, 0);
+            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 30, 0);
+            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 30, 0);
+            style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(255, 30, 0);
+            style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(255, 30, 0);
             ui.set_style(style);
 
             ui.set_min_width(toggle_width);
@@ -1915,7 +1915,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                         ui.allocate_exact_size(button_size, egui::Sense::click());
 
                     let mut bg = if active {
-                        egui::Color32::from_rgb(255, 13, 0)
+                        egui::Color32::from_rgb(255, 30, 0)
                     } else {
                         ui.visuals().widgets.inactive.bg_fill
                     };
@@ -1924,7 +1924,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                     }
 
                     let stroke_color = if active {
-                        egui::Color32::from_rgb(255, 13, 0)
+                        egui::Color32::from_rgb(255, 30, 0)
                     } else {
                         ui.visuals().widgets.inactive.bg_stroke.color
                     };
@@ -2412,7 +2412,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                 let stroke =
                                                     egui::Stroke::new(
                                                         2.0,
-                                                        egui::Color32::from_rgb(255, 60, 0),
+                                                        egui::Color32::from_rgb(255, 30, 0),
                                                     );
                                                 ui.painter().rect_stroke(
                                                     rect,
@@ -2817,7 +2817,7 @@ pub(crate) fn render_structure_columns_editor(
                     }
                     // Draw the selected cell outline last (on top)
                     if let Some(rect) = selected_cell_rect {
-                        let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 0));
+                        let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 30, 0));
                         ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
                     }
                 });
@@ -3104,7 +3104,7 @@ pub(crate) fn render_drop_column_confirmation(
                     tabular.pending_drop_column_stmt = None;
                 }
                 if ui
-                    .button(egui::RichText::new("Confirm").color(egui::Color32::RED))
+                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)))
                     .clicked()
                 {
                     if let Some(conn_id) = tabular.current_connection_id
@@ -3493,7 +3493,7 @@ pub(crate) fn render_drop_index_confirmation(
                     tabular.pending_drop_index_stmt = None;
                 }
                 if ui
-                    .button(egui::RichText::new("Confirm").color(egui::Color32::RED))
+                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)))
                     .clicked()
                 {
                     if let Some(conn_id) = tabular.current_connection_id

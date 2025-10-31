@@ -592,8 +592,8 @@ pub(crate) fn render_connection_dialog(
                         });
                     } else {
                         ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::RED, "✗");
-                            ui.colored_label(egui::Color32::RED, message);
+                            ui.colored_label(egui::Color32::from_rgb(255, 30, 0), "✗");
+                            ui.colored_label(egui::Color32::from_rgb(255, 30, 0), message);
                         });
                     }
                 }
