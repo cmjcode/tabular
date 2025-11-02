@@ -80,6 +80,7 @@ anyhow = { version = "1", optional = true }
 once_cell = "1"
 thiserror = "1"
 async-trait = "0.1.89"
+cargo-deb = "3.6.2"
 
 [features]
 default = ["tree_sitter_sequel", "query_ast"]
@@ -92,3 +93,28 @@ tree_sitter_sequel = ["tree-sitter", "tree-sitter-sequel", "anyhow"]
 query_ast = ["sqlparser"]
 
 # removed lapce_core in egui-only mode
+
+[package.metadata.deb]
+name = "tabular"
+maintainer = "Tabular Team <yulius.jayuda@gmail.com>"
+copyright = "Copyright © 2025 Y.N Pamungkas Jayuda"
+license-file = ["LICENSE", "4"]
+section = "utils"
+priority = "optional"
+depends = [
+       "libc6",
+       "libssl3",
+       "libgtk-3-0",
+       "libxcb1",
+       "libxkbcommon0",
+       "libglib2.0-0",
+]
+assets = [
+       ["tabular.desktop", "usr/share/applications/tabular.desktop", "644"],
+       ["assets/logo.png", "usr/share/icons/hicolor/512x512/apps/tabular.png", "644"],
+       ["LICENSE", "usr/share/doc/tabular/LICENSE", "644"],
+       ["LICENSE-AGPL", "usr/share/doc/tabular/LICENSE-AGPL", "644"],
+]
+extended-description = "Tabular helps you explore and query SQL and NoSQL databases from a single desktop app."
+recommends = ["update-desktop-database", "gtk-update-icon-cache"]
+maintainer-scripts = "debian"
