@@ -11,44 +11,45 @@ fn paint_text_edit_cursor(
     text: &str,
 ) {
     if let Some(text_state) = egui::TextEdit::load_state(ui.ctx(), text_edit_id)
-        && let Some(cursor_range) = text_state.cursor.char_range() {
-            let cursor_pos = cursor_range.primary.index;
-            
-            // Calculate cursor X position from actual text width
-            let text_before_cursor = if cursor_pos <= text.len() {
-                &text[..cursor_pos]
-            } else {
-                text
-            };
-            
-            let font_id = egui::TextStyle::Body.resolve(ui.style());
-            let galley = ui.fonts(|f| {
-                f.layout_no_wrap(
-                    text_before_cursor.to_string(),
-                    font_id,
-                    ui.visuals().text_color(),
-                )
-            });
-            let text_width = galley.rect.width();
-            
-            // Position cursor in response rect
-            let text_margin = 4.0; // TextEdit internal margin
-            let caret_x = response.rect.min.x + text_margin + text_width;
-            let caret_top = response.rect.min.y + 2.0;
-            let caret_bottom = response.rect.max.y - 2.0;
-            
-            // Paint visible cursor
-            let cursor_color = ui.visuals().text_cursor.stroke.color;
-            let cursor_width = 2.0;
-            ui.painter().rect_filled(
-                egui::Rect::from_min_max(
-                    egui::pos2(caret_x - cursor_width / 2.0, caret_top),
-                    egui::pos2(caret_x + cursor_width / 2.0, caret_bottom),
-                ),
-                0.0,
-                cursor_color,
-            );
-        }
+        && let Some(cursor_range) = text_state.cursor.char_range()
+    {
+        let cursor_pos = cursor_range.primary.index;
+
+        // Calculate cursor X position from actual text width
+        let text_before_cursor = if cursor_pos <= text.len() {
+            &text[..cursor_pos]
+        } else {
+            text
+        };
+
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let galley = ui.fonts(|f| {
+            f.layout_no_wrap(
+                text_before_cursor.to_string(),
+                font_id,
+                ui.visuals().text_color(),
+            )
+        });
+        let text_width = galley.rect.width();
+
+        // Position cursor in response rect
+        let text_margin = 4.0; // TextEdit internal margin
+        let caret_x = response.rect.min.x + text_margin + text_width;
+        let caret_top = response.rect.min.y + 2.0;
+        let caret_bottom = response.rect.max.y - 2.0;
+
+        // Paint visible cursor
+        let cursor_color = ui.visuals().text_cursor.stroke.color;
+        let cursor_width = 2.0;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(caret_x - cursor_width / 2.0, caret_top),
+                egui::pos2(caret_x + cursor_width / 2.0, caret_bottom),
+            ),
+            0.0,
+            cursor_color,
+        );
+    }
 }
 
 fn load_logo_texture(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
@@ -207,8 +208,7 @@ pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui:
                     // Filename input
                     ui.label("Enter filename:");
                     let filename_resp = ui.add(
-                        egui::TextEdit::singleline(&mut tabular.save_filename)
-                            .cursor_at_end(false)
+                        egui::TextEdit::singleline(&mut tabular.save_filename).cursor_at_end(false),
                     );
                     if filename_resp.clicked() || filename_resp.gained_focus() {
                         filename_resp.request_focus();
@@ -683,9 +683,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                         ui.label(connection_caption.clone());
                     });
                     ui.add_space(4.0);
-                    let target_text = state
-                        .database_name.as_deref()
-                        .unwrap_or("[default schema]");
+                    let target_text = state.database_name.as_deref().unwrap_or("[default schema]");
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Target").strong());
                         ui.separator();
@@ -717,20 +715,29 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                             .cursor_at_end(false)
                                             .id(text_edit_id),
                                     );
-                                    
+
                                     if response.clicked() || response.gained_focus() {
                                         ui.memory_mut(|mem| mem.request_focus(text_edit_id));
-                                        if let Some(mut state_inner) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
+                                        if let Some(mut state_inner) =
+                                            egui::TextEdit::load_state(ui.ctx(), text_edit_id)
+                                        {
                                             use egui::text::{CCursor, CCursorRange};
-                                            state_inner.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(0))));
+                                            state_inner.cursor.set_char_range(Some(
+                                                CCursorRange::one(CCursor::new(0)),
+                                            ));
                                             state_inner.store(ui.ctx(), text_edit_id);
                                         }
                                         ui.ctx().request_repaint();
                                     }
-                                    
+
                                     // Custom cursor painting
-                                    paint_text_edit_cursor(ui, &response, text_edit_id, &state.table_name);
-                                    
+                                    paint_text_edit_cursor(
+                                        ui,
+                                        &response,
+                                        text_edit_id,
+                                        &state.table_name,
+                                    );
+
                                     if response.changed() {
                                         tabular.create_table_error = None;
                                     }
@@ -866,7 +873,12 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                                     ui.memory_mut(|mem| mem.request_focus(name_id));
                                                     ui.ctx().request_repaint();
                                                 }
-                                                paint_text_edit_cursor(ui, &name_resp, name_id, &column.name);
+                                                paint_text_edit_cursor(
+                                                    ui,
+                                                    &name_resp,
+                                                    name_id,
+                                                    &column.name,
+                                                );
                                                 if name_resp.changed() {
                                                     tabular.create_table_error = None;
                                                 }
@@ -875,15 +887,22 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                                 let type_id = ui.id().with(("col_type", idx));
                                                 let type_resp = ui.add_sized(
                                                     [type_width, 0.0],
-                                                    egui::TextEdit::singleline(&mut column.data_type)
-                                                        .cursor_at_end(false)
-                                                        .id(type_id),
+                                                    egui::TextEdit::singleline(
+                                                        &mut column.data_type,
+                                                    )
+                                                    .cursor_at_end(false)
+                                                    .id(type_id),
                                                 );
                                                 if type_resp.clicked() || type_resp.gained_focus() {
                                                     ui.memory_mut(|mem| mem.request_focus(type_id));
                                                     ui.ctx().request_repaint();
                                                 }
-                                                paint_text_edit_cursor(ui, &type_resp, type_id, &column.data_type);
+                                                paint_text_edit_cursor(
+                                                    ui,
+                                                    &type_resp,
+                                                    type_id,
+                                                    &column.data_type,
+                                                );
                                                 if type_resp.changed() {
                                                     tabular.create_table_error = None;
                                                 }
@@ -900,15 +919,26 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                                 let default_id = ui.id().with(("col_default", idx));
                                                 let default_resp = ui.add_sized(
                                                     [default_width, 0.0],
-                                                    egui::TextEdit::singleline(&mut column.default_value)
-                                                        .cursor_at_end(false)
-                                                        .id(default_id),
+                                                    egui::TextEdit::singleline(
+                                                        &mut column.default_value,
+                                                    )
+                                                    .cursor_at_end(false)
+                                                    .id(default_id),
                                                 );
-                                                if default_resp.clicked() || default_resp.gained_focus() {
-                                                    ui.memory_mut(|mem| mem.request_focus(default_id));
+                                                if default_resp.clicked()
+                                                    || default_resp.gained_focus()
+                                                {
+                                                    ui.memory_mut(|mem| {
+                                                        mem.request_focus(default_id)
+                                                    });
                                                     ui.ctx().request_repaint();
                                                 }
-                                                paint_text_edit_cursor(ui, &default_resp, default_id, &column.default_value);
+                                                paint_text_edit_cursor(
+                                                    ui,
+                                                    &default_resp,
+                                                    default_id,
+                                                    &column.default_value,
+                                                );
                                                 if default_resp.changed() {
                                                     tabular.create_table_error = None;
                                                 }
@@ -1009,7 +1039,12 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                                 ui.memory_mut(|mem| mem.request_focus(name_id));
                                                 ui.ctx().request_repaint();
                                             }
-                                            paint_text_edit_cursor(ui, &name_resp, name_id, &index_def.name);
+                                            paint_text_edit_cursor(
+                                                ui,
+                                                &name_resp,
+                                                name_id,
+                                                &index_def.name,
+                                            );
                                             if name_resp.changed() {
                                                 tabular.create_table_error = None;
                                             }
@@ -1026,11 +1061,16 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                                 ui.memory_mut(|mem| mem.request_focus(cols_id));
                                                 ui.ctx().request_repaint();
                                             }
-                                            paint_text_edit_cursor(ui, &cols_resp, cols_id, &index_def.columns);
+                                            paint_text_edit_cursor(
+                                                ui,
+                                                &cols_resp,
+                                                cols_id,
+                                                &index_def.columns,
+                                            );
                                             if cols_resp.changed() {
                                                 tabular.create_table_error = None;
                                             }
-                                            
+
                                             if ui.checkbox(&mut index_def.unique, "").changed() {
                                                 tabular.create_table_error = None;
                                             }
@@ -1134,10 +1174,9 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                     .as_ref()
                                     .map(|res| res.is_ok())
                                     .unwrap_or(false);
-                                let create_button = egui::Button::new(
-                                    egui::RichText::new("Create Table").strong(),
-                                )
-                                .min_size(egui::vec2(110.0, 32.0));
+                                let create_button =
+                                    egui::Button::new(egui::RichText::new("Create Table").strong())
+                                        .min_size(egui::vec2(110.0, 32.0));
                                 if ui.add_enabled(create_enabled, create_button).clicked() {
                                     action = WizardAction::Create;
                                 }
@@ -1148,9 +1187,9 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                             egui::Button::new("Copy SQL"),
                                         )
                                         .clicked()
-                                    {
-                                        copy_preview = Some(sql.clone());
-                                    }
+                                {
+                                    copy_preview = Some(sql.clone());
+                                }
                             } else if ui
                                 .add_sized(egui::vec2(110.0, 32.0), egui::Button::new("Next"))
                                 .clicked()
@@ -1178,9 +1217,10 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
         }
         WizardAction::Back => {
             if let Some(state) = tabular.create_table_wizard.as_mut()
-                && let Some(prev) = state.current_step.previous() {
-                    state.current_step = prev;
-                }
+                && let Some(prev) = state.current_step.previous()
+            {
+                state.current_step = prev;
+            }
             tabular.create_table_error = None;
             tabular.show_create_table_dialog = true;
         }

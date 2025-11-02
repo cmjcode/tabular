@@ -86,6 +86,10 @@ pub struct Tabular {
     // Background processing channels
     pub background_sender: Option<Sender<models::enums::BackgroundTask>>,
     pub background_receiver: Option<Receiver<models::enums::BackgroundResult>>,
+    pub query_result_sender: Sender<connection::QueryResultMessage>,
+    pub query_result_receiver: Receiver<connection::QueryResultMessage>,
+    pub active_query_jobs: std::collections::HashMap<u64, connection::QueryJobStatus>,
+    pub next_query_job_id: u64,
     // Background refresh status tracking
     pub refreshing_connections: std::collections::HashSet<i64>,
     // Pending expansion state restore after refresh
@@ -518,6 +522,8 @@ impl Tabular {
         let (background_sender, background_receiver) =
             mpsc::channel::<models::enums::BackgroundTask>();
         let (result_sender, result_receiver) = mpsc::channel::<models::enums::BackgroundResult>();
+        let (query_result_sender, query_result_receiver) =
+            mpsc::channel::<connection::QueryResultMessage>();
 
         // Create shared runtime for all database operations
         let runtime = match tokio::runtime::Runtime::new() {
@@ -569,6 +575,10 @@ impl Tabular {
             test_connection_in_progress: false,
             background_sender: Some(background_sender),
             background_receiver: Some(result_receiver),
+            query_result_sender,
+            query_result_receiver,
+            active_query_jobs: std::collections::HashMap::new(),
+            next_query_job_id: 1,
             refreshing_connections: std::collections::HashSet::new(),
             pending_expansion_restore: std::collections::HashMap::new(),
             pending_auto_load: std::collections::HashSet::new(),
@@ -853,6 +863,23 @@ impl Tabular {
         });
     }
 
+    fn handle_query_result_message(&mut self, message: connection::QueryResultMessage) {
+        if let Some(status) = self.active_query_jobs.get_mut(&message.job_id) {
+            status.completed = true;
+        }
+        self.active_query_jobs.remove(&message.job_id);
+
+        if let Some(ast_sql) = message.ast_debug_sql.clone() {
+            self.last_compiled_sql = Some(ast_sql);
+        }
+        if let Some(ast_headers) = message.ast_headers.clone() {
+            self.last_compiled_headers = ast_headers;
+        }
+
+        let result_tuple = Some((message.headers.clone(), message.rows.clone()));
+        editor::process_query_result(self, &message.query, message.connection_id, result_tuple);
+    }
+
     pub fn set_active_tab_connection_with_database(
         &mut self,
         connection_id: Option<i64>,
@@ -928,15 +955,16 @@ impl Tabular {
         );
 
         if let Some(first_column) = state.columns.first_mut()
-            && first_column.data_type.is_empty() {
-                first_column.data_type = match connection.connection_type {
-                    models::enums::DatabaseType::PostgreSQL => "SERIAL".to_string(),
-                    models::enums::DatabaseType::SQLite => "INTEGER".to_string(),
-                    models::enums::DatabaseType::MySQL => "INT".to_string(),
-                    models::enums::DatabaseType::MsSQL => "INT".to_string(),
-                    _ => String::new(),
-                };
-            }
+            && first_column.data_type.is_empty()
+        {
+            first_column.data_type = match connection.connection_type {
+                models::enums::DatabaseType::PostgreSQL => "SERIAL".to_string(),
+                models::enums::DatabaseType::SQLite => "INTEGER".to_string(),
+                models::enums::DatabaseType::MySQL => "INT".to_string(),
+                models::enums::DatabaseType::MsSQL => "INT".to_string(),
+                _ => String::new(),
+            };
+        }
 
         self.current_connection_id = Some(connection_id);
         self.create_table_wizard = Some(state);
@@ -1214,7 +1242,10 @@ impl Tabular {
                     self.create_table_error = None;
                     self.create_table_wizard = None;
                     self.show_create_table_dialog = false;
-                    self.error_message = format!("Table '{}' has been created successfully.", state.table_name.trim());
+                    self.error_message = format!(
+                        "Table '{}' has been created successfully.",
+                        state.table_name.trim()
+                    );
                     self.show_error_message = true;
                     self.refresh_connection(state.connection_id);
                 } else {
@@ -8198,7 +8229,10 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                         ui.label("Checking for updates...");
                     });
                 } else if let Some(error) = &self.update_check_error {
-                    ui.colored_label(egui::Color32::from_rgb(255, 30, 0), format!("Error: {}", error));
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 30, 0),
+                        format!("Error: {}", error),
+                    );
                     ui.separator();
                     if ui.button("Close").clicked() {
                         self.show_update_dialog = false;
@@ -9659,6 +9693,11 @@ impl App for Tabular {
                     }
                 }
             }
+        }
+
+        while let Ok(message) = self.query_result_receiver.try_recv() {
+            self.handle_query_result_message(message);
+            ctx.request_repaint();
         }
 
         // Kick off deferred auto download if flagged (done outside borrow loops)

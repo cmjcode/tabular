@@ -9,6 +9,7 @@ use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, sidebar_history,
     sidebar_query, window_egui,
 };
+use std::time::Instant;
 
 // Tab management methods
 pub(crate) fn create_new_tab(
@@ -2381,11 +2382,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
     }
-    
+
     // ALWAYS paint cursor when no multi-selection - fallback for egui's built-in cursor
     if tabular.multi_selection.is_empty() {
         let has_focus = response.has_focus() || ui.ctx().memory(|m| m.has_focus(response.id));
-        
+
         // Only paint when editor has focus or during focus boost window
         if has_focus || tabular.editor_focus_boost_frames > 0 {
             let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
@@ -2396,8 +2397,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             };
             let caret_cursor = CCursor::new(caret_char_idx);
             let caret_layout = galley.layout_from_cursor(caret_cursor);
-            
-            
+
             // Use simple fallback if galley layout fails - paint at top-left as last resort
             if caret_layout.row < galley.rows.len() && !galley.rows.is_empty() {
                 let placed_row = &galley.rows[caret_layout.row];
@@ -2406,19 +2406,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let caret_x = galley_pos.x + placed_row.pos.x + x_offset;
                 let caret_top = galley_pos.y + placed_row.min_y();
                 let mut caret_bottom = galley_pos.y + placed_row.max_y();
-                
+
                 // FIX: If galley gives zero height, use text style height as fallback
                 if (caret_bottom - caret_top).abs() < 1.0 {
                     let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
                     caret_bottom = caret_top + line_height;
                 }
-                
+
                 let caret_width = 2.0;
                 let caret_shape = egui::Rect::from_min_max(
                     egui::pos2(caret_x, caret_top),
                     egui::pos2(caret_x + caret_width, caret_bottom),
                 );
-                
+
                 // Paint cursor regardless of height (we already fixed it above)
                 let painter = ui.painter();
                 let color = if ui.visuals().dark_mode {
@@ -2427,12 +2427,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     egui::Color32::BLACK
                 };
                 painter.rect_filled(caret_shape, 0.0, color);
-                
             } else {
                 let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
                 let caret_rect = egui::Rect::from_min_max(
                     egui::pos2(response.rect.left() + 6.0, response.rect.top() + 6.0),
-                    egui::pos2(response.rect.left() + 8.0, response.rect.top() + 6.0 + line_height),
+                    egui::pos2(
+                        response.rect.left() + 8.0,
+                        response.rect.top() + 6.0 + line_height,
+                    ),
                 );
                 let color = if ui.visuals().dark_mode {
                     egui::Color32::WHITE
@@ -2609,22 +2611,25 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     if response.clicked() || response.gained_focus() {
         ui.memory_mut(|m| m.request_focus(response.id));
         tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(10);
-        
+
         // CRITICAL: Force read cursor position from egui state immediately on click
-        if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id) {
+        if let Some(rng) =
+            crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
+        {
             let primary_b = to_byte_index(&tabular.editor.text, rng.primary);
             tabular.cursor_position = primary_b;
             tabular.selection_start = to_byte_index(&tabular.editor.text, rng.start);
             tabular.selection_end = to_byte_index(&tabular.editor.text, rng.end);
             log::debug!(
                 "🖱️ Click detected! Updated cursor_position to {} (char index {})",
-                primary_b, rng.primary
+                primary_b,
+                rng.primary
             );
         }
-        
+
         // Request repaint to ensure caret appears immediately
         ui.ctx().request_repaint();
-        
+
         if tabular.multi_selection.is_empty() {
             let caret = tabular.cursor_position.min(tabular.editor.text.len());
             tabular.pending_cursor_set = Some(caret);
@@ -3626,112 +3631,159 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
             }
         }
 
-        let result =
-            connection::execute_query_with_connection(tabular, connection_id, query.clone());
+        let job_id = tabular.next_query_job_id;
+        tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
 
-        debug!("Query execution result: {:?}", result.is_some());
+        match connection::prepare_query_job(tabular, connection_id, query.clone(), job_id) {
+            Ok(job) => {
+                let status = connection::QueryJobStatus {
+                    job_id,
+                    connection_id,
+                    query_preview: query.chars().take(80).collect(),
+                    started_at: Instant::now(),
+                    completed: false,
+                };
+                tabular.active_query_jobs.insert(job_id, status);
 
-        // Mark tab as having executed a query (regardless of success/failure)
-        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-            tab.has_executed_query = true;
-        }
+                if let Err(err) =
+                    connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone())
+                {
+                    tabular.active_query_jobs.remove(&job_id);
+                    debug!("Failed to spawn async job: {:?}", err);
+                    let result = connection::execute_query_with_connection(
+                        tabular,
+                        connection_id,
+                        query.clone(),
+                    );
 
-        if let Some((headers, data)) = result {
-            let is_error_result = headers.first().map(|h| h == "Error").unwrap_or(false);
-            debug!("=== QUERY RESULT SUCCESS ===");
-            debug!("Headers received: {} - {:?}", headers.len(), headers);
-            debug!("Data rows received: {}", data.len());
-            if !data.is_empty() {
-                debug!("First row sample: {:?}", &data[0]);
-            }
+                    debug!("Query execution result: {:?}", result.is_some());
 
-            tabular.current_table_headers = headers;
-
-            // Use pagination for query results
-            data_table::update_pagination_data(tabular, data);
-
-            if tabular.total_rows == 0 {
-                tabular.current_table_name = "Query executed successfully (no results)".to_string();
-            } else {
-                tabular.current_table_name = format!(
-                    "Query Results ({} total rows, showing page {} of {})",
-                    tabular.total_rows,
-                    tabular.current_page + 1,
-                    data_table::get_total_pages(tabular)
-                );
-            }
-            debug!(
-                "After update_pagination_data - total_rows: {}, all_table_data.len(): {}",
-                tabular.total_rows,
-                tabular.all_table_data.len()
-            );
-            debug!("============================");
-
-            // Set the base query for pagination - this is crucial for regular queries!
-            // For regular queries, we set the base query to the executed query (without LIMIT)
-            let base_query_for_pagination = if !is_error_result && tabular.total_rows > 0 {
-                // Simple LIMIT removal for pagination - remove LIMIT clause if present
-                let mut clean_query = query.clone();
-                if let Some(limit_pos) = clean_query.to_uppercase().rfind("LIMIT") {
-                    // Find the end of the LIMIT clause (look for semicolon or end of string)
-                    if let Some(semicolon_pos) = clean_query[limit_pos..].find(';') {
-                        clean_query = format!(
-                            "{}{}",
-                            &clean_query[..limit_pos].trim(),
-                            &clean_query[limit_pos + semicolon_pos..]
-                        );
-                    } else {
-                        clean_query = clean_query[..limit_pos].trim().to_string();
-                    }
+                    process_query_result(tabular, &query, connection_id, result);
+                } else {
+                    tabular.current_table_name = "Running query…".to_string();
                 }
-                clean_query
-            } else {
-                String::new()
-            };
-            tabular.current_base_query = base_query_for_pagination.clone();
-            debug!(
-                "📝 Set base_query for pagination: '{}'",
-                base_query_for_pagination
-            );
+            }
+            Err(err) => {
+                debug!("Failed to prepare async job: {:?}", err);
+                let result = connection::execute_query_with_connection(
+                    tabular,
+                    connection_id,
+                    query.clone(),
+                );
 
-            // Save query to history hanya jika bukan hasil error
-            if !is_error_result {
-                sidebar_history::save_query_to_history(tabular, &query, connection_id);
-            } else {
-                debug!("Skip saving to history karena hasil error");
-            }
-            // Persist into tab state
-            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                tab.result_headers = tabular.current_table_headers.clone();
-                tab.result_rows = tabular.current_table_data.clone();
-                tab.result_all_rows = tabular.all_table_data.clone();
-                tab.result_table_name = tabular.current_table_name.clone();
-                tab.is_table_browse_mode = tabular.is_table_browse_mode;
-                tab.current_page = tabular.current_page;
-                tab.page_size = tabular.page_size;
-                tab.total_rows = tabular.total_rows;
-                tab.base_query = tabular.current_base_query.clone(); // Save the base query to the tab
-            }
-        } else {
-            tabular.current_table_name = "Query execution failed".to_string();
-            tabular.current_table_headers.clear();
-            tabular.current_table_data.clear();
-            tabular.all_table_data.clear();
-            tabular.total_rows = 0;
-            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                tab.result_headers.clear();
-                tab.result_rows.clear();
-                tab.result_all_rows.clear();
-                tab.result_table_name = tabular.current_table_name.clone();
-                tab.total_rows = 0;
-                tab.current_page = 0;
-                tab.base_query.clear(); // Clear base query on failure
+                debug!("Query execution result: {:?}", result.is_some());
+
+                process_query_result(tabular, &query, connection_id, result);
             }
         }
-
-        tabular.query_execution_in_progress = false;
-        tabular.extend_query_icon_hold();
     }
+}
+
+pub(crate) fn process_query_result(
+    tabular: &mut window_egui::Tabular,
+    query: &str,
+    connection_id: i64,
+    result: Option<(Vec<String>, Vec<Vec<String>>)>,
+) {
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.has_executed_query = true;
+    }
+
+    if let Some((headers, data)) = result {
+        let is_error_result = headers.first().map(|h| h == "Error").unwrap_or(false);
+        debug!("=== QUERY RESULT SUCCESS ===");
+        debug!("Headers received: {} - {:?}", headers.len(), headers);
+        debug!("Data rows received: {}", data.len());
+        if !data.is_empty() {
+            debug!("First row sample: {:?}", &data[0]);
+        }
+
+        tabular.current_table_headers = headers;
+
+        // Use pagination for query results
+        data_table::update_pagination_data(tabular, data);
+
+        if tabular.total_rows == 0 {
+            tabular.current_table_name = "Query executed successfully (no results)".to_string();
+        } else {
+            tabular.current_table_name = format!(
+                "Query Results ({} total rows, showing page {} of {})",
+                tabular.total_rows,
+                tabular.current_page + 1,
+                data_table::get_total_pages(tabular)
+            );
+        }
+        debug!(
+            "After update_pagination_data - total_rows: {}, all_table_data.len(): {}",
+            tabular.total_rows,
+            tabular.all_table_data.len()
+        );
+        debug!("============================");
+
+        // Set the base query for pagination - this is crucial for regular queries!
+        // For regular queries, we set the base query to the executed query (without LIMIT)
+        let base_query_for_pagination = if !is_error_result && tabular.total_rows > 0 {
+            // Simple LIMIT removal for pagination - remove LIMIT clause if present
+            let mut clean_query = query.to_string();
+            if let Some(limit_pos) = clean_query.to_uppercase().rfind("LIMIT") {
+                // Find the end of the LIMIT clause (look for semicolon or end of string)
+                if let Some(semicolon_pos) = clean_query[limit_pos..].find(';') {
+                    clean_query = format!(
+                        "{}{}",
+                        &clean_query[..limit_pos].trim(),
+                        &clean_query[limit_pos + semicolon_pos..]
+                    );
+                } else {
+                    clean_query = clean_query[..limit_pos].trim().to_string();
+                }
+            }
+            clean_query
+        } else {
+            String::new()
+        };
+        tabular.current_base_query = base_query_for_pagination.clone();
+        debug!(
+            "📝 Set base_query for pagination: '{}'",
+            base_query_for_pagination
+        );
+
+        // Save query to history hanya jika bukan hasil error
+        if !is_error_result {
+            sidebar_history::save_query_to_history(tabular, query, connection_id);
+        } else {
+            debug!("Skip saving to history karena hasil error");
+        }
+        // Persist into tab state
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.result_headers = tabular.current_table_headers.clone();
+            tab.result_rows = tabular.current_table_data.clone();
+            tab.result_all_rows = tabular.all_table_data.clone();
+            tab.result_table_name = tabular.current_table_name.clone();
+            tab.is_table_browse_mode = tabular.is_table_browse_mode;
+            tab.current_page = tabular.current_page;
+            tab.page_size = tabular.page_size;
+            tab.total_rows = tabular.total_rows;
+            tab.base_query = tabular.current_base_query.clone(); // Save the base query to the tab
+        }
+    } else {
+        tabular.current_table_name = "Query execution failed".to_string();
+        tabular.current_table_headers.clear();
+        tabular.current_table_data.clear();
+        tabular.all_table_data.clear();
+        tabular.total_rows = 0;
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.result_headers.clear();
+            tab.result_rows.clear();
+            tab.result_all_rows.clear();
+            tab.result_table_name = tabular.current_table_name.clone();
+            tab.total_rows = 0;
+            tab.current_page = 0;
+            tab.base_query.clear(); // Clear base query on failure
+        }
+    }
+
+    tabular.query_execution_in_progress = false;
+    tabular.extend_query_icon_hold();
 }
 
 pub(crate) fn extract_query_from_cursor(tabular: &mut window_egui::Tabular) -> String {

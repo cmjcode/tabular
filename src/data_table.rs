@@ -55,7 +55,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     }
                     if tabular.spreadsheet_state.is_dirty {
                         ui.separator();
-                        ui.colored_label(egui::Color32::from_rgb(255, 30, 0), "Unsaved changes (⌘S)");
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 30, 0),
+                            "Unsaved changes (⌘S)",
+                        );
                     }
                 });
                 ui.separator();
@@ -1027,7 +1030,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // (Pagination dipindahkan & kini dirender terpisah secara universal di akhir fungsi)
         } else if tabular.current_table_name.starts_with("Failed") {
-            ui.colored_label(egui::Color32::from_rgb(255, 30, 0), &tabular.current_table_name);
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 30, 0),
+                &tabular.current_table_name,
+            );
         } else {
             // Tampilkan header & pagination walaupun tidak ada data
             // Ambil header dari tab aktif bila current_table_headers kosong
@@ -3102,7 +3108,9 @@ pub(crate) fn render_drop_column_confirmation(
                     tabular.pending_drop_column_stmt = None;
                 }
                 if ui
-                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)))
+                    .button(
+                        egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)),
+                    )
                     .clicked()
                 {
                     if let Some(conn_id) = tabular.current_connection_id
@@ -3491,7 +3499,9 @@ pub(crate) fn render_drop_index_confirmation(
                     tabular.pending_drop_index_stmt = None;
                 }
                 if ui
-                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)))
+                    .button(
+                        egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)),
+                    )
                     .clicked()
                 {
                     if let Some(conn_id) = tabular.current_connection_id

@@ -16,9 +16,939 @@ use sqlx::{
     sqlite::SqlitePoolOptions,
 };
 use std::sync::Arc;
+use std::time::Instant;
 
 // Limit concurrent prefetch tasks to avoid overwhelming servers and local machine
 const PREFETCH_CONCURRENCY: usize = 6;
+
+#[derive(Clone, Debug)]
+pub struct QueryExecutionOptions {
+    pub connection_id: i64,
+    pub connection: models::structs::ConnectionConfig,
+    pub query: String,
+    pub selected_database: Option<String>,
+    pub use_server_pagination: bool,
+    pub current_page: usize,
+    pub page_size: usize,
+    pub base_query: Option<String>,
+    pub dba_special_mode: Option<models::enums::DBASpecialMode>,
+    pub save_to_history: bool,
+    pub ast_enabled: bool,
+}
+
+#[derive(Clone)]
+pub struct QueryJob {
+    pub job_id: u64,
+    pub options: QueryExecutionOptions,
+    pub connection_pool: models::enums::DatabasePool,
+    pub started_at: Instant,
+}
+
+#[derive(Clone, Debug)]
+pub struct QueryJobStatus {
+    pub job_id: u64,
+    pub connection_id: i64,
+    pub query_preview: String,
+    pub started_at: Instant,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueryResultMessage {
+    pub job_id: u64,
+    pub connection_id: i64,
+    pub success: bool,
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub error: Option<String>,
+    pub duration: std::time::Duration,
+    pub query: String,
+    pub dba_special_mode: Option<models::enums::DBASpecialMode>,
+    pub ast_debug_sql: Option<String>,
+    pub ast_headers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueryJobOutput {
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub ast_debug_sql: Option<String>,
+    pub ast_headers: Option<Vec<String>>,
+}
+
+#[derive(Debug)]
+pub enum QueryPreparationError {
+    ConnectionNotFound,
+    PoolUnavailable,
+    RuntimeUnavailable,
+    UnsupportedDatabase,
+}
+
+#[derive(Debug)]
+pub enum QueryExecutionError {
+    Message(String),
+}
+
+pub(crate) fn prepare_query_job(
+    tabular: &mut Tabular,
+    connection_id: i64,
+    query: String,
+    job_id: u64,
+) -> Result<QueryJob, QueryPreparationError> {
+    let connection = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))
+        .cloned()
+        .ok_or(QueryPreparationError::ConnectionNotFound)?;
+
+    match connection.connection_type {
+        models::enums::DatabaseType::Redis
+        | models::enums::DatabaseType::MsSQL
+        | models::enums::DatabaseType::MongoDB => {
+            return Err(QueryPreparationError::UnsupportedDatabase);
+        }
+        _ => {}
+    }
+
+    let selected_database = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.database_name.clone())
+        .filter(|s| !s.trim().is_empty());
+
+    let dba_special_mode = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.dba_special_mode.clone());
+
+    let connection_pool = if let Some(pool) = tabular.connection_pools.get(&connection_id) {
+        pool.clone()
+    } else if let Ok(shared) = tabular.shared_connection_pools.lock() {
+        shared
+            .get(&connection_id)
+            .cloned()
+            .ok_or(QueryPreparationError::PoolUnavailable)?
+    } else {
+        return Err(QueryPreparationError::PoolUnavailable);
+    };
+
+    let base_query = if tabular.current_base_query.trim().is_empty() {
+        None
+    } else {
+        Some(tabular.current_base_query.clone())
+    };
+
+    let options = QueryExecutionOptions {
+        connection_id,
+        connection,
+        query,
+        selected_database,
+        use_server_pagination: tabular.use_server_pagination,
+        current_page: tabular.current_page,
+        page_size: tabular.page_size,
+        base_query,
+        dba_special_mode,
+        save_to_history: true,
+        ast_enabled: cfg!(feature = "query_ast"),
+    };
+
+    Ok(QueryJob {
+        job_id,
+        options,
+        connection_pool,
+        started_at: Instant::now(),
+    })
+}
+
+pub(crate) fn spawn_query_job(
+    tabular: &mut Tabular,
+    job: QueryJob,
+    sender: std::sync::mpsc::Sender<QueryResultMessage>,
+) -> Result<(), QueryPreparationError> {
+    let runtime = tabular
+        .runtime
+        .clone()
+        .ok_or(QueryPreparationError::RuntimeUnavailable)?;
+
+    runtime.spawn(async move {
+        let result = execute_query_job(job).await;
+        let _ = sender.send(result);
+    });
+
+    Ok(())
+}
+
+async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
+    let start = job.started_at;
+    let connection_id = job.options.connection_id;
+    let query = job.options.query.clone();
+    let dba_special_mode = job.options.dba_special_mode.clone();
+
+    let outcome = match job.options.connection.connection_type {
+        models::enums::DatabaseType::MySQL => {
+            execute_mysql_query_job(&job.options, job.connection_pool.clone()).await
+        }
+        models::enums::DatabaseType::PostgreSQL => {
+            execute_postgres_query_job(&job.options, job.connection_pool.clone()).await
+        }
+        models::enums::DatabaseType::SQLite => {
+            execute_sqlite_query_job(&job.options, job.connection_pool.clone()).await
+        }
+        models::enums::DatabaseType::Redis => {
+            execute_redis_query_job(&job.options, job.connection_pool.clone()).await
+        }
+        models::enums::DatabaseType::MsSQL => {
+            execute_mssql_query_job(&job.options, job.connection_pool.clone()).await
+        }
+        models::enums::DatabaseType::MongoDB => {
+            execute_mongodb_query_job(&job.options, job.connection_pool.clone()).await
+        }
+    };
+
+    match outcome {
+        Ok(output) => QueryResultMessage {
+            job_id: job.job_id,
+            connection_id,
+            success: true,
+            headers: output.headers,
+            rows: output.rows,
+            error: None,
+            duration: start.elapsed(),
+            query,
+            dba_special_mode,
+            ast_debug_sql: output.ast_debug_sql,
+            ast_headers: output.ast_headers,
+        },
+        Err(err) => {
+            let message = describe_execution_error(err);
+            QueryResultMessage {
+                job_id: job.job_id,
+                connection_id,
+                success: false,
+                headers: vec!["Error".to_string()],
+                rows: vec![vec![message.clone()]],
+                error: Some(message),
+                duration: start.elapsed(),
+                query,
+                dba_special_mode,
+                ast_debug_sql: None,
+                ast_headers: None,
+            }
+        }
+    }
+}
+
+fn describe_execution_error(err: QueryExecutionError) -> String {
+    match err {
+        QueryExecutionError::Message(msg) => msg,
+    }
+}
+
+async fn execute_mysql_query_job(
+    options: &QueryExecutionOptions,
+    _pool: models::enums::DatabasePool,
+) -> Result<QueryJobOutput, QueryExecutionError> {
+    debug!(
+        "[async] Executing MySQL query (job {})",
+        options.connection_id
+    );
+
+    let (target_host, target_port) =
+        resolve_connection_target(&options.connection).map_err(QueryExecutionError::Message)?;
+
+    let statements_raw: Vec<&str> = options
+        .query
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    #[cfg(feature = "query_ast")]
+    let mut inferred_headers_from_ast: Option<Vec<String>> = None;
+    let mut ast_headers: Option<Vec<String>> = None;
+    #[cfg(feature = "query_ast")]
+    let statements: Vec<String> = if statements_raw.len() == 1
+        && statements_raw[0]
+            .trim_start()
+            .to_uppercase()
+            .starts_with("SELECT")
+    {
+        let pagination_opt = if options.use_server_pagination {
+            Some((options.current_page as u64, options.page_size as u64))
+        } else {
+            None
+        };
+        match crate::query_ast::compile_single_select(
+            statements_raw[0],
+            &options.connection.connection_type,
+            pagination_opt,
+            true,
+        ) {
+            Ok((new_sql, hdrs)) => {
+                if !hdrs.is_empty() {
+                    inferred_headers_from_ast = Some(hdrs.clone());
+                    ast_headers = Some(hdrs.clone());
+                }
+                vec![new_sql]
+            }
+            Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
+        }
+    } else {
+        statements_raw.iter().map(|s| s.to_string()).collect()
+    };
+    #[cfg(not(feature = "query_ast"))]
+    let statements: Vec<String> = statements_raw.iter().map(|s| s.to_string()).collect();
+    #[cfg(feature = "query_ast")]
+    let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+    #[cfg(not(feature = "query_ast"))]
+    let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+
+    let replication_status_mode = matches!(
+        options.dba_special_mode,
+        Some(models::enums::DBASpecialMode::ReplicationStatus)
+    );
+    let master_status_mode = matches!(
+        options.dba_special_mode,
+        Some(models::enums::DBASpecialMode::MasterStatus)
+    );
+
+    let encoded_username = modules::url_encode(&options.connection.username);
+    let encoded_password = modules::url_encode(&options.connection.password);
+
+    let default_db = if let Some(db) = &options.selected_database {
+        if db.trim().is_empty() {
+            options.connection.database.clone()
+        } else {
+            db.clone()
+        }
+    } else {
+        options.connection.database.clone()
+    };
+
+    let mut ast_debug_sql: Option<String> = None;
+    #[cfg(feature = "query_ast")]
+    {
+        if let Some(sql) = statements.first() {
+            if statements.len() == 1
+                && statements_raw.len() == 1
+                && statements_raw[0]
+                    .trim_start()
+                    .to_uppercase()
+                    .starts_with("SELECT")
+            {
+                ast_debug_sql = Some(sql.clone());
+            }
+        }
+    }
+
+    let mut attempts = 0;
+    let max_attempts = 3;
+    let mut last_error: Option<String> = None;
+
+    while attempts < max_attempts {
+        attempts += 1;
+
+        let dsn = format!(
+            "mysql://{}:{}@{}:{}/{}",
+            encoded_username, encoded_password, target_host, target_port, default_db
+        );
+
+        let mut conn = match MySqlConnection::connect(&dsn).await {
+            Ok(c) => c,
+            Err(e) => {
+                last_error = Some(e.to_string());
+                continue;
+            }
+        };
+
+        let _ = sqlx::query("SET SESSION wait_timeout = 600")
+            .execute(&mut conn)
+            .await;
+        let _ = sqlx::query("SET SESSION interactive_timeout = 600")
+            .execute(&mut conn)
+            .await;
+        let _ = sqlx::query("SET SESSION net_read_timeout = 120")
+            .execute(&mut conn)
+            .await;
+        let _ = sqlx::query("SET SESSION net_write_timeout = 120")
+            .execute(&mut conn)
+            .await;
+        let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824")
+            .execute(&mut conn)
+            .await;
+        let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
+            .execute(&mut conn)
+            .await;
+
+        let mut final_headers: Vec<String> = Vec::new();
+        let mut final_data: Vec<Vec<String>> = Vec::new();
+        let mut execution_success = true;
+
+        for (idx, statement) in statements_ref.iter().enumerate() {
+            let trimmed = statement.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with("--")
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("/*")
+            {
+                continue;
+            }
+
+            let upper = trimmed.to_uppercase();
+            if upper.starts_with("USE ") {
+                let db_part = trimmed[3..].trim();
+                let db_name = db_part
+                    .trim_matches('`')
+                    .trim_matches('"')
+                    .trim_matches('[')
+                    .trim_matches(']')
+                    .trim();
+
+                let use_stmt = format!("USE `{}`", db_name);
+                if sqlx::query(&use_stmt).execute(&mut conn).await.is_err() {
+                    let new_dsn = format!(
+                        "mysql://{}:{}@{}:{}/{}",
+                        encoded_username, encoded_password, target_host, target_port, db_name
+                    );
+                    match MySqlConnection::connect(&new_dsn).await {
+                        Ok(new_conn) => {
+                            let mut new_conn = new_conn;
+                            let _ = sqlx::query("SET SESSION wait_timeout = 600")
+                                .execute(&mut new_conn)
+                                .await;
+                            let _ = sqlx::query("SET SESSION interactive_timeout = 600")
+                                .execute(&mut new_conn)
+                                .await;
+                            let _ = sqlx::query("SET SESSION net_read_timeout = 120")
+                                .execute(&mut new_conn)
+                                .await;
+                            let _ = sqlx::query("SET SESSION net_write_timeout = 120")
+                                .execute(&mut new_conn)
+                                .await;
+                            let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824")
+                                .execute(&mut new_conn)
+                                .await;
+                            let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
+                                .execute(&mut new_conn)
+                                .await;
+                            conn = new_conn;
+                        }
+                        Err(e) => {
+                            last_error = Some(format!("USE failed (reconnect): {}", e));
+                            execution_success = false;
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let query_result = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                sqlx::query(trimmed).fetch_all(&mut conn),
+            )
+            .await;
+
+            match query_result {
+                Ok(Ok(rows)) => {
+                    if idx == statements_ref.len() - 1 {
+                        if !rows.is_empty() {
+                            final_headers = rows[0]
+                                .columns()
+                                .iter()
+                                .map(|c| c.name().to_string())
+                                .collect();
+                            final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
+
+                            if replication_status_mode || master_status_mode {
+                                let version_str = match sqlx::query("SELECT VERSION() AS v")
+                                    .fetch_one(&mut conn)
+                                    .await
+                                {
+                                    Ok(vrow) => vrow.try_get::<String, _>("v").unwrap_or_default(),
+                                    Err(_) => String::new(),
+                                };
+                                let is_mariadb = version_str.to_lowercase().contains("mariadb");
+
+                                if replication_status_mode && final_data.is_empty() {
+                                    if let Ok(fallback_rows) =
+                                        sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await
+                                        && !fallback_rows.is_empty()
+                                    {
+                                        final_headers = fallback_rows[0]
+                                            .columns()
+                                            .iter()
+                                            .map(|c| c.name().to_string())
+                                            .collect();
+                                        final_data = driver_mysql::convert_mysql_rows_to_table_data(
+                                            fallback_rows,
+                                        );
+                                    }
+                                }
+
+                                if !final_headers.is_empty() && !final_data.is_empty() {
+                                    let header_index = |name: &str| {
+                                        final_headers
+                                            .iter()
+                                            .position(|h| h.eq_ignore_ascii_case(name))
+                                    };
+                                    let first = &final_data[0];
+                                    let mut summary: Vec<(String, String)> = Vec::new();
+
+                                    if replication_status_mode {
+                                        if let Some(idx) = header_index("Replica_IO_Running")
+                                            .or_else(|| header_index("Slave_IO_Running"))
+                                        {
+                                            summary.push(("IO Thread".into(), first[idx].clone()));
+                                        }
+                                        if let Some(idx) = header_index("Replica_SQL_Running")
+                                            .or_else(|| header_index("Slave_SQL_Running"))
+                                        {
+                                            summary.push(("SQL Thread".into(), first[idx].clone()));
+                                        }
+                                        if let Some(idx) = header_index("Seconds_Behind_Source")
+                                            .or_else(|| header_index("Seconds_Behind_Master"))
+                                        {
+                                            summary.push((
+                                                "Seconds Behind".into(),
+                                                first[idx].clone(),
+                                            ));
+                                        }
+                                        if let Some(idx) = header_index("Channel_Name") {
+                                            summary.push(("Channel".into(), first[idx].clone()));
+                                        }
+                                        if let Some(idx) = header_index("Retrieved_Gtid_Set") {
+                                            summary.push((
+                                                "Retrieved GTID".into(),
+                                                first[idx].clone(),
+                                            ));
+                                        }
+                                        if let Some(idx) = header_index("Executed_Gtid_Set") {
+                                            summary
+                                                .push(("Executed GTID".into(), first[idx].clone()));
+                                        }
+                                    }
+
+                                    if master_status_mode {
+                                        if let Some(idx) = header_index("File") {
+                                            summary.push((
+                                                "Binary Log File".into(),
+                                                first[idx].clone(),
+                                            ));
+                                        }
+                                        if let Some(idx) = header_index("Position") {
+                                            summary.push(("Position".into(), first[idx].clone()));
+                                        }
+                                        if let Some(idx) = header_index("Binlog_Do_DB") {
+                                            summary
+                                                .push(("Binlog Do DB".into(), first[idx].clone()));
+                                        }
+                                        if let Some(idx) = header_index("Binlog_Ignore_DB") {
+                                            summary.push((
+                                                "Binlog Ignore DB".into(),
+                                                first[idx].clone(),
+                                            ));
+                                        }
+                                    }
+
+                                    if !summary.is_empty() {
+                                        let mut summary_table: Vec<Vec<String>> = summary
+                                            .into_iter()
+                                            .map(|(metric, value)| vec![metric, value])
+                                            .collect();
+                                        summary_table.push(vec![
+                                            "Server Version".into(),
+                                            version_str.clone(),
+                                        ]);
+                                        summary_table.push(vec![
+                                            "Engine".into(),
+                                            if is_mariadb {
+                                                "MariaDB".into()
+                                            } else {
+                                                "MySQL".into()
+                                            },
+                                        ]);
+                                        final_headers = vec!["Metric".into(), "Value".into()];
+                                        final_data = summary_table;
+                                    }
+                                }
+                            }
+                        } else {
+                            #[cfg(feature = "query_ast")]
+                            if final_headers.is_empty()
+                                && ast_debug_sql.is_some()
+                                && let Some(hh) = inferred_headers_from_ast.clone()
+                                && !hh.is_empty()
+                            {
+                                final_headers = hh;
+                            }
+
+                            if final_headers.is_empty()
+                                && trimmed.to_uppercase().starts_with("SELECT")
+                            {
+                                let inferred = infer_select_headers(trimmed);
+                                if !inferred.is_empty() {
+                                    final_headers = inferred;
+                                }
+                            }
+
+                            final_data = Vec::new();
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    last_error = Some(e.to_string());
+                    execution_success = false;
+                    break;
+                }
+                Err(_) => {
+                    last_error = Some("Query timeout after 60s".to_string());
+                    execution_success = false;
+                    break;
+                }
+            }
+        }
+
+        if execution_success {
+            return Ok(QueryJobOutput {
+                headers: final_headers,
+                rows: final_data,
+                ast_debug_sql,
+                ast_headers,
+            });
+        }
+    }
+
+    Err(QueryExecutionError::Message(
+        last_error.unwrap_or_else(|| "Unknown MySQL error".to_string()),
+    ))
+}
+
+async fn execute_postgres_query_job(
+    options: &QueryExecutionOptions,
+    pool: models::enums::DatabasePool,
+) -> Result<QueryJobOutput, QueryExecutionError> {
+    let pg_pool = match pool {
+        models::enums::DatabasePool::PostgreSQL(pg) => pg,
+        _ => {
+            return Err(QueryExecutionError::Message(
+                "Invalid pool type for PostgreSQL".to_string(),
+            ));
+        }
+    };
+
+    let statements_raw: Vec<&str> = options
+        .query
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    #[cfg(feature = "query_ast")]
+    let mut inferred_headers_from_ast: Option<Vec<String>> = None;
+    let mut ast_headers: Option<Vec<String>> = None;
+    let mut ast_debug_sql: Option<String> = None;
+
+    #[cfg(feature = "query_ast")]
+    let statements: Vec<String> = if statements_raw.len() == 1
+        && statements_raw[0]
+            .trim_start()
+            .to_uppercase()
+            .starts_with("SELECT")
+    {
+        let pagination_opt = if options.use_server_pagination {
+            Some((options.current_page as u64, options.page_size as u64))
+        } else {
+            None
+        };
+        match crate::query_ast::compile_single_select(
+            statements_raw[0],
+            &options.connection.connection_type,
+            pagination_opt,
+            true,
+        ) {
+            Ok((new_sql, hdrs)) => {
+                if !hdrs.is_empty() {
+                    inferred_headers_from_ast = Some(hdrs.clone());
+                    ast_headers = Some(hdrs.clone());
+                }
+                ast_debug_sql = Some(new_sql.clone());
+                vec![new_sql]
+            }
+            Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
+        }
+    } else {
+        statements_raw.iter().map(|s| s.to_string()).collect()
+    };
+    #[cfg(not(feature = "query_ast"))]
+    let statements: Vec<String> = statements_raw.iter().map(|s| s.to_string()).collect();
+    #[cfg(feature = "query_ast")]
+    let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+    #[cfg(not(feature = "query_ast"))]
+    let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+
+    let mut final_headers = Vec::new();
+    let mut final_data = Vec::new();
+
+    for (i, statement) in statements_ref.iter().enumerate() {
+        let trimmed = statement.trim();
+        if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") {
+            continue;
+        }
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            sqlx::query(trimmed).fetch_all(pg_pool.as_ref()),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(rows)) => {
+                if i == statements_ref.len() - 1 {
+                    if !rows.is_empty() {
+                        final_headers = rows[0]
+                            .columns()
+                            .iter()
+                            .map(|c| c.name().to_string())
+                            .collect();
+                        final_data = rows
+                            .into_iter()
+                            .map(|row| {
+                                (0..row.len())
+                                    .map(|idx| match row.try_get::<Option<String>, _>(idx) {
+                                        Ok(Some(v)) => v,
+                                        Ok(None) => "NULL".to_string(),
+                                        Err(_) => {
+                                            // Try a few primitive fallbacks
+                                            if let Ok(val) = row.try_get::<i64, _>(idx) {
+                                                val.to_string()
+                                            } else if let Ok(val) = row.try_get::<f64, _>(idx) {
+                                                val.to_string()
+                                            } else if let Ok(val) = row.try_get::<bool, _>(idx) {
+                                                val.to_string()
+                                            } else {
+                                                "[unsupported]".to_string()
+                                            }
+                                        }
+                                    })
+                                    .collect()
+                            })
+                            .collect();
+                    } else {
+                        #[cfg(feature = "query_ast")]
+                        if final_headers.is_empty()
+                            && let Some(hh) = inferred_headers_from_ast.clone()
+                            && !hh.is_empty()
+                        {
+                            final_headers = hh;
+                        }
+                        if final_headers.is_empty() && trimmed.to_uppercase().starts_with("SELECT")
+                        {
+                            let inferred = infer_select_headers(trimmed);
+                            if !inferred.is_empty() {
+                                final_headers = inferred;
+                            }
+                        }
+                        final_data = Vec::new();
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                return Err(QueryExecutionError::Message(format!(
+                    "PostgreSQL error: {}",
+                    e
+                )));
+            }
+            Err(_) => {
+                return Err(QueryExecutionError::Message(
+                    "PostgreSQL query timed out".to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(QueryJobOutput {
+        headers: final_headers,
+        rows: final_data,
+        ast_debug_sql,
+        ast_headers,
+    })
+}
+
+async fn execute_sqlite_query_job(
+    options: &QueryExecutionOptions,
+    pool: models::enums::DatabasePool,
+) -> Result<QueryJobOutput, QueryExecutionError> {
+    let sqlite_pool = match pool {
+        models::enums::DatabasePool::SQLite(p) => p,
+        _ => {
+            return Err(QueryExecutionError::Message(
+                "Invalid pool type for SQLite".to_string(),
+            ));
+        }
+    };
+
+    let statements_raw: Vec<&str> = options
+        .query
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    #[cfg(feature = "query_ast")]
+    let mut inferred_headers_from_ast: Option<Vec<String>> = None;
+    let mut ast_headers: Option<Vec<String>> = None;
+    let mut ast_debug_sql: Option<String> = None;
+
+    #[cfg(feature = "query_ast")]
+    let statements: Vec<String> = if statements_raw.len() == 1
+        && statements_raw[0]
+            .trim_start()
+            .to_uppercase()
+            .starts_with("SELECT")
+    {
+        let pagination_opt = if options.use_server_pagination {
+            Some((options.current_page as u64, options.page_size as u64))
+        } else {
+            None
+        };
+        match crate::query_ast::compile_single_select(
+            statements_raw[0],
+            &options.connection.connection_type,
+            pagination_opt,
+            true,
+        ) {
+            Ok((new_sql, hdrs)) => {
+                if !hdrs.is_empty() {
+                    inferred_headers_from_ast = Some(hdrs.clone());
+                    ast_headers = Some(hdrs.clone());
+                }
+                ast_debug_sql = Some(new_sql.clone());
+                vec![new_sql]
+            }
+            Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
+        }
+    } else {
+        statements_raw.iter().map(|s| s.to_string()).collect()
+    };
+    #[cfg(not(feature = "query_ast"))]
+    let statements: Vec<String> = statements_raw.iter().map(|s| s.to_string()).collect();
+    #[cfg(feature = "query_ast")]
+    let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+    #[cfg(not(feature = "query_ast"))]
+    let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+
+    let mut final_headers = Vec::new();
+    let mut final_data = Vec::new();
+
+    for (i, statement) in statements_ref.iter().enumerate() {
+        let trimmed = statement.trim();
+        if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") {
+            continue;
+        }
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sqlx::query(trimmed).fetch_all(sqlite_pool.as_ref()),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(rows)) => {
+                if i == statements_ref.len() - 1 {
+                    if !rows.is_empty() {
+                        final_headers = rows[0]
+                            .columns()
+                            .iter()
+                            .map(|c| c.name().to_string())
+                            .collect();
+                        final_data = rows
+                            .into_iter()
+                            .map(|row| {
+                                (0..row.len())
+                                    .map(|idx| match row.try_get::<Option<String>, _>(idx) {
+                                        Ok(Some(v)) => v,
+                                        Ok(None) => "NULL".to_string(),
+                                        Err(_) => {
+                                            if let Ok(val) = row.try_get::<i64, _>(idx) {
+                                                val.to_string()
+                                            } else if let Ok(val) = row.try_get::<f64, _>(idx) {
+                                                val.to_string()
+                                            } else if let Ok(val) = row.try_get::<bool, _>(idx) {
+                                                val.to_string()
+                                            } else {
+                                                "[unsupported]".to_string()
+                                            }
+                                        }
+                                    })
+                                    .collect()
+                            })
+                            .collect();
+                    } else {
+                        #[cfg(feature = "query_ast")]
+                        if final_headers.is_empty()
+                            && let Some(hh) = inferred_headers_from_ast.clone()
+                            && !hh.is_empty()
+                        {
+                            final_headers = hh;
+                        }
+                        if final_headers.is_empty() && trimmed.to_uppercase().starts_with("SELECT")
+                        {
+                            let inferred = infer_select_headers(trimmed);
+                            if !inferred.is_empty() {
+                                final_headers = inferred;
+                            }
+                        }
+                        final_data = Vec::new();
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                return Err(QueryExecutionError::Message(format!("SQLite error: {}", e)));
+            }
+            Err(_) => {
+                return Err(QueryExecutionError::Message(
+                    "SQLite query timed out".to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(QueryJobOutput {
+        headers: final_headers,
+        rows: final_data,
+        ast_debug_sql,
+        ast_headers,
+    })
+}
+
+async fn execute_redis_query_job(
+    _options: &QueryExecutionOptions,
+    _pool: models::enums::DatabasePool,
+) -> Result<QueryJobOutput, QueryExecutionError> {
+    Err(QueryExecutionError::Message(
+        "Redis async execution not yet implemented".to_string(),
+    ))
+}
+
+async fn execute_mssql_query_job(
+    _options: &QueryExecutionOptions,
+    _pool: models::enums::DatabasePool,
+) -> Result<QueryJobOutput, QueryExecutionError> {
+    Err(QueryExecutionError::Message(
+        "MsSQL async execution not yet implemented".to_string(),
+    ))
+}
+
+async fn execute_mongodb_query_job(
+    _options: &QueryExecutionOptions,
+    _pool: models::enums::DatabasePool,
+) -> Result<QueryJobOutput, QueryExecutionError> {
+    Err(QueryExecutionError::Message(
+        "MongoDB async execution not yet implemented".to_string(),
+    ))
+}
 
 fn resolve_connection_target(
     connection: &models::structs::ConnectionConfig,
