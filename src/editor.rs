@@ -2198,16 +2198,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Guard: treat a single collapsed region at the current caret as no multi-selection.
     // This avoids switching to the custom multi-cursor paint path unnecessarily,
     // which in some cases could make the caret appear to "freeze".
-    if tabular.multi_selection.len() == 1 {
-        if let Some((a, b)) = tabular.multi_selection.primary_range() {
-            if a == b {
+    if tabular.multi_selection.len() == 1
+        && let Some((a, b)) = tabular.multi_selection.primary_range()
+            && a == b {
                 let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
                 if b == caret_b {
                     tabular.multi_selection.clear();
                 }
             }
-        }
-    }
 
     // Clear multi-selection on Escape
     if input_snapshot.key_pressed(egui::Key::Escape) && !tabular.multi_selection.is_empty() {
@@ -2655,8 +2653,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // CRITICAL: Only update cursor/selection if NOT in a text-change frame, because
     // response.changed() already set the correct cursor position from diff calculation.
     // Reading egui state here would overwrite with stale values.
-    if !response.changed() {
-        if let Some(rng) =
+    if !response.changed()
+        && let Some(rng) =
             crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
         {
             // Convert char indices from egui to byte indices for our buffer
@@ -2676,7 +2674,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 tabular.selected_text.clear();
             }
         }
-    }
 
     // Enforce selection collapse visually if requested by a previous destructive action
     if tabular.selection_force_clear {
@@ -3754,9 +3751,9 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
     tabular.lint_messages = query_tools::lint_sql(&query);
     tabular.show_lint_panel = !tabular.lint_messages.is_empty();
 
-    if tabular.auto_format_on_execute {
-        if let Some(formatted) = query_tools::format_sql(&query) {
-            if formatted != query {
+    if tabular.auto_format_on_execute
+        && let Some(formatted) = query_tools::format_sql(&query)
+            && formatted != query {
                 let executed_full_editor = tabular.editor.text.trim() == query;
                 query = formatted.clone();
                 if executed_full_editor {
@@ -3768,8 +3765,6 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
                     tabular.last_editor_text = tabular.editor.text.clone();
                 }
             }
-        }
-    }
 
     if query.is_empty() {
         tabular.query_execution_in_progress = false;

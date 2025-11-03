@@ -191,8 +191,8 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             hint: Some("Add a WHERE clause to scope the update.".to_string()),
         });
     }
-    if upper.contains("DROP TABLE") && !upper.contains("IF EXISTS") {
-        if let Some(idx) = find_case_insensitive(trimmed, "DROP TABLE") {
+    if upper.contains("DROP TABLE") && !upper.contains("IF EXISTS")
+        && let Some(idx) = find_case_insensitive(trimmed, "DROP TABLE") {
             messages.push(LintMessage {
                 severity: LintSeverity::Info,
                 message: "DROP TABLE without IF EXISTS may fail if the table is missing.".to_string(),
@@ -200,7 +200,6 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
                 hint: Some("Consider DROP TABLE IF EXISTS ...".to_string()),
             });
         }
-    }
 
     messages
 }
@@ -218,15 +217,13 @@ pub fn format_sql(sql: &str) -> Option<String> {
     while let Some(tok) = tokens.next() {
         let mut token = tok.to_string();
         let mut upper = token.to_ascii_uppercase();
-        if matches!(upper.as_str(), "LEFT" | "RIGHT" | "INNER" | "OUTER" | "FULL" | "CROSS") {
-            if let Some(next) = tokens.peek() {
-                if next.to_ascii_uppercase() == "JOIN" {
+        if matches!(upper.as_str(), "LEFT" | "RIGHT" | "INNER" | "OUTER" | "FULL" | "CROSS")
+            && let Some(next) = tokens.peek()
+                && next.eq_ignore_ascii_case("JOIN") {
                     let join = tokens.next().unwrap();
                     token = format!("{} {}", tok, join);
                     upper = "JOIN".to_string();
                 }
-            }
-        }
 
         let break_before = matches!(
             upper.as_str(),

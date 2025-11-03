@@ -242,11 +242,10 @@ mod ts {
 
         fn ensure_snapshot(&mut self, text: &str) -> Option<Arc<SemanticSnapshot>> {
             let hash = hash_text(text);
-            if let Some(snapshot) = self.snapshot.as_ref() {
-                if snapshot.source_hash == hash {
+            if let Some(snapshot) = self.snapshot.as_ref()
+                && snapshot.source_hash == hash {
                     return self.snapshot.clone();
                 }
-            }
 
             let tree = self.reparse(text)?;
             let snapshot = Arc::new(build_snapshot(
@@ -265,12 +264,11 @@ mod ts {
 
         fn reparse(&mut self, text: &str) -> Option<Tree> {
             let mut previous_tree = self.tree.take();
-            if let (Some(old_tree), true) = (&mut previous_tree, !self.last_text.is_empty()) {
-                if let Some(edit) = compute_edit(&self.last_text, text) {
+            if let (Some(old_tree), true) = (&mut previous_tree, !self.last_text.is_empty())
+                && let Some(edit) = compute_edit(&self.last_text, text) {
                     let input_edit = to_input_edit(&self.last_text, text, &edit);
                     old_tree.edit(&input_edit);
                 }
-            }
 
             let parsed = self
                 .parser
@@ -848,11 +846,10 @@ mod ts {
         fn collect_properties(object: Node, text: &str) -> Vec<SymbolNode> {
             let mut props = Vec::new();
             for i in 0..object.named_child_count() {
-                if let Some(child) = object.named_child(i) {
-                    if child.kind() == "pair" {
+                if let Some(child) = object.named_child(i)
+                    && child.kind() == "pair" {
                         props.push(build_property_symbol(child, text));
                     }
-                }
             }
             props
         }
@@ -1120,15 +1117,12 @@ mod ts {
                 "lexical_declaration" | "variable_declaration" => {
                     let mut names = Vec::new();
                     for i in 0..node.named_child_count() {
-                        if let Some(child) = node.named_child(i) {
-                            if child.kind() == "variable_declarator" {
-                                if let Some(name_node) = child.child_by_field_name("name") {
-                                    if let Ok(name) = name_node.utf8_text(text.as_bytes()) {
+                        if let Some(child) = node.named_child(i)
+                            && child.kind() == "variable_declarator"
+                                && let Some(name_node) = child.child_by_field_name("name")
+                                    && let Ok(name) = name_node.utf8_text(text.as_bytes()) {
                                         names.push(name.to_string());
                                     }
-                                }
-                            }
-                        }
                     }
                     if names.is_empty() {
                         None

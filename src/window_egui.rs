@@ -1035,9 +1035,9 @@ impl Tabular {
                     ui.add_space(12.0);
                     ui.checkbox(&mut self.lint_panel_pinned, "Pin (keep open)");
                     ui.checkbox(&mut self.auto_format_on_execute, "Auto-format before execute");
-                    if ui.button("Format now").clicked() {
-                        if let Some(formatted) = query_tools::format_sql(&self.editor.text) {
-                            if formatted != self.editor.text {
+                    if ui.button("Format now").clicked()
+                        && let Some(formatted) = query_tools::format_sql(&self.editor.text)
+                            && formatted != self.editor.text {
                                 self.editor.set_text(formatted.clone());
                                 let new_len = self.editor.text.len();
                                 self.cursor_position = new_len;
@@ -1054,8 +1054,6 @@ impl Tabular {
                                 self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(4);
                                 self.pending_cursor_set = Some(self.cursor_position);
                             }
-                        }
-                    }
                 });
 
                 ui.separator();

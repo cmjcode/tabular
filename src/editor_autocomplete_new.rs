@@ -76,7 +76,7 @@ fn parse_table_name(sql: &str, mut idx: usize) -> Option<(usize, String)> {
         return None;
     }
     let mut token = sql[start..idx].trim();
-    token = token.trim_end_matches(|c: char| c == ',' || c == ';');
+    token = token.trim_end_matches([',', ';']);
     if token.is_empty() {
         return None;
     }
@@ -369,7 +369,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
     // CRITICAL: Don't touch autocomplete state while typing - let text settle first
     // This prevents freeze and caret jumping by avoiding mid-keystroke state mutations
     
-    let prev_char = editor_text[..cursor].chars().rev().next();
+    let prev_char = editor_text[..cursor].chars().next_back();
     if matches!(prev_char, Some(';')) || matches!(prev_char, Some('*')) {
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
@@ -393,7 +393,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
     }
 
     let pre_prefix_char = if pref.len() <= cursor {
-        editor_text[..cursor - pref.len()].chars().rev().next()
+        editor_text[..cursor - pref.len()].chars().next_back()
     } else {
         None
     };
@@ -653,8 +653,8 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                 note_count += 1;
             }
 
-            if let Some(&kind) = kinds.get(idx) {
-                if last_kind != Some(kind) {
+            if let Some(&kind) = kinds.get(idx)
+                && last_kind != Some(kind) {
                     group_count += 1;
                     last_kind = Some(kind);
                     let heading = match kind {
@@ -668,7 +668,6 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                         f.layout_no_wrap(heading.to_string(), heading_font_id.clone(), egui::Color32::WHITE);
                     max_heading_px = max_heading_px.max(hg.size().x);
                 }
-            }
         }
     });
 
