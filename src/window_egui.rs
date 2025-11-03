@@ -327,6 +327,7 @@ pub struct Tabular {
     pub last_plan_hash: Option<u64>,
     pub last_plan_cache_key: Option<String>,
     pub last_ctes: Option<Vec<String>>, // names of remaining CTEs after rewrites
+    pub sql_semantic_snapshot: Option<Arc<crate::syntax_ts::SqlSemanticSnapshot>>,
 }
 
 // Preference tabs enumeration
@@ -743,6 +744,7 @@ impl Tabular {
             highlight_cache: std::collections::HashMap::new(),
             last_highlight_hash: None,
             suppress_editor_arrow_once: false,
+            sql_semantic_snapshot: None,
             // Context menu for row operations
             show_row_context_menu: false,
             context_menu_row: None,
@@ -880,12 +882,11 @@ impl Tabular {
             self.last_compiled_headers = ast_headers;
         }
 
-        if was_paginated
-            && message.success {
-                self.apply_paginated_query_result(&message);
-                return;
-            }
-            // For errors, fall through to regular handler to reuse error display logic.
+        if was_paginated && message.success {
+            self.apply_paginated_query_result(&message);
+            return;
+        }
+        // For errors, fall through to regular handler to reuse error display logic.
 
         let result_tuple = Some((message.headers.clone(), message.rows.clone()));
         editor::process_query_result(self, &message.query, message.connection_id, result_tuple);
@@ -1325,8 +1326,7 @@ impl Tabular {
 
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
 
-        let mut jobs: Vec<&connection::QueryJobStatus> =
-            self.active_query_jobs.values().collect();
+        let mut jobs: Vec<&connection::QueryJobStatus> = self.active_query_jobs.values().collect();
         jobs.sort_by_key(|status| status.started_at);
 
         let count = jobs.len();
@@ -1358,7 +1358,7 @@ impl Tabular {
             egui::Color32::from_rgb(210, 210, 210)
         };
 
-    egui::Area::new(egui::Id::new("active_query_jobs_overlay"))
+        egui::Area::new(egui::Id::new("active_query_jobs_overlay"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
             .show(ctx, |area_ui| {
@@ -1415,8 +1415,9 @@ impl Tabular {
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::symmetric(8, 4))
                                     .show(ui, |chip_ui| {
-                                        chip_ui
-                                            .label(egui::RichText::new(chip_text.clone()).size(11.0));
+                                        chip_ui.label(
+                                            egui::RichText::new(chip_text.clone()).size(11.0),
+                                        );
                                     })
                                     .response;
 
@@ -2779,7 +2780,7 @@ impl Tabular {
         let mut dba_click_request: Option<(i64, models::enums::NodeType)> = None;
         let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
-    let mut alter_table_request: Option<(i64, Option<String>, String)> = None;
+        let mut alter_table_request: Option<(i64, Option<String>, String)> = None;
         let mut drop_collection_request: Option<(i64, String, String)> = None;
         let mut drop_table_request: Option<(i64, String, String, String)> = None;
         let mut create_table_request: Option<(i64, Option<String>)> = None;
@@ -7395,11 +7396,9 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     self.active_query_jobs.insert(job_id, status);
                     self.pending_paginated_jobs.insert(job_id);
 
-                    if let Err(err) = connection::spawn_query_job(
-                        self,
-                        job,
-                        self.query_result_sender.clone(),
-                    ) {
+                    if let Err(err) =
+                        connection::spawn_query_job(self, job, self.query_result_sender.clone())
+                    {
                         debug!(
                             "⚠️ Failed to spawn paginated query job {:?}. Falling back to sync execution.",
                             err
@@ -7407,10 +7406,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                         self.active_query_jobs.remove(&job_id);
                         self.pending_paginated_jobs.remove(&job_id);
                     } else {
-                        self.current_table_name = format!(
-                            "Loading page {}…",
-                            self.current_page.saturating_add(1)
-                        );
+                        self.current_table_name =
+                            format!("Loading page {}…", self.current_page.saturating_add(1));
                         return;
                     }
                 }

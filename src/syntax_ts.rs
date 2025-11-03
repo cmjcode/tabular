@@ -45,6 +45,11 @@
 #![allow(dead_code)]
 
 use eframe::egui::text::LayoutJob; // For public highlight API (ported from legacy syntax.rs)
+use eframe::egui::{Color32, TextFormat};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::ops::Range;
+use std::sync::Arc;
 
 /// Language classification (formerly in `syntax.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -70,353 +75,568 @@ pub fn detect_language_from_name(name: &str) -> LanguageKind {
     LanguageKind::Plain
 }
 
+/// Token classes emitted by the semantic snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SemanticTokenKind {
+    Keyword,
+    String,
+    Comment,
+    Number,
+    Operator,
+    Identifier,
+    Literal,
+    Punctuation,
+    Other,
+}
+
+/// Semantic token with byte range.
+#[derive(Clone, Debug)]
+pub struct SemanticToken {
+    pub range: Range<usize>,
+    pub kind: SemanticTokenKind,
+}
+
+/// Folding range categories (roughly matching LSP kinds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FoldingRangeKind {
+    Block,
+    Comment,
+    Region,
+}
+
+/// Folding range covering [start_line, end_line].
+#[derive(Clone, Debug)]
+pub struct FoldingRange {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub kind: FoldingRangeKind,
+    pub byte_range: Range<usize>,
+}
+
+/// Outline kinds surfaced to side panels / navigation widgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SymbolKind {
+    Select,
+    Insert,
+    Update,
+    Delete,
+    CreateTable,
+    CreateView,
+    CreateFunction,
+    CreateProcedure,
+    CreateIndex,
+    With,
+    Unknown,
+}
+
+/// Outline node representing a semantic element in the document.
+#[derive(Clone, Debug)]
+pub struct SymbolNode {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub range: Range<usize>,
+    pub selection_range: Range<usize>,
+    pub children: Vec<SymbolNode>,
+}
+
+/// Lightweight tree-sitter diagnostic.
+#[derive(Clone, Debug)]
+pub struct ParseDiagnostic {
+    pub message: String,
+    pub range: Range<usize>,
+}
+
+/// Captures the reusable semantic products of a parse pass.
+#[derive(Clone, Debug)]
+pub struct SqlSemanticSnapshot {
+    pub source_hash: u64,
+    pub tokens: Vec<SemanticToken>,
+    pub folding_ranges: Vec<FoldingRange>,
+    pub outline: Vec<SymbolNode>,
+    pub diagnostics: Vec<ParseDiagnostic>,
+    pub root_sexpr: Option<String>,
+}
+
 #[cfg(feature = "tree_sitter_sequel")]
 mod ts {
+    use super::*;
+    use anyhow::Context;
     use once_cell::sync::OnceCell;
     use std::sync::Mutex;
-    use tree_sitter::{Parser, Tree};
-    pub struct TsSqlParser {
+    use tree_sitter::{InputEdit, Node, Parser, Point, Tree};
+
+    pub struct SqlParserService {
         parser: Parser,
         tree: Option<Tree>,
+        last_text: String,
         last_hash: u64,
+        snapshot: Option<Arc<SqlSemanticSnapshot>>,
     }
-    impl TsSqlParser {
+
+    impl SqlParserService {
         pub fn new() -> anyhow::Result<Self> {
             let mut parser = Parser::new();
-            // tree-sitter-sequel exposes a LanguageFn; convert to tree_sitter::Language
             let language = tree_sitter_sequel::LANGUAGE;
-            parser.set_language(&language.into())?;
+            parser
+                .set_language(&language.into())
+                .context("failed to set SQL grammar on parser")?;
             Ok(Self {
                 parser,
                 tree: None,
+                last_text: String::new(),
                 last_hash: 0,
+                snapshot: None,
             })
         }
-        fn hash(text: &str) -> u64 {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            text.hash(&mut h);
-            h.finish()
-        }
-        pub fn ensure_parsed(&mut self, text: &str) {
-            let h = Self::hash(text);
-            if h == self.last_hash {
-                return;
+
+        pub fn ensure_snapshot(&mut self, text: &str) -> Option<Arc<SqlSemanticSnapshot>> {
+            let hash = hash_text(text);
+            if let Some(current) = self.snapshot.as_ref() {
+                if current.source_hash == hash {
+                    return self.snapshot.clone();
+                }
             }
-            self.tree = self.parser.parse(text, self.tree.as_ref());
-            self.last_hash = h;
+
+            let tree = self.reparse(text)?;
+            let snapshot = Arc::new(build_snapshot(&tree, text, hash));
+            self.snapshot = Some(snapshot.clone());
+            self.last_text.clear();
+            self.last_text.push_str(text);
+            self.last_hash = hash;
+            Some(snapshot)
         }
-        pub fn root_sexpr(&self) -> Option<String> {
-            self.tree.as_ref().map(|t| t.root_node().to_sexp())
+
+        fn reparse(&mut self, text: &str) -> Option<Tree> {
+            let mut previous_tree = self.tree.take();
+            if let (Some(old_tree), true) = (&mut previous_tree, !self.last_text.is_empty()) {
+                if let Some(edit) = compute_edit(&self.last_text, text) {
+                    let input_edit = to_input_edit(&self.last_text, text, &edit);
+                    old_tree.edit(&input_edit);
+                }
+            }
+
+            let parsed = self
+                .parser
+                .parse(text, previous_tree.as_ref())
+                .or_else(|| self.parser.parse(text, None))?;
+            self.tree = Some(parsed.clone());
+            Some(parsed)
         }
     }
 
-    static PARSER: OnceCell<Mutex<TsSqlParser>> = OnceCell::new();
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct EditSpan {
+        start: usize,
+        old_end: usize,
+        new_end: usize,
+    }
 
-    pub fn parse_sql(text: &str) -> Option<String> {
-        let cell = PARSER.get_or_init(|| {
-            // If creation fails, store a parser with empty tree (we return None below)
-            let parser = TsSqlParser::new().ok();
-            Mutex::new(parser.unwrap_or_else(|| TsSqlParser {
-                parser: Parser::new(),
-                tree: None,
-                last_hash: 0,
-            }))
-        });
-        if let Ok(mut guard) = cell.lock() {
-            // If parser.language not set (because creation failed earlier), attempt again.
-            if guard.tree.is_none() && guard.last_hash == 0 {
-                // best-effort re-init
-                if let Ok(fresh) = TsSqlParser::new() {
-                    *guard = fresh;
+    fn hash_text(text: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn compute_edit(old: &str, new: &str) -> Option<EditSpan> {
+        if old == new {
+            return None;
+        }
+        let prefix = common_prefix_len(old, new);
+        let suffix = common_suffix_len(old, new, prefix);
+        let old_end = old.len() - suffix;
+        let new_end = new.len() - suffix;
+        Some(EditSpan {
+            start: prefix,
+            old_end,
+            new_end,
+        })
+    }
+
+    fn common_prefix_len(a: &str, b: &str) -> usize {
+        a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
+    }
+
+    fn common_suffix_len(a: &str, b: &str, prefix_len: usize) -> usize {
+        let mut i = a.len();
+        let mut j = b.len();
+        let mut count = 0;
+        while i > prefix_len && j > prefix_len {
+            if a.as_bytes()[i - 1] != b.as_bytes()[j - 1] {
+                break;
+            }
+            i -= 1;
+            j -= 1;
+            count += 1;
+        }
+        count
+    }
+
+    fn to_input_edit(old: &str, new: &str, span: &EditSpan) -> InputEdit {
+        InputEdit {
+            start_byte: span.start,
+            old_end_byte: span.old_end,
+            new_end_byte: span.new_end,
+            start_position: byte_to_point(old, span.start),
+            old_end_position: byte_to_point(old, span.old_end),
+            new_end_position: byte_to_point(new, span.new_end),
+        }
+    }
+
+    fn byte_to_point(text: &str, byte_index: usize) -> Point {
+        let mut row = 0usize;
+        let mut col = 0usize;
+        for (idx, ch) in text.bytes().enumerate() {
+            if idx == byte_index {
+                break;
+            }
+            if ch == b'\n' {
+                row += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        Point { row, column: col }
+    }
+
+    fn build_snapshot(tree: &Tree, text: &str, hash: u64) -> SqlSemanticSnapshot {
+        let root = tree.root_node();
+        let (tokens, diagnostics) = collect_tokens_and_diagnostics(root, text);
+        let folding_ranges = collect_folding_ranges(root, text);
+        let outline = collect_outline(root, text);
+        SqlSemanticSnapshot {
+            source_hash: hash,
+            tokens,
+            folding_ranges,
+            outline,
+            diagnostics,
+            root_sexpr: Some(root.to_sexp()),
+        }
+    }
+
+    fn collect_tokens_and_diagnostics(
+        root: Node,
+        text: &str,
+    ) -> (Vec<SemanticToken>, Vec<ParseDiagnostic>) {
+        let mut tokens = Vec::with_capacity(256);
+        let mut diagnostics = Vec::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "ERROR" {
+                let range = node.start_byte()..node.end_byte().min(text.len());
+                diagnostics.push(ParseDiagnostic {
+                    message: "Parse error".to_string(),
+                    range: range.clone(),
+                });
+                // still dive into children to classify salvageable tokens
+            }
+
+            if node.child_count() == 0 {
+                if let Some(kind) = classify_token(node, text) {
+                    push_token(&mut tokens, node, kind, text);
+                }
+                continue;
+            }
+
+            if let Some(kind) = classify_token(node, text) {
+                push_token(&mut tokens, node, kind, text);
+                continue;
+            }
+
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
                 }
             }
-            guard.ensure_parsed(text);
-            return guard.root_sexpr();
         }
+        tokens.sort_by_key(|t| t.range.start);
+        tokens.dedup_by(|a, b| a.range == b.range && a.kind == b.kind);
+        (tokens, diagnostics)
+    }
+
+    fn push_token(
+        storage: &mut Vec<SemanticToken>,
+        node: Node,
+        kind: SemanticTokenKind,
+        text: &str,
+    ) {
+        let start = node.start_byte();
+        let end = node.end_byte().min(text.len());
+        if start >= end {
+            return;
+        }
+        storage.push(SemanticToken {
+            range: start..end,
+            kind,
+        });
+    }
+
+    fn classify_token(node: Node, text: &str) -> Option<SemanticTokenKind> {
+        let kind = node.kind();
+        if matches!(kind, "comment" | "line_comment" | "block_comment") {
+            return Some(SemanticTokenKind::Comment);
+        }
+        if kind.starts_with("keyword_") {
+            return Some(SemanticTokenKind::Keyword);
+        }
+        if matches!(
+            kind,
+            "literal" | "string" | "quoted_text" | "string_literal"
+        ) {
+            return literal_kind(node, text);
+        }
+        if matches!(
+            kind,
+            "identifier" | "column_name" | "table_name" | "schema_name" | "field"
+        ) {
+            return Some(SemanticTokenKind::Identifier);
+        }
+        if kind == "ERROR" {
+            return None;
+        }
+        if !node.is_named() {
+            let start = node.start_byte();
+            let end = node.end_byte().min(text.len());
+            if start >= end {
+                return None;
+            }
+            let token_text = &text[start..end];
+            if is_sql_keyword(token_text) {
+                return Some(SemanticTokenKind::Keyword);
+            }
+            if token_text.len() == 1 {
+                let ch = token_text.as_bytes()[0];
+                if ch.is_ascii_punctuation() || ch == b'`' {
+                    return Some(SemanticTokenKind::Punctuation);
+                }
+            }
+            return None;
+        }
+        if kind.ends_with("_operator") {
+            return Some(SemanticTokenKind::Operator);
+        }
+        None
+    }
+
+    fn literal_kind(node: Node, text: &str) -> Option<SemanticTokenKind> {
+        let start = node.start_byte();
+        let end = node.end_byte().min(text.len());
+        if start >= end {
+            return None;
+        }
+        let token_text = &text[start..end];
+        let trimmed = token_text.trim();
+        if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+            return Some(SemanticTokenKind::String);
+        }
+        if trimmed.parse::<f64>().is_ok() {
+            return Some(SemanticTokenKind::Number);
+        }
+        Some(SemanticTokenKind::Literal)
+    }
+
+    fn collect_folding_ranges(root: Node, text: &str) -> Vec<FoldingRange> {
+        let mut ranges = Vec::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let start = node.start_position();
+            let end = node.end_position();
+            if end.row > start.row {
+                let kind = if matches!(node.kind(), "comment" | "block_comment" | "line_comment") {
+                    FoldingRangeKind::Comment
+                } else {
+                    FoldingRangeKind::Block
+                };
+                ranges.push(FoldingRange {
+                    start_line: start.row as usize,
+                    end_line: end.row as usize,
+                    kind,
+                    byte_range: node.start_byte()..node.end_byte().min(text.len()),
+                });
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
+            }
+        }
+        ranges.sort_by_key(|r| (r.start_line, r.end_line));
+        ranges.dedup_by(|a, b| a.start_line == b.start_line && a.end_line == b.end_line);
+        ranges
+    }
+
+    fn collect_outline(root: Node, text: &str) -> Vec<SymbolNode> {
+        let mut items = Vec::new();
+        for i in 0..root.named_child_count() {
+            if let Some(child) = root.named_child(i) {
+                append_symbol(child, text, &mut items);
+            }
+        }
+        items
+    }
+
+    fn append_symbol(node: Node, text: &str, out: &mut Vec<SymbolNode>) {
+        if let Some(symbol) = build_symbol(node, text) {
+            out.push(symbol);
+            return;
+        }
+        for i in 0..node.named_child_count() {
+            if let Some(child) = node.named_child(i) {
+                append_symbol(child, text, out);
+            }
+        }
+    }
+
+    fn build_symbol(node: Node, text: &str) -> Option<SymbolNode> {
+        let kind = match symbol_kind_for(node) {
+            Some(k) => k,
+            None => return None,
+        };
+        let name = format_symbol_label(kind, node, text);
+        let mut children = Vec::new();
+        if kind == SymbolKind::Select {
+            collect_cte_symbols(node, text, &mut children);
+        }
+        Some(SymbolNode {
+            name,
+            kind,
+            range: node.start_byte()..node.end_byte().min(text.len()),
+            selection_range: symbol_selection_range(node, text),
+            children,
+        })
+    }
+
+    fn symbol_kind_for(node: Node) -> Option<SymbolKind> {
+        let kind = node.kind();
+        match kind {
+            "select" | "select_statement" => Some(SymbolKind::Select),
+            "insert" | "insert_statement" => Some(SymbolKind::Insert),
+            "update" | "update_statement" => Some(SymbolKind::Update),
+            "delete" | "delete_statement" => Some(SymbolKind::Delete),
+            "create_table_statement" => Some(SymbolKind::CreateTable),
+            "create_view_statement" => Some(SymbolKind::CreateView),
+            "create_function_statement" => Some(SymbolKind::CreateFunction),
+            "create_procedure_statement" => Some(SymbolKind::CreateProcedure),
+            "create_index_statement" => Some(SymbolKind::CreateIndex),
+            "common_table_expression" => Some(SymbolKind::With),
+            _ => None,
+        }
+    }
+
+    fn format_symbol_label(kind: SymbolKind, node: Node, text: &str) -> String {
+        let base = match kind {
+            SymbolKind::Select => "SELECT",
+            SymbolKind::Insert => "INSERT",
+            SymbolKind::Update => "UPDATE",
+            SymbolKind::Delete => "DELETE",
+            SymbolKind::CreateTable => "CREATE TABLE",
+            SymbolKind::CreateView => "CREATE VIEW",
+            SymbolKind::CreateFunction => "CREATE FUNCTION",
+            SymbolKind::CreateProcedure => "CREATE PROCEDURE",
+            SymbolKind::CreateIndex => "CREATE INDEX",
+            SymbolKind::With => "WITH",
+            SymbolKind::Unknown => "SQL",
+        };
+
+        if let Some(target) = find_primary_identifier(node, text) {
+            format!("{base} {target}")
+        } else {
+            base.to_string()
+        }
+    }
+
+    fn find_primary_identifier(node: Node, text: &str) -> Option<String> {
+        let mut stack = vec![node];
+        while let Some(current) = stack.pop() {
+            if matches!(
+                current.kind(),
+                "table_name" | "object_reference" | "identifier" | "column_name"
+            ) {
+                let slice = current.utf8_text(text.as_bytes()).ok()?.trim().to_string();
+                if !slice.is_empty() {
+                    return Some(slice);
+                }
+            }
+            for i in (0..current.named_child_count()).rev() {
+                if let Some(child) = current.named_child(i) {
+                    stack.push(child);
+                }
+            }
+        }
+        None
+    }
+
+    fn symbol_selection_range(node: Node, text: &str) -> Range<usize> {
+        node.start_byte()..node.end_byte().min(text.len())
+    }
+
+    fn collect_cte_symbols(node: Node, text: &str, out: &mut Vec<SymbolNode>) {
+        let mut stack = vec![node];
+        while let Some(current) = stack.pop() {
+            if current.kind() == "common_table_expression" {
+                let name =
+                    find_primary_identifier(current, text).unwrap_or_else(|| "(cte)".to_string());
+                out.push(SymbolNode {
+                    name: format!("WITH {name}"),
+                    kind: SymbolKind::With,
+                    range: current.start_byte()..current.end_byte().min(text.len()),
+                    selection_range: symbol_selection_range(current, text),
+                    children: Vec::new(),
+                });
+                continue;
+            }
+            for i in (0..current.named_child_count()).rev() {
+                if let Some(child) = current.named_child(i) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    static SERVICE: OnceCell<Mutex<SqlParserService>> = OnceCell::new();
+
+    pub fn ensure_snapshot(text: &str) -> Option<Arc<SqlSemanticSnapshot>> {
+        let service = SERVICE.get_or_init(|| {
+            let parser = SqlParserService::new().ok();
+            Mutex::new(parser.unwrap_or_else(|| SqlParserService {
+                parser: Parser::new(),
+                tree: None,
+                last_text: String::new(),
+                last_hash: 0,
+                snapshot: None,
+            }))
+        });
+        service.lock().ok()?.ensure_snapshot(text)
+    }
+
+    pub fn last_snapshot() -> Option<Arc<SqlSemanticSnapshot>> {
+        SERVICE
+            .get()
+            .and_then(|svc| svc.lock().ok())
+            .and_then(|guard| guard.snapshot.clone())
+    }
+}
+
+#[cfg(not(feature = "tree_sitter_sequel"))]
+mod ts {
+    use super::*;
+
+    pub fn ensure_snapshot(_text: &str) -> Option<Arc<SqlSemanticSnapshot>> {
+        None
+    }
+
+    pub fn last_snapshot() -> Option<Arc<SqlSemanticSnapshot>> {
         None
     }
 }
 
-/// Attempt tree-sitter based highlight. If it fails or yields nothing, return None
-/// so the legacy heuristic highlighter can run as fallback.
+/// Update the global SQL snapshot and build a themed layout job.
 #[allow(unused_variables)]
 pub fn try_tree_sitter_sequel_highlight(text: &str, dark: bool) -> Option<LayoutJob> {
     #[cfg(feature = "tree_sitter_sequel")]
     {
-        use crate::syntax_ts::{
-            comment_color, keyword_color, normal_color, number_color, punctuation_color,
-            string_color,
-        };
-        use eframe::egui::TextFormat;
-        use tree_sitter::Node;
-
-        // Fresh parser (keeps logic simple and avoids global mutable state in UI thread)
-        let mut parser = tree_sitter::Parser::new();
-        let language = tree_sitter_sequel::LANGUAGE;
-        if parser.set_language(&language.into()).is_err() {
-            return None;
-        }
-        let tree = parser.parse(text, None)?;
-        let root = tree.root_node();
-
-        // Collect spans (start_byte, end_byte, kind)
-        #[derive(Clone, Copy)]
-        struct Span {
-            s: usize,
-            e: usize,
-            kind: SpanKind,
-        }
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum SpanKind {
-            Keyword,
-            String,
-            Comment,
-            Number,
-            Punctuation,
-            Ident,
-            Other,
-        }
-
-        let mut spans: Vec<Span> = Vec::with_capacity(256);
-
-        fn classify(node: Node, text: &str) -> Option<SpanKind> {
-            let kind = node.kind();
-
-            // Adapted for tree-sitter-sequel: keywords are named as `keyword_*`,
-            // literals use `literal`, and comments are `comment`.
-            if kind == "comment" || kind == "line_comment" || kind == "block_comment" {
-                return Some(SpanKind::Comment);
-            }
-
-            // keyword_* nodes (e.g., keyword_select, keyword_from, keyword_insert)
-            if kind.starts_with("keyword_") {
-                return Some(SpanKind::Keyword);
-            }
-
-            // literal may be a string (quoted) or number (unquoted digits)
-            if kind == "literal"
-                || kind == "string"
-                || kind == "quoted_text"
-                || kind == "string_literal"
-            {
-                let s = node.start_byte();
-                let e = node.end_byte().min(text.len());
-                if s < e {
-                    let token_text = &text[s..e];
-                    let trimmed = token_text.trim();
-                    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
-                        return Some(SpanKind::String);
-                    }
-                    // Simple numeric detection (int/float)
-                    let numeric = trimmed.parse::<f64>().is_ok();
-                    if numeric {
-                        return Some(SpanKind::Number);
-                    }
-                }
-                // If unsure, treat as Other and let children/punctuation handle details
-                return Some(SpanKind::Other);
-            }
-
-            // Identifiers
-            if matches!(
-                kind,
-                "identifier" | "column_name" | "table_name" | "schema_name" | "field"
-            ) {
-                return Some(SpanKind::Ident);
-            }
-
-            // Composite constructs: let traversal recurse into children
-            if matches!(
-                kind,
-                "program"
-                    | "statement"
-                    | "select"
-                    | "insert"
-                    | "update"
-                    | "delete"
-                    | "from"
-                    | "where"
-                    | "group_by"
-                    | "order_by"
-                    | "order_target"
-                    | "direction"
-                    | "relation"
-                    | "object_reference"
-                    | "list"
-                    | "select_expression"
-            ) || kind.ends_with("_statement")
-                || kind.ends_with("_clause")
-            {
-                return None;
-            }
-
-            if kind == "ERROR" {
-                return None; // dive into children to salvage tokens
-            }
-
-            // Punctuation and anonymous tokens
-            if !node.is_named() {
-                let s = node.start_byte();
-                let e = node.end_byte().min(text.len());
-                if s < e {
-                    let token_text = &text[s..e];
-                    // keyword recovery for anonymous uppercase tokens (rare here)
-                    if is_sql_keyword(token_text) {
-                        return Some(SpanKind::Keyword);
-                    }
-                    if token_text.len() == 1 {
-                        let ch = token_text.chars().next().unwrap();
-                        if ch.is_ascii_punctuation() || ch == '`' {
-                            return Some(SpanKind::Punctuation);
-                        }
-                    }
-                }
-                return None;
-            }
-
-            // Default: don't classify composite/unknown; recurse
-            None
-        }
-
-        // Check if token is a SQL keyword (case-insensitive)
-        fn is_sql_keyword(token: &str) -> bool {
-            let lower = token.to_ascii_lowercase();
-            matches!(
-                lower.as_str(),
-                // Core SQL
-                "select" | "from" | "where" | "insert" | "into" | "update" | "delete" |
-                "create" | "alter" | "drop" | "table" | "values" | "join" | "left" | "right" |
-                "inner" | "outer" | "on" | "group" | "by" | "having" | "order" | "limit" |
-                "offset" | "union" | "distinct" | "asc" | "desc" | "and" | "or" | "not" |
-                "null" | "is" | "set" | "as" | "in" | "exists" | "case" | "when" | "then" |
-                "else" | "end" | "between" | "like" | "all" | "any" | "some" |
-                // MySQL specific
-                "show" | "start" | "stop" | "reset" | "change" | "purge" | "replica" | 
-                "master" | "slave" | "binary" | "logs" | "status" | "privileges" | "grants" |
-                "processlist" | "global" | "before" | "to" |
-                // Table definition
-                "primary" | "key" | "foreign" | "references" | "constraint" | "unique" |
-                "index" | "using" | "btree" | "hash" | "default" | "auto_increment" |
-                "current_timestamp" | "engine" | "innodb" | "myisam" | "charset" | "collate" |
-                "character" | "row_format" | "dynamic" | "compressed" | "redundant" | "compact" |
-                // Types
-                "int" | "varchar" | "text" | "bigint" | "datetime" | "timestamp" | 
-                "boolean" | "decimal" | "float" | "double" | "char" | "longtext" | "mediumtext" |
-                "tinytext" | "blob" | "longblob" | "mediumblob" | "tinyblob" | "enum" | 
-                "unsigned" | "signed" | "zerofill"
-            )
-        }
-
-        // Debug: print parse tree for first 500 chars (helps diagnose grammar issues)
-        // if text.len() < 500 {
-        //     eprintln!("=== Parse tree for query ===");
-        //     fn print_tree(node: Node, text: &str, indent: usize) {
-        //         let kind = node.kind();
-        //         let token_text = &text[node.start_byte()..node.end_byte().min(text.len())];
-        //         let display = if token_text.len() > 20 {
-        //             format!("{}...", &token_text[..20])
-        //         } else {
-        //             token_text.to_string()
-        //         };
-        //         eprintln!(
-        //             "{:indent$}{} [{}] named={}",
-        //             "",
-        //             kind,
-        //             display.replace('\n', "\\n"),
-        //             node.is_named(),
-        //             indent = indent * 2
-        //         );
-        //         for i in 0..node.child_count() {
-        //             if let Some(ch) = node.child(i) {
-        //                 print_tree(ch, text, indent + 1);
-        //             }
-        //         }
-        //     }
-        //     print_tree(root, text, 0);
-        //     eprintln!("=== End parse tree ===\n");
-        // }
-
-        // Depth-first traversal; skip large subtrees once classified (e.g., string, comment)
-        let mut stack: Vec<Node> = vec![root];
-        while let Some(node) = stack.pop() {
-            if node.child_count() == 0 {
-                // leaf
-                if let Some(k) = classify(node, text) {
-                    spans.push(Span {
-                        s: node.start_byte(),
-                        e: node.end_byte(),
-                        kind: k,
-                    });
-                }
-            } else if let Some(k) = classify(node, text) {
-                // treat whole composite node (like comment) as one span
-                spans.push(Span {
-                    s: node.start_byte(),
-                    e: node.end_byte(),
-                    kind: k,
-                });
-                continue; // don't descend
-            } else {
-                // push children
-                for i in (0..node.child_count()).rev() {
-                    if let Some(ch) = node.child(i) {
-                        stack.push(ch);
-                    }
-                }
-            }
-        }
-
-        if spans.is_empty() {
-            return None;
-        }
-        spans.sort_by_key(|s| s.s);
-
-        let mut job = LayoutJob::default();
-        let mut idx = 0; // current byte index
-        for span in spans {
-            if span.s > idx {
-                // intermediate plain text
-                let slice = &text[idx..span.s];
-                job.append(
-                    slice,
-                    0.0,
-                    TextFormat {
-                        color: normal_color(dark),
-                        ..Default::default()
-                    },
-                );
-            }
-            let slice = &text[span.s..span.e];
-            let color = match span.kind {
-                SpanKind::Keyword => keyword_color(dark),
-                SpanKind::String => string_color(dark),
-                SpanKind::Comment => comment_color(dark),
-                SpanKind::Number => number_color(dark),
-                SpanKind::Punctuation => punctuation_color(dark),
-                SpanKind::Ident | SpanKind::Other => normal_color(dark),
-            };
-            job.append(
-                slice,
-                0.0,
-                TextFormat {
-                    color,
-                    ..Default::default()
-                },
-            );
-            idx = span.e;
-        }
-        if idx < text.len() {
-            job.append(
-                &text[idx..],
-                0.0,
-                TextFormat {
-                    color: normal_color(dark),
-                    ..Default::default()
-                },
-            );
-        }
-        Some(job)
+        let snapshot = ts::ensure_snapshot(text)?;
+        Some(layout_from_tokens(text, &snapshot.tokens, dark))
     }
     #[cfg(not(feature = "tree_sitter_sequel"))]
     {
@@ -425,10 +645,183 @@ pub fn try_tree_sitter_sequel_highlight(text: &str, dark: bool) -> Option<Layout
     }
 }
 
+/// Returns the most recently computed SQL semantic snapshot (if any).
+pub fn get_last_sql_snapshot() -> Option<Arc<SqlSemanticSnapshot>> {
+    ts::last_snapshot()
+}
+
+/// Ensure the parser cache is synchronized with `text`, returning the snapshot.
+pub fn ensure_sql_semantics(text: &str) -> Option<Arc<SqlSemanticSnapshot>> {
+    ts::ensure_snapshot(text)
+}
+
+fn layout_from_tokens(text: &str, tokens: &[SemanticToken], dark: bool) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    let mut cursor = 0usize;
+    for token in tokens {
+        if token.range.start > cursor {
+            job.append(
+                &text[cursor..token.range.start],
+                0.0,
+                TextFormat {
+                    color: normal_color(dark),
+                    ..Default::default()
+                },
+            );
+        }
+        let color = color_for_token(token.kind, dark);
+        let slice = &text[token.range.start..token.range.end];
+        job.append(
+            slice,
+            0.0,
+            TextFormat {
+                color,
+                ..Default::default()
+            },
+        );
+        cursor = token.range.end;
+    }
+    if cursor < text.len() {
+        job.append(
+            &text[cursor..],
+            0.0,
+            TextFormat {
+                color: normal_color(dark),
+                ..Default::default()
+            },
+        );
+    }
+    job
+}
+
+fn color_for_token(kind: SemanticTokenKind, dark: bool) -> Color32 {
+    match kind {
+        SemanticTokenKind::Keyword => keyword_color(dark),
+        SemanticTokenKind::String => string_color(dark),
+        SemanticTokenKind::Comment => comment_color(dark),
+        SemanticTokenKind::Number => number_color(dark),
+        SemanticTokenKind::Operator | SemanticTokenKind::Punctuation => punctuation_color(dark),
+        _ => normal_color(dark),
+    }
+}
+
+fn is_sql_keyword(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "select"
+            | "from"
+            | "where"
+            | "insert"
+            | "into"
+            | "update"
+            | "delete"
+            | "create"
+            | "alter"
+            | "drop"
+            | "table"
+            | "values"
+            | "join"
+            | "left"
+            | "right"
+            | "inner"
+            | "outer"
+            | "on"
+            | "group"
+            | "by"
+            | "having"
+            | "order"
+            | "limit"
+            | "offset"
+            | "union"
+            | "distinct"
+            | "asc"
+            | "desc"
+            | "and"
+            | "or"
+            | "not"
+            | "null"
+            | "is"
+            | "set"
+            | "as"
+            | "in"
+            | "exists"
+            | "case"
+            | "when"
+            | "then"
+            | "else"
+            | "end"
+            | "between"
+            | "like"
+            | "all"
+            | "any"
+            | "some"
+            | "transaction"
+            | "commit"
+            | "rollback"
+            | "show"
+            | "start"
+            | "stop"
+            | "reset"
+            | "change"
+            | "purge"
+            | "binary"
+            | "logs"
+            | "privileges"
+            | "grants"
+            | "processlist"
+            | "before"
+            | "to"
+            | "primary"
+            | "key"
+            | "foreign"
+            | "references"
+            | "constraint"
+            | "unique"
+            | "index"
+            | "using"
+            | "btree"
+            | "hash"
+            | "default"
+            | "auto_increment"
+            | "current_timestamp"
+            | "engine"
+            | "innodb"
+            | "myisam"
+            | "charset"
+            | "collate"
+            | "character"
+            | "row_format"
+            | "dynamic"
+            | "compressed"
+            | "redundant"
+            | "compact"
+            | "int"
+            | "varchar"
+            | "text"
+            | "bigint"
+            | "datetime"
+            | "timestamp"
+            | "boolean"
+            | "decimal"
+            | "float"
+            | "double"
+            | "char"
+            | "longtext"
+            | "mediumtext"
+            | "tinytext"
+            | "blob"
+            | "longblob"
+            | "mediumblob"
+            | "tinyblob"
+            | "enum"
+            | "unsigned"
+            | "signed"
+            | "zerofill"
+    )
+}
+
 // ---------------- Legacy heuristic highlighter (ported from syntax.rs) ----------------
-use eframe::egui::{Color32, TextFormat};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 /// Cached highlighting with hash-based lookup
 pub fn highlight_text_cached(
@@ -453,16 +846,13 @@ pub fn highlight_text_cached(
     job
 }
 
-/// Whole text highlighter (optionally tries tree-sitter for SQL; currently only for side effects)
+/// Whole text highlighter (tree-sitter path is kept for side effects only).
 pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
     if matches!(lang, LanguageKind::Sql) {
         #[cfg(feature = "tree_sitter_sequel")]
         {
-            if let Some(ts_job) = try_tree_sitter_sequel_highlight(text, dark)
-                && !ts_job.text.is_empty()
-            {
-                return ts_job;
-            }
+            // Keep semantic snapshot in sync; fall back to legacy rendering for stability.
+            let _ = ensure_sql_semantics(text);
         }
     }
     let mut job = LayoutJob::default();
@@ -564,11 +954,12 @@ fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut L
     }
 }
 
-fn word_color(word: &str, _lang: LanguageKind, dark: bool) -> Color32 {
-    // Legacy fallback without static dictionaries: keep it conservative to avoid "ngaco".
-    // Only numbers get special color; everything else uses normal text color.
+fn word_color(word: &str, lang: LanguageKind, dark: bool) -> Color32 {
     if word.chars().all(|c| c.is_ascii_digit()) {
         return number_color(dark);
+    }
+    if matches!(lang, LanguageKind::Sql) && is_sql_keyword(word) {
+        return keyword_color(dark);
     }
     normal_color(dark)
 }

@@ -328,14 +328,14 @@ async fn execute_mysql_query_job(
     {
         if let Some(sql) = statements.first()
             && statements.len() == 1
-                && statements_raw.len() == 1
-                && statements_raw[0]
-                    .trim_start()
-                    .to_uppercase()
-                    .starts_with("SELECT")
-            {
-                ast_debug_sql = Some(sql.clone());
-            }
+            && statements_raw.len() == 1
+            && statements_raw[0]
+                .trim_start()
+                .to_uppercase()
+                .starts_with("SELECT")
+        {
+            ast_debug_sql = Some(sql.clone());
+        }
     }
 
     let mut attempts = 0;
@@ -469,20 +469,21 @@ async fn execute_mysql_query_job(
                                 };
                                 let is_mariadb = version_str.to_lowercase().contains("mariadb");
 
-                                if replication_status_mode && final_data.is_empty()
+                                if replication_status_mode
+                                    && final_data.is_empty()
                                     && let Ok(fallback_rows) =
                                         sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await
-                                        && !fallback_rows.is_empty()
-                                    {
-                                        final_headers = fallback_rows[0]
-                                            .columns()
-                                            .iter()
-                                            .map(|c| c.name().to_string())
-                                            .collect();
-                                        final_data = driver_mysql::convert_mysql_rows_to_table_data(
-                                            fallback_rows,
-                                        );
-                                    }
+                                    && !fallback_rows.is_empty()
+                                {
+                                    final_headers = fallback_rows[0]
+                                        .columns()
+                                        .iter()
+                                        .map(|c| c.name().to_string())
+                                        .collect();
+                                    final_data = driver_mysql::convert_mysql_rows_to_table_data(
+                                        fallback_rows,
+                                    );
+                                }
 
                                 if !final_headers.is_empty() && !final_data.is_empty() {
                                     let header_index = |name: &str| {
@@ -606,7 +607,8 @@ async fn execute_mysql_query_job(
                         failing_stmt_preview = Some(prev);
                     }
                     // Attach a friendly hint for common 1146 (table doesn't exist) cases
-                    if err_str.contains("1146") || err_str.to_lowercase().contains("doesn't exist") {
+                    if err_str.contains("1146") || err_str.to_lowercase().contains("doesn't exist")
+                    {
                         let mut hint = String::new();
                         hint.push_str("Hint: Check the database/schema qualifier in your SQL. ");
                         hint.push_str(&format!(
@@ -639,7 +641,10 @@ async fn execute_mysql_query_job(
                     final_headers
                 );
             } else {
-                debug!("[mysql] final headers are empty (rows: {})", final_data.len());
+                debug!(
+                    "[mysql] final headers are empty (rows: {})",
+                    final_data.len()
+                );
             }
             return Ok(QueryJobOutput {
                 headers: final_headers,
@@ -652,10 +657,7 @@ async fn execute_mysql_query_job(
 
     let mut final_err = last_error.unwrap_or_else(|| "Unknown MySQL error".to_string());
     if let Some(stmt) = failing_stmt_preview {
-        final_err = format!(
-            "{}\n\nFailed statement (preview): {}",
-            final_err, stmt
-        );
+        final_err = format!("{}\n\nFailed statement (preview): {}", final_err, stmt);
     }
     Err(QueryExecutionError::Message(final_err))
 }
@@ -1055,10 +1057,7 @@ async fn execute_redis_query_job(
             .await
             {
                 Ok(Ok(keys)) => {
-                    let table_data: Vec<Vec<String>> = keys
-                        .into_iter()
-                        .map(|k| vec![k])
-                        .collect();
+                    let table_data: Vec<Vec<String>> = keys.into_iter().map(|k| vec![k]).collect();
                     Ok(QueryJobOutput {
                         headers: vec!["Key".to_string()],
                         rows: table_data,
@@ -1155,10 +1154,7 @@ async fn execute_redis_query_job(
                         {
                             table_data.push(vec!["Sample Keys Found".to_string(), "".to_string()]);
                             for (i, key) in sample_keys.iter().take(5).enumerate() {
-                                table_data.push(vec![
-                                    format!("Sample {}", i + 1),
-                                    key.clone(),
-                                ]);
+                                table_data.push(vec![format!("Sample {}", i + 1), key.clone()]);
                             }
                         }
                     } else {
@@ -1288,10 +1284,7 @@ async fn execute_mssql_query_job(
             ast_debug_sql: None,
             ast_headers: None,
         }),
-        Err(e) => Err(QueryExecutionError::Message(format!(
-            "Query error: {}",
-            e
-        ))),
+        Err(e) => Err(QueryExecutionError::Message(format!("Query error: {}", e))),
     }
 }
 
@@ -1303,7 +1296,8 @@ async fn execute_mongodb_query_job(
         models::enums::DatabasePool::MongoDB(_) => Ok(QueryJobOutput {
             headers: vec!["Info".to_string()],
             rows: vec![vec![
-                "MongoDB query execution is not supported. Use tree to browse collections.".to_string(),
+                "MongoDB query execution is not supported. Use tree to browse collections."
+                    .to_string(),
             ]],
             ast_debug_sql: None,
             ast_headers: None,

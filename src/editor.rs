@@ -47,6 +47,9 @@ pub(crate) fn create_new_tab(
 
     // Update editor with new tab content
     tabular.editor.set_text(content.clone());
+    tabular.highlight_cache.clear();
+    tabular.last_highlight_hash = None;
+    tabular.sql_semantic_snapshot = None;
     // Clear global result state so a fresh tab starts clean (no lingering table below)
     tabular.current_table_headers.clear();
     tabular.current_table_data.clear();
@@ -117,7 +120,10 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.has_executed_query = false;
             tab.dba_special_mode = None;
         }
-        tabular.editor.set_text(String::new());
+    tabular.editor.set_text(String::new());
+    tabular.highlight_cache.clear();
+    tabular.last_highlight_hash = None;
+    tabular.sql_semantic_snapshot = None;
         // Also clear global result state so the UI table area is reset
         tabular.current_table_headers.clear();
         tabular.current_table_data.clear();
@@ -145,6 +151,9 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
         // Update editor with active tab content
         if let Some(active_tab) = tabular.query_tabs.get(tabular.active_tab_index) {
             tabular.editor.set_text(active_tab.content.clone());
+            tabular.highlight_cache.clear();
+            tabular.last_highlight_hash = None;
+            tabular.sql_semantic_snapshot = None;
         }
     }
 }
@@ -191,6 +200,9 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
         tabular.active_tab_index = tab_index;
         if let Some(new_tab) = tabular.query_tabs.get_mut(tab_index) {
             tabular.editor.set_text(new_tab.content.clone());
+            tabular.highlight_cache.clear();
+            tabular.last_highlight_hash = None;
+            tabular.sql_semantic_snapshot = None;
             // Restore per-tab result state into global display (swap to avoid clones)
             std::mem::swap(
                 &mut tabular.current_table_headers,
@@ -2104,6 +2116,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         text_clip_rect,
         ..
     } = text_output;
+
+    #[cfg(feature = "tree_sitter_sequel")]
+    {
+        if matches!(lang, crate::syntax_ts::LanguageKind::Sql) {
+            tabular.sql_semantic_snapshot = crate::syntax_ts::get_last_sql_snapshot();
+        } else {
+            tabular.sql_semantic_snapshot = None;
+        }
+    }
     let did_double_click = response.double_clicked();
 
     // CRITICAL: Ensure focus and cursor visibility on interaction
@@ -2456,8 +2477,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // After show(), apply any pending cursor via direct set_ccursor_range
     // IMPORTANT: Never collapse selection on the same frame as a double-click, to preserve word-select.
-    if !did_double_click
-        && let Some(pos) = tabular.pending_cursor_set {
+    if !did_double_click && let Some(pos) = tabular.pending_cursor_set {
         // Guard: if there's an active selection range in egui state or Shift is held, skip applying
         // a collapsed caret to avoid wiping a freshly created Shift+Click selection.
         let id = response.id;
@@ -2512,7 +2532,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             ui.memory_mut(|m| m.request_focus(id));
             ui.ctx().request_repaint();
         }
-        }
+    }
     // Enforce expected caret for a short window after autocomplete accept
     // BUT: never override an active selection range (e.g., from double-click word selection).
     if tabular.autocomplete_protection_frames > 0 {
@@ -2527,30 +2547,29 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             false
         };
 
-        if !has_active_selection
-            && let Some(expected) = tabular.autocomplete_expected_cursor {
-                // Read current state
-                if let Some(state) = TextEditState::load(ui.ctx(), id) {
-                    if let Some(rng) = state.cursor.char_range() {
-                        let current = rng.primary.index;
-                        let exp_ci = to_char_index(&tabular.editor.text, expected);
-                        if current != exp_ci {
-                            let mut st = state;
-                            st.cursor
-                                .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
-                            st.store(ui.ctx(), id);
-                            ui.memory_mut(|m| m.request_focus(id));
-                        }
-                    }
-                } else {
-                    let mut st = TextEditState::default();
+        if !has_active_selection && let Some(expected) = tabular.autocomplete_expected_cursor {
+            // Read current state
+            if let Some(state) = TextEditState::load(ui.ctx(), id) {
+                if let Some(rng) = state.cursor.char_range() {
+                    let current = rng.primary.index;
                     let exp_ci = to_char_index(&tabular.editor.text, expected);
-                    st.cursor
-                        .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
-                    st.store(ui.ctx(), id);
-                    ui.memory_mut(|m| m.request_focus(id));
+                    if current != exp_ci {
+                        let mut st = state;
+                        st.cursor
+                            .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
+                        st.store(ui.ctx(), id);
+                        ui.memory_mut(|m| m.request_focus(id));
+                    }
                 }
+            } else {
+                let mut st = TextEditState::default();
+                let exp_ci = to_char_index(&tabular.editor.text, expected);
+                st.cursor
+                    .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
+                st.store(ui.ctx(), id);
+                ui.memory_mut(|m| m.request_focus(id));
             }
+        }
 
         tabular.autocomplete_protection_frames =
             tabular.autocomplete_protection_frames.saturating_sub(1);
@@ -3522,22 +3541,33 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
 pub(crate) fn execute_query_with_text(tabular: &mut window_egui::Tabular, selected_text: String) {
     tabular.is_table_browse_mode = false;
     tabular.extend_query_icon_hold();
-    
+
     let text_hash = format!("{:x}", md5::compute(&selected_text));
-    log::debug!("🚀 EXECUTE - Received (len {}, hash {}): '{}'", 
+    log::debug!(
+        "🚀 EXECUTE - Received (len {}, hash {}): '{}'",
         selected_text.len(),
         text_hash,
-        selected_text.chars().take(150).collect::<String>());
-    log::debug!("   pending_query: '{}'", tabular.pending_query.chars().take(50).collect::<String>());
-    log::debug!("   tabular.selected_text field: '{}'", tabular.selected_text.chars().take(100).collect::<String>());
-    
+        selected_text.chars().take(150).collect::<String>()
+    );
+    log::debug!(
+        "   pending_query: '{}'",
+        tabular.pending_query.chars().take(50).collect::<String>()
+    );
+    log::debug!(
+        "   tabular.selected_text field: '{}'",
+        tabular.selected_text.chars().take(100).collect::<String>()
+    );
+
     let mut used_pending_query = false;
     let query = if !tabular.pending_query.trim().is_empty() {
         used_pending_query = true;
         log::debug!("   ✓ Using pending_query");
         tabular.pending_query.trim().to_string()
     } else if !selected_text.trim().is_empty() {
-        log::debug!("   ✓ Using provided selected_text (len: {})", selected_text.len());
+        log::debug!(
+            "   ✓ Using provided selected_text (len: {})",
+            selected_text.len()
+        );
         let result = selected_text.trim().to_string();
         log::debug!("   After trim, query length: {}", result.len());
         result
@@ -3557,22 +3587,32 @@ pub(crate) fn execute_query_with_text(tabular: &mut window_egui::Tabular, select
         tabular.selected_text = query.clone();
     }
 
-    log::debug!("   Final query (len {}): '{}'", query.len(), query.chars().take(150).collect::<String>());
-    
+    log::debug!(
+        "   Final query (len {}): '{}'",
+        query.len(),
+        query.chars().take(150).collect::<String>()
+    );
+
     execute_query_internal(tabular, query);
 }
 
 pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
     tabular.is_table_browse_mode = false;
     tabular.extend_query_icon_hold();
-    
+
     // Priority: 1) Pending query (auto-run after connection), 2) Selected text (already captured),
     // 3) Query from cursor position, 4) Full editor text
     // NOTE: selected_text is already refreshed by capture_current_editor_selection before this call
     log::debug!("🚀 execute_query called");
-    log::debug!("   pending_query: '{}'", tabular.pending_query.chars().take(50).collect::<String>());
-    log::debug!("   selected_text: '{}'", tabular.selected_text.chars().take(50).collect::<String>());
-    
+    log::debug!(
+        "   pending_query: '{}'",
+        tabular.pending_query.chars().take(50).collect::<String>()
+    );
+    log::debug!(
+        "   selected_text: '{}'",
+        tabular.selected_text.chars().take(50).collect::<String>()
+    );
+
     let mut used_pending_query = false;
     let query = if !tabular.pending_query.trim().is_empty() {
         used_pending_query = true;
@@ -3596,13 +3636,15 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
         tabular.selected_text = query.clone();
     }
 
-    log::debug!("   Final query to execute: '{}'", query.chars().take(100).collect::<String>());
-    
+    log::debug!(
+        "   Final query to execute: '{}'",
+        query.chars().take(100).collect::<String>()
+    );
+
     execute_query_internal(tabular, query);
 }
 
 fn execute_query_internal(tabular: &mut window_egui::Tabular, query: String) {
-
     if query.is_empty() {
         tabular.query_execution_in_progress = false;
         tabular.extend_query_icon_hold();
@@ -3635,7 +3677,7 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, query: String) {
     if let Some(connection_id) = connection_id {
         // Clear pending query since we're executing now
         tabular.pending_query.clear();
-        
+
         tabular.query_execution_in_progress = true;
         // If a pool creation is already in progress for this connection, show loading and queue the query
         if tabular.pending_connection_pools.contains(&connection_id) {

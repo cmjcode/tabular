@@ -361,6 +361,9 @@ pub(crate) fn open_query_file(
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;
     tabular.editor.set_text(content);
+    tabular.highlight_cache.clear();
+    tabular.last_highlight_hash = None;
+    tabular.sql_semantic_snapshot = None;
 
     // If the file specified a connection, set it for active tab and eagerly create the pool
     if let Some(conn_id) = effective_connection_id {
