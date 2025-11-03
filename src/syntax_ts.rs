@@ -575,7 +575,7 @@ fn word_color(word: &str, _lang: LanguageKind, dark: bool) -> Color32 {
 
 fn keyword_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(220, 180, 90) // #DCA85A
+        Color32::from_rgb(255, 179, 0) // rgba(255, 179, 0, 1)
     } else {
         Color32::from_rgb(160, 60, 0) // #A03C00
     }
@@ -590,11 +590,7 @@ fn number_color(dark: bool) -> Color32 {
 }
 
 fn string_color(dark: bool) -> Color32 {
-    if dark {
-        Color32::from_rgb(255, 21, 160) // #ff0000ff
-    } else {
-        Color32::from_rgb(160, 0, 120) // #A00078
-    }
+    Color32::from_rgb(21, 255, 0) // rgba(21, 255, 0, 1)
 }
 
 fn comment_color(dark: bool) -> Color32 {

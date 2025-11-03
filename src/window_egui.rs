@@ -1370,7 +1370,11 @@ impl Tabular {
                     .show(area_ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("⏳").strong().size(14.0));
-                            ui.label(egui::RichText::new(title.clone()).strong());
+                            ui.label(
+                                egui::RichText::new(title.clone())
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(255, 60, 0)), // rgba(255, 60, 0, 1)
+                            );
                         });
 
                         ui.add_space(4.0);
