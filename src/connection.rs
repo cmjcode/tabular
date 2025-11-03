@@ -2741,10 +2741,6 @@ async fn create_connection_pool_for_config(
                     1 => (0u32, false, 30u64), // Very permissive first attempt (lazy open)
                     _ => (1u32, true, 45u64),  // Second attempt: enable validation, longer acquire
                 };
-                debug!(
-                    "⚙️ MySQL pool attempt {} (min_connections={}, test_before_acquire={}, acquire_timeout={}s) for connection {:?}",
-                    attempt, min_conns, test_before, acquire_secs, connection.id
-                );
 
                 let pool_result = MySqlPoolOptions::new()
                     .max_connections(10)

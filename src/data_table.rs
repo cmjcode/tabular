@@ -2784,7 +2784,7 @@ pub(crate) fn render_structure_columns_editor(
                                 }
                                 ui.close();
                             }
-                            if ui.button("✏️ Edit Column").clicked() {
+                            if ui.button("☑ Edit Column").clicked() {
                                 tabular.editing_column = true;
                                 tabular.edit_column_original_name = col.name.clone();
                                 tabular.edit_column_name = col.name.clone();

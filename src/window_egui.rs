@@ -880,13 +880,12 @@ impl Tabular {
             self.last_compiled_headers = ast_headers;
         }
 
-        if was_paginated {
-            if message.success {
+        if was_paginated
+            && message.success {
                 self.apply_paginated_query_result(&message);
                 return;
             }
             // For errors, fall through to regular handler to reuse error display logic.
-        }
 
         let result_tuple = Some((message.headers.clone(), message.rows.clone()));
         editor::process_query_result(self, &message.query, message.connection_id, result_tuple);
@@ -2983,11 +2982,11 @@ impl Tabular {
                     models::enums::NodeType::DatabasesFolder => "📁",
                     models::enums::NodeType::TablesFolder => "📋",
                     models::enums::NodeType::ViewsFolder => "👁",
-                    models::enums::NodeType::StoredProceduresFolder => "⚙️",
+                    models::enums::NodeType::StoredProceduresFolder => "📦",
                     models::enums::NodeType::UserFunctionsFolder => "🔧",
                     models::enums::NodeType::TriggersFolder => "⚡",
                     models::enums::NodeType::EventsFolder => "📅",
-                    models::enums::NodeType::DBAViewsFolder => "⚙️",
+                    models::enums::NodeType::DBAViewsFolder => "☢",
                     models::enums::NodeType::UsersFolder => "👥",
                     models::enums::NodeType::PrivilegesFolder => "🔒",
                     models::enums::NodeType::ProcessesFolder => "⚡",
@@ -2996,7 +2995,7 @@ impl Tabular {
                     models::enums::NodeType::MasterStatusFolder => "⭐",
                     models::enums::NodeType::MetricsUserActiveFolder => "👨‍💼",
                     models::enums::NodeType::View => "👁",
-                    models::enums::NodeType::StoredProcedure => "⚙️",
+                    models::enums::NodeType::StoredProcedure => "⚛",
                     models::enums::NodeType::UserFunction => "🔧",
                     models::enums::NodeType::Trigger => "⚡",
                     models::enums::NodeType::Event => "📅",
@@ -3693,11 +3692,11 @@ impl Tabular {
                         models::enums::NodeType::DatabasesFolder => "📁",
                         models::enums::NodeType::TablesFolder => "📋",
                         models::enums::NodeType::ViewsFolder => "👁",
-                        models::enums::NodeType::StoredProceduresFolder => "⚙️",
+                        models::enums::NodeType::StoredProceduresFolder => "📦",
                         models::enums::NodeType::UserFunctionsFolder => "🔧",
                         models::enums::NodeType::TriggersFolder => "⚡",
                         models::enums::NodeType::EventsFolder => "📅",
-                        models::enums::NodeType::DBAViewsFolder => "⚙️",
+                        models::enums::NodeType::DBAViewsFolder => "☢",
                         models::enums::NodeType::UsersFolder => "👥",
                         models::enums::NodeType::PrivilegesFolder => "🔒",
                         models::enums::NodeType::ProcessesFolder => "⚡",
@@ -3705,7 +3704,7 @@ impl Tabular {
                         models::enums::NodeType::ReplicationStatusFolder => "🔁",
                         models::enums::NodeType::MasterStatusFolder => "⭐",
                         models::enums::NodeType::View => "👁",
-                        models::enums::NodeType::StoredProcedure => "⚙️",
+                        models::enums::NodeType::StoredProcedure => "⚛",
                         models::enums::NodeType::UserFunction => "🔧",
                         models::enums::NodeType::Trigger => "⚡",
                         models::enums::NodeType::Event => "📅",
@@ -10742,7 +10741,7 @@ impl App for Tabular {
                                 }
                                 let is_struct = self.table_bottom_view
                                     == models::structs::TableBottomView::Structure;
-                                let struct_text = egui::RichText::new("📦 Structure").color(if is_struct {
+                                let struct_text = egui::RichText::new("⊞ Structure").color(if is_struct {
                                     egui::Color32::WHITE
                                 } else {
                                     default_text
