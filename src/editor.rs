@@ -2012,10 +2012,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         models::structs::EditorColorTheme::GithubDark | models::structs::EditorColorTheme::Gruvbox
     );
 
-    // Simple layouter; honor Word Wrap toggle by adjusting max_width
+    // Simple layouter with cached highlighting; honor Word Wrap by adjusting max_width
     let word_wrap = tabular.advanced_editor.word_wrap;
+    // Capture a mutable handle to the highlight cache for this frame to avoid recomputing
+    let cache = &mut tabular.highlight_cache;
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
-        let mut job = crate::syntax_ts::highlight_text(text.as_str(), lang, dark);
+        let mut job = crate::syntax_ts::highlight_text_cached(text.as_str(), lang, dark, cache);
         job.wrap.max_width = if word_wrap { wrap_width } else { f32::INFINITY };
         ui.fonts(|f| f.layout_job(job))
     };
@@ -3471,20 +3473,89 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
         });
 }
 
+pub(crate) fn execute_query_with_text(tabular: &mut window_egui::Tabular, selected_text: String) {
+    tabular.is_table_browse_mode = false;
+    tabular.extend_query_icon_hold();
+    
+    let text_hash = format!("{:x}", md5::compute(&selected_text));
+    log::debug!("🚀 EXECUTE - Received (len {}, hash {}): '{}'", 
+        selected_text.len(),
+        text_hash,
+        selected_text.chars().take(150).collect::<String>());
+    log::debug!("   pending_query: '{}'", tabular.pending_query.chars().take(50).collect::<String>());
+    log::debug!("   tabular.selected_text field: '{}'", tabular.selected_text.chars().take(100).collect::<String>());
+    
+    let mut used_pending_query = false;
+    let query = if !tabular.pending_query.trim().is_empty() {
+        used_pending_query = true;
+        log::debug!("   ✓ Using pending_query");
+        tabular.pending_query.trim().to_string()
+    } else if !selected_text.trim().is_empty() {
+        log::debug!("   ✓ Using provided selected_text (len: {})", selected_text.len());
+        let result = selected_text.trim().to_string();
+        log::debug!("   After trim, query length: {}", result.len());
+        result
+    } else {
+        log::debug!("   ⚠️ Falling back to cursor/full text");
+        let cursor_query = extract_query_from_cursor(tabular);
+        if !cursor_query.trim().is_empty() {
+            log::debug!("   ✓ Using cursor query");
+            cursor_query
+        } else {
+            log::debug!("   ✓ Using full editor text");
+            tabular.editor.text.trim().to_string()
+        }
+    };
+
+    if used_pending_query && tabular.selected_text.trim().is_empty() {
+        tabular.selected_text = query.clone();
+    }
+
+    log::debug!("   Final query (len {}): '{}'", query.len(), query.chars().take(150).collect::<String>());
+    
+    execute_query_internal(tabular, query);
+}
+
 pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
     tabular.is_table_browse_mode = false;
     tabular.extend_query_icon_hold();
-    // Priority: 1) Selected text, 2) Query from cursor position, 3) Full editor text
-    let query = if !tabular.selected_text.trim().is_empty() {
+    
+    // Priority: 1) Pending query (auto-run after connection), 2) Selected text (already captured),
+    // 3) Query from cursor position, 4) Full editor text
+    // NOTE: selected_text is already refreshed by capture_current_editor_selection before this call
+    log::debug!("🚀 execute_query called");
+    log::debug!("   pending_query: '{}'", tabular.pending_query.chars().take(50).collect::<String>());
+    log::debug!("   selected_text: '{}'", tabular.selected_text.chars().take(50).collect::<String>());
+    
+    let mut used_pending_query = false;
+    let query = if !tabular.pending_query.trim().is_empty() {
+        used_pending_query = true;
+        log::debug!("   ✓ Using pending_query");
+        tabular.pending_query.trim().to_string()
+    } else if !tabular.selected_text.trim().is_empty() {
+        log::debug!("   ✓ Using selected_text");
         tabular.selected_text.trim().to_string()
     } else {
         let cursor_query = extract_query_from_cursor(tabular);
         if !cursor_query.trim().is_empty() {
+            log::debug!("   ✓ Using cursor query");
             cursor_query
         } else {
+            log::debug!("   ✓ Using full editor text");
             tabular.editor.text.trim().to_string()
         }
     };
+
+    if used_pending_query && tabular.selected_text.trim().is_empty() {
+        tabular.selected_text = query.clone();
+    }
+
+    log::debug!("   Final query to execute: '{}'", query.chars().take(100).collect::<String>());
+    
+    execute_query_internal(tabular, query);
+}
+
+fn execute_query_internal(tabular: &mut window_egui::Tabular, query: String) {
 
     if query.is_empty() {
         tabular.query_execution_in_progress = false;
@@ -3516,6 +3587,9 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
 
     // Check if we have an active connection
     if let Some(connection_id) = connection_id {
+        // Clear pending query since we're executing now
+        tabular.pending_query.clear();
+        
         tabular.query_execution_in_progress = true;
         // If a pool creation is already in progress for this connection, show loading and queue the query
         if tabular.pending_connection_pools.contains(&connection_id) {

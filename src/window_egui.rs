@@ -89,6 +89,7 @@ pub struct Tabular {
     pub query_result_sender: Sender<connection::QueryResultMessage>,
     pub query_result_receiver: Receiver<connection::QueryResultMessage>,
     pub active_query_jobs: std::collections::HashMap<u64, connection::QueryJobStatus>,
+    pub pending_paginated_jobs: std::collections::HashSet<u64>,
     pub next_query_job_id: u64,
     // Background refresh status tracking
     pub refreshing_connections: std::collections::HashSet<i64>,
@@ -578,6 +579,7 @@ impl Tabular {
             query_result_sender,
             query_result_receiver,
             active_query_jobs: std::collections::HashMap::new(),
+            pending_paginated_jobs: std::collections::HashSet::new(),
             next_query_job_id: 1,
             refreshing_connections: std::collections::HashSet::new(),
             pending_expansion_restore: std::collections::HashMap::new(),
@@ -869,6 +871,8 @@ impl Tabular {
         }
         self.active_query_jobs.remove(&message.job_id);
 
+        let was_paginated = self.pending_paginated_jobs.remove(&message.job_id);
+
         if let Some(ast_sql) = message.ast_debug_sql.clone() {
             self.last_compiled_sql = Some(ast_sql);
         }
@@ -876,8 +880,51 @@ impl Tabular {
             self.last_compiled_headers = ast_headers;
         }
 
+        if was_paginated {
+            if message.success {
+                self.apply_paginated_query_result(&message);
+                return;
+            }
+            // For errors, fall through to regular handler to reuse error display logic.
+        }
+
         let result_tuple = Some((message.headers.clone(), message.rows.clone()));
         editor::process_query_result(self, &message.query, message.connection_id, result_tuple);
+    }
+
+    fn apply_paginated_query_result(&mut self, message: &connection::QueryResultMessage) {
+        self.current_table_headers = message.headers.clone();
+        self.current_table_data = message.rows.clone();
+        self.all_table_data = self.current_table_data.clone();
+        self.total_rows = self.current_table_data.len();
+
+        if self.total_rows == 0 {
+            self.current_table_name = format!(
+                "Query Results (page {} empty)",
+                self.current_page.saturating_add(1)
+            );
+        } else {
+            self.current_table_name = format!(
+                "Query Results (page {} showing {} rows)",
+                self.current_page.saturating_add(1),
+                self.current_table_data.len()
+            );
+        }
+
+        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            active_tab.result_headers = self.current_table_headers.clone();
+            active_tab.result_rows = self.current_table_data.clone();
+            active_tab.result_all_rows = self.current_table_data.clone();
+            active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
+            active_tab.current_page = self.current_page;
+            active_tab.page_size = self.page_size;
+            active_tab.is_table_browse_mode = self.is_table_browse_mode;
+            active_tab.base_query = self.current_base_query.clone();
+            active_tab.result_table_name = self.current_table_name.clone();
+        }
+
+        self.query_execution_in_progress = false;
+        self.extend_query_icon_hold();
     }
 
     pub fn set_active_tab_connection_with_database(
@@ -1270,6 +1317,209 @@ impl Tabular {
             .iter()
             .find(|conn| conn.id == Some(connection_id))
             .map(|conn| conn.name.clone())
+    }
+
+    fn render_active_query_jobs_overlay(&mut self, ctx: &egui::Context) {
+        if self.active_query_jobs.is_empty() {
+            return;
+        }
+
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+
+        let mut jobs: Vec<&connection::QueryJobStatus> =
+            self.active_query_jobs.values().collect();
+        jobs.sort_by_key(|status| status.started_at);
+
+        let count = jobs.len();
+        let title = if count == 1 {
+            "1 running query".to_string()
+        } else {
+            format!("{} running queries", count)
+        };
+
+        let visuals = ctx.style().visuals.clone();
+        let frame_fill = if visuals.dark_mode {
+            egui::Color32::from_rgb(40, 40, 40)
+        } else {
+            egui::Color32::from_rgb(255, 245, 235)
+        };
+        let frame_stroke = if visuals.dark_mode {
+            egui::Color32::from_rgb(70, 70, 70)
+        } else {
+            egui::Color32::from_rgb(225, 190, 170)
+        };
+        let chip_fill = if visuals.dark_mode {
+            egui::Color32::from_rgb(58, 58, 58)
+        } else {
+            egui::Color32::from_rgb(255, 255, 255)
+        };
+        let chip_stroke = if visuals.dark_mode {
+            egui::Color32::from_rgb(96, 96, 96)
+        } else {
+            egui::Color32::from_rgb(210, 210, 210)
+        };
+
+    egui::Area::new(egui::Id::new("active_query_jobs_overlay"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
+            .show(ctx, |area_ui| {
+                egui::Frame::default()
+                    .fill(frame_fill)
+                    .stroke(egui::Stroke::new(1.0, frame_stroke))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(area_ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("⏳").strong().size(14.0));
+                            ui.label(egui::RichText::new(title.clone()).strong());
+                        });
+
+                        ui.add_space(4.0);
+
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                            for status in jobs.iter() {
+                                let connection_label = self
+                                    .get_connection_name(status.connection_id)
+                                    .unwrap_or_else(|| {
+                                        format!("Connection {}", status.connection_id)
+                                    });
+                                let elapsed = status.started_at.elapsed();
+                                let elapsed_label = if elapsed.as_secs() >= 60 {
+                                    let minutes = elapsed.as_secs() / 60;
+                                    let seconds = elapsed.as_secs() % 60;
+                                    format!("{}m {:02}s", minutes, seconds)
+                                } else {
+                                    format!("{:.1}s", elapsed.as_secs_f32())
+                                };
+
+                                let sanitised = status.query_preview.replace('\n', " ");
+                                let mut preview = sanitised.chars().take(60).collect::<String>();
+                                if sanitised.chars().count() > 60 {
+                                    preview.push('…');
+                                }
+
+                                let chip_text = format!(
+                                    "{} • {} • {}",
+                                    connection_label,
+                                    elapsed_label,
+                                    preview.trim()
+                                );
+
+                                let response = egui::Frame::default()
+                                    .fill(chip_fill)
+                                    .stroke(egui::Stroke::new(1.0, chip_stroke))
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .inner_margin(egui::Margin::symmetric(8, 4))
+                                    .show(ui, |chip_ui| {
+                                        chip_ui
+                                            .label(egui::RichText::new(chip_text.clone()).size(11.0));
+                                    })
+                                    .response;
+
+                                response.on_hover_text(status.query_preview.clone());
+                            }
+                        });
+                    });
+            });
+    }
+
+    fn capture_current_editor_selection(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> Option<(usize, usize, usize)> {
+        let id = egui::Id::new("sql_editor");
+        let mut start_b = self.selection_start;
+        let mut end_b = self.selection_end;
+        let mut primary_b = self.cursor_position;
+
+        if let Some(range) =
+            crate::editor_state_adapter::EditorStateAdapter::get_range(ctx, id)
+        {
+            let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                s.char_indices()
+                    .map(|(b, _)| b)
+                    .chain(std::iter::once(s.len()))
+                    .nth(char_idx)
+                    .unwrap_or(s.len())
+            };
+
+            start_b = to_byte_index(&self.editor.text, range.start);
+            end_b = to_byte_index(&self.editor.text, range.end);
+            primary_b = to_byte_index(&self.editor.text, range.primary);
+            
+            log::debug!(
+                "🎯 Captured selection from egui: char range {}-{}, byte range {}-{}",
+                range.start, range.end, start_b, end_b
+            );
+        } else {
+            log::debug!("⚠️ No egui selection state found, using stored values: {}-{}", start_b, end_b);
+        }
+
+        let clamp = |value: usize| value.min(self.editor.text.len());
+        start_b = clamp(start_b);
+        end_b = clamp(end_b);
+        primary_b = clamp(primary_b);
+
+        self.selection_start = start_b;
+        self.selection_end = end_b;
+        self.cursor_position = primary_b;
+
+        if start_b < end_b {
+            self.selected_text = self.editor.text[start_b..end_b].to_string();
+            let text_hash = format!("{:x}", md5::compute(&self.selected_text));
+            log::debug!("✅ CAPTURE - Selected text (len {}, hash {}): '{}'", 
+                self.selected_text.len(),
+                text_hash,
+                self.selected_text.chars().take(150).collect::<String>());
+            Some((start_b, end_b, primary_b))
+        } else {
+            self.selected_text.clear();
+            log::debug!("❌ No selection (start == end)");
+            None
+        }
+    }
+
+    fn restore_editor_selection(
+        &mut self,
+        ctx: &egui::Context,
+        start_b: usize,
+        end_b: usize,
+        primary_b: usize,
+    ) {
+        let clamp = |value: usize| value.min(self.editor.text.len());
+        let start_b = clamp(start_b);
+        let end_b = clamp(end_b);
+        let primary_b = clamp(primary_b);
+
+        self.selection_start = start_b;
+        self.selection_end = end_b;
+        self.cursor_position = primary_b;
+        self.selected_text = if start_b < end_b {
+            self.editor.text[start_b..end_b].to_string()
+        } else {
+            String::new()
+        };
+        self.selection_force_clear = false;
+        self.pending_cursor_set = None;
+
+        let byte_to_char = |s: &str, byte_idx: usize| -> usize {
+            s[..byte_idx].chars().count()
+        };
+        let start_c = byte_to_char(&self.editor.text, start_b);
+        let end_c = byte_to_char(&self.editor.text, end_b);
+        let primary_c = byte_to_char(&self.editor.text, primary_b);
+
+        crate::editor_state_adapter::EditorStateAdapter::set_selection(
+            ctx,
+            egui::Id::new("sql_editor"),
+            start_c,
+            end_c,
+            primary_c,
+        );
+        self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(6);
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+        ctx.request_repaint();
     }
 
     fn render_tree(
@@ -7155,6 +7405,54 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             let prev_headers = self.current_table_headers.clone();
             let requested_page = self.current_page;
 
+            let job_id = self.next_query_job_id;
+            self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
+
+            match connection::prepare_query_job(
+                self,
+                connection_id,
+                paginated_query.clone(),
+                job_id,
+            ) {
+                Ok(mut job) => {
+                    job.options.save_to_history = false;
+                    let status = connection::QueryJobStatus {
+                        job_id,
+                        connection_id,
+                        query_preview: paginated_query.chars().take(80).collect(),
+                        started_at: std::time::Instant::now(),
+                        completed: false,
+                    };
+                    self.active_query_jobs.insert(job_id, status);
+                    self.pending_paginated_jobs.insert(job_id);
+
+                    if let Err(err) = connection::spawn_query_job(
+                        self,
+                        job,
+                        self.query_result_sender.clone(),
+                    ) {
+                        debug!(
+                            "⚠️ Failed to spawn paginated query job {:?}. Falling back to sync execution.",
+                            err
+                        );
+                        self.active_query_jobs.remove(&job_id);
+                        self.pending_paginated_jobs.remove(&job_id);
+                    } else {
+                        self.current_table_name = format!(
+                            "Loading page {}…",
+                            self.current_page.saturating_add(1)
+                        );
+                        return;
+                    }
+                }
+                Err(err) => {
+                    debug!(
+                        "⚠️ Failed to prepare paginated query job: {:?}. Falling back to sync execution.",
+                        err
+                    );
+                }
+            }
+
             if let Some((headers, data)) =
                 connection::execute_query_with_connection(self, connection_id, paginated_query)
             {
@@ -10605,16 +10903,8 @@ impl App for Tabular {
                             let button_corner =
                                 (button_size.y / 2.0).round().clamp(2.0, u8::MAX as f32) as u8;
 
-                            let previous_selection = if self.selection_start < self.selection_end {
-                                Some((
-                                    self.selection_start,
-                                    self.selection_end,
-                                    self.cursor_position,
-                                ))
-                            } else {
-                                None
-                            };
                             let mut execute_clicked = false;
+                            let mut captured_selection_text = String::new();
                             egui::Area::new(egui::Id::new(("floating_execute_button", self.active_tab_index)))
                                 .order(egui::Order::Foreground)
                                 .fixed_pos(button_pos)
@@ -10630,46 +10920,57 @@ impl App for Tabular {
                                         .add_sized(button_size, button)
                                         .on_hover_text(tooltip_text);
                                     if !is_loading && response.clicked() {
+                                        // Try to read selection DIRECTLY from egui state at click time
+                                        let id = egui::Id::new("sql_editor");
+                                        let mut direct_selected = String::new();
+                                        if let Some(range) =
+                                            crate::editor_state_adapter::EditorStateAdapter::get_range(area_ui.ctx(), id)
+                                        {
+                                            let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                                                s.char_indices()
+                                                    .map(|(b, _)| b)
+                                                    .chain(std::iter::once(s.len()))
+                                                    .nth(char_idx)
+                                                    .unwrap_or(s.len())
+                                            };
+                                            let start_b = to_byte_index(&self.editor.text, range.start);
+                                            let end_b = to_byte_index(&self.editor.text, range.end);
+                                            if start_b < end_b && end_b <= self.editor.text.len() {
+                                                direct_selected = self.editor.text[start_b..end_b].to_string();
+                                                let h = format!("{:x}", md5::compute(&direct_selected));
+                                                log::debug!(
+                                                    "🟢 DIRECT CAPTURE (button) - (len {}, hash {}): '{}'",
+                                                    direct_selected.len(),
+                                                    h,
+                                                    direct_selected.chars().take(150).collect::<String>()
+                                                );
+                                            }
+                                        }
+
                                         self.query_execution_in_progress = true;
                                         execute_clicked = true;
+
+                                        // Prefer direct capture; fallback to mirrored field if empty
+                                        captured_selection_text = if !direct_selected.is_empty() {
+                                            direct_selected
+                                        } else {
+                                            self.selected_text.clone()
+                                        };
                                     }
                                 });
                             if execute_clicked {
                                 self.is_table_browse_mode = false;
                                 self.query_execution_in_progress = true;
                                 self.extend_query_icon_hold();
-                                editor::execute_query(self);
-                                if let Some((start_b, end_b, primary_b)) = previous_selection {
-                                    let clamp = |value: usize| value.min(self.editor.text.len());
-                                    let start_b = clamp(start_b);
-                                    let end_b = clamp(end_b);
-                                    let primary_b = clamp(primary_b);
-                                    self.selection_start = start_b;
-                                    self.selection_end = end_b;
-                                    self.cursor_position = primary_b;
-                                    self.selected_text = if start_b < end_b {
-                                        self.editor.text[start_b..end_b].to_string()
-                                    } else {
-                                        String::new()
-                                    };
-                                    self.selection_force_clear = false;
-                                    self.pending_cursor_set = None;
-                                    let to_char_index = |s: &str, byte_idx: usize| -> usize {
-                                        let b = byte_idx.min(s.len());
-                                        s[..b].chars().count()
-                                    };
-                                    let start_c = to_char_index(&self.editor.text, start_b);
-                                    let end_c = to_char_index(&self.editor.text, end_b);
-                                    let primary_c = to_char_index(&self.editor.text, primary_b);
-                                    crate::editor_state_adapter::EditorStateAdapter::set_selection(
-                                        ui.ctx(),
-                                        egui::Id::new("sql_editor"),
-                                        start_c,
-                                        end_c,
-                                        primary_c,
-                                    );
-                                    self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(6);
-                                }
+                                
+                                // Use the selection that was captured at click time
+                                let text_hash = format!("{:x}", md5::compute(&captured_selection_text));
+                                log::debug!("🔵 BUTTON - Passing selection (len {}, hash {}): '{}'", 
+                                    captured_selection_text.len(),
+                                    text_hash,
+                                    captured_selection_text.chars().take(150).collect::<String>());
+                                editor::execute_query_with_text(self, captured_selection_text);
+                                
                                 ui.ctx()
                                     .memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
                                 ui.ctx().request_repaint();
@@ -10687,8 +10988,48 @@ impl App for Tabular {
                                     !cq.trim().is_empty() || !self.editor.text.trim().is_empty()
                                 };
                                 if has_q {
+                                    // Read selection DIRECTLY from egui before any other work
+                                    let id = egui::Id::new("sql_editor");
+                                    let mut direct_selected = String::new();
+                                    if let Some(range) =
+                                        crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                                    {
+                                        let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                                            s.char_indices()
+                                                .map(|(b, _)| b)
+                                                .chain(std::iter::once(s.len()))
+                                                .nth(char_idx)
+                                                .unwrap_or(s.len())
+                                        };
+                                        let start_b = to_byte_index(&self.editor.text, range.start);
+                                        let end_b = to_byte_index(&self.editor.text, range.end);
+                                        if start_b < end_b && end_b <= self.editor.text.len() {
+                                            direct_selected = self.editor.text[start_b..end_b].to_string();
+                                            let h = format!("{:x}", md5::compute(&direct_selected));
+                                            log::debug!(
+                                                "🟢 DIRECT CAPTURE (keyboard) - (len {}, hash {}): '{}'",
+                                                direct_selected.len(),
+                                                h,
+                                                direct_selected.chars().take(150).collect::<String>()
+                                            );
+                                        }
+                                    }
+
                                     self.extend_query_icon_hold();
-                                    editor::execute_query(self);
+                                    
+                                    // Prefer direct capture; fallback to mirrored field if empty
+                                    let captured_selection = if !direct_selected.is_empty() {
+                                        direct_selected
+                                    } else {
+                                        self.selected_text.clone()
+                                    };
+                                    let text_hash = format!("{:x}", md5::compute(&captured_selection));
+                                    log::debug!("⌨️ KEYBOARD - Passing selection (len {}, hash {}): '{}'", 
+                                        captured_selection.len(),
+                                        text_hash,
+                                        captured_selection.chars().take(150).collect::<String>());
+                                    editor::execute_query_with_text(self, captured_selection);
+                                    
                                 }
                             }
                         });
@@ -10941,6 +11282,8 @@ impl App for Tabular {
                             });
                         });
                 }
+
+                self.render_active_query_jobs_overlay(ctx);
             });
     } // end update
 } // end impl App for Tabular

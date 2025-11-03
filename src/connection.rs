@@ -102,15 +102,6 @@ pub(crate) fn prepare_query_job(
         .cloned()
         .ok_or(QueryPreparationError::ConnectionNotFound)?;
 
-    match connection.connection_type {
-        models::enums::DatabaseType::Redis
-        | models::enums::DatabaseType::MsSQL
-        | models::enums::DatabaseType::MongoDB => {
-            return Err(QueryPreparationError::UnsupportedDatabase);
-        }
-        _ => {}
-    }
-
     let selected_database = tabular
         .query_tabs
         .get(tabular.active_tab_index)
@@ -250,7 +241,7 @@ async fn execute_mysql_query_job(
     _pool: models::enums::DatabasePool,
 ) -> Result<QueryJobOutput, QueryExecutionError> {
     debug!(
-        "[async] Executing MySQL query (job {})",
+        "[async] Executing MySQL query (conn_id={})",
         options.connection_id
     );
 
@@ -326,6 +317,12 @@ async fn execute_mysql_query_job(
         options.connection.database.clone()
     };
 
+    // Log resolved target and database context up front to help diagnose schema issues
+    debug!(
+        "[mysql] target={}:{}, selected_database={:?}, default_db={}",
+        target_host, target_port, options.selected_database, default_db
+    );
+
     let mut ast_debug_sql: Option<String> = None;
     #[cfg(feature = "query_ast")]
     {
@@ -345,6 +342,8 @@ async fn execute_mysql_query_job(
     let mut attempts = 0;
     let max_attempts = 3;
     let mut last_error: Option<String> = None;
+    // Track the first failing statement across attempts for better diagnostics
+    let mut failing_stmt_preview: Option<String> = None;
 
     while attempts < max_attempts {
         attempts += 1;
@@ -598,7 +597,30 @@ async fn execute_mysql_query_job(
                     }
                 }
                 Ok(Err(e)) => {
-                    last_error = Some(e.to_string());
+                    let err_str = e.to_string();
+                    // Capture which statement failed (preview 200 chars)
+                    if failing_stmt_preview.is_none() {
+                        let prev = if trimmed.len() > 200 {
+                            format!("{}...", &trimmed[..200])
+                        } else {
+                            trimmed.to_string()
+                        };
+                        failing_stmt_preview = Some(prev);
+                    }
+                    // Attach a friendly hint for common 1146 (table doesn't exist) cases
+                    if err_str.contains("1146") || err_str.to_lowercase().contains("doesn't exist") {
+                        let mut hint = String::new();
+                        hint.push_str("Hint: Check the database/schema qualifier in your SQL. ");
+                        hint.push_str(&format!(
+                            "Current default database is '{}'. If your query references a different schema (e.g., 'foxlogger' vs actual '{}'), it can fail even if SELECT * FROM table works in the default DB. ",
+                            default_db, default_db
+                        ));
+                        hint.push_str("Try removing the schema prefix or replacing it with the selected/default database, or switch the active database in the tab. ");
+                        hint.push_str("Also, on case-sensitive MySQL servers (lower_case_table_names=0), using backticks requires exact table name casing. If unquoted works but \"`name`\" fails, check SHOW TABLES for the exact case and match it.");
+                        last_error = Some(format!("{}\n\n{}", err_str, hint));
+                    } else {
+                        last_error = Some(err_str);
+                    }
                     execution_success = false;
                     break;
                 }
@@ -611,6 +633,16 @@ async fn execute_mysql_query_job(
         }
 
         if execution_success {
+            // Log final headers for diagnostics (helps detect unexpected projection pruning)
+            if !final_headers.is_empty() {
+                debug!(
+                    "[mysql] final headers ({}): {:?}",
+                    final_headers.len(),
+                    final_headers
+                );
+            } else {
+                debug!("[mysql] final headers are empty (rows: {})", final_data.len());
+            }
             return Ok(QueryJobOutput {
                 headers: final_headers,
                 rows: final_data,
@@ -620,9 +652,14 @@ async fn execute_mysql_query_job(
         }
     }
 
-    Err(QueryExecutionError::Message(
-        last_error.unwrap_or_else(|| "Unknown MySQL error".to_string()),
-    ))
+    let mut final_err = last_error.unwrap_or_else(|| "Unknown MySQL error".to_string());
+    if let Some(stmt) = failing_stmt_preview {
+        final_err = format!(
+            "{}\n\nFailed statement (preview): {}",
+            final_err, stmt
+        );
+    }
+    Err(QueryExecutionError::Message(final_err))
 }
 
 async fn execute_postgres_query_job(
@@ -924,30 +961,359 @@ async fn execute_sqlite_query_job(
 }
 
 async fn execute_redis_query_job(
-    _options: &QueryExecutionOptions,
-    _pool: models::enums::DatabasePool,
+    options: &QueryExecutionOptions,
+    pool: models::enums::DatabasePool,
 ) -> Result<QueryJobOutput, QueryExecutionError> {
-    Err(QueryExecutionError::Message(
-        "Redis async execution not yet implemented".to_string(),
-    ))
+    use redis::AsyncCommands;
+
+    let redis_manager = match pool {
+        models::enums::DatabasePool::Redis(manager) => manager,
+        _ => {
+            return Err(QueryExecutionError::Message(
+                "Invalid pool type for Redis".to_string(),
+            ));
+        }
+    };
+
+    let command_line = options.query.trim();
+    if command_line.is_empty() {
+        return Err(QueryExecutionError::Message(
+            "Empty Redis command".to_string(),
+        ));
+    }
+
+    let mut connection = redis_manager.as_ref().clone();
+
+    if let Some(db_name) = options.selected_database.as_ref() {
+        let db_trim = db_name.trim();
+        let candidate = if let Some(rest) = db_trim.strip_prefix("db") {
+            rest
+        } else if let Some(rest) = db_trim.strip_prefix("DB") {
+            rest
+        } else {
+            db_trim
+        };
+        if let Ok(db_index) = candidate.parse::<i32>() {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                redis::cmd("SELECT")
+                    .arg(db_index)
+                    .query_async::<String>(&mut connection),
+            )
+            .await;
+        }
+    }
+
+    debug!("[async] Executing Redis command: {}", command_line);
+
+    let parts: Vec<&str> = command_line.split_whitespace().collect();
+    if parts.is_empty() {
+        return Err(QueryExecutionError::Message(
+            "Empty Redis command".to_string(),
+        ));
+    }
+
+    let command = parts[0].to_uppercase();
+    match command.as_str() {
+        "GET" => {
+            if parts.len() != 2 {
+                return Err(QueryExecutionError::Message(
+                    "GET requires exactly one key".to_string(),
+                ));
+            }
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                connection.get::<&str, Option<String>>(parts[1]),
+            )
+            .await
+            {
+                Ok(Ok(Some(value))) => Ok(QueryJobOutput {
+                    headers: vec!["Key".to_string(), "Value".to_string()],
+                    rows: vec![vec![parts[1].to_string(), value]],
+                    ast_debug_sql: None,
+                    ast_headers: None,
+                }),
+                Ok(Ok(None)) => Ok(QueryJobOutput {
+                    headers: vec!["Key".to_string(), "Value".to_string()],
+                    rows: vec![vec![parts[1].to_string(), "NULL".to_string()]],
+                    ast_debug_sql: None,
+                    ast_headers: None,
+                }),
+                _ => Err(QueryExecutionError::Message(
+                    "Redis GET timed out or failed".to_string(),
+                )),
+            }
+        }
+        "KEYS" => {
+            if parts.len() != 2 {
+                return Err(QueryExecutionError::Message(
+                    "KEYS requires exactly one pattern".to_string(),
+                ));
+            }
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                connection.keys::<&str, Vec<String>>(parts[1]),
+            )
+            .await
+            {
+                Ok(Ok(keys)) => {
+                    let table_data: Vec<Vec<String>> = keys
+                        .into_iter()
+                        .map(|k| vec![k])
+                        .collect();
+                    Ok(QueryJobOutput {
+                        headers: vec!["Key".to_string()],
+                        rows: table_data,
+                        ast_debug_sql: None,
+                        ast_headers: None,
+                    })
+                }
+                _ => Err(QueryExecutionError::Message(
+                    "Redis KEYS timed out or failed".to_string(),
+                )),
+            }
+        }
+        "SCAN" => {
+            if parts.len() < 2 {
+                return Err(QueryExecutionError::Message(
+                    "SCAN requires cursor parameter".to_string(),
+                ));
+            }
+            let cursor = parts[1];
+            let mut match_pattern = "*";
+            let mut count: i64 = 10;
+            let mut idx = 2;
+            while idx < parts.len() {
+                match parts[idx].to_uppercase().as_str() {
+                    "MATCH" => {
+                        if idx + 1 < parts.len() {
+                            match_pattern = parts[idx + 1];
+                            idx += 2;
+                        } else {
+                            return Err(QueryExecutionError::Message(
+                                "MATCH requires a pattern".to_string(),
+                            ));
+                        }
+                    }
+                    "COUNT" => {
+                        if idx + 1 < parts.len() {
+                            if let Ok(parsed) = parts[idx + 1].parse::<i64>() {
+                                count = parsed;
+                                idx += 2;
+                            } else {
+                                return Err(QueryExecutionError::Message(
+                                    "COUNT must be a number".to_string(),
+                                ));
+                            }
+                        } else {
+                            return Err(QueryExecutionError::Message(
+                                "COUNT requires a number".to_string(),
+                            ));
+                        }
+                    }
+                    other => {
+                        return Err(QueryExecutionError::Message(format!(
+                            "Unknown SCAN parameter: {}",
+                            other
+                        )));
+                    }
+                }
+            }
+
+            let mut cmd = redis::cmd("SCAN");
+            cmd.arg(cursor);
+            if match_pattern != "*" {
+                cmd.arg("MATCH").arg(match_pattern);
+            }
+            cmd.arg("COUNT").arg(count);
+
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                cmd.query_async::<(String, Vec<String>)>(&mut connection),
+            )
+            .await
+            {
+                Ok(Ok((next_cursor, keys))) => {
+                    let mut table_data = Vec::new();
+                    if keys.is_empty() {
+                        table_data.push(vec![
+                            "Info".to_string(),
+                            format!("No keys found matching pattern: {}", match_pattern),
+                        ]);
+                        table_data.push(vec!["Cursor".to_string(), next_cursor.clone()]);
+                        table_data.push(vec![
+                            "Suggestion".to_string(),
+                            "Try different pattern or use 'SCAN 0 COUNT 100' to see all keys"
+                                .to_string(),
+                        ]);
+                        if match_pattern != "*"
+                            && let Ok((_, sample_keys)) = redis::cmd("SCAN")
+                                .arg("0")
+                                .arg("COUNT")
+                                .arg("10")
+                                .query_async::<(String, Vec<String>)>(&mut connection)
+                                .await
+                            && !sample_keys.is_empty()
+                        {
+                            table_data.push(vec!["Sample Keys Found".to_string(), "".to_string()]);
+                            for (i, key) in sample_keys.iter().take(5).enumerate() {
+                                table_data.push(vec![
+                                    format!("Sample {}", i + 1),
+                                    key.clone(),
+                                ]);
+                            }
+                        }
+                    } else {
+                        table_data.push(vec!["CURSOR".to_string(), next_cursor]);
+                        for key in keys {
+                            table_data.push(vec!["KEY".to_string(), key]);
+                        }
+                    }
+                    Ok(QueryJobOutput {
+                        headers: vec!["Type".to_string(), "Value".to_string()],
+                        rows: table_data,
+                        ast_debug_sql: None,
+                        ast_headers: None,
+                    })
+                }
+                _ => Err(QueryExecutionError::Message(
+                    "Redis SCAN timed out or failed".to_string(),
+                )),
+            }
+        }
+        "INFO" => {
+            let section = if parts.len() > 1 { parts[1] } else { "default" };
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                redis::cmd("INFO")
+                    .arg(section)
+                    .query_async::<String>(&mut connection),
+            )
+            .await
+            {
+                Ok(Ok(info_result)) => {
+                    let mut table_data = Vec::new();
+                    for line in info_result.lines() {
+                        if line.trim().is_empty() || line.starts_with('#') {
+                            continue;
+                        }
+                        if let Some((key, value)) = line.split_once(':') {
+                            table_data.push(vec![key.to_string(), value.to_string()]);
+                        }
+                    }
+                    Ok(QueryJobOutput {
+                        headers: vec!["Property".to_string(), "Value".to_string()],
+                        rows: table_data,
+                        ast_debug_sql: None,
+                        ast_headers: None,
+                    })
+                }
+                _ => Err(QueryExecutionError::Message(
+                    "Redis INFO timed out or failed".to_string(),
+                )),
+            }
+        }
+        "HGETALL" => {
+            if parts.len() != 2 {
+                return Err(QueryExecutionError::Message(
+                    "HGETALL requires exactly one key".to_string(),
+                ));
+            }
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                redis::cmd("HGETALL")
+                    .arg(parts[1])
+                    .query_async::<Vec<String>>(&mut connection),
+            )
+            .await
+            {
+                Ok(Ok(hash_data)) => {
+                    let mut table_data = Vec::new();
+                    for chunk in hash_data.chunks(2) {
+                        if chunk.len() == 2 {
+                            table_data.push(vec![chunk[0].clone(), chunk[1].clone()]);
+                        }
+                    }
+                    if table_data.is_empty() {
+                        table_data.push(vec![
+                            "No data".to_string(),
+                            "Hash is empty or key does not exist".to_string(),
+                        ]);
+                    }
+                    Ok(QueryJobOutput {
+                        headers: vec!["Field".to_string(), "Value".to_string()],
+                        rows: table_data,
+                        ast_debug_sql: None,
+                        ast_headers: None,
+                    })
+                }
+                _ => Err(QueryExecutionError::Message(
+                    "Redis HGETALL timed out or failed".to_string(),
+                )),
+            }
+        }
+        _ => Err(QueryExecutionError::Message(format!(
+            "Unsupported Redis command: {}",
+            parts[0]
+        ))),
+    }
 }
 
 async fn execute_mssql_query_job(
-    _options: &QueryExecutionOptions,
-    _pool: models::enums::DatabasePool,
+    options: &QueryExecutionOptions,
+    pool: models::enums::DatabasePool,
 ) -> Result<QueryJobOutput, QueryExecutionError> {
-    Err(QueryExecutionError::Message(
-        "MsSQL async execution not yet implemented".to_string(),
-    ))
+    let config = match pool {
+        models::enums::DatabasePool::MsSQL(cfg) => cfg,
+        _ => {
+            return Err(QueryExecutionError::Message(
+                "Invalid pool type for MsSQL".to_string(),
+            ));
+        }
+    };
+
+    let mut query_str = options.query.trim().to_string();
+    if query_str.is_empty() {
+        return Err(QueryExecutionError::Message(
+            "Empty MsSQL query".to_string(),
+        ));
+    }
+
+    if query_str.contains("TOP") && query_str.contains("ROWS FETCH NEXT") {
+        query_str = query_str.replace("TOP 10000", "");
+    }
+
+    match driver_mssql::execute_query(config.clone(), &query_str).await {
+        Ok((headers, rows)) => Ok(QueryJobOutput {
+            headers,
+            rows,
+            ast_debug_sql: None,
+            ast_headers: None,
+        }),
+        Err(e) => Err(QueryExecutionError::Message(format!(
+            "Query error: {}",
+            e
+        ))),
+    }
 }
 
 async fn execute_mongodb_query_job(
     _options: &QueryExecutionOptions,
-    _pool: models::enums::DatabasePool,
+    pool: models::enums::DatabasePool,
 ) -> Result<QueryJobOutput, QueryExecutionError> {
-    Err(QueryExecutionError::Message(
-        "MongoDB async execution not yet implemented".to_string(),
-    ))
+    match pool {
+        models::enums::DatabasePool::MongoDB(_) => Ok(QueryJobOutput {
+            headers: vec!["Info".to_string()],
+            rows: vec![vec![
+                "MongoDB query execution is not supported. Use tree to browse collections.".to_string(),
+            ]],
+            ast_debug_sql: None,
+            ast_headers: None,
+        }),
+        _ => Err(QueryExecutionError::Message(
+            "Invalid pool type for MongoDB".to_string(),
+        )),
+    }
 }
 
 fn resolve_connection_target(

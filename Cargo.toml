@@ -52,6 +52,7 @@ rust_decimal = "1.39.0"
 log = "0.4"
 env_logger = "0.11"
 dotenv = "0.15.0"
+md5 = "0.7"
 tiberius = { version = "0.12", default-features = false, features = [
        "winauth",
        "chrono",
@@ -110,10 +111,26 @@ depends = [
        "libglib2.0-0",
 ]
 assets = [
-       ["tabular.desktop", "usr/share/applications/tabular.desktop", "644"],
-       ["assets/logo.png", "usr/share/icons/hicolor/512x512/apps/tabular.png", "644"],
-       ["LICENSE", "usr/share/doc/tabular/LICENSE", "644"],
-       ["LICENSE-AGPL", "usr/share/doc/tabular/LICENSE-AGPL", "644"],
+       [
+              "tabular.desktop",
+              "usr/share/applications/tabular.desktop",
+              "644",
+       ],
+       [
+              "assets/logo.png",
+              "usr/share/icons/hicolor/512x512/apps/tabular.png",
+              "644",
+       ],
+       [
+              "LICENSE",
+              "usr/share/doc/tabular/LICENSE",
+              "644",
+       ],
+       [
+              "LICENSE-AGPL",
+              "usr/share/doc/tabular/LICENSE-AGPL",
+              "644",
+       ],
 ]
 extended-description = "Tabular helps you explore and query SQL and NoSQL databases from a single desktop app."
 recommends = ["update-desktop-database", "gtk-update-icon-cache"]

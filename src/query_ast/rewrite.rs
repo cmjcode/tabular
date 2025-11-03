@@ -334,28 +334,38 @@ fn projection_prune(plan: &mut LogicalQueryPlan) -> bool {
         }
     }
     // Recursive pruning
-    fn recurse(p: &mut L, changed: &mut bool, needed_parent: &std::collections::HashSet<String>) {
+    fn recurse(
+        p: &mut L,
+        changed: &mut bool,
+        needed_parent: &std::collections::HashSet<String>,
+        is_root: bool,
+    ) {
         match p {
             L::Projection { exprs, input } => {
-                // Determine which expressions are referenced by parent contexts (needed_parent)
-                let mut kept = Vec::with_capacity(exprs.len());
-                for e in exprs.iter() {
-                    let keep = match e {
-                        Expr::Alias { alias, .. } => {
-                            needed_parent.contains(&alias.to_ascii_lowercase())
+                // Do NOT prune at the root projection: keep user-selected columns intact.
+                // Also, if there is no explicit need from parent contexts, keep the full projection.
+                if !is_root && !needed_parent.is_empty() {
+                    // Determine which expressions are referenced by parent contexts (needed_parent)
+                    let mut kept = Vec::with_capacity(exprs.len());
+                    for e in exprs.iter() {
+                        let keep = match e {
+                            Expr::Alias { alias, .. } => {
+                                needed_parent.contains(&alias.to_ascii_lowercase())
+                            }
+                            Expr::Column(c) => needed_parent.contains(
+                                &c.split('.').next_back().unwrap_or(c).to_ascii_lowercase(),
+                            ),
+                            Expr::Star => true, // cannot prune * safely
+                            _ => true,          // keep complex expressions conservatively
+                        };
+                        if keep {
+                            kept.push(e.clone());
                         }
-                        Expr::Column(c) => needed_parent
-                            .contains(&c.split('.').next_back().unwrap_or(c).to_ascii_lowercase()),
-                        Expr::Star => true, // cannot prune * safely
-                        _ => true,          // keep complex expressions conservatively
-                    };
-                    if keep {
-                        kept.push(e.clone());
                     }
-                }
-                if kept.len() != exprs.len() {
-                    *exprs = kept;
-                    *changed = true;
+                    if kept.len() != exprs.len() {
+                        *exprs = kept;
+                        *changed = true;
+                    }
                 }
                 // Build next needed set from current projection outputs (all aliases/columns that remain)
                 let mut next_needed = std::collections::HashSet::new();
@@ -372,7 +382,7 @@ fn projection_prune(plan: &mut LogicalQueryPlan) -> bool {
                         _ => {}
                     }
                 }
-                recurse(input, changed, &next_needed);
+                recurse(input, changed, &next_needed, false);
             }
             L::Filter { input, .. }
             | L::Sort { input, .. }
@@ -380,10 +390,10 @@ fn projection_prune(plan: &mut LogicalQueryPlan) -> bool {
             | L::Distinct { input }
             | L::Group { input, .. }
             | L::Having { input, .. }
-            | L::With { input, .. } => recurse(input, changed, needed_parent),
+            | L::With { input, .. } => recurse(input, changed, needed_parent, is_root),
             L::Join { left, right, .. } | L::SetOp { left, right, .. } => {
-                recurse(left, changed, needed_parent);
-                recurse(right, changed, needed_parent);
+                recurse(left, changed, needed_parent, is_root);
+                recurse(right, changed, needed_parent, is_root);
             }
             L::TableScan { .. } | L::SubqueryScan { .. } => {}
         }
@@ -392,7 +402,8 @@ fn projection_prune(plan: &mut LogicalQueryPlan) -> bool {
     let mut needed = std::collections::HashSet::new();
     collect_needed(plan, &mut needed);
     // Root needed set = everything referenced above base projections
-    recurse(plan, &mut changed, &needed);
+    // Root call: mark as root to avoid pruning top-level projection
+    recurse(plan, &mut changed, &needed, true);
     changed
 }
 
