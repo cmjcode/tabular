@@ -118,7 +118,12 @@ impl SqlDialect for MySqlDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("`{}`", ident.replace('`', "``"))
+        let trimmed = ident.trim();
+        // If already backtick-quoted, return as-is to avoid double quoting like ```name```.
+        if trimmed.len() >= 2 && trimmed.starts_with('`') && trimmed.ends_with('`') {
+            return trimmed.to_string();
+        }
+        format!("`{}`", trimmed.replace('`', "``"))
     }
 }
 
@@ -131,7 +136,11 @@ impl SqlDialect for PostgresDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("\"{}\"", ident.replace('"', "\"\""))
+        let trimmed = ident.trim();
+        if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+            return trimmed.to_string();
+        }
+        format!("\"{}\"", trimmed.replace('"', "\"\""))
     }
 }
 
@@ -144,7 +153,11 @@ impl SqlDialect for SqliteDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("`{}`", ident.replace('`', "``"))
+        let trimmed = ident.trim();
+        if trimmed.len() >= 2 && trimmed.starts_with('`') && trimmed.ends_with('`') {
+            return trimmed.to_string();
+        }
+        format!("`{}`", trimmed.replace('`', "``"))
     }
 
     fn supports_window_functions(&self) -> bool {
@@ -161,7 +174,11 @@ impl SqlDialect for MssqlDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("[{}]", ident.replace(']', "]]"))
+        let trimmed = ident.trim();
+        if trimmed.len() >= 2 && trimmed.starts_with('[') && trimmed.ends_with(']') {
+            return trimmed.to_string();
+        }
+        format!("[{}]", trimmed.replace(']', "]]"))
     }
 
     fn emit_limit(&self, limit: u64, offset: u64) -> String {
@@ -188,7 +205,11 @@ impl SqlDialect for MongoDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("\"{}\"", ident.replace('"', "\"\""))
+        let trimmed = ident.trim();
+        if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+            return trimmed.to_string();
+        }
+        format!("\"{}\"", trimmed.replace('"', "\"\""))
     }
 
     fn supports_window_functions(&self) -> bool {
@@ -209,7 +230,11 @@ impl SqlDialect for RedisDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("\"{}\"", ident.replace('"', "\"\""))
+        let trimmed = ident.trim();
+        if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+            return trimmed.to_string();
+        }
+        format!("\"{}\"", trimmed.replace('"', "\"\""))
     }
 
     fn supports_window_functions(&self) -> bool {
