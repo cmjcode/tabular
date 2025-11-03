@@ -10868,19 +10868,10 @@ impl App for Tabular {
                                 rect.min.y + button_margin,
                             );
                             let play_fill = egui::Color32::TRANSPARENT;
-                            let hold_active = if let Some(deadline) = self.query_icon_hold_until {
-                                if deadline > std::time::Instant::now() {
-                                    true
-                                } else {
-                                    self.query_icon_hold_until = None;
-                                    false
-                                }
-                            } else {
-                                false
-                            };
+                            // Loading indicator should strictly follow query_execution_in_progress / pool wait
+                            // to avoid delayed hourglass after query finishes.
                             let is_loading = self.query_execution_in_progress
-                                || self.pool_wait_in_progress
-                                || hold_active;
+                                || self.pool_wait_in_progress;
                             let (play_icon, play_color, play_border, tooltip_text) =
                                 if is_loading {
                                     (
