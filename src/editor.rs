@@ -2451,6 +2451,23 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // After show(), apply any pending cursor via direct set_ccursor_range
     if let Some(pos) = tabular.pending_cursor_set {
+        // Guard: if there's an active selection range in egui state or Shift is held, skip applying
+        // a collapsed caret to avoid wiping a freshly created Shift+Click selection.
+        let id = response.id;
+        let skip_due_to_active_range = if let Some(st) = TextEditState::load(ui.ctx(), id) {
+            if let Some(rng) = st.cursor.char_range() {
+                // Treat as active range when primary and secondary differ
+                rng.primary.index != rng.secondary.index
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let shift_now = ui.input(|i| i.modifiers.shift);
+        if skip_due_to_active_range || shift_now {
+            tabular.pending_cursor_set = None;
+        }
         let id = response.id;
         let clamped = pos.min(tabular.editor.text.len());
         // Use a collapsed selection to set the caret directly
@@ -2632,9 +2649,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Request repaint to ensure caret appears immediately
         ui.ctx().request_repaint();
 
-        if tabular.multi_selection.is_empty() {
+        // IMPORTANT: Do not collapse selection on Shift+Click or when a non-collapsed selection exists.
+        // Previously, we always set a pending collapsed caret here, which overwrote egui's range
+        // selection on the final Shift+Click, making the block selection disappear.
+        let shift_down = ui.input(|i| i.modifiers.shift);
+        let has_range = tabular.selection_start != tabular.selection_end;
+        if tabular.multi_selection.is_empty() && !shift_down && !has_range {
             let caret = tabular.cursor_position.min(tabular.editor.text.len());
             tabular.pending_cursor_set = Some(caret);
+        } else {
+            // Ensure no stray pending collapse remains that could override current selection
+            tabular.pending_cursor_set = None;
         }
     }
     if response.clicked() || response.has_focus() {
