@@ -2683,7 +2683,7 @@ pub(crate) fn render_structure_columns_editor(
                         let w = widths[i];
                         // All cells clickable for context menu
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click_and_drag());
-                        if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}    
+                        if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}
                         // Selection highlight
                         let is_row_selected = tabular.structure_selected_row == Some(idx);
                         let is_cell_selected = tabular.structure_selected_cell == Some((idx, i));

@@ -2200,12 +2200,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // which in some cases could make the caret appear to "freeze".
     if tabular.multi_selection.len() == 1
         && let Some((a, b)) = tabular.multi_selection.primary_range()
-            && a == b {
-                let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
-                if b == caret_b {
-                    tabular.multi_selection.clear();
-                }
-            }
+        && a == b
+    {
+        let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
+        if b == caret_b {
+            tabular.multi_selection.clear();
+        }
+    }
 
     // Clear multi-selection on Escape
     if input_snapshot.key_pressed(egui::Key::Escape) && !tabular.multi_selection.is_empty() {
@@ -2438,7 +2439,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
                 let caret_rect = egui::Rect::from_min_max(
                     egui::pos2(caret_line_rect.left(), caret_line_rect.top()),
-                    egui::pos2(caret_line_rect.left() + 2.0, caret_line_rect.top() + line_height),
+                    egui::pos2(
+                        caret_line_rect.left() + 2.0,
+                        caret_line_rect.top() + line_height,
+                    ),
                 );
                 let color = egui::Color32::from_rgba_unmultiplied(100, 150, 255, 220);
                 selection_painter.rect_filled(caret_rect, 1.0, color);
@@ -2656,24 +2660,24 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     if !response.changed()
         && let Some(rng) =
             crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
-        {
-            // Convert char indices from egui to byte indices for our buffer
-            let primary_b = to_byte_index(&tabular.editor.text, rng.primary);
-            let start_b = to_byte_index(&tabular.editor.text, rng.start);
-            let end_b = to_byte_index(&tabular.editor.text, rng.end);
-            tabular.cursor_position = primary_b;
-            tabular.selection_start = start_b;
-            tabular.selection_end = end_b;
-            if start_b != end_b {
-                if let Some(selected) = tabular.editor.text.get(start_b..end_b) {
-                    tabular.selected_text = selected.to_string();
-                } else {
-                    tabular.selected_text.clear();
-                }
+    {
+        // Convert char indices from egui to byte indices for our buffer
+        let primary_b = to_byte_index(&tabular.editor.text, rng.primary);
+        let start_b = to_byte_index(&tabular.editor.text, rng.start);
+        let end_b = to_byte_index(&tabular.editor.text, rng.end);
+        tabular.cursor_position = primary_b;
+        tabular.selection_start = start_b;
+        tabular.selection_end = end_b;
+        if start_b != end_b {
+            if let Some(selected) = tabular.editor.text.get(start_b..end_b) {
+                tabular.selected_text = selected.to_string();
             } else {
                 tabular.selected_text.clear();
             }
+        } else {
+            tabular.selected_text.clear();
         }
+    }
 
     // Enforce selection collapse visually if requested by a previous destructive action
     if tabular.selection_force_clear {
@@ -2749,7 +2753,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let post_b = post_s.as_bytes();
         let pre_len = pre_b.len();
         let post_len = post_b.len();
-    let _delta = post_len as isize - pre_len as isize;
+        let _delta = post_len as isize - pre_len as isize;
         let mut pref = 0usize;
         let mut pre_suf = pre_len;
         let mut post_suf = post_len;
@@ -2770,10 +2774,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         } else {
             // Large texts: skip expensive scans; infer from delta and key events
             let is_newline = enter_pressed_pre || ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let ins = if is_newline { "\\n".to_string() } else { String::new() };
+            let ins = if is_newline {
+                "\\n".to_string()
+            } else {
+                String::new()
+            };
             (String::new(), ins)
         };
-        
+
         // Prefer cursor information reported by egui, with diff-based fallback for edge cases.
         let mut widget_cursor_b = None;
         let mut widget_sel_start_b = None;
@@ -2794,20 +2802,24 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // CRITICAL: Always compute diff for logging and fallback cursor calculation.
         let inserted_len = post_suf.saturating_sub(pref);
         let deleted_len = pre_suf.saturating_sub(pref);
-        let (diff_sel_start_b, diff_sel_end_b, diff_cursor_b) = if inserted_len > 0 || deleted_len > 0 {
+        let (diff_sel_start_b, diff_sel_end_b, diff_cursor_b) = if inserted_len > 0
+            || deleted_len > 0
+        {
             // Text changed - use diff to determine cursor position
             let cursor_b = if inserted_len > 0 {
-                post_suf  // After insertion, cursor should be at end of inserted text
+                post_suf // After insertion, cursor should be at end of inserted text
             } else if deleted_len > 0 {
-                pref  // After deletion, cursor should be at deletion start point
+                pref // After deletion, cursor should be at deletion start point
             } else {
-                post_suf  // Replacement case
+                post_suf // Replacement case
             };
             let cursor_b = cursor_b.min(tabular.editor.text.len());
             (cursor_b, cursor_b, cursor_b)
         } else {
             // No text change - try to read cursor from egui state (navigation, click, etc.)
-            if let Some(r) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id) {
+            if let Some(r) =
+                crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
+            {
                 let ss = to_byte_index(&tabular.editor.text, r.start);
                 let ee = to_byte_index(&tabular.editor.text, r.end);
                 let pp = to_byte_index(&tabular.editor.text, r.primary);
@@ -2824,8 +2836,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             (diff_sel_start_b, diff_sel_end_b, diff_cursor_b)
         } else if let Some(cursor_b) = widget_cursor_b {
             (
-                widget_sel_start_b.unwrap_or(cursor_b).min(tabular.editor.text.len()),
-                widget_sel_end_b.unwrap_or(cursor_b).min(tabular.editor.text.len()),
+                widget_sel_start_b
+                    .unwrap_or(cursor_b)
+                    .min(tabular.editor.text.len()),
+                widget_sel_end_b
+                    .unwrap_or(cursor_b)
+                    .min(tabular.editor.text.len()),
                 cursor_b.min(tabular.editor.text.len()),
             )
         } else {
@@ -2947,13 +2963,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             );
 
                             // Mirror the widget's primary insertion to other carets only
-                            tabular
-                                .multi_selection
-                                .apply_insert_text_others(
-                                    &mut tabular.editor.text,
-                                    &inserted,
-                                    old_primary,
-                                );
+                            tabular.multi_selection.apply_insert_text_others(
+                                &mut tabular.editor.text,
+                                &inserted,
+                                old_primary,
+                            );
                             let caret_positions_after = tabular.multi_selection.caret_positions();
                             log::debug!(
                                 "[multi] insert applied text_len={} positions_after={:?}",
@@ -3063,7 +3077,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let placed_row = &galley.rows[layout.row];
                 let row_rect = egui::Rect::from_min_max(
                     egui::pos2(galley_pos.x, galley_pos.y + placed_row.min_y()),
-                    egui::pos2(galley_pos.x + response.rect.width(), galley_pos.y + placed_row.max_y()),
+                    egui::pos2(
+                        galley_pos.x + response.rect.width(),
+                        galley_pos.y + placed_row.max_y(),
+                    ),
                 );
                 ui.scroll_to_rect(row_rect, Some(egui::Align::BOTTOM));
             }
@@ -3753,18 +3770,21 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
 
     if tabular.auto_format_on_execute
         && let Some(formatted) = query_tools::format_sql(&query)
-            && formatted != query {
-                let executed_full_editor = tabular.editor.text.trim() == query;
-                query = formatted.clone();
-                if executed_full_editor {
-                    tabular.editor.set_text(formatted);
-                    let new_len = tabular.editor.text.len();
-                    tabular.cursor_position = tabular.cursor_position.min(new_len);
-                    tabular.multi_selection.clear();
-                    tabular.multi_selection.add_collapsed(tabular.cursor_position);
-                    tabular.last_editor_text = tabular.editor.text.clone();
-                }
-            }
+        && formatted != query
+    {
+        let executed_full_editor = tabular.editor.text.trim() == query;
+        query = formatted.clone();
+        if executed_full_editor {
+            tabular.editor.set_text(formatted);
+            let new_len = tabular.editor.text.len();
+            tabular.cursor_position = tabular.cursor_position.min(new_len);
+            tabular.multi_selection.clear();
+            tabular
+                .multi_selection
+                .add_collapsed(tabular.cursor_position);
+            tabular.last_editor_text = tabular.editor.text.clone();
+        }
+    }
 
     if query.is_empty() {
         tabular.query_execution_in_progress = false;

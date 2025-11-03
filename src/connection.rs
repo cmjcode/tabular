@@ -1621,7 +1621,7 @@ pub(crate) fn execute_table_query_sync(
                         let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
                             let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
                             match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
-                                Ok((new_sql, hdrs)) => { 
+                                Ok((new_sql, hdrs)) => {
                                     if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs.clone()); }
                                     // Store debug info for UI panel
                                     tabular.last_compiled_sql = Some(new_sql.clone());
@@ -1769,8 +1769,8 @@ pub(crate) fn execute_table_query_sync(
                                                             && !fallback_rows.is_empty() {
                                                                 final_headers = fallback_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
                                                                 final_data = driver_mysql::convert_mysql_rows_to_table_data(fallback_rows);
-                                                            }
-                                                            
+                                }
+
                                                     // Build summary metrics (simple overlay table)
                                                     if !final_headers.is_empty() && !final_data.is_empty() {
                                                         let header_index = |name: &str| final_headers.iter().position(|h| h.eq_ignore_ascii_case(name));
@@ -1916,7 +1916,7 @@ pub(crate) fn execute_table_query_sync(
                         let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
                             let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
                             match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
-                                Ok((new_sql, hdrs)) => { 
+                                Ok((new_sql, hdrs)) => {
                                     if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs.clone()); }
                                     tabular.last_compiled_sql = Some(new_sql.clone());
                                     tabular.last_compiled_headers = hdrs.clone();

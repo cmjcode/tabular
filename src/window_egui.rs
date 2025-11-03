@@ -990,11 +990,9 @@ impl Tabular {
 
         if !self.show_lint_panel {
             ui.horizontal(|ui| {
-                let warning_text = egui::RichText::new(format!(
-                    "⚠ {} lint issue{} detected",
-                    count, plural
-                ))
-                .color(egui::Color32::from_rgb(255, 183, 0));
+                let warning_text =
+                    egui::RichText::new(format!("⚠ {} lint issue{} detected", count, plural))
+                        .color(egui::Color32::from_rgb(255, 183, 0));
                 ui.label(warning_text);
                 if ui.button("Show details").clicked() {
                     self.show_lint_panel = true;
@@ -1017,61 +1015,55 @@ impl Tabular {
 
         let inner = egui::Frame::group(ui.style())
             .fill(panel_fill)
-            .stroke(egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgb(255, 30, 0),
-            ))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 30, 0)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!(
-                        "Lint ({})",
-                        count
-                    ))
-                    .strong());
+                    ui.label(egui::RichText::new(format!("Lint ({})", count)).strong());
                     if ui.button("Hide").clicked() {
                         self.show_lint_panel = false;
                         self.lint_panel_shown_at = None;
                     }
                     ui.add_space(12.0);
                     ui.checkbox(&mut self.lint_panel_pinned, "Pin (keep open)");
-                    ui.checkbox(&mut self.auto_format_on_execute, "Auto-format before execute");
+                    ui.checkbox(
+                        &mut self.auto_format_on_execute,
+                        "Auto-format before execute",
+                    );
                     if ui.button("Format now").clicked()
                         && let Some(formatted) = query_tools::format_sql(&self.editor.text)
-                            && formatted != self.editor.text {
-                                self.editor.set_text(formatted.clone());
-                                let new_len = self.editor.text.len();
-                                self.cursor_position = new_len;
-                                self.multi_selection.clear();
-                                self.multi_selection.add_collapsed(self.cursor_position);
-                                self.last_editor_text = self.editor.text.clone();
-                                self.lint_messages = query_tools::lint_sql(&self.editor.text);
-                                self.show_lint_panel = !self.lint_messages.is_empty();
-                                if self.show_lint_panel {
-                                    self.lint_panel_shown_at = Some(std::time::Instant::now());
-                                } else {
-                                    self.lint_panel_shown_at = None;
-                                }
-                                self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(4);
-                                self.pending_cursor_set = Some(self.cursor_position);
-                            }
+                        && formatted != self.editor.text
+                    {
+                        self.editor.set_text(formatted.clone());
+                        let new_len = self.editor.text.len();
+                        self.cursor_position = new_len;
+                        self.multi_selection.clear();
+                        self.multi_selection.add_collapsed(self.cursor_position);
+                        self.last_editor_text = self.editor.text.clone();
+                        self.lint_messages = query_tools::lint_sql(&self.editor.text);
+                        self.show_lint_panel = !self.lint_messages.is_empty();
+                        if self.show_lint_panel {
+                            self.lint_panel_shown_at = Some(std::time::Instant::now());
+                        } else {
+                            self.lint_panel_shown_at = None;
+                        }
+                        self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(4);
+                        self.pending_cursor_set = Some(self.cursor_position);
+                    }
                 });
 
                 ui.separator();
 
                 for msg in &self.lint_messages {
                     let (icon, color) = match msg.severity {
-                        query_tools::LintSeverity::Info => (
-                            "ℹ",
-                            egui::Color32::from_rgb(120, 170, 255),
-                        ),
-                        query_tools::LintSeverity::Warning => (
-                            "⚠",
-                            egui::Color32::from_rgb(255, 183, 0),
-                        ),
-                        query_tools::LintSeverity::Error => (
-                            "⛔",
-                            egui::Color32::from_rgb(255, 80, 80),
-                        ),
+                        query_tools::LintSeverity::Info => {
+                            ("ℹ", egui::Color32::from_rgb(120, 170, 255))
+                        }
+                        query_tools::LintSeverity::Warning => {
+                            ("⚠", egui::Color32::from_rgb(255, 183, 0))
+                        }
+                        query_tools::LintSeverity::Error => {
+                            ("⛔", egui::Color32::from_rgb(255, 80, 80))
+                        }
                     };
 
                     ui.horizontal(|ui| {
@@ -4792,7 +4784,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
 
             rt.block_on(async {
                 info!("🧹 Clearing cache for table {}.{}", db, tbl);
-                
+
                 // Clear table cache entry
                 let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
                     .bind(connection_id)
@@ -4824,7 +4816,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     .bind(&tbl)
                     .execute(pool_clone.as_ref())
                     .await;
-                    
+
                 info!("✅ Cache cleared for table {}.{}", db, tbl);
             });
         }
@@ -11000,7 +10992,7 @@ impl App for Tabular {
                                 if is_loading {
                                     (
                                         "⏳",
-                                        egui::Color32::WHITE, 
+                                        egui::Color32::WHITE,
                                         egui::Color32::TRANSPARENT,
                                         "Executing query…",
                                     )
@@ -11077,7 +11069,7 @@ impl App for Tabular {
                                 self.is_table_browse_mode = false;
                                 self.query_execution_in_progress = true;
                                 self.extend_query_icon_hold();
-                                
+
                                 // Use the selection that was captured at click time
                                 let text_hash = format!("{:x}", md5::compute(&captured_selection_text));
                                 log::debug!("🔵 BUTTON - Passing selection (len {}, hash {}): '{}'", 
@@ -11085,12 +11077,12 @@ impl App for Tabular {
                                     text_hash,
                                     captured_selection_text.chars().take(150).collect::<String>());
                                 editor::execute_query_with_text(self, captured_selection_text);
-                                
+
                                 ui.ctx()
                                     .memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
                                 ui.ctx().request_repaint();
                             }
-                            
+
                             // Key shortcut check
                             if ui.input(|i| {
                                 (i.modifiers.ctrl || i.modifiers.mac_cmd)
@@ -11131,7 +11123,7 @@ impl App for Tabular {
                                     }
 
                                     self.extend_query_icon_hold();
-                                    
+
                                     // Prefer direct capture; fallback to mirrored field if empty
                                     let captured_selection = if !direct_selected.is_empty() {
                                         direct_selected
@@ -11144,7 +11136,7 @@ impl App for Tabular {
                                         text_hash,
                                         captured_selection.chars().take(150).collect::<String>());
                                     editor::execute_query_with_text(self, captured_selection);
-                                    
+
                                 }
                             }
                         });
@@ -11184,7 +11176,7 @@ impl App for Tabular {
                 // Render context menu for row operations
                 if self.show_row_context_menu {
                     let mut close_menu = false;
-                    
+
                     let area_response = egui::Area::new(egui::Id::new("row_context_menu"))
                         .order(egui::Order::Foreground)
                         .fixed_pos(self.context_menu_pos)
@@ -11310,7 +11302,7 @@ impl App for Tabular {
                                     .clicked()
                                 {
                                     use log::{info, error};
-                                    
+
                                     info!("🗑️ Executing DROP TABLE:");
                                     info!("   Connection ID: {}", conn_id);
                                     info!("   Database: {}", db);

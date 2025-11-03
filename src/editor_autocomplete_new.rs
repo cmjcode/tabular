@@ -64,9 +64,7 @@ fn parse_table_name(sql: &str, mut idx: usize) -> Option<(usize, String)> {
     let start = idx;
     while idx < len {
         let b = bytes[idx];
-        if b.is_ascii_alphanumeric()
-            || matches!(b, b'_' | b'.' | b'"' | b'`' | b'[' | b']')
-        {
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'"' | b'`' | b'[' | b']') {
             idx += 1;
         } else {
             break;
@@ -242,11 +240,7 @@ fn get_cached_columns(
         }
     }
     out.sort_unstable();
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    if out.is_empty() { None } else { Some(out) }
 }
 fn add_keywords(out: &mut Vec<String>, pref: &str) {
     for kw in SQL_KEYWORDS {
@@ -365,10 +359,10 @@ pub fn update_autocomplete(app: &mut Tabular) {
     let editor_text = app.editor.text.clone();
     let cursor = app.cursor_position.min(editor_text.len());
     let (pref, _) = current_prefix(&editor_text, cursor);
-    
+
     // CRITICAL: Don't touch autocomplete state while typing - let text settle first
     // This prevents freeze and caret jumping by avoiding mid-keystroke state mutations
-    
+
     let prev_char = editor_text[..cursor].chars().next_back();
     if matches!(prev_char, Some(';')) || matches!(prev_char, Some('*')) {
         app.show_autocomplete = false;
@@ -397,8 +391,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
     } else {
         None
     };
-    let triggered_by_space =
-        matches!(pre_prefix_char, Some(ch) if ch.is_whitespace());
+    let triggered_by_space = matches!(pre_prefix_char, Some(ch) if ch.is_whitespace());
     let triggered_by_len = pref.len() >= 2;
     if !triggered_by_space && !triggered_by_len {
         app.show_autocomplete = false;
@@ -412,14 +405,14 @@ pub fn update_autocomplete(app: &mut Tabular) {
     }
 
     // Only rebuild if prefix length changed (avoid redundant calls)
-    if app.last_autocomplete_trigger_len == pref.len() 
-        && app.show_autocomplete 
-        && app.autocomplete_prefix == pref 
+    if app.last_autocomplete_trigger_len == pref.len()
+        && app.show_autocomplete
+        && app.autocomplete_prefix == pref
     {
         // Suggestions already up-to-date for this prefix
         return;
     }
-    
+
     app.autocomplete_prefix = pref.clone();
 
     if app.last_autocomplete_trigger_len != pref.len() || !app.show_autocomplete {
@@ -493,17 +486,18 @@ pub fn update_autocomplete(app: &mut Tabular) {
             let mut notes = Vec::new();
             let mut payloads = Vec::new();
             let mut seen_labels: HashSet<String> = HashSet::new();
-            let mut push_suggestion = |label: String,
-                                       kind: crate::models::enums::AutocompleteKind,
-                                       note: Option<String>,
-                                       payload: Option<String>| {
-                if seen_labels.insert(label.clone()) {
-                    ordered.push(label);
-                    kinds.push(kind);
-                    notes.push(note);
-                    payloads.push(payload);
-                }
-            };
+            let mut push_suggestion =
+                |label: String,
+                 kind: crate::models::enums::AutocompleteKind,
+                 note: Option<String>,
+                 payload: Option<String>| {
+                    if seen_labels.insert(label.clone()) {
+                        ordered.push(label);
+                        kinds.push(kind);
+                        notes.push(note);
+                        payloads.push(payload);
+                    }
+                };
 
             for t in tables {
                 let note = if db.is_empty() {
@@ -511,12 +505,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
                 } else {
                     Some(format!("db: {}", db))
                 };
-                push_suggestion(
-                    t,
-                    crate::models::enums::AutocompleteKind::Table,
-                    note,
-                    None,
-                );
+                push_suggestion(t, crate::models::enums::AutocompleteKind::Table, note, None);
             }
 
             for c in columns {
@@ -648,26 +637,31 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
             max_label_px = max_label_px.max(g.size().x);
 
             if let Some(Some(note)) = notes.get(idx) {
-                let ng = f.layout_no_wrap(note.clone(), small_font_id.clone(), egui::Color32::WHITE);
+                let ng =
+                    f.layout_no_wrap(note.clone(), small_font_id.clone(), egui::Color32::WHITE);
                 max_note_px = max_note_px.max(ng.size().x);
                 note_count += 1;
             }
 
             if let Some(&kind) = kinds.get(idx)
-                && last_kind != Some(kind) {
-                    group_count += 1;
-                    last_kind = Some(kind);
-                    let heading = match kind {
-                        crate::models::enums::AutocompleteKind::Table => "Tables",
-                        crate::models::enums::AutocompleteKind::Column => "Columns",
-                        crate::models::enums::AutocompleteKind::Syntax => "Syntax",
-                        crate::models::enums::AutocompleteKind::Snippet => "Snippets",
-                        crate::models::enums::AutocompleteKind::Parameter => "Parameters",
-                    };
-                    let hg =
-                        f.layout_no_wrap(heading.to_string(), heading_font_id.clone(), egui::Color32::WHITE);
-                    max_heading_px = max_heading_px.max(hg.size().x);
-                }
+                && last_kind != Some(kind)
+            {
+                group_count += 1;
+                last_kind = Some(kind);
+                let heading = match kind {
+                    crate::models::enums::AutocompleteKind::Table => "Tables",
+                    crate::models::enums::AutocompleteKind::Column => "Columns",
+                    crate::models::enums::AutocompleteKind::Syntax => "Syntax",
+                    crate::models::enums::AutocompleteKind::Snippet => "Snippets",
+                    crate::models::enums::AutocompleteKind::Parameter => "Parameters",
+                };
+                let hg = f.layout_no_wrap(
+                    heading.to_string(),
+                    heading_font_id.clone(),
+                    egui::Color32::WHITE,
+                );
+                max_heading_px = max_heading_px.max(hg.size().x);
+            }
         }
     });
 
@@ -675,9 +669,8 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     let popup_w = (base_width + 48.0).clamp(220.0, (screen.width() - 32.0).max(220.0));
 
     let entry_count = suggestions.len() as f32;
-    let mut desired_h = entry_count * 26.0
-        + (note_count as f32) * 12.0
-        + (group_count as f32) * 20.0;
+    let mut desired_h =
+        entry_count * 26.0 + (note_count as f32) * 12.0 + (group_count as f32) * 20.0;
     if desired_h < 64.0 {
         desired_h = 64.0;
     }
@@ -729,8 +722,12 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                         crate::models::enums::AutocompleteKind::Table => "Tables",
                                         crate::models::enums::AutocompleteKind::Column => "Columns",
                                         crate::models::enums::AutocompleteKind::Syntax => "Syntax",
-                                        crate::models::enums::AutocompleteKind::Snippet => "Snippets",
-                                        crate::models::enums::AutocompleteKind::Parameter => "Parameters",
+                                        crate::models::enums::AutocompleteKind::Snippet => {
+                                            "Snippets"
+                                        }
+                                        crate::models::enums::AutocompleteKind::Parameter => {
+                                            "Parameters"
+                                        }
                                     };
                                     if i != 0 {
                                         ui.add(egui::Separator::default().spacing(4.0));
