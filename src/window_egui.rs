@@ -3155,6 +3155,33 @@ impl Tabular {
                     });
                 }
 
+                if node.node_type == models::enums::NodeType::Database {
+                    response.context_menu(|ui| {
+                        if let Some(conn_id) = node.connection_id {
+                            let db_type = params.connection_types.get(&conn_id);
+                            let supported = matches!(
+                                db_type,
+                                Some(models::enums::DatabaseType::MySQL)
+                                    | Some(models::enums::DatabaseType::PostgreSQL)
+                                    | Some(models::enums::DatabaseType::SQLite)
+                                    | Some(models::enums::DatabaseType::MsSQL)
+                            );
+                            if supported {
+                                if ui.button("➕ Create New Table").clicked() {
+                                    let database_name = node
+                                        .database_name
+                                        .clone()
+                                        .or_else(|| Some(node.name.clone()));
+                                    create_table_request = Some((conn_id, database_name));
+                                    ui.close();
+                                }
+                            } else {
+                                ui.label("Create table not supported for this database");
+                            }
+                        }
+                    });
+                }
+
                 if node.node_type == models::enums::NodeType::TablesFolder {
                     response.context_menu(|ui| {
                         if let Some(conn_id) = node.connection_id {
