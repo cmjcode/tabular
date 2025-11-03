@@ -22,6 +22,7 @@ pub mod editor_state_adapter;
 pub mod export;
 pub mod models;
 pub mod modules;
+pub mod query_tools;
 pub mod self_update;
 pub mod sidebar_database;
 pub mod sidebar_history;

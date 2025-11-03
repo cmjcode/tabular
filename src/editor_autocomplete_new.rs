@@ -1,7 +1,9 @@
 //! Temporary clean replacement for editor_autocomplete while original is corrupted.
 use crate::cache_data::{get_columns_from_cache, get_tables_from_cache};
+use crate::query_tools;
 use crate::window_egui::Tabular;
 use eframe::egui;
+use std::collections::HashSet;
 
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE",
@@ -18,7 +20,7 @@ fn current_prefix(text: &str, cursor: usize) -> (String, usize) {
     let mut start = cursor.min(bytes.len());
     while start > 0 {
         let c = bytes[start - 1] as char;
-        if c.is_alphanumeric() || c == '_' {
+        if c.is_alphanumeric() || matches!(c, '_' | ':' | '@' | '$') {
             start -= 1;
         } else {
             break;
@@ -32,45 +34,134 @@ fn active_connection_and_db(app: &Tabular) -> Option<(i64, String)> {
             .map(|cid| (cid, tab.database_name.clone().unwrap_or_default()))
     })
 }
-fn extract_tables(sql: &str) -> Vec<String> {
-    let lower = sql.to_ascii_lowercase();
-    if let Some(i) = lower.find(" from ") {
-        let after = &sql[i + 6..];
-        let mut out = Vec::new();
-        for seg in after.split([',', '\n']) {
-            let t = seg.trim();
-            if t.is_empty() {
-                continue;
-            }
-            let stop = [
-                "where", "group", "order", "limit", "offset", "join", "left", "right", "inner",
-                "outer",
-            ];
-            let first = t
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if stop.contains(&first.as_str()) {
-                break;
-            }
-            let cleaned = t
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches('`')
-                .trim_matches('"');
-            if cleaned.is_empty() {
-                continue;
-            }
-            let final_name = cleaned.split('.').next_back().unwrap_or(cleaned);
-            out.push(final_name.to_string());
+fn is_word_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn strip_wrapping_pair(s: &str) -> &str {
+    if s.len() >= 2 {
+        let bytes = s.as_bytes();
+        match (bytes[0], bytes[s.len() - 1]) {
+            (b'"', b'"') | (b'`', b'`') | (b'[', b']') => return &s[1..s.len() - 1],
+            _ => {}
         }
-        out.sort_unstable();
-        out.dedup();
-        return out;
     }
-    Vec::new()
+    s
+}
+
+fn parse_table_name(sql: &str, mut idx: usize) -> Option<(usize, String)> {
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    while idx < len && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    if idx >= len {
+        return None;
+    }
+    if bytes[idx] == b'(' {
+        return None;
+    }
+    let start = idx;
+    while idx < len {
+        let b = bytes[idx];
+        if b.is_ascii_alphanumeric()
+            || matches!(b, b'_' | b'.' | b'"' | b'`' | b'[' | b']')
+        {
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+    if start == idx {
+        return None;
+    }
+    let mut token = sql[start..idx].trim();
+    token = token.trim_end_matches(|c: char| c == ',' || c == ';');
+    if token.is_empty() {
+        return None;
+    }
+    let mut final_seg = None;
+    for seg in token.split('.') {
+        let stripped = strip_wrapping_pair(seg.trim());
+        if !stripped.is_empty() {
+            final_seg = Some(strip_wrapping_pair(stripped));
+        }
+    }
+    let final_name = final_seg?.trim();
+    if final_name.is_empty() {
+        return None;
+    }
+    Some((start, final_name.to_string()))
+}
+
+fn collect_table_hits(sql: &str) -> Vec<(usize, String)> {
+    let lower = sql.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut hits = Vec::new();
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        if bytes[i..].starts_with(b"from")
+            && (i == 0 || !is_word_char(bytes[i - 1]))
+            && (i + 4 >= bytes.len() || !is_word_char(bytes[i + 4]))
+        {
+            if let Some((pos, name)) = parse_table_name(sql, i + 4) {
+                hits.push((pos, name));
+            }
+            i += 4;
+            continue;
+        }
+        if bytes[i..].starts_with(b"join")
+            && (i == 0 || !is_word_char(bytes[i - 1]))
+            && (i + 4 >= bytes.len() || !is_word_char(bytes[i + 4]))
+        {
+            if let Some((pos, name)) = parse_table_name(sql, i + 4) {
+                hits.push((pos, name));
+            }
+            i += 4;
+            continue;
+        }
+        i += 1;
+    }
+    hits
+}
+
+fn tables_near_cursor(sql: &str, cursor: usize) -> Vec<String> {
+    let hits = collect_table_hits(sql);
+    if hits.is_empty() {
+        return Vec::new();
+    }
+    let cursor = cursor.min(sql.len());
+    let mut below: Vec<_> = hits
+        .iter()
+        .filter(|(pos, _)| *pos >= cursor)
+        .cloned()
+        .collect();
+    below.sort_by_key(|(pos, _)| *pos);
+    let mut above: Vec<_> = hits
+        .iter()
+        .filter(|(pos, _)| *pos < cursor)
+        .cloned()
+        .collect();
+    above.sort_by_key(|(pos, _)| cursor - *pos);
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for (_, name) in below.into_iter().chain(above.into_iter()) {
+        if seen.insert(name.clone()) {
+            result.push(name);
+        }
+    }
+    result
+}
+
+fn extract_tables(sql: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for (_, name) in collect_table_hits(sql) {
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    out
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SqlContext {
@@ -137,6 +228,9 @@ fn get_cached_columns(
     db: &str,
     tables: Vec<String>,
 ) -> Option<Vec<String>> {
+    if tables.is_empty() {
+        return None;
+    }
     let mut out = Vec::new();
     for t in tables {
         if let Some(cols) = get_columns_from_cache(app, cid, db, &t) {
@@ -148,7 +242,11 @@ fn get_cached_columns(
         }
     }
     out.sort_unstable();
-    Some(out)
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 fn add_keywords(out: &mut Vec<String>, pref: &str) {
     for kw in SQL_KEYWORDS {
@@ -167,7 +265,11 @@ pub fn build_suggestions(
     let mut out = Vec::new();
     let pl = prefix.to_ascii_lowercase();
     let ctx = detect_ctx(text, cursor);
-    let tables_in = extract_tables(text);
+    let mut tables_in_scope = tables_near_cursor(text, cursor);
+    let tables_all = extract_tables(text);
+    if tables_in_scope.is_empty() {
+        tables_in_scope = tables_all.clone();
+    }
     let conn_id = app
         .query_tabs
         .get(app.active_tab_index)
@@ -178,7 +280,7 @@ pub fn build_suggestions(
     match ctx {
         SqlContext::AfterSelect => {
             if let Some(cid) = conn_id
-                && let Some(cols) = get_cached_columns(app, cid, &db, tables_in)
+                && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
             {
                 for c in cols {
                     if c.to_ascii_lowercase().starts_with(&pl) {
@@ -209,7 +311,7 @@ pub fn build_suggestions(
         }
         SqlContext::AfterWhere => {
             if let Some(cid) = conn_id
-                && let Some(cols) = get_cached_columns(app, cid, &db, tables_in)
+                && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
             {
                 for c in cols {
                     if c.to_ascii_lowercase().starts_with(&pl) {
@@ -228,7 +330,7 @@ pub fn build_suggestions(
                         }
                     }
                 }
-                if let Some(cols) = get_cached_columns(app, cid, &db, tables_in) {
+                if let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone()) {
                     for c in cols {
                         if c.to_ascii_lowercase().starts_with(&pl) {
                             out.push(c);
@@ -250,24 +352,81 @@ pub fn build_suggestions(
 }
 
 pub fn update_autocomplete(app: &mut Tabular) {
+    // Throttle autocomplete updates to avoid heavy work on every keystroke
+    let now = std::time::Instant::now();
+    if let Some(last) = app.autocomplete_last_update {
+        let elapsed = now.saturating_duration_since(last);
+        if elapsed < std::time::Duration::from_millis(app.autocomplete_debounce_ms) {
+            return;
+        }
+    }
+    app.autocomplete_last_update = Some(now);
     // Clone editor text first to avoid immutable + mutable borrow overlap
     let editor_text = app.editor.text.clone();
     let cursor = app.cursor_position.min(editor_text.len());
     let (pref, _) = current_prefix(&editor_text, cursor);
-    app.autocomplete_prefix = pref.clone();
+    
+    // CRITICAL: Don't touch autocomplete state while typing - let text settle first
+    // This prevents freeze and caret jumping by avoiding mid-keystroke state mutations
+    
+    let prev_char = editor_text[..cursor].chars().rev().next();
+    if matches!(prev_char, Some(';')) || matches!(prev_char, Some('*')) {
+        app.show_autocomplete = false;
+        app.autocomplete_suggestions.clear();
+        app.autocomplete_kinds.clear();
+        app.autocomplete_notes.clear();
+        app.autocomplete_payloads.clear();
+        app.autocomplete_prefix.clear();
+        app.last_autocomplete_trigger_len = 0;
+        return;
+    }
 
     if pref.is_empty() {
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
         app.autocomplete_kinds.clear();
         app.autocomplete_notes.clear();
+        app.autocomplete_payloads.clear();
+        app.autocomplete_prefix.clear();
+        app.last_autocomplete_trigger_len = 0;
         return;
     }
+
+    let pre_prefix_char = if pref.len() <= cursor {
+        editor_text[..cursor - pref.len()].chars().rev().next()
+    } else {
+        None
+    };
+    let triggered_by_space =
+        matches!(pre_prefix_char, Some(ch) if ch.is_whitespace());
+    let triggered_by_len = pref.len() >= 2;
+    if !triggered_by_space && !triggered_by_len {
+        app.show_autocomplete = false;
+        app.autocomplete_suggestions.clear();
+        app.autocomplete_kinds.clear();
+        app.autocomplete_notes.clear();
+        app.autocomplete_payloads.clear();
+        app.autocomplete_prefix.clear();
+        app.last_autocomplete_trigger_len = 0;
+        return;
+    }
+
+    // Only rebuild if prefix length changed (avoid redundant calls)
+    if app.last_autocomplete_trigger_len == pref.len() 
+        && app.show_autocomplete 
+        && app.autocomplete_prefix == pref 
+    {
+        // Suggestions already up-to-date for this prefix
+        return;
+    }
+    
+    app.autocomplete_prefix = pref.clone();
 
     if app.last_autocomplete_trigger_len != pref.len() || !app.show_autocomplete {
         let suggestions = build_suggestions(app, &editor_text, cursor, &pref);
         if suggestions.is_empty() {
             app.show_autocomplete = false;
+            app.autocomplete_payloads.clear();
         } else {
             app.show_autocomplete = true;
             let context = detect_ctx(&editor_text, cursor);
@@ -280,7 +439,6 @@ pub fn update_autocomplete(app: &mut Tabular) {
                 })
                 .unwrap_or((0, String::new()));
 
-            use std::collections::HashSet;
             let tables_set: HashSet<String> = if cid != 0 {
                 get_cached_tables(app, cid, &db)
                     .unwrap_or_default()
@@ -289,8 +447,10 @@ pub fn update_autocomplete(app: &mut Tabular) {
             } else {
                 get_all_tables(app).into_iter().collect()
             };
-            let cols_set: HashSet<String> = if cid != 0 {
-                get_cached_columns(app, cid, &db, extract_tables(&editor_text))
+            // Reuse tables_in_scope from build_suggestions to avoid redundant cache lookups
+            let tables_for_cols = tables_near_cursor(&editor_text, cursor);
+            let cols_set: HashSet<String> = if cid != 0 && !tables_for_cols.is_empty() {
+                get_cached_columns(app, cid, &db, tables_for_cols)
                     .unwrap_or_default()
                     .into_iter()
                     .collect()
@@ -331,34 +491,86 @@ pub fn update_autocomplete(app: &mut Tabular) {
             let mut ordered = Vec::new();
             let mut kinds = Vec::new();
             let mut notes = Vec::new();
+            let mut payloads = Vec::new();
+            let mut seen_labels: HashSet<String> = HashSet::new();
+            let mut push_suggestion = |label: String,
+                                       kind: crate::models::enums::AutocompleteKind,
+                                       note: Option<String>,
+                                       payload: Option<String>| {
+                if seen_labels.insert(label.clone()) {
+                    ordered.push(label);
+                    kinds.push(kind);
+                    notes.push(note);
+                    payloads.push(payload);
+                }
+            };
+
             for t in tables {
-                ordered.push(t);
-                kinds.push(crate::models::enums::AutocompleteKind::Table);
-                notes.push(Some(if db.is_empty() {
-                    "table".into()
+                let note = if db.is_empty() {
+                    Some("table".to_string())
                 } else {
-                    format!("db: {}", db)
-                }));
+                    Some(format!("db: {}", db))
+                };
+                push_suggestion(
+                    t,
+                    crate::models::enums::AutocompleteKind::Table,
+                    note,
+                    None,
+                );
             }
+
             for c in columns {
-                ordered.push(c);
-                kinds.push(crate::models::enums::AutocompleteKind::Column);
-                notes.push(Some("column".into()));
+                push_suggestion(
+                    c,
+                    crate::models::enums::AutocompleteKind::Column,
+                    Some("column".to_string()),
+                    None,
+                );
             }
+
+            for param in query_tools::parameter_candidates(&pref) {
+                push_suggestion(
+                    param.label.to_string(),
+                    crate::models::enums::AutocompleteKind::Parameter,
+                    Some(param.note.to_string()),
+                    Some(param.template.to_string()),
+                );
+            }
+
             for kw in syntax {
                 let is_wc = kw == "*";
-                ordered.push(kw);
-                kinds.push(crate::models::enums::AutocompleteKind::Syntax);
-                notes.push(Some(if is_wc {
-                    "wildcard".into()
-                } else {
-                    "keyword".into()
-                }));
+                push_suggestion(
+                    kw,
+                    crate::models::enums::AutocompleteKind::Syntax,
+                    Some(if is_wc {
+                        "wildcard".to_string()
+                    } else {
+                        "keyword".to_string()
+                    }),
+                    None,
+                );
+            }
+
+            let snippet_context = match context {
+                SqlContext::AfterSelect => query_tools::SnippetContext::SelectList,
+                SqlContext::AfterFrom => query_tools::SnippetContext::FromClause,
+                SqlContext::AfterWhere => query_tools::SnippetContext::WhereClause,
+                SqlContext::General => query_tools::SnippetContext::Any,
+            };
+
+            for snippet in query_tools::snippet_candidates(&pref, snippet_context) {
+                push_suggestion(
+                    snippet.label.to_string(),
+                    crate::models::enums::AutocompleteKind::Snippet,
+                    Some(snippet.note.to_string()),
+                    Some(snippet.template.to_string()),
+                );
             }
 
             app.autocomplete_suggestions = ordered;
             app.autocomplete_kinds = kinds;
             app.autocomplete_notes = notes;
+            app.autocomplete_payloads = payloads;
             app.selected_autocomplete_index = 0;
         }
         app.last_autocomplete_trigger_len = pref.len();
@@ -369,7 +581,7 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
     if !app.show_autocomplete {
         return;
     }
-    if let Some(s) = app
+    if let Some(display) = app
         .autocomplete_suggestions
         .get(app.selected_autocomplete_index)
         .cloned()
@@ -377,8 +589,14 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         let cursor = app.cursor_position.min(app.editor.text.len());
         let (_pref, start) = current_prefix(&app.editor.text, cursor);
         let start_idx = start;
-        app.editor.apply_single_replace(start_idx..cursor, &s);
-        app.cursor_position = start_idx + s.len();
+        let replacement = app
+            .autocomplete_payloads
+            .get(app.selected_autocomplete_index)
+            .and_then(|p| p.clone())
+            .unwrap_or_else(|| display.clone());
+        app.editor
+            .apply_single_replace(start_idx..cursor, &replacement);
+        app.cursor_position = start_idx + replacement.len();
         app.multi_selection
             .set_primary_range(app.cursor_position, app.cursor_position);
         app.pending_cursor_set = Some(app.cursor_position);
@@ -389,6 +607,7 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
         app.autocomplete_suggestions.clear();
         app.autocomplete_kinds.clear();
         app.autocomplete_notes.clear();
+        app.autocomplete_payloads.clear();
     }
 }
 
@@ -412,20 +631,61 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     }
     let screen = ui.ctx().screen_rect();
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-    let mut max_px = 0.0;
+    let small_font_id = egui::TextStyle::Small.resolve(ui.style());
+    let heading_font_id = egui::TextStyle::Body.resolve(ui.style());
+    let suggestions = app.autocomplete_suggestions.clone();
+    let kinds = app.autocomplete_kinds.clone();
+    let notes = app.autocomplete_notes.clone();
+    let mut max_label_px: f32 = 0.0;
+    let mut max_note_px: f32 = 0.0;
+    let mut max_heading_px: f32 = 0.0;
+    let mut note_count = 0usize;
+    let mut group_count = 0usize;
+    let mut last_kind: Option<crate::models::enums::AutocompleteKind> = None;
     ui.ctx().fonts(|f| {
-        for s in &app.autocomplete_suggestions {
-            let g = f.layout_no_wrap(s.to_string(), font_id.clone(), egui::Color32::WHITE);
-            if g.size().x > max_px {
-                max_px = g.size().x;
+        for (idx, s) in suggestions.iter().enumerate() {
+            let g = f.layout_no_wrap(s.clone(), font_id.clone(), egui::Color32::WHITE);
+            max_label_px = max_label_px.max(g.size().x);
+
+            if let Some(Some(note)) = notes.get(idx) {
+                let ng = f.layout_no_wrap(note.clone(), small_font_id.clone(), egui::Color32::WHITE);
+                max_note_px = max_note_px.max(ng.size().x);
+                note_count += 1;
+            }
+
+            if let Some(&kind) = kinds.get(idx) {
+                if last_kind != Some(kind) {
+                    group_count += 1;
+                    last_kind = Some(kind);
+                    let heading = match kind {
+                        crate::models::enums::AutocompleteKind::Table => "Tables",
+                        crate::models::enums::AutocompleteKind::Column => "Columns",
+                        crate::models::enums::AutocompleteKind::Syntax => "Syntax",
+                        crate::models::enums::AutocompleteKind::Snippet => "Snippets",
+                        crate::models::enums::AutocompleteKind::Parameter => "Parameters",
+                    };
+                    let hg =
+                        f.layout_no_wrap(heading.to_string(), heading_font_id.clone(), egui::Color32::WHITE);
+                    max_heading_px = max_heading_px.max(hg.size().x);
+                }
             }
         }
     });
-    let popup_w = (max_px + 32.0).clamp(160.0, (screen.width() * 0.55).clamp(220.0, 600.0));
-    let mut desired_h = (app.autocomplete_suggestions.len() as f32) * 12.0;
+
+    let base_width = max_label_px.max(max_note_px).max(max_heading_px);
+    let popup_w = (base_width + 48.0).clamp(220.0, (screen.width() - 32.0).max(220.0));
+
+    let entry_count = suggestions.len() as f32;
+    let mut desired_h = entry_count * 26.0
+        + (note_count as f32) * 12.0
+        + (group_count as f32) * 20.0;
+    if desired_h < 64.0 {
+        desired_h = 64.0;
+    }
     let screen_h = screen.height();
-    if desired_h > screen_h * 0.6 {
-        desired_h = screen_h * 0.5;
+    let desired_cap = screen_h * 0.65;
+    if desired_h > desired_cap {
+        desired_h = desired_cap;
     }
     let margin = 8.0;
     let space_below = (screen.bottom() - pos.y - margin).max(0.0);
@@ -454,9 +714,9 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                     ui.set_min_width(popup_w);
                     ui.set_max_width(popup_w);
                     ui.set_min_height(max_h);
-                    let suggestions = app.autocomplete_suggestions.clone();
-                    let kinds = app.autocomplete_kinds.clone();
-                    let notes = app.autocomplete_notes.clone();
+                    let suggestions = suggestions.clone();
+                    let kinds = kinds.clone();
+                    let notes = notes.clone();
                     let mut last_kind = None;
                     egui::ScrollArea::vertical()
                         .max_height(max_h - 10.0)
@@ -470,6 +730,8 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                         crate::models::enums::AutocompleteKind::Table => "Tables",
                                         crate::models::enums::AutocompleteKind::Column => "Columns",
                                         crate::models::enums::AutocompleteKind::Syntax => "Syntax",
+                                        crate::models::enums::AutocompleteKind::Snippet => "Snippets",
+                                        crate::models::enums::AutocompleteKind::Parameter => "Parameters",
                                     };
                                     if i != 0 {
                                         ui.add(egui::Separator::default().spacing(4.0));
@@ -524,6 +786,7 @@ pub fn trigger_manual(app: &mut Tabular) {
         ];
         app.autocomplete_notes =
             vec![Some("keyword".to_string()); app.autocomplete_suggestions.len()];
+        app.autocomplete_payloads = vec![None; app.autocomplete_suggestions.len()];
     } else if app.autocomplete_suggestions.is_empty() {
         app.autocomplete_suggestions = SQL_KEYWORDS
             .iter()
@@ -541,6 +804,7 @@ pub fn trigger_manual(app: &mut Tabular) {
             ];
             app.autocomplete_notes =
                 vec![Some("keyword".to_string()); app.autocomplete_suggestions.len()];
+            app.autocomplete_payloads = vec![None; app.autocomplete_suggestions.len()];
         }
     }
 }

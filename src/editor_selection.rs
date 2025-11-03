@@ -262,6 +262,58 @@ impl MultiSelection {
             caret_positions_after
         );
     }
+
+    /// Apply inserted text to all carets EXCEPT the given primary_pos.
+    /// Use this when the primary insertion was already performed by the widget,
+    /// so we only need to mirror it to the other carets.
+    pub fn apply_insert_text_others(
+        &mut self,
+        text: &mut String,
+        insert: &str,
+        primary_pos: usize,
+    ) {
+        if insert.is_empty() || self.regions.is_empty() {
+            return;
+        }
+
+        let before_len = text.len();
+        let insert_dbg = insert.escape_debug().to_string();
+        let len = insert.len();
+        let mut positions = self.caret_positions();
+        // Remove the primary position so we don't double-insert at the main caret
+        positions.retain(|&p| p != primary_pos);
+
+        if positions.is_empty() {
+            return;
+        }
+
+        log::debug!(
+            "[multi] apply_insert_text_others positions={:?} insert='{}' len={} text_len_before={}",
+            positions,
+            insert_dbg,
+            len,
+            before_len
+        );
+
+        for &pos in positions.iter().rev() {
+            if pos <= text.len() {
+                text.insert_str(pos, insert);
+            }
+        }
+        // Update caret/selection positions for each mirrored insertion
+        for &pos in &positions {
+            self.apply_simple_insert(pos, len);
+        }
+
+        let after_len = text.len();
+        let caret_positions_after = self.caret_positions();
+        log::debug!(
+            "[multi] apply_insert_text_others done text_len_after={} delta={} positions_after={:?}",
+            after_len,
+            after_len.saturating_sub(before_len),
+            caret_positions_after
+        );
+    }
     /// Apply backspace (delete one char to the left) for each collapsed caret.
     pub fn apply_backspace(&mut self, text: &mut String) {
         let before_len = text.len();

@@ -116,16 +116,26 @@ pub struct FoldingRange {
 /// Outline kinds surfaced to side panels / navigation widgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
-    Select,
-    Insert,
-    Update,
-    Delete,
-    CreateTable,
-    CreateView,
-    CreateFunction,
-    CreateProcedure,
-    CreateIndex,
-    With,
+    // SQL constructs
+    SqlSelect,
+    SqlInsert,
+    SqlUpdate,
+    SqlDelete,
+    SqlCreateTable,
+    SqlCreateView,
+    SqlCreateFunction,
+    SqlCreateProcedure,
+    SqlCreateIndex,
+    SqlWith,
+    // JSON constructs
+    JsonObject,
+    JsonArray,
+    JsonProperty,
+    // JavaScript constructs
+    JsFunction,
+    JsClass,
+    JsMethod,
+    JsVariable,
     Unknown,
 }
 
@@ -148,7 +158,8 @@ pub struct ParseDiagnostic {
 
 /// Captures the reusable semantic products of a parse pass.
 #[derive(Clone, Debug)]
-pub struct SqlSemanticSnapshot {
+pub struct SemanticSnapshot {
+    pub language: LanguageKind,
     pub source_hash: u64,
     pub tokens: Vec<SemanticToken>,
     pub folding_ranges: Vec<FoldingRange>,
@@ -157,48 +168,94 @@ pub struct SqlSemanticSnapshot {
     pub root_sexpr: Option<String>,
 }
 
+/// Backward-compatibility alias. The legacy name is still consumed by the UI state.
+pub type SqlSemanticSnapshot = SemanticSnapshot;
+
 #[cfg(feature = "tree_sitter_sequel")]
 mod ts {
     use super::*;
-    use anyhow::Context;
+    use anyhow::{Context, anyhow};
     use once_cell::sync::OnceCell;
     use std::sync::Mutex;
     use tree_sitter::{InputEdit, Node, Parser, Point, Tree};
 
-    pub struct SqlParserService {
+    #[derive(Clone, Copy, Debug)]
+    enum GrammarKind {
+        Sql,
+        Json,
+        Javascript,
+    }
+
+    impl GrammarKind {
+        fn for_language(language: LanguageKind) -> Option<Self> {
+            match language {
+                LanguageKind::Sql => Some(GrammarKind::Sql),
+                LanguageKind::Redis => Some(GrammarKind::Json),
+                LanguageKind::Mongo => Some(GrammarKind::Javascript),
+                LanguageKind::Plain => None,
+            }
+        }
+    }
+
+    struct ParserService {
         parser: Parser,
         tree: Option<Tree>,
         last_text: String,
         last_hash: u64,
-        snapshot: Option<Arc<SqlSemanticSnapshot>>,
+        snapshot: Option<Arc<SemanticSnapshot>>,
+        language: LanguageKind,
+        grammar: GrammarKind,
     }
 
-    impl SqlParserService {
-        pub fn new() -> anyhow::Result<Self> {
+    impl ParserService {
+        fn new(language: LanguageKind) -> anyhow::Result<Self> {
+            let grammar = GrammarKind::for_language(language)
+                .ok_or_else(|| anyhow!("language {:?} has no associated grammar", language))?;
             let mut parser = Parser::new();
-            let language = tree_sitter_sequel::LANGUAGE;
+            let ts_language = match grammar {
+                GrammarKind::Sql => {
+                    let language = tree_sitter_sequel::LANGUAGE;
+                    language.into()
+                }
+                GrammarKind::Json => {
+                    let language = tree_sitter_json::LANGUAGE;
+                    language.into()
+                }
+                GrammarKind::Javascript => {
+                    let language = tree_sitter_javascript::LANGUAGE;
+                    language.into()
+                }
+            };
             parser
-                .set_language(&language.into())
-                .context("failed to set SQL grammar on parser")?;
+                .set_language(&ts_language)
+                .context("failed to configure tree-sitter language")?;
             Ok(Self {
                 parser,
                 tree: None,
                 last_text: String::new(),
                 last_hash: 0,
                 snapshot: None,
+                language,
+                grammar,
             })
         }
 
-        pub fn ensure_snapshot(&mut self, text: &str) -> Option<Arc<SqlSemanticSnapshot>> {
+        fn ensure_snapshot(&mut self, text: &str) -> Option<Arc<SemanticSnapshot>> {
             let hash = hash_text(text);
-            if let Some(current) = self.snapshot.as_ref() {
-                if current.source_hash == hash {
+            if let Some(snapshot) = self.snapshot.as_ref() {
+                if snapshot.source_hash == hash {
                     return self.snapshot.clone();
                 }
             }
 
             let tree = self.reparse(text)?;
-            let snapshot = Arc::new(build_snapshot(&tree, text, hash));
+            let snapshot = Arc::new(build_snapshot(
+                self.language,
+                self.grammar,
+                &tree,
+                text,
+                hash,
+            ));
             self.snapshot = Some(snapshot.clone());
             self.last_text.clear();
             self.last_text.push_str(text);
@@ -299,321 +356,890 @@ mod ts {
         Point { row, column: col }
     }
 
-    fn build_snapshot(tree: &Tree, text: &str, hash: u64) -> SqlSemanticSnapshot {
-        let root = tree.root_node();
-        let (tokens, diagnostics) = collect_tokens_and_diagnostics(root, text);
-        let folding_ranges = collect_folding_ranges(root, text);
-        let outline = collect_outline(root, text);
-        SqlSemanticSnapshot {
-            source_hash: hash,
-            tokens,
-            folding_ranges,
-            outline,
-            diagnostics,
-            root_sexpr: Some(root.to_sexp()),
+    fn build_snapshot(
+        language: LanguageKind,
+        grammar: GrammarKind,
+        tree: &Tree,
+        text: &str,
+        hash: u64,
+    ) -> SemanticSnapshot {
+        match grammar {
+            GrammarKind::Sql => sql::build_snapshot(language, tree, text, hash),
+            GrammarKind::Json => json_lang::build_snapshot(language, tree, text, hash),
+            GrammarKind::Javascript => javascript::build_snapshot(language, tree, text, hash),
         }
     }
 
-    fn collect_tokens_and_diagnostics(
-        root: Node,
-        text: &str,
-    ) -> (Vec<SemanticToken>, Vec<ParseDiagnostic>) {
-        let mut tokens = Vec::with_capacity(256);
-        let mut diagnostics = Vec::new();
-        let mut stack = vec![root];
-        while let Some(node) = stack.pop() {
-            if node.kind() == "ERROR" {
-                let range = node.start_byte()..node.end_byte().min(text.len());
-                diagnostics.push(ParseDiagnostic {
-                    message: "Parse error".to_string(),
-                    range: range.clone(),
-                });
-                // still dive into children to classify salvageable tokens
-            }
+    mod sql {
+        use super::*;
 
-            if node.child_count() == 0 {
+        pub fn build_snapshot(
+            language: LanguageKind,
+            tree: &Tree,
+            text: &str,
+            hash: u64,
+        ) -> SemanticSnapshot {
+            debug_assert!(matches!(language, LanguageKind::Sql));
+            let root = tree.root_node();
+            let (tokens, diagnostics) = collect_tokens_and_diagnostics(root, text);
+            let folding_ranges = collect_folding_ranges(root, text);
+            let outline = collect_outline(root, text);
+            SemanticSnapshot {
+                language,
+                source_hash: hash,
+                tokens,
+                folding_ranges,
+                outline,
+                diagnostics,
+                root_sexpr: Some(root.to_sexp()),
+            }
+        }
+
+        fn collect_tokens_and_diagnostics(
+            root: Node,
+            text: &str,
+        ) -> (Vec<SemanticToken>, Vec<ParseDiagnostic>) {
+            let mut tokens = Vec::with_capacity(256);
+            let mut diagnostics = Vec::new();
+            let mut stack = vec![root];
+            while let Some(node) = stack.pop() {
+                if node.kind() == "ERROR" {
+                    let range = node.start_byte()..node.end_byte().min(text.len());
+                    diagnostics.push(ParseDiagnostic {
+                        message: "Parse error".to_string(),
+                        range: range.clone(),
+                    });
+                }
+
+                if node.child_count() == 0 {
+                    if let Some(kind) = classify_token(node, text) {
+                        push_token(&mut tokens, node, kind, text);
+                    }
+                    continue;
+                }
+
                 if let Some(kind) = classify_token(node, text) {
                     push_token(&mut tokens, node, kind, text);
+                    continue;
                 }
-                continue;
-            }
 
-            if let Some(kind) = classify_token(node, text) {
-                push_token(&mut tokens, node, kind, text);
-                continue;
-            }
-
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
-                    stack.push(child);
+                for i in (0..node.child_count()).rev() {
+                    if let Some(child) = node.child(i) {
+                        stack.push(child);
+                    }
                 }
             }
+            tokens.sort_by_key(|t| t.range.start);
+            tokens.dedup_by(|a, b| a.range == b.range && a.kind == b.kind);
+            (tokens, diagnostics)
         }
-        tokens.sort_by_key(|t| t.range.start);
-        tokens.dedup_by(|a, b| a.range == b.range && a.kind == b.kind);
-        (tokens, diagnostics)
-    }
 
-    fn push_token(
-        storage: &mut Vec<SemanticToken>,
-        node: Node,
-        kind: SemanticTokenKind,
-        text: &str,
-    ) {
-        let start = node.start_byte();
-        let end = node.end_byte().min(text.len());
-        if start >= end {
-            return;
+        fn push_token(
+            storage: &mut Vec<SemanticToken>,
+            node: Node,
+            kind: SemanticTokenKind,
+            text: &str,
+        ) {
+            let start = node.start_byte();
+            let end = node.end_byte().min(text.len());
+            if start >= end {
+                return;
+            }
+            storage.push(SemanticToken {
+                range: start..end,
+                kind,
+            });
         }
-        storage.push(SemanticToken {
-            range: start..end,
-            kind,
-        });
-    }
 
-    fn classify_token(node: Node, text: &str) -> Option<SemanticTokenKind> {
-        let kind = node.kind();
-        if matches!(kind, "comment" | "line_comment" | "block_comment") {
-            return Some(SemanticTokenKind::Comment);
+        fn classify_token(node: Node, text: &str) -> Option<SemanticTokenKind> {
+            let kind = node.kind();
+            if matches!(kind, "comment" | "line_comment" | "block_comment") {
+                return Some(SemanticTokenKind::Comment);
+            }
+            if kind.starts_with("keyword_") {
+                return Some(SemanticTokenKind::Keyword);
+            }
+            if matches!(
+                kind,
+                "literal" | "string" | "quoted_text" | "string_literal"
+            ) {
+                return literal_kind(node, text);
+            }
+            if matches!(
+                kind,
+                "identifier" | "column_name" | "table_name" | "schema_name" | "field"
+            ) {
+                return Some(SemanticTokenKind::Identifier);
+            }
+            if kind == "ERROR" {
+                return None;
+            }
+            if !node.is_named() {
+                let start = node.start_byte();
+                let end = node.end_byte().min(text.len());
+                if start >= end {
+                    return None;
+                }
+                let token_text = &text[start..end];
+                if is_sql_keyword(token_text) {
+                    return Some(SemanticTokenKind::Keyword);
+                }
+                if token_text.len() == 1 {
+                    let ch = token_text.as_bytes()[0];
+                    if ch.is_ascii_punctuation() || ch == b'`' {
+                        return Some(SemanticTokenKind::Punctuation);
+                    }
+                }
+                return None;
+            }
+            if kind.ends_with("_operator") {
+                return Some(SemanticTokenKind::Operator);
+            }
+            None
         }
-        if kind.starts_with("keyword_") {
-            return Some(SemanticTokenKind::Keyword);
-        }
-        if matches!(
-            kind,
-            "literal" | "string" | "quoted_text" | "string_literal"
-        ) {
-            return literal_kind(node, text);
-        }
-        if matches!(
-            kind,
-            "identifier" | "column_name" | "table_name" | "schema_name" | "field"
-        ) {
-            return Some(SemanticTokenKind::Identifier);
-        }
-        if kind == "ERROR" {
-            return None;
-        }
-        if !node.is_named() {
+
+        fn literal_kind(node: Node, text: &str) -> Option<SemanticTokenKind> {
             let start = node.start_byte();
             let end = node.end_byte().min(text.len());
             if start >= end {
                 return None;
             }
             let token_text = &text[start..end];
-            if is_sql_keyword(token_text) {
-                return Some(SemanticTokenKind::Keyword);
+            let trimmed = token_text.trim();
+            if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+                return Some(SemanticTokenKind::String);
             }
-            if token_text.len() == 1 {
-                let ch = token_text.as_bytes()[0];
-                if ch.is_ascii_punctuation() || ch == b'`' {
-                    return Some(SemanticTokenKind::Punctuation);
+            if trimmed.parse::<f64>().is_ok() {
+                return Some(SemanticTokenKind::Number);
+            }
+            Some(SemanticTokenKind::Literal)
+        }
+
+        fn collect_folding_ranges(root: Node, text: &str) -> Vec<FoldingRange> {
+            let mut ranges = Vec::new();
+            let mut stack = vec![root];
+            while let Some(node) = stack.pop() {
+                let start = node.start_position();
+                let end = node.end_position();
+                if end.row > start.row {
+                    let kind =
+                        if matches!(node.kind(), "comment" | "block_comment" | "line_comment") {
+                            FoldingRangeKind::Comment
+                        } else {
+                            FoldingRangeKind::Block
+                        };
+                    ranges.push(FoldingRange {
+                        start_line: start.row,
+                        end_line: end.row,
+                        kind,
+                        byte_range: node.start_byte()..node.end_byte().min(text.len()),
+                    });
+                }
+                for i in (0..node.child_count()).rev() {
+                    if let Some(child) = node.child(i) {
+                        stack.push(child);
+                    }
                 }
             }
-            return None;
+            ranges.sort_by_key(|r| (r.start_line, r.end_line));
+            ranges.dedup_by(|a, b| a.start_line == b.start_line && a.end_line == b.end_line);
+            ranges
         }
-        if kind.ends_with("_operator") {
-            return Some(SemanticTokenKind::Operator);
-        }
-        None
-    }
 
-    fn literal_kind(node: Node, text: &str) -> Option<SemanticTokenKind> {
-        let start = node.start_byte();
-        let end = node.end_byte().min(text.len());
-        if start >= end {
-            return None;
-        }
-        let token_text = &text[start..end];
-        let trimmed = token_text.trim();
-        if trimmed.starts_with('\'') || trimmed.starts_with('"') {
-            return Some(SemanticTokenKind::String);
-        }
-        if trimmed.parse::<f64>().is_ok() {
-            return Some(SemanticTokenKind::Number);
-        }
-        Some(SemanticTokenKind::Literal)
-    }
-
-    fn collect_folding_ranges(root: Node, text: &str) -> Vec<FoldingRange> {
-        let mut ranges = Vec::new();
-        let mut stack = vec![root];
-        while let Some(node) = stack.pop() {
-            let start = node.start_position();
-            let end = node.end_position();
-            if end.row > start.row {
-                let kind = if matches!(node.kind(), "comment" | "block_comment" | "line_comment") {
-                    FoldingRangeKind::Comment
-                } else {
-                    FoldingRangeKind::Block
-                };
-                ranges.push(FoldingRange {
-                    start_line: start.row as usize,
-                    end_line: end.row as usize,
-                    kind,
-                    byte_range: node.start_byte()..node.end_byte().min(text.len()),
-                });
-            }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
-                    stack.push(child);
+        fn collect_outline(root: Node, text: &str) -> Vec<SymbolNode> {
+            let mut items = Vec::new();
+            for i in 0..root.named_child_count() {
+                if let Some(child) = root.named_child(i) {
+                    append_symbol(child, text, &mut items);
                 }
             }
+            items
         }
-        ranges.sort_by_key(|r| (r.start_line, r.end_line));
-        ranges.dedup_by(|a, b| a.start_line == b.start_line && a.end_line == b.end_line);
-        ranges
-    }
 
-    fn collect_outline(root: Node, text: &str) -> Vec<SymbolNode> {
-        let mut items = Vec::new();
-        for i in 0..root.named_child_count() {
-            if let Some(child) = root.named_child(i) {
-                append_symbol(child, text, &mut items);
+        fn append_symbol(node: Node, text: &str, out: &mut Vec<SymbolNode>) {
+            if let Some(symbol) = build_symbol(node, text) {
+                out.push(symbol);
+                return;
             }
-        }
-        items
-    }
-
-    fn append_symbol(node: Node, text: &str, out: &mut Vec<SymbolNode>) {
-        if let Some(symbol) = build_symbol(node, text) {
-            out.push(symbol);
-            return;
-        }
-        for i in 0..node.named_child_count() {
-            if let Some(child) = node.named_child(i) {
-                append_symbol(child, text, out);
-            }
-        }
-    }
-
-    fn build_symbol(node: Node, text: &str) -> Option<SymbolNode> {
-        let kind = match symbol_kind_for(node) {
-            Some(k) => k,
-            None => return None,
-        };
-        let name = format_symbol_label(kind, node, text);
-        let mut children = Vec::new();
-        if kind == SymbolKind::Select {
-            collect_cte_symbols(node, text, &mut children);
-        }
-        Some(SymbolNode {
-            name,
-            kind,
-            range: node.start_byte()..node.end_byte().min(text.len()),
-            selection_range: symbol_selection_range(node, text),
-            children,
-        })
-    }
-
-    fn symbol_kind_for(node: Node) -> Option<SymbolKind> {
-        let kind = node.kind();
-        match kind {
-            "select" | "select_statement" => Some(SymbolKind::Select),
-            "insert" | "insert_statement" => Some(SymbolKind::Insert),
-            "update" | "update_statement" => Some(SymbolKind::Update),
-            "delete" | "delete_statement" => Some(SymbolKind::Delete),
-            "create_table_statement" => Some(SymbolKind::CreateTable),
-            "create_view_statement" => Some(SymbolKind::CreateView),
-            "create_function_statement" => Some(SymbolKind::CreateFunction),
-            "create_procedure_statement" => Some(SymbolKind::CreateProcedure),
-            "create_index_statement" => Some(SymbolKind::CreateIndex),
-            "common_table_expression" => Some(SymbolKind::With),
-            _ => None,
-        }
-    }
-
-    fn format_symbol_label(kind: SymbolKind, node: Node, text: &str) -> String {
-        let base = match kind {
-            SymbolKind::Select => "SELECT",
-            SymbolKind::Insert => "INSERT",
-            SymbolKind::Update => "UPDATE",
-            SymbolKind::Delete => "DELETE",
-            SymbolKind::CreateTable => "CREATE TABLE",
-            SymbolKind::CreateView => "CREATE VIEW",
-            SymbolKind::CreateFunction => "CREATE FUNCTION",
-            SymbolKind::CreateProcedure => "CREATE PROCEDURE",
-            SymbolKind::CreateIndex => "CREATE INDEX",
-            SymbolKind::With => "WITH",
-            SymbolKind::Unknown => "SQL",
-        };
-
-        if let Some(target) = find_primary_identifier(node, text) {
-            format!("{base} {target}")
-        } else {
-            base.to_string()
-        }
-    }
-
-    fn find_primary_identifier(node: Node, text: &str) -> Option<String> {
-        let mut stack = vec![node];
-        while let Some(current) = stack.pop() {
-            if matches!(
-                current.kind(),
-                "table_name" | "object_reference" | "identifier" | "column_name"
-            ) {
-                let slice = current.utf8_text(text.as_bytes()).ok()?.trim().to_string();
-                if !slice.is_empty() {
-                    return Some(slice);
-                }
-            }
-            for i in (0..current.named_child_count()).rev() {
-                if let Some(child) = current.named_child(i) {
-                    stack.push(child);
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i) {
+                    append_symbol(child, text, out);
                 }
             }
         }
-        None
-    }
 
-    fn symbol_selection_range(node: Node, text: &str) -> Range<usize> {
-        node.start_byte()..node.end_byte().min(text.len())
-    }
-
-    fn collect_cte_symbols(node: Node, text: &str, out: &mut Vec<SymbolNode>) {
-        let mut stack = vec![node];
-        while let Some(current) = stack.pop() {
-            if current.kind() == "common_table_expression" {
-                let name =
-                    find_primary_identifier(current, text).unwrap_or_else(|| "(cte)".to_string());
-                out.push(SymbolNode {
-                    name: format!("WITH {name}"),
-                    kind: SymbolKind::With,
-                    range: current.start_byte()..current.end_byte().min(text.len()),
-                    selection_range: symbol_selection_range(current, text),
-                    children: Vec::new(),
-                });
-                continue;
+        fn build_symbol(node: Node, text: &str) -> Option<SymbolNode> {
+            let kind = symbol_kind_for(node)?;
+            let name = format_symbol_label(kind, node, text);
+            let mut children = Vec::new();
+            if kind == SymbolKind::SqlSelect {
+                collect_cte_symbols(node, text, &mut children);
             }
-            for i in (0..current.named_child_count()).rev() {
-                if let Some(child) = current.named_child(i) {
-                    stack.push(child);
+            Some(SymbolNode {
+                name,
+                kind,
+                range: node.start_byte()..node.end_byte().min(text.len()),
+                selection_range: symbol_selection_range(node, text),
+                children,
+            })
+        }
+
+        fn symbol_kind_for(node: Node) -> Option<SymbolKind> {
+            let kind = node.kind();
+            match kind {
+                "select" | "select_statement" => Some(SymbolKind::SqlSelect),
+                "insert" | "insert_statement" => Some(SymbolKind::SqlInsert),
+                "update" | "update_statement" => Some(SymbolKind::SqlUpdate),
+                "delete" | "delete_statement" => Some(SymbolKind::SqlDelete),
+                "create_table_statement" => Some(SymbolKind::SqlCreateTable),
+                "create_view_statement" => Some(SymbolKind::SqlCreateView),
+                "create_function_statement" => Some(SymbolKind::SqlCreateFunction),
+                "create_procedure_statement" => Some(SymbolKind::SqlCreateProcedure),
+                "create_index_statement" => Some(SymbolKind::SqlCreateIndex),
+                "common_table_expression" => Some(SymbolKind::SqlWith),
+                _ => None,
+            }
+        }
+
+        fn format_symbol_label(kind: SymbolKind, node: Node, text: &str) -> String {
+            let base = match kind {
+                SymbolKind::SqlSelect => "SELECT",
+                SymbolKind::SqlInsert => "INSERT",
+                SymbolKind::SqlUpdate => "UPDATE",
+                SymbolKind::SqlDelete => "DELETE",
+                SymbolKind::SqlCreateTable => "CREATE TABLE",
+                SymbolKind::SqlCreateView => "CREATE VIEW",
+                SymbolKind::SqlCreateFunction => "CREATE FUNCTION",
+                SymbolKind::SqlCreateProcedure => "CREATE PROCEDURE",
+                SymbolKind::SqlCreateIndex => "CREATE INDEX",
+                SymbolKind::SqlWith => "WITH",
+                SymbolKind::JsonObject => "OBJECT",
+                SymbolKind::JsonArray => "ARRAY",
+                SymbolKind::JsonProperty => "PROPERTY",
+                SymbolKind::JsFunction => "FN",
+                SymbolKind::JsClass => "CLASS",
+                SymbolKind::JsMethod => "METHOD",
+                SymbolKind::JsVariable => "VAR",
+                SymbolKind::Unknown => "SQL",
+            };
+
+            if let Some(target) = find_primary_identifier(node, text) {
+                format!("{base} {target}")
+            } else {
+                base.to_string()
+            }
+        }
+
+        fn find_primary_identifier(node: Node, text: &str) -> Option<String> {
+            let mut stack = vec![node];
+            while let Some(current) = stack.pop() {
+                if matches!(
+                    current.kind(),
+                    "table_name" | "object_reference" | "identifier" | "column_name"
+                ) {
+                    let slice = current.utf8_text(text.as_bytes()).ok()?.trim().to_string();
+                    if !slice.is_empty() {
+                        return Some(slice);
+                    }
+                }
+                for i in (0..current.named_child_count()).rev() {
+                    if let Some(child) = current.named_child(i) {
+                        stack.push(child);
+                    }
+                }
+            }
+            None
+        }
+
+        fn symbol_selection_range(node: Node, text: &str) -> Range<usize> {
+            node.start_byte()..node.end_byte().min(text.len())
+        }
+
+        fn collect_cte_symbols(node: Node, text: &str, out: &mut Vec<SymbolNode>) {
+            let mut stack = vec![node];
+            while let Some(current) = stack.pop() {
+                if current.kind() == "common_table_expression" {
+                    let name = find_primary_identifier(current, text)
+                        .unwrap_or_else(|| "(cte)".to_string());
+                    out.push(SymbolNode {
+                        name: format!("WITH {name}"),
+                        kind: SymbolKind::SqlWith,
+                        range: current.start_byte()..current.end_byte().min(text.len()),
+                        selection_range: symbol_selection_range(current, text),
+                        children: Vec::new(),
+                    });
+                    continue;
+                }
+                for i in (0..current.named_child_count()).rev() {
+                    if let Some(child) = current.named_child(i) {
+                        stack.push(child);
+                    }
                 }
             }
         }
     }
 
-    static SERVICE: OnceCell<Mutex<SqlParserService>> = OnceCell::new();
+    mod json_lang {
+        use super::*;
 
-    pub fn ensure_snapshot(text: &str) -> Option<Arc<SqlSemanticSnapshot>> {
-        let service = SERVICE.get_or_init(|| {
-            let parser = SqlParserService::new().ok();
-            Mutex::new(parser.unwrap_or_else(|| SqlParserService {
+        pub fn build_snapshot(
+            language: LanguageKind,
+            tree: &Tree,
+            text: &str,
+            hash: u64,
+        ) -> SemanticSnapshot {
+            let root = tree.root_node();
+            let (tokens, diagnostics) = collect_tokens_and_diagnostics(root, text);
+            let folding_ranges = collect_folding_ranges(root, text);
+            let outline = collect_outline(root, text);
+            SemanticSnapshot {
+                language,
+                source_hash: hash,
+                tokens,
+                folding_ranges,
+                outline,
+                diagnostics,
+                root_sexpr: Some(root.to_sexp()),
+            }
+        }
+
+        fn collect_tokens_and_diagnostics(
+            root: Node,
+            text: &str,
+        ) -> (Vec<SemanticToken>, Vec<ParseDiagnostic>) {
+            let mut tokens = Vec::new();
+            let mut diagnostics = Vec::new();
+            let mut stack = vec![root];
+            while let Some(node) = stack.pop() {
+                if node.kind() == "ERROR" {
+                    diagnostics.push(ParseDiagnostic {
+                        message: "Parse error".to_string(),
+                        range: node.start_byte()..node.end_byte().min(text.len()),
+                    });
+                }
+
+                if node.child_count() == 0 {
+                    if let Some(kind) = classify_leaf(node, text) {
+                        push_token(&mut tokens, node, kind, text);
+                    }
+                    continue;
+                }
+
+                for i in (0..node.child_count()).rev() {
+                    if let Some(child) = node.child(i) {
+                        stack.push(child);
+                    }
+                }
+            }
+            tokens.sort_by_key(|t| t.range.start);
+            tokens.dedup_by(|a, b| a.range == b.range && a.kind == b.kind);
+            (tokens, diagnostics)
+        }
+
+        fn classify_leaf(node: Node, text: &str) -> Option<SemanticTokenKind> {
+            match node.kind() {
+                "string" => Some(SemanticTokenKind::String),
+                "number" => Some(SemanticTokenKind::Number),
+                "true" | "false" | "null" => Some(SemanticTokenKind::Literal),
+                _ => {
+                    if !node.is_named() {
+                        let start = node.start_byte();
+                        let end = node.end_byte().min(text.len());
+                        if start >= end {
+                            return None;
+                        }
+                        let token = &text[start..end];
+                        if token.chars().all(|c| "{}[]:,".contains(c)) {
+                            return Some(SemanticTokenKind::Punctuation);
+                        }
+                    }
+                    None
+                }
+            }
+        }
+
+        fn push_token(
+            tokens: &mut Vec<SemanticToken>,
+            node: Node,
+            kind: SemanticTokenKind,
+            text: &str,
+        ) {
+            let start = node.start_byte();
+            let end = node.end_byte().min(text.len());
+            if start >= end {
+                return;
+            }
+            tokens.push(SemanticToken {
+                range: start..end,
+                kind,
+            });
+        }
+
+        fn collect_folding_ranges(root: Node, text: &str) -> Vec<FoldingRange> {
+            let mut ranges = Vec::new();
+            let mut stack = vec![root];
+            while let Some(node) = stack.pop() {
+                let start = node.start_position();
+                let end = node.end_position();
+                if end.row > start.row && matches!(node.kind(), "object" | "array") {
+                    ranges.push(FoldingRange {
+                        start_line: start.row,
+                        end_line: end.row,
+                        kind: FoldingRangeKind::Block,
+                        byte_range: node.start_byte()..node.end_byte().min(text.len()),
+                    });
+                }
+                for i in (0..node.child_count()).rev() {
+                    if let Some(child) = node.child(i) {
+                        stack.push(child);
+                    }
+                }
+            }
+            ranges.sort_by_key(|r| (r.start_line, r.end_line));
+            ranges.dedup_by(|a, b| a.start_line == b.start_line && a.end_line == b.end_line);
+            ranges
+        }
+
+        fn collect_outline(root: Node, text: &str) -> Vec<SymbolNode> {
+            let mut items = Vec::new();
+            for i in 0..root.named_child_count() {
+                if let Some(child) = root.named_child(i) {
+                    append_symbol(child, text, &mut items);
+                }
+            }
+            items
+        }
+
+        fn append_symbol(node: Node, text: &str, out: &mut Vec<SymbolNode>) {
+            match node.kind() {
+                "object" => {
+                    let children = collect_properties(node, text);
+                    out.push(SymbolNode {
+                        name: format_object_label(&children),
+                        kind: SymbolKind::JsonObject,
+                        range: node.start_byte()..node.end_byte().min(text.len()),
+                        selection_range: node.start_byte()..node.end_byte().min(text.len()),
+                        children,
+                    });
+                }
+                "array" => {
+                    let child_symbols = collect_array_children(node, text);
+                    out.push(SymbolNode {
+                        name: format!("Array [{}]", child_symbols.len()),
+                        kind: SymbolKind::JsonArray,
+                        range: node.start_byte()..node.end_byte().min(text.len()),
+                        selection_range: node.start_byte()..node.end_byte().min(text.len()),
+                        children: child_symbols,
+                    });
+                }
+                "pair" => {
+                    out.push(build_property_symbol(node, text));
+                }
+                _ => {
+                    for i in 0..node.named_child_count() {
+                        if let Some(child) = node.named_child(i) {
+                            append_symbol(child, text, out);
+                        }
+                    }
+                }
+            }
+        }
+
+        fn collect_properties(object: Node, text: &str) -> Vec<SymbolNode> {
+            let mut props = Vec::new();
+            for i in 0..object.named_child_count() {
+                if let Some(child) = object.named_child(i) {
+                    if child.kind() == "pair" {
+                        props.push(build_property_symbol(child, text));
+                    }
+                }
+            }
+            props
+        }
+
+        fn collect_array_children(array: Node, text: &str) -> Vec<SymbolNode> {
+            let mut result = Vec::new();
+            for i in 0..array.named_child_count() {
+                if let Some(child) = array.named_child(i) {
+                    append_symbol(child, text, &mut result);
+                }
+            }
+            result
+        }
+
+        fn build_property_symbol(node: Node, text: &str) -> SymbolNode {
+            let name = node
+                .child_by_field_name("key")
+                .and_then(|key| key.utf8_text(text.as_bytes()).ok())
+                .map(|s| s.trim_matches('"').to_string())
+                .unwrap_or_else(|| "(property)".to_string());
+            let mut children = Vec::new();
+            if let Some(value) = node.child_by_field_name("value") {
+                append_symbol(value, text, &mut children);
+            }
+            SymbolNode {
+                name,
+                kind: SymbolKind::JsonProperty,
+                range: node.start_byte()..node.end_byte().min(text.len()),
+                selection_range: node.start_byte()..node.end_byte().min(text.len()),
+                children,
+            }
+        }
+
+        fn format_object_label(children: &[SymbolNode]) -> String {
+            if let Some(first) = children.first() {
+                format!("Object {{{}}}", first.name)
+            } else {
+                "Object {}".to_string()
+            }
+        }
+    }
+
+    mod javascript {
+        use super::*;
+
+        pub fn build_snapshot(
+            language: LanguageKind,
+            tree: &Tree,
+            text: &str,
+            hash: u64,
+        ) -> SemanticSnapshot {
+            let root = tree.root_node();
+            let (tokens, diagnostics) = collect_tokens_and_diagnostics(root, text);
+            let folding_ranges = collect_folding_ranges(root, text);
+            let outline = collect_outline(root, text);
+            SemanticSnapshot {
+                language,
+                source_hash: hash,
+                tokens,
+                folding_ranges,
+                outline,
+                diagnostics,
+                root_sexpr: Some(root.to_sexp()),
+            }
+        }
+
+        fn collect_tokens_and_diagnostics(
+            root: Node,
+            text: &str,
+        ) -> (Vec<SemanticToken>, Vec<ParseDiagnostic>) {
+            let mut tokens = Vec::new();
+            let mut diagnostics = Vec::new();
+            let mut stack = vec![root];
+            while let Some(node) = stack.pop() {
+                if node.kind() == "ERROR" {
+                    diagnostics.push(ParseDiagnostic {
+                        message: "Parse error".to_string(),
+                        range: node.start_byte()..node.end_byte().min(text.len()),
+                    });
+                }
+
+                if node.child_count() == 0 {
+                    if let Some(kind) = classify_leaf(node, text) {
+                        push_token(&mut tokens, node, kind, text);
+                    }
+                    continue;
+                }
+
+                for i in (0..node.child_count()).rev() {
+                    if let Some(child) = node.child(i) {
+                        stack.push(child);
+                    }
+                }
+            }
+            tokens.sort_by_key(|t| t.range.start);
+            tokens.dedup_by(|a, b| a.range == b.range && a.kind == b.kind);
+            (tokens, diagnostics)
+        }
+
+        fn classify_leaf(node: Node, text: &str) -> Option<SemanticTokenKind> {
+            match node.kind() {
+                "comment" | "hash_bang_line" => Some(SemanticTokenKind::Comment),
+                "string" | "template_string" => Some(SemanticTokenKind::String),
+                "number" => Some(SemanticTokenKind::Number),
+                "regex" => Some(SemanticTokenKind::Literal),
+                "identifier" => Some(SemanticTokenKind::Identifier),
+                _ => {
+                    if !node.is_named() {
+                        let start = node.start_byte();
+                        let end = node.end_byte().min(text.len());
+                        if start >= end {
+                            return None;
+                        }
+                        let token = &text[start..end];
+                        if is_js_keyword(token) {
+                            return Some(SemanticTokenKind::Keyword);
+                        }
+                        if token.len() == 1
+                            && token.chars().all(|c| "{}[]().,;:+-*/%<>=!&|^?".contains(c))
+                        {
+                            return Some(SemanticTokenKind::Punctuation);
+                        }
+                    }
+                    None
+                }
+            }
+        }
+
+        fn push_token(
+            tokens: &mut Vec<SemanticToken>,
+            node: Node,
+            kind: SemanticTokenKind,
+            text: &str,
+        ) {
+            let start = node.start_byte();
+            let end = node.end_byte().min(text.len());
+            if start >= end {
+                return;
+            }
+            tokens.push(SemanticToken {
+                range: start..end,
+                kind,
+            });
+        }
+
+        fn collect_folding_ranges(root: Node, text: &str) -> Vec<FoldingRange> {
+            let mut ranges = Vec::new();
+            let mut stack = vec![root];
+            while let Some(node) = stack.pop() {
+                let start = node.start_position();
+                let end = node.end_position();
+                if end.row > start.row
+                    && matches!(
+                        node.kind(),
+                        "statement_block"
+                            | "class_body"
+                            | "object"
+                            | "array"
+                            | "function_declaration"
+                            | "method_definition"
+                            | "arrow_function"
+                    )
+                {
+                    let kind = if node.kind() == "comment" {
+                        FoldingRangeKind::Comment
+                    } else {
+                        FoldingRangeKind::Block
+                    };
+                    ranges.push(FoldingRange {
+                        start_line: start.row,
+                        end_line: end.row,
+                        kind,
+                        byte_range: node.start_byte()..node.end_byte().min(text.len()),
+                    });
+                }
+                for i in (0..node.child_count()).rev() {
+                    if let Some(child) = node.child(i) {
+                        stack.push(child);
+                    }
+                }
+            }
+            ranges.sort_by_key(|r| (r.start_line, r.end_line));
+            ranges.dedup_by(|a, b| a.start_line == b.start_line && a.end_line == b.end_line);
+            ranges
+        }
+
+        fn collect_outline(root: Node, text: &str) -> Vec<SymbolNode> {
+            let mut items = Vec::new();
+            for i in 0..root.named_child_count() {
+                if let Some(child) = root.named_child(i) {
+                    append_symbol(child, text, &mut items);
+                }
+            }
+            items
+        }
+
+        fn append_symbol(node: Node, text: &str, out: &mut Vec<SymbolNode>) {
+            if let Some(symbol) = build_symbol(node, text) {
+                out.push(symbol);
+                return;
+            }
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i) {
+                    append_symbol(child, text, out);
+                }
+            }
+        }
+
+        fn build_symbol(node: Node, text: &str) -> Option<SymbolNode> {
+            match node.kind() {
+                "function_declaration" => {
+                    let name = node
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(text.as_bytes()).ok())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "(anonymous)".to_string());
+                    let body_children = node
+                        .child_by_field_name("body")
+                        .map(|body| collect_nested_symbols(body, text))
+                        .unwrap_or_default();
+                    Some(SymbolNode {
+                        name: format!("fn {name}"),
+                        kind: SymbolKind::JsFunction,
+                        range: node.start_byte()..node.end_byte().min(text.len()),
+                        selection_range: node.start_byte()..node.end_byte().min(text.len()),
+                        children: body_children,
+                    })
+                }
+                "class_declaration" => {
+                    let name = node
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(text.as_bytes()).ok())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "(anonymous class)".to_string());
+                    let body_children = node
+                        .child_by_field_name("body")
+                        .map(|body| collect_nested_symbols(body, text))
+                        .unwrap_or_default();
+                    Some(SymbolNode {
+                        name: format!("class {name}"),
+                        kind: SymbolKind::JsClass,
+                        range: node.start_byte()..node.end_byte().min(text.len()),
+                        selection_range: node.start_byte()..node.end_byte().min(text.len()),
+                        children: body_children,
+                    })
+                }
+                "method_definition" => {
+                    let name = node
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(text.as_bytes()).ok())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "(method)".to_string());
+                    let body_children = node
+                        .child_by_field_name("body")
+                        .map(|body| collect_nested_symbols(body, text))
+                        .unwrap_or_default();
+                    Some(SymbolNode {
+                        name,
+                        kind: SymbolKind::JsMethod,
+                        range: node.start_byte()..node.end_byte().min(text.len()),
+                        selection_range: node.start_byte()..node.end_byte().min(text.len()),
+                        children: body_children,
+                    })
+                }
+                "lexical_declaration" | "variable_declaration" => {
+                    let mut names = Vec::new();
+                    for i in 0..node.named_child_count() {
+                        if let Some(child) = node.named_child(i) {
+                            if child.kind() == "variable_declarator" {
+                                if let Some(name_node) = child.child_by_field_name("name") {
+                                    if let Ok(name) = name_node.utf8_text(text.as_bytes()) {
+                                        names.push(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if names.is_empty() {
+                        None
+                    } else {
+                        Some(SymbolNode {
+                            name: names.join(", "),
+                            kind: SymbolKind::JsVariable,
+                            range: node.start_byte()..node.end_byte().min(text.len()),
+                            selection_range: node.start_byte()..node.end_byte().min(text.len()),
+                            children: Vec::new(),
+                        })
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        fn collect_nested_symbols(node: Node, text: &str) -> Vec<SymbolNode> {
+            let mut items = Vec::new();
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i) {
+                    if let Some(symbol) = build_symbol(child, text) {
+                        items.push(symbol);
+                    } else {
+                        items.extend(collect_nested_symbols(child, text));
+                    }
+                }
+            }
+            items
+        }
+
+        pub(super) fn is_js_keyword(token: &str) -> bool {
+            matches!(
+                token,
+                "break"
+                    | "case"
+                    | "catch"
+                    | "class"
+                    | "const"
+                    | "continue"
+                    | "debugger"
+                    | "default"
+                    | "delete"
+                    | "do"
+                    | "else"
+                    | "export"
+                    | "extends"
+                    | "finally"
+                    | "for"
+                    | "function"
+                    | "if"
+                    | "import"
+                    | "in"
+                    | "instanceof"
+                    | "let"
+                    | "new"
+                    | "return"
+                    | "super"
+                    | "switch"
+                    | "this"
+                    | "throw"
+                    | "try"
+                    | "typeof"
+                    | "var"
+                    | "void"
+                    | "while"
+                    | "with"
+                    | "yield"
+            )
+        }
+    }
+
+    static SQL_SERVICE: OnceCell<Mutex<ParserService>> = OnceCell::new();
+    static JSON_SERVICE: OnceCell<Mutex<ParserService>> = OnceCell::new();
+    static JS_SERVICE: OnceCell<Mutex<ParserService>> = OnceCell::new();
+
+    fn service_cell(language: LanguageKind) -> Option<&'static OnceCell<Mutex<ParserService>>> {
+        match language {
+            LanguageKind::Sql => Some(&SQL_SERVICE),
+            LanguageKind::Redis => Some(&JSON_SERVICE),
+            LanguageKind::Mongo => Some(&JS_SERVICE),
+            LanguageKind::Plain => None,
+        }
+    }
+
+    pub fn ensure_snapshot(language: LanguageKind, text: &str) -> Option<Arc<SemanticSnapshot>> {
+        let cell = service_cell(language)?;
+        let mutex = cell.get_or_init(|| {
+            let parser = ParserService::new(language).ok();
+            Mutex::new(parser.unwrap_or_else(|| ParserService {
                 parser: Parser::new(),
                 tree: None,
                 last_text: String::new(),
                 last_hash: 0,
                 snapshot: None,
+                language,
+                grammar: GrammarKind::for_language(language).unwrap(),
             }))
         });
-        service.lock().ok()?.ensure_snapshot(text)
+        mutex.lock().ok()?.ensure_snapshot(text)
     }
 
-    pub fn last_snapshot() -> Option<Arc<SqlSemanticSnapshot>> {
-        SERVICE
-            .get()
-            .and_then(|svc| svc.lock().ok())
+    pub fn last_snapshot(language: LanguageKind) -> Option<Arc<SemanticSnapshot>> {
+        service_cell(language)
+            .and_then(|cell| cell.get())
+            .and_then(|mutex| mutex.lock().ok())
             .and_then(|guard| guard.snapshot.clone())
+    }
+
+    fn is_js_keyword(token: &str) -> bool {
+        javascript::is_js_keyword(token)
     }
 }
 
@@ -621,11 +1247,11 @@ mod ts {
 mod ts {
     use super::*;
 
-    pub fn ensure_snapshot(_text: &str) -> Option<Arc<SqlSemanticSnapshot>> {
+    pub fn ensure_snapshot(_language: LanguageKind, _text: &str) -> Option<Arc<SemanticSnapshot>> {
         None
     }
 
-    pub fn last_snapshot() -> Option<Arc<SqlSemanticSnapshot>> {
+    pub fn last_snapshot(_language: LanguageKind) -> Option<Arc<SemanticSnapshot>> {
         None
     }
 }
@@ -635,7 +1261,7 @@ mod ts {
 pub fn try_tree_sitter_sequel_highlight(text: &str, dark: bool) -> Option<LayoutJob> {
     #[cfg(feature = "tree_sitter_sequel")]
     {
-        let snapshot = ts::ensure_snapshot(text)?;
+        let snapshot = ts::ensure_snapshot(LanguageKind::Sql, text)?;
         Some(layout_from_tokens(text, &snapshot.tokens, dark))
     }
     #[cfg(not(feature = "tree_sitter_sequel"))]
@@ -646,13 +1272,23 @@ pub fn try_tree_sitter_sequel_highlight(text: &str, dark: bool) -> Option<Layout
 }
 
 /// Returns the most recently computed SQL semantic snapshot (if any).
-pub fn get_last_sql_snapshot() -> Option<Arc<SqlSemanticSnapshot>> {
-    ts::last_snapshot()
+pub fn get_last_sql_snapshot() -> Option<Arc<SemanticSnapshot>> {
+    ts::last_snapshot(LanguageKind::Sql)
 }
 
 /// Ensure the parser cache is synchronized with `text`, returning the snapshot.
-pub fn ensure_sql_semantics(text: &str) -> Option<Arc<SqlSemanticSnapshot>> {
-    ts::ensure_snapshot(text)
+pub fn ensure_sql_semantics(text: &str) -> Option<Arc<SemanticSnapshot>> {
+    ts::ensure_snapshot(LanguageKind::Sql, text)
+}
+
+/// Ensure the parser cache for `language` matches `text` and return the snapshot.
+pub fn ensure_semantics(language: LanguageKind, text: &str) -> Option<Arc<SemanticSnapshot>> {
+    ts::ensure_snapshot(language, text)
+}
+
+/// Fetch the last semantic snapshot recorded for `language`.
+pub fn get_last_semantic_snapshot(language: LanguageKind) -> Option<Arc<SemanticSnapshot>> {
+    ts::last_snapshot(language)
 }
 
 fn layout_from_tokens(text: &str, tokens: &[SemanticToken], dark: bool) -> LayoutJob {
@@ -848,11 +1484,14 @@ pub fn highlight_text_cached(
 
 /// Whole text highlighter (tree-sitter path is kept for side effects only).
 pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
-    if matches!(lang, LanguageKind::Sql) {
+    if matches!(
+        lang,
+        LanguageKind::Sql | LanguageKind::Redis | LanguageKind::Mongo
+    ) {
         #[cfg(feature = "tree_sitter_sequel")]
         {
             // Keep semantic snapshot in sync; fall back to legacy rendering for stability.
-            let _ = ensure_sql_semantics(text);
+            let _ = ensure_semantics(lang, text);
         }
     }
     let mut job = LayoutJob::default();

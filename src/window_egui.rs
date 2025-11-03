@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use crate::{
     cache_data, connection, dialog, directory, driver_mysql, driver_postgres, driver_redis,
-    driver_sqlite, editor, models, sidebar_database, sidebar_query,
+    driver_sqlite, editor, models, query_tools, sidebar_database, sidebar_query,
     spreadsheet::SpreadsheetOperations,
 };
 use crate::{data_table, driver_mssql};
@@ -204,6 +204,7 @@ pub struct Tabular {
     pub autocomplete_suggestions: Vec<String>,
     pub autocomplete_kinds: Vec<models::enums::AutocompleteKind>,
     pub autocomplete_notes: Vec<Option<String>>, // optional description per suggestion
+    pub autocomplete_payloads: Vec<Option<String>>, // optional payload such as snippet expansion text
     pub selected_autocomplete_index: usize,
     pub autocomplete_prefix: String,
     pub last_autocomplete_trigger_len: usize,
@@ -215,6 +216,9 @@ pub struct Tabular {
     pub autocomplete_protection_frames: u8,
     // Tracks whether user has navigated autocomplete popup (ArrowUp/Down or similar)
     pub autocomplete_navigated: bool,
+    // Autocomplete throttle
+    pub autocomplete_last_update: Option<std::time::Instant>,
+    pub autocomplete_debounce_ms: u64,
     // Ensure selection is cleared on the next frame after a destructive action (e.g., Delete)
     pub selection_force_clear: bool,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)
@@ -328,6 +332,13 @@ pub struct Tabular {
     pub last_plan_cache_key: Option<String>,
     pub last_ctes: Option<Vec<String>>, // names of remaining CTEs after rewrites
     pub sql_semantic_snapshot: Option<Arc<crate::syntax_ts::SqlSemanticSnapshot>>,
+    pub lint_messages: Vec<query_tools::LintMessage>,
+    pub show_lint_panel: bool,
+    // Lint panel auto-hide timer
+    pub lint_panel_shown_at: Option<std::time::Instant>,
+    pub lint_panel_auto_hide_ms: u64,
+    pub lint_panel_pinned: bool,
+    pub auto_format_on_execute: bool,
 }
 
 // Preference tabs enumeration
@@ -657,6 +668,7 @@ impl Tabular {
             autocomplete_suggestions: Vec::new(),
             autocomplete_kinds: Vec::new(),
             autocomplete_notes: Vec::new(),
+            autocomplete_payloads: Vec::new(),
             selected_autocomplete_index: 0,
             autocomplete_prefix: String::new(),
             last_autocomplete_trigger_len: 0,
@@ -665,6 +677,8 @@ impl Tabular {
             autocomplete_expected_cursor: None,
             autocomplete_protection_frames: 0,
             autocomplete_navigated: false,
+            autocomplete_last_update: None,
+            autocomplete_debounce_ms: 120,
             selection_force_clear: false,
             // Index dialog defaults
             show_index_dialog: false,
@@ -761,6 +775,12 @@ impl Tabular {
             last_plan_hash: None,
             last_plan_cache_key: None,
             last_ctes: None,
+            lint_messages: Vec::new(),
+            show_lint_panel: false,
+            lint_panel_shown_at: None,
+            lint_panel_auto_hide_ms: 2_000,
+            lint_panel_pinned: false,
+            auto_format_on_execute: false,
         };
 
         // Clear any old cached pools
@@ -782,26 +802,26 @@ impl Tabular {
         // Do NOT force an immediate update check here; let the preference load path enforce 24h throttling.
         // If preferences haven't been loaded yet (first run path) we can perform a very conservative check:
         // Only queue if default auto_check_updates is true AND no persisted timestamp available or older than 24h.
-        if app.auto_check_updates
-            && let (Some(sender), Some(rt)) = (&app.background_sender, &app.runtime)
-            && let Ok(store) = rt.block_on(crate::config::ConfigStore::new())
-        {
-            println!("Checking last update check timestamp for initial check...");
-            let mut should_queue = true;
-            if let Some(last_iso) = rt.block_on(store.get_last_update_check())
-                && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&last_iso)
-            {
-                let last_utc = parsed.with_timezone(&chrono::Utc);
-                if chrono::Utc::now().signed_duration_since(last_utc) < chrono::Duration::days(1) {
-                    should_queue = false;
-                }
-            }
-            if should_queue {
-                // Persist immediately to prevent multiple queues in rapid restarts
-                rt.block_on(store.set_last_update_check_now());
-                let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
-            }
-        }
+        // if app.auto_check_updates
+        //     && let (Some(sender), Some(rt)) = (&app.background_sender, &app.runtime)
+        //     && let Ok(store) = rt.block_on(crate::config::ConfigStore::new())
+        // {
+        //     println!("Checking last update check timestamp for initial check...");
+        //     let mut should_queue = true;
+        //     if let Some(last_iso) = rt.block_on(store.get_last_update_check())
+        //         && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&last_iso)
+        //     {
+        //         let last_utc = parsed.with_timezone(&chrono::Utc);
+        //         if chrono::Utc::now().signed_duration_since(last_utc) < chrono::Duration::days(1) {
+        //             should_queue = false;
+        //         }
+        //     }
+        //     if should_queue {
+        //         // Persist immediately to prevent multiple queues in rapid restarts
+        //         rt.block_on(store.set_last_update_check_now());
+        //         let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
+        //     }
+        // }
         app
     }
 
@@ -955,6 +975,146 @@ impl Tabular {
                 rt.block_on(async {
                     let _ = crate::connection::get_or_create_connection_pool(self, cid).await;
                 });
+            }
+        }
+    }
+
+    fn render_lint_panel(&mut self, ui: &mut egui::Ui) {
+        if self.lint_messages.is_empty() {
+            return;
+        }
+
+        ui.add_space(6.0);
+        let count = self.lint_messages.len();
+        let plural = if count == 1 { "" } else { "s" };
+
+        if !self.show_lint_panel {
+            ui.horizontal(|ui| {
+                let warning_text = egui::RichText::new(format!(
+                    "⚠ {} lint issue{} detected",
+                    count, plural
+                ))
+                .color(egui::Color32::from_rgb(255, 183, 0));
+                ui.label(warning_text);
+                if ui.button("Show details").clicked() {
+                    self.show_lint_panel = true;
+                    self.lint_panel_shown_at = Some(std::time::Instant::now());
+                }
+            });
+            return;
+        }
+
+        // Panel is shown: start timer if needed (hover/pin logic handled after rendering)
+        if self.lint_panel_shown_at.is_none() {
+            self.lint_panel_shown_at = Some(std::time::Instant::now());
+        }
+
+        let panel_fill = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(40, 40, 40)
+        } else {
+            egui::Color32::from_rgb(255, 244, 234)
+        };
+
+        let inner = egui::Frame::group(ui.style())
+            .fill(panel_fill)
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(255, 30, 0),
+            ))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!(
+                        "Lint ({})",
+                        count
+                    ))
+                    .strong());
+                    if ui.button("Hide").clicked() {
+                        self.show_lint_panel = false;
+                        self.lint_panel_shown_at = None;
+                    }
+                    ui.add_space(12.0);
+                    ui.checkbox(&mut self.lint_panel_pinned, "Pin (keep open)");
+                    ui.checkbox(&mut self.auto_format_on_execute, "Auto-format before execute");
+                    if ui.button("Format now").clicked() {
+                        if let Some(formatted) = query_tools::format_sql(&self.editor.text) {
+                            if formatted != self.editor.text {
+                                self.editor.set_text(formatted.clone());
+                                let new_len = self.editor.text.len();
+                                self.cursor_position = new_len;
+                                self.multi_selection.clear();
+                                self.multi_selection.add_collapsed(self.cursor_position);
+                                self.last_editor_text = self.editor.text.clone();
+                                self.lint_messages = query_tools::lint_sql(&self.editor.text);
+                                self.show_lint_panel = !self.lint_messages.is_empty();
+                                if self.show_lint_panel {
+                                    self.lint_panel_shown_at = Some(std::time::Instant::now());
+                                } else {
+                                    self.lint_panel_shown_at = None;
+                                }
+                                self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(4);
+                                self.pending_cursor_set = Some(self.cursor_position);
+                            }
+                        }
+                    }
+                });
+
+                ui.separator();
+
+                for msg in &self.lint_messages {
+                    let (icon, color) = match msg.severity {
+                        query_tools::LintSeverity::Info => (
+                            "ℹ",
+                            egui::Color32::from_rgb(120, 170, 255),
+                        ),
+                        query_tools::LintSeverity::Warning => (
+                            "⚠",
+                            egui::Color32::from_rgb(255, 183, 0),
+                        ),
+                        query_tools::LintSeverity::Error => (
+                            "⛔",
+                            egui::Color32::from_rgb(255, 80, 80),
+                        ),
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(icon).color(color).strong());
+                        ui.label(egui::RichText::new(&msg.message));
+                    });
+
+                    if let Some(hint) = &msg.hint {
+                        ui.label(egui::RichText::new(hint).small().italics().weak());
+                    }
+
+                    if let Some(span) = &msg.span {
+                        ui.label(
+                            egui::RichText::new(format!("range {}..{}", span.start, span.end))
+                                .small()
+                                .weak(),
+                        );
+                    }
+
+                    ui.add_space(4.0);
+                }
+            });
+
+        // After rendering, handle auto-hide with hover/pin behavior
+        if self.show_lint_panel {
+            // If pinned, do not auto-hide
+            if self.lint_panel_pinned {
+                self.lint_panel_shown_at = Some(std::time::Instant::now());
+            } else {
+                // If hovered, refresh timer to prevent hiding while interacting
+                if inner.response.hovered() {
+                    self.lint_panel_shown_at = Some(std::time::Instant::now());
+                }
+                // Check elapsed when not hovered
+                if let Some(shown_at) = self.lint_panel_shown_at {
+                    let elapsed_ms = shown_at.elapsed().as_millis() as u64;
+                    if elapsed_ms >= self.lint_panel_auto_hide_ms {
+                        self.show_lint_panel = false;
+                        self.lint_panel_shown_at = None;
+                    }
+                }
             }
         }
     }
@@ -10990,6 +11150,7 @@ impl App for Tabular {
                                 }
                             }
                         });
+                    self.render_lint_panel(ui);
                     if show_bottom {
                         // Draw draggable handle
                         let handle_id = ui.make_persistent_id("editor_table_splitter");

@@ -1,6 +1,6 @@
 #![cfg(feature = "tree_sitter_sequel")]
 
-use tabular::syntax_ts::{self, SemanticTokenKind, SymbolKind};
+use tabular::syntax_ts::{self, LanguageKind, SemanticTokenKind, SymbolKind};
 
 #[test]
 fn semantic_snapshot_contains_outline_and_folding() {
@@ -18,8 +18,54 @@ fn semantic_snapshot_contains_outline_and_folding() {
         snapshot
             .outline
             .iter()
-            .any(|symbol| matches!(symbol.kind, SymbolKind::Select)),
+            .any(|symbol| matches!(symbol.kind, SymbolKind::SqlSelect)),
         "expected SELECT symbol in outline"
+    );
+}
+
+#[test]
+fn json_snapshot_emits_outline() {
+    let json = r#"{"user":{"name":"Ada","tags":["admin","ops"]}}"#;
+    let snapshot =
+        syntax_ts::ensure_semantics(LanguageKind::Redis, json).expect("JSON snapshot available");
+    assert!(
+        snapshot
+            .tokens
+            .iter()
+            .any(|token| matches!(token.kind, SemanticTokenKind::String)),
+        "expected string tokens in JSON snapshot"
+    );
+    assert!(
+        snapshot
+            .outline
+            .iter()
+            .any(|symbol| matches!(symbol.kind, SymbolKind::JsonObject)),
+        "expected object outline entry"
+    );
+}
+
+#[test]
+fn javascript_snapshot_detects_functions() {
+    let js = r#"
+        class Service {
+            constructor() {}
+            runTask() {
+                function helper() {
+                    return 42;
+                }
+                return helper();
+            }
+        }
+    "#;
+    let snapshot =
+        syntax_ts::ensure_semantics(LanguageKind::Mongo, js).expect("JS snapshot available");
+    assert!(
+        snapshot
+            .outline
+            .iter()
+            .flat_map(|symbol| symbol.children.iter())
+            .any(|symbol| matches!(symbol.kind, SymbolKind::JsMethod | SymbolKind::JsFunction)),
+        "expected method or function symbols in outline"
     );
 }
 
@@ -45,7 +91,7 @@ fn semantic_snapshot_updates_after_edit() {
         snap_after
             .outline
             .iter()
-            .any(|symbol| matches!(symbol.kind, SymbolKind::Select)),
+            .any(|symbol| matches!(symbol.kind, SymbolKind::SqlSelect)),
         "expected outline to retain SELECT entry"
     );
 }

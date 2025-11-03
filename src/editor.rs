@@ -6,8 +6,8 @@ use egui::text::{CCursor, CCursorRange};
 use log::debug;
 
 use crate::{
-    connection, data_table, directory, editor, editor_autocomplete, models, sidebar_history,
-    sidebar_query, window_egui,
+    connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
+    sidebar_history, sidebar_query, window_egui,
 };
 use std::time::Instant;
 
@@ -120,10 +120,10 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.has_executed_query = false;
             tab.dba_special_mode = None;
         }
-    tabular.editor.set_text(String::new());
-    tabular.highlight_cache.clear();
-    tabular.last_highlight_hash = None;
-    tabular.sql_semantic_snapshot = None;
+        tabular.editor.set_text(String::new());
+        tabular.highlight_cache.clear();
+        tabular.last_highlight_hash = None;
+        tabular.sql_semantic_snapshot = None;
         // Also clear global result state so the UI table area is reset
         tabular.current_table_headers.clear();
         tabular.current_table_data.clear();
@@ -782,6 +782,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
     }
+    // Track autocomplete visibility to restore focus when popup closes this frame
+    let autocomplete_was_visible_at_start = tabular.show_autocomplete;
+
     // ----- Handle autocomplete key interception and pre-acceptance BEFORE building TextEdit -----
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
     let mut raw_tab = false;
@@ -1977,7 +1980,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
     // Only accept via Enter if popup shown AND acceptance criteria met
-    let accept_via_enter_pre = enter_pressed_pre && tabular.show_autocomplete;
+    // Only intercept Enter for autocomplete when popup is visible AND there are suggestions
+    let accept_via_enter_pre = enter_pressed_pre
+        && tabular.show_autocomplete
+        && !tabular.autocomplete_suggestions.is_empty();
     if accept_via_tab_pre || accept_via_enter_pre {
         // Remove Tab/Enter pressed events so TextEdit tidak menyisipkan tab/newline
         ui.ctx().input_mut(|ri| {
@@ -2073,7 +2079,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     let avail_rect = ui.available_rect_before_wrap();
     let line_height = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
-    let total_lines = total_lines_for_layout; // already computed before borrowing
+    // Anticipate an extra line when Enter is pressed this frame so the new line is visible immediately
+    let total_lines = total_lines_for_layout + if enter_pressed_pre { 1 } else { 0 };
     // Tinggi minimal mengikuti rows (tinggi viewport awal), tinggi maksimal mengikuti jumlah baris.
     // Tambahkan padding extra 3 * line_height agar baris terakhir tidak "nempel" pada panel bawah / handle.
     let min_height = line_height * rows as f32;
@@ -2114,8 +2121,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         galley,
         galley_pos,
         text_clip_rect,
+        cursor_range,
         ..
     } = text_output;
+    let cursor_range_after = cursor_range;
 
     #[cfg(feature = "tree_sitter_sequel")]
     {
@@ -2180,10 +2189,25 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             .cursor
             .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
         state.store(ui.ctx(), id);
+        tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(12);
         ui.ctx().request_repaint();
     }
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
+
+    // Guard: treat a single collapsed region at the current caret as no multi-selection.
+    // This avoids switching to the custom multi-cursor paint path unnecessarily,
+    // which in some cases could make the caret appear to "freeze".
+    if tabular.multi_selection.len() == 1 {
+        if let Some((a, b)) = tabular.multi_selection.primary_range() {
+            if a == b {
+                let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
+                if b == caret_b {
+                    tabular.multi_selection.clear();
+                }
+            }
+        }
+    }
 
     // Clear multi-selection on Escape
     if input_snapshot.key_pressed(egui::Key::Escape) && !tabular.multi_selection.is_empty() {
@@ -2311,11 +2335,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let galley = galley.clone();
         let selection_painter = ui.painter().with_clip_rect(text_clip_rect);
 
-        log::debug!(
-            "🎨 Rendering multi-cursor highlights using galley_pos=({}, {})",
-            galley_pos.x,
-            galley_pos.y
-        );
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!(
+                "🎨 Rendering multi-cursor highlights using galley_pos=({}, {})",
+                galley_pos.x,
+                galley_pos.y
+            );
+        }
 
         let to_char_index = |s: &str, byte_idx: usize| -> usize {
             let clamped = byte_idx.min(s.len());
@@ -2344,16 +2370,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     egui::Color32::from_rgba_unmultiplied(100, 150, 200, 80)
                 };
 
-                log::debug!(
-                    "   Region [{}]: bytes {}..{} -> rows {}..{} (cols {} -> {})",
-                    idx,
-                    start_pos,
-                    end_pos,
-                    min_layout.row,
-                    max_layout.row,
-                    min_layout.column,
-                    max_layout.column
-                );
+                if log::log_enabled!(log::Level::Trace) {
+                    log::trace!(
+                        "   Region [{}]: bytes {}..{} -> rows {}..{} (cols {} -> {})",
+                        idx,
+                        start_pos,
+                        end_pos,
+                        min_layout.row,
+                        max_layout.row,
+                        min_layout.column,
+                        max_layout.column
+                    );
+                }
 
                 for row_idx in min_layout.row..=max_layout.row {
                     let placed_row = &galley.rows[row_idx];
@@ -2404,6 +2432,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let caret_rect = egui::Rect::from_min_max(
                     egui::pos2(caret_line_rect.left(), caret_line_rect.top()),
                     egui::pos2(caret_line_rect.left() + 2.0, caret_line_rect.bottom()),
+                );
+                let color = egui::Color32::from_rgba_unmultiplied(100, 150, 255, 220);
+                selection_painter.rect_filled(caret_rect, 1.0, color);
+            } else {
+                // Fallback: draw a caret using line height when galley returns zero height
+                let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+                let caret_rect = egui::Rect::from_min_max(
+                    egui::pos2(caret_line_rect.left(), caret_line_rect.top()),
+                    egui::pos2(caret_line_rect.left() + 2.0, caret_line_rect.top() + line_height),
                 );
                 let color = egui::Color32::from_rgba_unmultiplied(100, 150, 255, 220);
                 selection_painter.rect_filled(caret_rect, 1.0, color);
@@ -2522,16 +2559,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Keep focus and repaint so the caret moves visually this frame
         ui.memory_mut(|m| m.request_focus(id));
         ui.ctx().request_repaint();
-        // One more hard set right after the log to absolutely force the caret position in this frame
-        if let Some(state_now) = TextEditState::load(ui.ctx(), id) {
-            let mut st = state_now;
-            let ci = to_char_index(&tabular.editor.text, clamped);
-            st.cursor
-                .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
-            st.store(ui.ctx(), id);
-            ui.memory_mut(|m| m.request_focus(id));
-            ui.ctx().request_repaint();
-        }
+        // Avoid double-setting the cursor in the same frame; the single store above is sufficient
     }
     // Enforce expected caret for a short window after autocomplete accept
     // BUT: never override an active selection range (e.g., from double-click word selection).
@@ -2624,24 +2652,29 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Try to capture selected text from the response
     // Note: This is a simplified approach. The actual implementation may vary depending on the CodeEditor version
     // Recover cursor + selection from TextEditState (single range only for now)
-    if let Some(rng) =
-        crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
-    {
-        // Convert char indices from egui to byte indices for our buffer
-        let primary_b = to_byte_index(&tabular.editor.text, rng.primary);
-        let start_b = to_byte_index(&tabular.editor.text, rng.start);
-        let end_b = to_byte_index(&tabular.editor.text, rng.end);
-        tabular.cursor_position = primary_b;
-        tabular.selection_start = start_b;
-        tabular.selection_end = end_b;
-        if start_b != end_b {
-            if let Some(selected) = tabular.editor.text.get(start_b..end_b) {
-                tabular.selected_text = selected.to_string();
+    // CRITICAL: Only update cursor/selection if NOT in a text-change frame, because
+    // response.changed() already set the correct cursor position from diff calculation.
+    // Reading egui state here would overwrite with stale values.
+    if !response.changed() {
+        if let Some(rng) =
+            crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id)
+        {
+            // Convert char indices from egui to byte indices for our buffer
+            let primary_b = to_byte_index(&tabular.editor.text, rng.primary);
+            let start_b = to_byte_index(&tabular.editor.text, rng.start);
+            let end_b = to_byte_index(&tabular.editor.text, rng.end);
+            tabular.cursor_position = primary_b;
+            tabular.selection_start = start_b;
+            tabular.selection_end = end_b;
+            if start_b != end_b {
+                if let Some(selected) = tabular.editor.text.get(start_b..end_b) {
+                    tabular.selected_text = selected.to_string();
+                } else {
+                    tabular.selected_text.clear();
+                }
             } else {
                 tabular.selected_text.clear();
             }
-        } else {
-            tabular.selected_text.clear();
         }
     }
 
@@ -2691,16 +2724,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // IMPORTANT: Do not collapse selection on Shift+Click or when a non-collapsed selection exists.
         // Previously, we always set a pending collapsed caret here, which overwrote egui's range
         // selection on the final Shift+Click, making the block selection disappear.
-        let shift_down = ui.input(|i| i.modifiers.shift);
-        let has_range = tabular.selection_start != tabular.selection_end;
-        // Also, avoid collapsing on double-click this frame (to preserve word selection behavior).
-        if tabular.multi_selection.is_empty() && !shift_down && !has_range && !did_double_click {
-            let caret = tabular.cursor_position.min(tabular.editor.text.len());
-            tabular.pending_cursor_set = Some(caret);
-        } else {
-            // Ensure no stray pending collapse remains that could override current selection
-            tabular.pending_cursor_set = None;
-        }
+        let _shift_down = ui.input(|i| i.modifiers.shift);
+        let _has_range = tabular.selection_start != tabular.selection_end;
+        // DO NOT schedule pending collapsed caret on simple click; this caused next-frame overrides
+        // that move the caret back to old position (e.g., 0) right after typing the first character.
+        // Keep pending_cursor_set clear here. We'll only use it for explicit flows (e.g., autocomplete).
+        tabular.pending_cursor_set = None;
     }
     if response.clicked() || response.has_focus() {
         tabular.table_recently_clicked = false;
@@ -2715,41 +2744,117 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Update tab content when editor changes (but skip autocomplete update if we're accepting via Tab)
     if response.changed() {
-        // DEBUG: compute simple diff between pre and post text to log inserted/deleted content
+        // Compute change classification with a fast path to avoid O(n) scans on every keystroke
         let post_text_for_diff = tabular.editor.text.clone();
         let pre_s = pre_text_for_diff.as_str();
         let post_s = post_text_for_diff.as_str();
         let pre_b = pre_s.as_bytes();
         let post_b = post_s.as_bytes();
+        let pre_len = pre_b.len();
+        let post_len = post_b.len();
+    let _delta = post_len as isize - pre_len as isize;
         let mut pref = 0usize;
-        let max_pref = pre_b.len().min(post_b.len());
-        while pref < max_pref && pre_b[pref] == post_b[pref] {
-            pref += 1;
+        let mut pre_suf = pre_len;
+        let mut post_suf = post_len;
+        let (deleted_dbg, inserted_dbg) = if pre_len <= 4096 && post_len <= 4096 {
+            // Small texts: do a precise prefix/suffix scan
+            let max_pref = pre_len.min(post_len);
+            while pref < max_pref && pre_b[pref] == post_b[pref] {
+                pref += 1;
+            }
+            while pre_suf > pref && post_suf > pref && pre_b[pre_suf - 1] == post_b[post_suf - 1] {
+                pre_suf -= 1;
+                post_suf -= 1;
+            }
+            (
+                pre_s[pref..pre_suf].escape_debug().to_string(),
+                post_s[pref..post_suf].escape_debug().to_string(),
+            )
+        } else {
+            // Large texts: skip expensive scans; infer from delta and key events
+            let is_newline = enter_pressed_pre || ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let ins = if is_newline { "\\n".to_string() } else { String::new() };
+            (String::new(), ins)
+        };
+        
+        // Prefer cursor information reported by egui, with diff-based fallback for edge cases.
+        let mut widget_cursor_b = None;
+        let mut widget_sel_start_b = None;
+        let mut widget_sel_end_b = None;
+        let mut used_widget_cursor = false;
+        if let Some(range) = cursor_range_after {
+            let primary_ci = range.primary.index;
+            let primary_b = to_byte_index(&tabular.editor.text, primary_ci);
+            widget_cursor_b = Some(primary_b);
+            let [min_cursor, max_cursor] = range.sorted_cursors();
+            let start_b = to_byte_index(&tabular.editor.text, min_cursor.index);
+            let end_b = to_byte_index(&tabular.editor.text, max_cursor.index);
+            widget_sel_start_b = Some(start_b);
+            widget_sel_end_b = Some(end_b);
+            used_widget_cursor = true;
         }
-        let mut pre_suf = pre_b.len();
-        let mut post_suf = post_b.len();
-        while pre_suf > pref && post_suf > pref && pre_b[pre_suf - 1] == post_b[post_suf - 1] {
-            pre_suf -= 1;
-            post_suf -= 1;
-        }
-        let deleted_dbg = pre_s[pref..pre_suf].escape_debug().to_string();
-        let inserted_dbg = post_s[pref..post_suf].escape_debug().to_string();
-        let post_state_for_diff =
-            crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id);
-        let (post_sel_start_b, post_sel_end_b, post_cursor_b_for_diff) =
-            if let Some(r) = post_state_for_diff {
+
+        // CRITICAL: Always compute diff for logging and fallback cursor calculation.
+        let inserted_len = post_suf.saturating_sub(pref);
+        let deleted_len = pre_suf.saturating_sub(pref);
+        let (diff_sel_start_b, diff_sel_end_b, diff_cursor_b) = if inserted_len > 0 || deleted_len > 0 {
+            // Text changed - use diff to determine cursor position
+            let cursor_b = if inserted_len > 0 {
+                post_suf  // After insertion, cursor should be at end of inserted text
+            } else if deleted_len > 0 {
+                pref  // After deletion, cursor should be at deletion start point
+            } else {
+                post_suf  // Replacement case
+            };
+            let cursor_b = cursor_b.min(tabular.editor.text.len());
+            (cursor_b, cursor_b, cursor_b)
+        } else {
+            // No text change - try to read cursor from egui state (navigation, click, etc.)
+            if let Some(r) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), response.id) {
                 let ss = to_byte_index(&tabular.editor.text, r.start);
                 let ee = to_byte_index(&tabular.editor.text, r.end);
                 let pp = to_byte_index(&tabular.editor.text, r.primary);
                 (ss, ee, pp)
             } else {
+                // Ultimate fallback - use current position
                 let p = tabular.cursor_position.min(tabular.editor.text.len());
-                (
-                    tabular.selection_start.min(tabular.editor.text.len()),
-                    tabular.selection_end.min(tabular.editor.text.len()),
-                    p,
-                )
-            };
+                (p, p, p)
+            }
+        };
+        // Prefer diff-based cursor for newline insertion to avoid off-by-one reports from widget
+        let just_inserted_newline = inserted_dbg == "\\n" && deleted_dbg.is_empty();
+        let (post_sel_start_b, post_sel_end_b, post_cursor_b_for_diff) = if just_inserted_newline {
+            (diff_sel_start_b, diff_sel_end_b, diff_cursor_b)
+        } else if let Some(cursor_b) = widget_cursor_b {
+            (
+                widget_sel_start_b.unwrap_or(cursor_b).min(tabular.editor.text.len()),
+                widget_sel_end_b.unwrap_or(cursor_b).min(tabular.editor.text.len()),
+                cursor_b.min(tabular.editor.text.len()),
+            )
+        } else {
+            (diff_sel_start_b, diff_sel_end_b, diff_cursor_b)
+        };
+        tabular.cursor_position = post_cursor_b_for_diff.min(tabular.editor.text.len());
+        tabular.selection_start = post_sel_start_b.min(tabular.editor.text.len());
+        tabular.selection_end = post_sel_end_b.min(tabular.editor.text.len());
+        // CRITICAL: Don't set pending_cursor_set here - it causes double-application
+        // and race conditions with the "After show()" block that applies pending cursors.
+        // The cursor_position is already correct from the diff calculation above.
+        // Just sync egui state directly without using pending mechanism.
+        if tabular.selection_start == tabular.selection_end {
+            let id = response.id;
+            let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+            let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
+            state
+                .cursor
+                .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
+            state.store(ui.ctx(), id);
+            // CRITICAL: Request focus and repaint immediately to commit cursor state
+            // Without this, egui won't commit the cursor change until next frame,
+            // causing the next character to insert at the old cursor position!
+            ui.memory_mut(|m| m.request_focus(id));
+            ui.ctx().request_repaint();
+        }
         let (bs_pressed, del_pressed, left_pressed, right_pressed) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Backspace),
@@ -2759,7 +2864,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             )
         });
         log::debug!(
-            "Δ edit: del='{}' ins='{}' @ [{}..{}] -> [{}..{}]; keys: BS={} DEL={} ←={} →={}; cursor {}->{}; sel {}..{} -> {}..{}",
+            "Δ edit: del='{}' ins='{}' @ [{}..{}] -> [{}..{}]; keys: BS={} DEL={} ←={} →={}; cursor {}->{} (widget_used={} diff_target={}); sel {}..{} -> {}..{}",
             deleted_dbg,
             inserted_dbg,
             pref,
@@ -2772,40 +2877,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             right_pressed,
             pre_cursor_b_for_diff,
             post_cursor_b_for_diff,
+            used_widget_cursor,
+            diff_cursor_b,
             pre_sel_start_b,
             pre_sel_end_b,
             post_sel_start_b,
             post_sel_end_b
         );
-        // If this was a deletion (and not an insertion), log concise remaining text
-        if !deleted_dbg.is_empty() && inserted_dbg.is_empty() {
-            let s = &tabular.editor.text;
-            let mut end = s.len();
-            for (count, (i, _)) in s.char_indices().enumerate() {
-                if count >= 200 {
-                    end = i;
-                    break;
-                }
-            }
-            let rem = if end < s.len() {
-                format!("{}… (len={})", s[..end].escape_debug(), s.len())
-            } else {
-                s.escape_debug().to_string()
-            };
-            log::debug!("Deleted chars: '{}' | Remaining text: {}", deleted_dbg, rem);
-        }
+        // Avoid heavy remaining-text logging which can be expensive on large buffers
         // Update rope text directly from current editor text to avoid any rebase/merge anomalies
+        // CRITICAL: Don't call set_text() here - it causes text to reset/desync with egui's view
+        // Just mark as modified and sync to tab content
+        tabular.editor.mark_text_modified();
         if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-            let new_full_owned = tabular.editor.text.clone();
-            tabular.editor.set_text(new_full_owned.clone());
-            tab.content = new_full_owned;
+            tab.content = tabular.editor.text.clone();
             tab.is_modified = true;
-            log::debug!(
-                "Synced rope via set_text; incremental update disabled to prevent trailing-char resurfacing"
-            );
-        } else {
-            // No tab? still mark rope dirty via full path
-            tabular.editor.mark_text_modified();
         }
 
         // Apply multi-cursor editing only when there are truly multiple cursors
@@ -2863,10 +2949,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                                 caret_positions_before
                             );
 
-                            // Apply the insertion to all other cursors
+                            // Mirror the widget's primary insertion to other carets only
                             tabular
                                 .multi_selection
-                                .apply_insert_text(&mut tabular.editor.text, &inserted);
+                                .apply_insert_text_others(
+                                    &mut tabular.editor.text,
+                                    &inserted,
+                                    old_primary,
+                                );
                             let caret_positions_after = tabular.multi_selection.caret_positions();
                             log::debug!(
                                 "[multi] insert applied text_len={} positions_after={:?}",
@@ -2940,15 +3030,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Rebuild autocomplete suggestions on text changes unless we're in the middle of accepting via Tab/Enter
         // Also skip if the change was just a newline insertion (to avoid lag after Enter)
+        // CRITICAL: Only update on insert (not delete/navigation) to avoid freeze and caret jumping
         if !accept_via_tab_pre && !accept_via_enter_pre {
             let just_inserted_newline = inserted_dbg == "\\n" && deleted_dbg.is_empty();
-            if !just_inserted_newline {
-                log::debug!("🔍 AUTOCOMPLETE DEBUG: Updating autocomplete after text change");
+            let is_insertion = !inserted_dbg.is_empty() && deleted_dbg.is_empty();
+            if is_insertion && !just_inserted_newline {
+                log::debug!("🔍 AUTOCOMPLETE DEBUG: Updating autocomplete after text insertion");
                 editor_autocomplete::update_autocomplete(tabular);
             } else {
                 log::debug!(
-                    "🔍 AUTOCOMPLETE DEBUG: Skipping autocomplete update after newline insertion"
+                    "🔍 AUTOCOMPLETE DEBUG: Skipping autocomplete update (newline or deletion)"
                 );
+                // Hide popup on deletion to avoid stale suggestions
+                if !inserted_dbg.is_empty() || !deleted_dbg.is_empty() {
+                    tabular.show_autocomplete = false;
+                }
             }
         }
 
@@ -2960,11 +3056,26 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tab.is_modified = true;
         }
 
-        // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
-        // BUT skip excessive repaints for simple newline insertions to reduce lag
-        if !(inserted_dbg == "\\n" && deleted_dbg.is_empty()) {
-            ui.ctx().request_repaint();
+        // Ensure the caret line is visible immediately after inserting a newline
+        if inserted_dbg == "\\n" && deleted_dbg.is_empty() {
+            let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
+            let caret_ci = to_char_index(&tabular.editor.text, caret_b);
+            let caret_cursor = CCursor::new(caret_ci);
+            let layout = galley.layout_from_cursor(caret_cursor);
+            if layout.row < galley.rows.len() {
+                let placed_row = &galley.rows[layout.row];
+                let row_rect = egui::Rect::from_min_max(
+                    egui::pos2(galley_pos.x, galley_pos.y + placed_row.min_y()),
+                    egui::pos2(galley_pos.x + response.rect.width(), galley_pos.y + placed_row.max_y()),
+                );
+                ui.scroll_to_rect(row_rect, Some(egui::Align::BOTTOM));
+            }
         }
+
+        // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
+        ui.ctx().request_repaint();
+        // Keep caret visible for a few frames after typing/Enter
+        tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(8);
     }
 
     // (Old forced replacement path removed; injection handles caret advance)
@@ -3093,8 +3204,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 .cursor
                 .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
             state.store(ui.ctx(), id);
+            // Ensure caret stays active after acceptance
+            let clamped = tabular.cursor_position.min(tabular.editor.text.len());
+            tabular.pending_cursor_set = Some(clamped);
+            tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(12);
             // Re-focus editor so Tab doesn't move focus away
             ui.memory_mut(|m| m.request_focus(id));
+            ui.ctx().request_repaint();
         }
         if input.key_pressed(egui::Key::Escape) {
             tabular.show_autocomplete = false;
@@ -3102,20 +3218,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Update suggestions saat kursor bergerak kiri/kanan (tanpa perubahan teks)
+    // DISABLED: Arrow key updates cause freeze - just hide popup instead
     let moved_lr =
         input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowRight);
     if moved_lr && !accept_via_tab_pre && !accept_via_enter_pre {
-        if should_suppress_autocomplete_on_arrow(tabular) {
-            log::trace!(
-                "Skipping autocomplete update (suppress_once={}, table_clicked={}, has_cell={})",
-                tabular.suppress_editor_arrow_once,
-                tabular.table_recently_clicked,
-                tabular.selected_cell.is_some()
-            );
-        } else {
-            editor_autocomplete::update_autocomplete(tabular);
-        }
-        // Always reset suppression flag after one frame (even if we updated)
+        // Hide autocomplete when navigating with arrows to avoid stale position
+        tabular.show_autocomplete = false;
         tabular.suppress_editor_arrow_once = false;
     }
 
@@ -3147,6 +3255,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             pos.x = editor_rect.right() - 150.0;
         }
         editor_autocomplete::render_autocomplete(tabular, ui, pos);
+    }
+
+    if autocomplete_was_visible_at_start && !tabular.show_autocomplete {
+        ui.memory_mut(|m| m.request_focus(response.id));
+        tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(8);
+        ui.ctx().request_repaint();
     }
 }
 
@@ -3195,16 +3309,6 @@ pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
         tab.content = new_text;
         tab.is_modified = true;
     }
-}
-
-/// Returns true if an arrow-left/right movement in the editor this frame should NOT
-/// trigger an autocomplete refresh. Conditions:
-/// 1. A one-shot suppression flag set by table navigation (`suppress_editor_arrow_once`).
-/// 2. The user is currently navigating a table (cell selected + table_recently_clicked).
-#[inline]
-fn should_suppress_autocomplete_on_arrow(tabular: &window_egui::Tabular) -> bool {
-    (tabular.suppress_editor_arrow_once)
-        || (tabular.table_recently_clicked && tabular.selected_cell.is_some())
 }
 
 pub(crate) fn find_next(tabular: &mut window_egui::Tabular) {
@@ -3644,7 +3748,29 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
     execute_query_internal(tabular, query);
 }
 
-fn execute_query_internal(tabular: &mut window_egui::Tabular, query: String) {
+fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String) {
+    query = query.trim().to_string();
+
+    tabular.lint_messages = query_tools::lint_sql(&query);
+    tabular.show_lint_panel = !tabular.lint_messages.is_empty();
+
+    if tabular.auto_format_on_execute {
+        if let Some(formatted) = query_tools::format_sql(&query) {
+            if formatted != query {
+                let executed_full_editor = tabular.editor.text.trim() == query;
+                query = formatted.clone();
+                if executed_full_editor {
+                    tabular.editor.set_text(formatted);
+                    let new_len = tabular.editor.text.len();
+                    tabular.cursor_position = tabular.cursor_position.min(new_len);
+                    tabular.multi_selection.clear();
+                    tabular.multi_selection.add_collapsed(tabular.cursor_position);
+                    tabular.last_editor_text = tabular.editor.text.clone();
+                }
+            }
+        }
+    }
+
     if query.is_empty() {
         tabular.query_execution_in_progress = false;
         tabular.extend_query_icon_hold();

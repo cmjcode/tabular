@@ -114,11 +114,13 @@ impl DatabaseType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AutocompleteKind {
     Table,
     Column,
     Syntax,
+    Snippet,
+    Parameter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
