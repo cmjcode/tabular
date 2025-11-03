@@ -589,7 +589,7 @@ fn number_color(dark: bool) -> Color32 {
     }
 }
 
-fn string_color(dark: bool) -> Color32 {
+fn string_color(_: bool) -> Color32 {
     Color32::from_rgb(21, 255, 0) // rgba(21, 255, 0, 1)
 }
 

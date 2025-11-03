@@ -2104,6 +2104,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         text_clip_rect,
         ..
     } = text_output;
+    let did_double_click = response.double_clicked();
 
     // CRITICAL: Ensure focus and cursor visibility on interaction
     if response.clicked() || response.gained_focus() {
@@ -2111,6 +2112,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         tabular.editor_focus_boost_frames = 10;
         ui.ctx().request_repaint();
     }
+
+    // Rely on egui's built-in double-click word selection.
+    // We purposely do NOT collapse selection on double-click frame (handled via did_double_click checks above),
+    // to avoid wiping the freshly formed selection.
 
     // VSCode-like: subtle current line highlight
     if response.has_focus() {
@@ -2450,7 +2455,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // After show(), apply any pending cursor via direct set_ccursor_range
-    if let Some(pos) = tabular.pending_cursor_set {
+    // IMPORTANT: Never collapse selection on the same frame as a double-click, to preserve word-select.
+    if !did_double_click
+        && let Some(pos) = tabular.pending_cursor_set {
         // Guard: if there's an active selection range in egui state or Shift is held, skip applying
         // a collapsed caret to avoid wiping a freshly created Shift+Click selection.
         let id = response.id;
@@ -2505,33 +2512,46 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             ui.memory_mut(|m| m.request_focus(id));
             ui.ctx().request_repaint();
         }
-    }
-    // Enforce expected caret for a short window after autocomplete accept
-    if tabular.autocomplete_protection_frames > 0 {
-        if let Some(expected) = tabular.autocomplete_expected_cursor {
-            let id = response.id;
-            // Read current state
-            if let Some(state) = TextEditState::load(ui.ctx(), id) {
-                if let Some(rng) = state.cursor.char_range() {
-                    let current = rng.primary.index;
-                    let exp_ci = to_char_index(&tabular.editor.text, expected);
-                    if current != exp_ci {
-                        let mut st = state;
-                        st.cursor
-                            .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
-                        st.store(ui.ctx(), id);
-                        ui.memory_mut(|m| m.request_focus(id));
-                    }
-                }
-            } else {
-                let mut st = TextEditState::default();
-                let exp_ci = to_char_index(&tabular.editor.text, expected);
-                st.cursor
-                    .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
-                st.store(ui.ctx(), id);
-                ui.memory_mut(|m| m.request_focus(id));
-            }
         }
+    // Enforce expected caret for a short window after autocomplete accept
+    // BUT: never override an active selection range (e.g., from double-click word selection).
+    if tabular.autocomplete_protection_frames > 0 {
+        let id = response.id;
+        let has_active_selection = if let Some(state) = TextEditState::load(ui.ctx(), id) {
+            if let Some(rng) = state.cursor.char_range() {
+                rng.primary.index != rng.secondary.index
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !has_active_selection
+            && let Some(expected) = tabular.autocomplete_expected_cursor {
+                // Read current state
+                if let Some(state) = TextEditState::load(ui.ctx(), id) {
+                    if let Some(rng) = state.cursor.char_range() {
+                        let current = rng.primary.index;
+                        let exp_ci = to_char_index(&tabular.editor.text, expected);
+                        if current != exp_ci {
+                            let mut st = state;
+                            st.cursor
+                                .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
+                            st.store(ui.ctx(), id);
+                            ui.memory_mut(|m| m.request_focus(id));
+                        }
+                    }
+                } else {
+                    let mut st = TextEditState::default();
+                    let exp_ci = to_char_index(&tabular.editor.text, expected);
+                    st.cursor
+                        .set_char_range(Some(CCursorRange::one(CCursor::new(exp_ci))));
+                    st.store(ui.ctx(), id);
+                    ui.memory_mut(|m| m.request_focus(id));
+                }
+            }
+
         tabular.autocomplete_protection_frames =
             tabular.autocomplete_protection_frames.saturating_sub(1);
         if tabular.autocomplete_protection_frames == 0 {
@@ -2654,7 +2674,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // selection on the final Shift+Click, making the block selection disappear.
         let shift_down = ui.input(|i| i.modifiers.shift);
         let has_range = tabular.selection_start != tabular.selection_end;
-        if tabular.multi_selection.is_empty() && !shift_down && !has_range {
+        // Also, avoid collapsing on double-click this frame (to preserve word selection behavior).
+        if tabular.multi_selection.is_empty() && !shift_down && !has_range && !did_double_click {
             let caret = tabular.cursor_position.min(tabular.editor.text.len());
             tabular.pending_cursor_set = Some(caret);
         } else {
