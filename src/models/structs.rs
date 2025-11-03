@@ -433,6 +433,8 @@ pub type RenderTreeNodeResult = (
     Option<(i64, models::enums::NodeType)>,
     Option<(i64, String, Option<String>, Option<String>)>,
     Option<(i64, Option<String>, Option<String>)>,
+    // New: request to open Structure view for Alter Table (connection_id, database, table_name)
+    Option<(i64, Option<String>, String)>,
     // New: request to drop a MongoDB collection (connection_id, database_name, collection_name)
     Option<(i64, String, String)>,
     // New: request to drop a table (connection_id, database_name, table_name, stmt)

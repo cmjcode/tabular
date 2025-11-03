@@ -1423,104 +1423,6 @@ impl Tabular {
             });
     }
 
-    fn capture_current_editor_selection(
-        &mut self,
-        ctx: &egui::Context,
-    ) -> Option<(usize, usize, usize)> {
-        let id = egui::Id::new("sql_editor");
-        let mut start_b = self.selection_start;
-        let mut end_b = self.selection_end;
-        let mut primary_b = self.cursor_position;
-
-        if let Some(range) =
-            crate::editor_state_adapter::EditorStateAdapter::get_range(ctx, id)
-        {
-            let to_byte_index = |s: &str, char_idx: usize| -> usize {
-                s.char_indices()
-                    .map(|(b, _)| b)
-                    .chain(std::iter::once(s.len()))
-                    .nth(char_idx)
-                    .unwrap_or(s.len())
-            };
-
-            start_b = to_byte_index(&self.editor.text, range.start);
-            end_b = to_byte_index(&self.editor.text, range.end);
-            primary_b = to_byte_index(&self.editor.text, range.primary);
-            
-            log::debug!(
-                "🎯 Captured selection from egui: char range {}-{}, byte range {}-{}",
-                range.start, range.end, start_b, end_b
-            );
-        } else {
-            log::debug!("⚠️ No egui selection state found, using stored values: {}-{}", start_b, end_b);
-        }
-
-        let clamp = |value: usize| value.min(self.editor.text.len());
-        start_b = clamp(start_b);
-        end_b = clamp(end_b);
-        primary_b = clamp(primary_b);
-
-        self.selection_start = start_b;
-        self.selection_end = end_b;
-        self.cursor_position = primary_b;
-
-        if start_b < end_b {
-            self.selected_text = self.editor.text[start_b..end_b].to_string();
-            let text_hash = format!("{:x}", md5::compute(&self.selected_text));
-            log::debug!("✅ CAPTURE - Selected text (len {}, hash {}): '{}'", 
-                self.selected_text.len(),
-                text_hash,
-                self.selected_text.chars().take(150).collect::<String>());
-            Some((start_b, end_b, primary_b))
-        } else {
-            self.selected_text.clear();
-            log::debug!("❌ No selection (start == end)");
-            None
-        }
-    }
-
-    fn restore_editor_selection(
-        &mut self,
-        ctx: &egui::Context,
-        start_b: usize,
-        end_b: usize,
-        primary_b: usize,
-    ) {
-        let clamp = |value: usize| value.min(self.editor.text.len());
-        let start_b = clamp(start_b);
-        let end_b = clamp(end_b);
-        let primary_b = clamp(primary_b);
-
-        self.selection_start = start_b;
-        self.selection_end = end_b;
-        self.cursor_position = primary_b;
-        self.selected_text = if start_b < end_b {
-            self.editor.text[start_b..end_b].to_string()
-        } else {
-            String::new()
-        };
-        self.selection_force_clear = false;
-        self.pending_cursor_set = None;
-
-        let byte_to_char = |s: &str, byte_idx: usize| -> usize {
-            s[..byte_idx].chars().count()
-        };
-        let start_c = byte_to_char(&self.editor.text, start_b);
-        let end_c = byte_to_char(&self.editor.text, end_b);
-        let primary_c = byte_to_char(&self.editor.text, primary_b);
-
-        crate::editor_state_adapter::EditorStateAdapter::set_selection(
-            ctx,
-            egui::Id::new("sql_editor"),
-            start_c,
-            end_c,
-            primary_c,
-        );
-        self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(6);
-        ctx.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
-        ctx.request_repaint();
-    }
-
     fn render_tree(
         &mut self,
         ui: &mut egui::Ui,
@@ -1572,6 +1474,7 @@ impl Tabular {
         let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> =
             Vec::new();
         let mut create_index_requests: Vec<(i64, Option<String>, Option<String>)> = Vec::new();
+        let mut alter_table_requests: Vec<(i64, Option<String>, String)> = Vec::new();
         let mut query_files_to_open = Vec::new();
         let mut create_table_requests: Vec<(i64, Option<String>)> = Vec::new();
 
@@ -1589,6 +1492,7 @@ impl Tabular {
                 dba_click_request,
                 index_click_request,
                 create_index_request,
+                alter_table_request,
                 drop_collection_request,
                 drop_table_request,
                 create_table_request,
@@ -1633,6 +1537,9 @@ impl Tabular {
             }
             if let Some((filename, content, file_path)) = query_file_to_open {
                 query_files_to_open.push((filename, content, file_path));
+            }
+            if let Some((conn_id, db_name, table_name)) = alter_table_request {
+                alter_table_requests.push((conn_id, db_name, table_name));
             }
             // Collect DBA quick view requests
             if let Some((conn_id, node_type)) = dba_click_request {
@@ -1711,6 +1618,10 @@ impl Tabular {
 
         for (conn_id, db_name) in create_table_requests {
             self.open_create_table_wizard(conn_id, db_name);
+        }
+
+        for (connection_id, database_name, table_name) in alter_table_requests {
+            self.handle_alter_table_request(connection_id, database_name, table_name);
         }
 
         // Handle connection clicks (create new tab with that connection)
@@ -2740,11 +2651,6 @@ impl Tabular {
                 let hash = context_id - 40000;
                 debug!("📦 Move query operation with hash: {}", hash);
                 sidebar_query::handle_query_move_request(self, hash);
-            } else if context_id >= 30000 {
-                // ID >= 30000 means alter table operation
-                let connection_id = context_id - 30000;
-                debug!("🔧 Alter table operation for connection: {}", connection_id);
-                self.handle_alter_table_request(connection_id);
             } else if context_id >= 20000 {
                 // ID >= 20000 means query edit operation
                 let hash = context_id - 20000;
@@ -2869,6 +2775,7 @@ impl Tabular {
         let mut dba_click_request: Option<(i64, models::enums::NodeType)> = None;
         let mut index_click_request: Option<(i64, String, Option<String>, Option<String>)> = None;
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
+    let mut alter_table_request: Option<(i64, Option<String>, String)> = None;
         let mut drop_collection_request: Option<(i64, String, String)> = None;
         let mut drop_table_request: Option<(i64, String, String, String)> = None;
         let mut create_table_request: Option<(i64, Option<String>)> = None;
@@ -3378,8 +3285,13 @@ impl Tabular {
                         ui.separator();
                         if !is_mongodb && ui.button("🔧 Alter Table").clicked() {
                             if let Some(conn_id) = node.connection_id {
-                                // Use connection_id + 30000 to indicate alter table request
-                                context_menu_request = Some(conn_id + 30000);
+                                let actual_table_name =
+                                    node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                alter_table_request = Some((
+                                    conn_id,
+                                    node.database_name.clone(),
+                                    actual_table_name,
+                                ));
                             }
                             ui.close();
                         }
@@ -3484,6 +3396,7 @@ impl Tabular {
                             child_dba_click,
                             child_index_click,
                             child_create_index_request,
+                            child_alter_table_request,
                             _child_drop_collection_request,
                             _child_drop_table_request,
                             child_create_table_request,
@@ -3533,6 +3446,9 @@ impl Tabular {
                         if let Some(v) = child_create_index_request {
                             create_index_request = Some(v);
                         }
+                        if let Some(v) = child_alter_table_request {
+                            alter_table_request = Some(v);
+                        }
                         if let Some(v) = child_create_table_request {
                             create_table_request = Some(v);
                         }
@@ -3560,6 +3476,7 @@ impl Tabular {
                                 child_dba_click,
                                 child_index_click,
                                 child_create_index_request,
+                                child_alter_table_request,
                                 _child_drop_collection_request,
                                 _child_drop_table_request,
                                 child_create_table_request,
@@ -3619,6 +3536,9 @@ impl Tabular {
                             }
                             if let Some(v) = child_create_index_request {
                                 create_index_request = Some(v);
+                            }
+                            if let Some(v) = child_alter_table_request {
+                                alter_table_request = Some(v);
                             }
                             if let Some(v) = child_create_table_request {
                                 create_table_request = Some(v);
@@ -3924,6 +3844,7 @@ impl Tabular {
             dba_click_request,
             index_click_request,
             create_index_request,
+            alter_table_request,
             drop_collection_request,
             drop_table_request,
             create_table_request,
@@ -4068,78 +3989,96 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         }
     }
 
-    fn handle_alter_table_request(&mut self, connection_id: i64) {
+    fn handle_alter_table_request(
+        &mut self,
+        connection_id: i64,
+        database_name: Option<String>,
+        table_name: String,
+    ) {
         debug!(
-            "🔍 handle_alter_table_request called with connection_id: {}",
-            connection_id
+            "🔍 handle_alter_table_request called with connection_id: {}, table: {}",
+            connection_id, table_name
         );
 
-        // Find the connection by ID to determine database type
-        if let Some(connection) = self
+        let connection = match self
             .connections
             .iter()
             .find(|c| c.id == Some(connection_id))
+            .cloned()
         {
-            // Find the currently selected table in the tree
-            if let Some(table_name) = self.find_selected_table_name(connection_id) {
-                // Generate ALTER TABLE template based on database type
-                let alter_template = match connection.connection_type {
-                    models::enums::DatabaseType::MySQL => self.generate_mysql_alter_table_template(&table_name),
-                    models::enums::DatabaseType::PostgreSQL => self.generate_postgresql_alter_table_template(&table_name),
-                    models::enums::DatabaseType::SQLite => self.generate_sqlite_alter_table_template(&table_name),
-                    models::enums::DatabaseType::Redis => "-- Redis does not support ALTER TABLE operations\n-- Redis is a key-value store, not a relational database".to_string(),
-                    models::enums::DatabaseType::MsSQL => self.generate_mysql_alter_table_template(&table_name).replace("MySQL", "MsSQL"),
-                    models::enums::DatabaseType::MongoDB => "-- MongoDB collections are schemaless; ALTER TABLE not applicable".to_string(),
-                };
+            Some(conn) => conn,
+            None => {
+                debug!("❌ Connection with ID {} not found", connection_id);
+                return;
+            }
+        };
 
-                // Set the ALTER TABLE template in the editor
-                self.editor.text = alter_template;
-                self.current_connection_id = Some(connection_id);
-            } else {
-                // If no specific table is selected, show a generic template
-                let alter_template = match connection.connection_type {
-                    models::enums::DatabaseType::MySQL => "-- MySQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD COLUMN new_column VARCHAR(255),\n  MODIFY COLUMN existing_column INT,\n  DROP COLUMN old_column;".to_string(),
-                    models::enums::DatabaseType::PostgreSQL => "-- PostgreSQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD COLUMN new_column VARCHAR(255),\n  ALTER COLUMN existing_column TYPE INTEGER,\n  DROP COLUMN old_column;".to_string(),
-                    models::enums::DatabaseType::SQLite => "-- SQLite ALTER TABLE template\n-- Note: SQLite has limited ALTER TABLE support\nALTER TABLE your_table_name\n  ADD COLUMN new_column TEXT;".to_string(),
-                    models::enums::DatabaseType::Redis => "-- Redis does not support ALTER TABLE operations\n-- Redis is a key-value store, not a relational database\n-- Use Redis commands like SET, GET, HSET, etc.".to_string(),
-                    models::enums::DatabaseType::MsSQL => "-- MsSQL ALTER TABLE template\nALTER TABLE your_table_name\n  ADD new_column VARCHAR(255) NULL,\n  ALTER COLUMN existing_column INT,\n  DROP COLUMN old_column;".to_string(),
-                    models::enums::DatabaseType::MongoDB => "-- MongoDB does not support ALTER TABLE; modify documents with update operators".to_string(),
-                };
+        let resolved_db = database_name
+            .filter(|db| !db.trim().is_empty())
+            .or_else(|| {
+                let default_db = connection.database.trim();
+                if default_db.is_empty() {
+                    None
+                } else {
+                    Some(connection.database.clone())
+                }
+            });
 
-                self.editor.text = alter_template;
-                self.current_connection_id = Some(connection_id);
+        let table_title = format!("Table: {}", table_name);
+        let matches_target = |tab: &models::structs::QueryTab| {
+            tab.title == table_title
+                && tab.connection_id == Some(connection_id)
+                && match (&resolved_db, &tab.database_name) {
+                    (Some(expected), Some(existing)) => expected == existing,
+                    (Some(_), None) => false,
+                    _ => true,
+                }
+        };
+
+        if let Some((existing_index, _)) = self
+            .query_tabs
+            .iter()
+            .enumerate()
+            .find(|(_, tab)| matches_target(tab))
+        {
+            if existing_index != self.active_tab_index {
+                editor::switch_to_tab(self, existing_index);
             }
         } else {
-            debug!("❌ Connection with ID {} not found", connection_id);
+            editor::create_new_tab_with_connection_and_database(
+                self,
+                table_title.clone(),
+                String::new(),
+                Some(connection_id),
+                resolved_db.clone(),
+            );
         }
-    }
 
-    fn find_selected_table_name(&self, _connection_id: i64) -> Option<String> {
-        // This is a simplified approach - in a more sophisticated implementation,
-        // you might track which table was right-clicked
-        // For now, we'll return None to show the generic template
-        None
-    }
+        self.current_connection_id = Some(connection_id);
+        self.is_table_browse_mode = true;
 
-    fn generate_mysql_alter_table_template(&self, table_name: &str) -> String {
-        format!(
-            "-- MySQL ALTER TABLE for {}\nALTER TABLE {}\n  ADD COLUMN new_column VARCHAR(255) DEFAULT NULL COMMENT 'New column description',\n  MODIFY COLUMN existing_column INT NOT NULL,\n  DROP COLUMN old_column,\n  ADD INDEX idx_new_column (new_column);",
-            table_name, table_name
-        )
-    }
+        let caption = resolved_db
+            .as_ref()
+            .map(|db| format!("Table: {} (Database: {})", table_name, db))
+            .unwrap_or_else(|| format!("Table: {}", table_name));
 
-    fn generate_postgresql_alter_table_template(&self, table_name: &str) -> String {
-        format!(
-            "-- PostgreSQL ALTER TABLE for {}\nALTER TABLE {}\n  ADD COLUMN new_column VARCHAR(255) DEFAULT NULL,\n  ALTER COLUMN existing_column TYPE INTEGER,\n  DROP COLUMN old_column;\n\n-- Add constraint example\n-- ALTER TABLE {} ADD CONSTRAINT chk_constraint CHECK (new_column IS NOT NULL);",
-            table_name, table_name, table_name
-        )
-    }
+        self.current_table_name = caption.clone();
+        self.table_bottom_view = models::structs::TableBottomView::Structure;
+        self.structure_sub_view = models::structs::StructureSubView::Columns;
+        self.last_structure_target = None;
+        self.request_structure_refresh = false;
 
-    fn generate_sqlite_alter_table_template(&self, table_name: &str) -> String {
-        format!(
-            "-- SQLite ALTER TABLE for {}\n-- Note: SQLite has limited ALTER TABLE support\n-- Only ADD COLUMN and RENAME operations are supported\n\nALTER TABLE {} ADD COLUMN new_column TEXT DEFAULT NULL;\n\n-- To modify or drop columns, you need to recreate the table:\n-- CREATE TABLE {}_new AS SELECT existing_columns FROM {};\n-- DROP TABLE {};\n-- ALTER TABLE {}_new RENAME TO {};",
-            table_name, table_name, table_name, table_name, table_name, table_name, table_name
-        )
+        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            active_tab.title = table_title;
+            active_tab.connection_id = Some(connection_id);
+            if resolved_db.is_some() {
+                active_tab.database_name = resolved_db.clone();
+            }
+            active_tab.is_table_browse_mode = true;
+            active_tab.result_table_name = caption.clone();
+        }
+
+        data_table::load_structure_info_for_current_table(self);
     }
 
     fn handle_create_folder_in_folder_request(&mut self, _hash: i64) {

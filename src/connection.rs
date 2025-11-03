@@ -326,8 +326,8 @@ async fn execute_mysql_query_job(
     let mut ast_debug_sql: Option<String> = None;
     #[cfg(feature = "query_ast")]
     {
-        if let Some(sql) = statements.first() {
-            if statements.len() == 1
+        if let Some(sql) = statements.first()
+            && statements.len() == 1
                 && statements_raw.len() == 1
                 && statements_raw[0]
                     .trim_start()
@@ -336,7 +336,6 @@ async fn execute_mysql_query_job(
             {
                 ast_debug_sql = Some(sql.clone());
             }
-        }
     }
 
     let mut attempts = 0;
@@ -470,8 +469,8 @@ async fn execute_mysql_query_job(
                                 };
                                 let is_mariadb = version_str.to_lowercase().contains("mariadb");
 
-                                if replication_status_mode && final_data.is_empty() {
-                                    if let Ok(fallback_rows) =
+                                if replication_status_mode && final_data.is_empty()
+                                    && let Ok(fallback_rows) =
                                         sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await
                                         && !fallback_rows.is_empty()
                                     {
@@ -484,7 +483,6 @@ async fn execute_mysql_query_job(
                                             fallback_rows,
                                         );
                                     }
-                                }
 
                                 if !final_headers.is_empty() && !final_data.is_empty() {
                                     let header_index = |name: &str| {
