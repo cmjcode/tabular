@@ -11183,14 +11183,11 @@ impl App for Tabular {
                         .show(ui.ctx(), |ui| {
                             let frame_response = egui::Frame::popup(ui.style()).show(ui, |ui| {
                                 ui.set_min_width(150.0);
-                                
                                 if ui.button("📋 Duplicate Row").clicked() {
                                     self.duplicate_selected_row();
                                     close_menu = true;
                                 }
-                                
                                 ui.separator();
-                                
                                 if ui.button("🗑️ Delete Row").clicked() {
                                     self.delete_selected_row();
                                     close_menu = true;
@@ -11198,9 +11195,7 @@ impl App for Tabular {
                             });
                             frame_response.response.hovered()
                         });
-                    
                     let hovered_menu = area_response.inner;
-                    
                     // Close context menu when clicking elsewhere or pressing Escape
                     if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
                         self.show_row_context_menu = false;
@@ -11208,14 +11203,12 @@ impl App for Tabular {
                         self.context_menu_just_opened = false;
                         self.context_menu_pos = egui::Pos2::ZERO;
                     }
-                    
                     if close_menu {
                         self.show_row_context_menu = false;
                         self.context_menu_row = None;
                         self.context_menu_just_opened = false;
                         self.context_menu_pos = egui::Pos2::ZERO;
                     }
-                    
                     // Close context menu when clicking anywhere outside the menu
                     // Skip the first frame after opening to avoid immediate closure from the right-click event
                     if !self.context_menu_just_opened {
@@ -11302,20 +11295,17 @@ impl App for Tabular {
                                     .clicked()
                                 {
                                     use log::{info, error};
-
                                     info!("🗑️ Executing DROP TABLE:");
                                     info!("   Connection ID: {}", conn_id);
                                     info!("   Database: {}", db);
                                     info!("   Table: {}", table);
                                     info!("   Statement: {}", stmt_str);
-                                    
                                     // Execute DROP TABLE statement
                                     let result = crate::connection::execute_query_with_connection(
                                         self,
                                         conn_id,
                                         stmt_str.clone(),
                                     );
-                                    
                                     // Log detailed result
                                     match &result {
                                         Some((headers, rows)) => {
@@ -11337,7 +11327,6 @@ impl App for Tabular {
                                             error!("   Result: None (Failed)");
                                         }
                                     }
-                                    
                                     // Check if result is successful (not None and not Error)
                                     let is_success = match &result {
                                         Some((headers, _)) => {
@@ -11345,29 +11334,23 @@ impl App for Tabular {
                                         }
                                         None => false,
                                     };
-                                    
                                     if is_success {
                                         info!("✅ DROP TABLE succeeded for {}.{}", db, table);
                                         info!("   Connection ID: {}", conn_id);
                                         info!("   Database: '{}'", db);
                                         info!("   Table: '{}'", table);
-                                        
                                         // Use incremental update: just remove the table from tree
                                         info!("🌲 Removing table from sidebar tree (incremental)...");
                                         self.remove_table_from_tree(conn_id, db, table);
-                                        
                                         // Clear cache for this table (but don't refresh entire connection)
                                         info!("🧹 Clearing cache for table {}.{}", db, table);
                                         self.clear_table_cache(conn_id, db, table);
-                                        
                                         // Force UI repaint to reflect changes immediately
                                         ui.ctx().request_repaint();
-                                        
                                         self.error_message = format!("Table '{}.{}' berhasil di-drop", db, table);
                                         self.show_error_message = true;
                                     } else {
-                                        error!("❌ DROP TABLE failed for {}.{}", db, table);
-                                        
+                                        error!("❌ DROP TABLE failed for {}.{}", db, table);                                        
                                         // Show error message from result if available
                                         let error_msg = if let Some((headers, rows)) = result {
                                             if headers.first().map(|h| h == "Error").unwrap_or(false) {
@@ -11381,7 +11364,6 @@ impl App for Tabular {
                                         } else {
                                             format!("Gagal drop table '{}.{}'", db, table)
                                         };
-                                        
                                         self.error_message = error_msg;
                                         self.show_error_message = true;
                                     }
