@@ -39,6 +39,7 @@ pub(crate) fn create_new_tab(
         total_rows: 0,
         base_query: String::new(), // Empty base query initially
         dba_special_mode: None,
+        object_ddl: None,
     };
 
     tabular.query_tabs.push(new_tab);
@@ -57,6 +58,7 @@ pub(crate) fn create_new_tab(
     tabular.current_table_name.clear();
     tabular.total_rows = 0;
     tabular.is_table_browse_mode = false;
+    tabular.current_object_ddl = None;
 
     tab_id
 }
@@ -119,6 +121,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.base_query.clear();
             tab.has_executed_query = false;
             tab.dba_special_mode = None;
+            tab.object_ddl = None;
         }
         tabular.editor.set_text(String::new());
         tabular.highlight_cache.clear();
@@ -135,6 +138,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
         // Keep the configured default page_size; don't override
         tabular.current_base_query.clear();
         tabular.current_connection_id = None;
+        tabular.current_object_ddl = None;
         return;
     }
 
@@ -155,6 +159,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tabular.last_highlight_hash = None;
             tabular.sql_semantic_snapshot = None;
         }
+        tabular.current_object_ddl = None;
     }
 }
 
@@ -193,6 +198,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 "💾 Saving tab {} state (swap): base_query='{}'",
                 tabular.active_tab_index, current_tab.base_query
             );
+            std::mem::swap(&mut current_tab.object_ddl, &mut tabular.current_object_ddl);
             // dba_special_mode already resides on current_tab; no action required here
         }
 
@@ -223,6 +229,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 "📂 Restoring tab {} state (swap): base_query='{}', connection_id={:?}",
                 tab_index, tabular.current_base_query, new_tab.connection_id
             );
+            std::mem::swap(&mut tabular.current_object_ddl, &mut new_tab.object_ddl);
             // IMPORTANT: kembalikan connection id aktif sesuai tab baru
             tabular.current_connection_id = new_tab.connection_id;
             // dba_special_mode automatically follows with new_tab
@@ -242,7 +249,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
 
             // Jika user sedang berada di tampilan Structure dan tab tujuan adalah tab Table, reload struktur tabel tsb.
             if tabular.table_bottom_view == models::structs::TableBottomView::Structure
-                && new_tab.title.starts_with("Table:")
+                && (new_tab.title.starts_with("Table:") || new_tab.title.starts_with("View:"))
             {
                 // load_structure_info_for_current_table adalah metode pada Tabular (dibuat pub(crate))
                 data_table::load_structure_info_for_current_table(tabular);

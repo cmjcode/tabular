@@ -65,6 +65,7 @@ pub struct Tabular {
     pub current_table_data: Vec<Vec<String>>,
     pub current_table_headers: Vec<String>,
     pub current_table_name: String,
+    pub current_object_ddl: Option<String>,
     pub current_connection_id: Option<i64>,
     // Pagination
     pub current_page: usize,
@@ -572,6 +573,7 @@ impl Tabular {
             current_table_data: Vec::new(),
             current_table_headers: Vec::new(),
             current_table_name: String::new(),
+        current_object_ddl: None,
             current_connection_id: None,
             current_page: 0,
             page_size: 500, // Default 500 rows per page
@@ -1624,7 +1626,7 @@ impl Tabular {
         let mut expansion_requests = Vec::new();
         let mut tables_to_expand = Vec::new();
         let mut context_menu_requests = Vec::new();
-        let mut table_click_requests = Vec::new();
+    let mut table_click_requests: Vec<(i64, String, models::enums::NodeType)> = Vec::new();
         let mut connection_click_requests = Vec::new();
         let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> =
             Vec::new();
@@ -1684,8 +1686,8 @@ impl Tabular {
             if let Some(context_id) = context_menu_request {
                 context_menu_requests.push(context_id);
             }
-            if let Some((connection_id, table_name)) = table_click_request {
-                table_click_requests.push((connection_id, table_name));
+            if let Some((connection_id, table_name, node_type)) = table_click_request {
+                table_click_requests.push((connection_id, table_name, node_type));
             }
             if let Some(connection_id) = connection_click_request {
                 connection_click_requests.push(connection_id);
@@ -2157,7 +2159,7 @@ impl Tabular {
         }
 
         // Handle table click requests - create new tab for each table
-        for (connection_id, table_name) in table_click_requests {
+        for (connection_id, table_name, node_type) in table_click_requests {
             // Find the connection to determine the database type and database name
             let connection = self
                 .connections
@@ -2166,6 +2168,7 @@ impl Tabular {
                 .cloned();
 
             if let Some(conn) = connection {
+                let is_view = node_type == models::enums::NodeType::View;
                 // Find the database name from the tree structure
                 let mut database_name: Option<String> = None;
                 for node in nodes.iter() {
@@ -2184,6 +2187,8 @@ impl Tabular {
 
                 match conn.connection_type {
                     models::enums::DatabaseType::Redis => {
+                        // Redis objects never carry ALTER view DDL
+                        self.current_object_ddl = None;
                         // Check if this is a Redis key (has specific Redis data types in the tree structure)
                         // For Redis keys, we need to find which database they belong to
                         let mut is_redis_key = false;
@@ -2347,6 +2352,19 @@ impl Tabular {
                         }
                     }
                     _ => {
+                        if !is_view
+                            && self.table_bottom_view
+                                == models::structs::TableBottomView::Query
+                        {
+                            self.table_bottom_view =
+                                models::structs::TableBottomView::Data;
+                        }
+                        self.current_object_ddl = None;
+                        if let Some(active_tab) =
+                            self.query_tabs.get_mut(self.active_tab_index)
+                        {
+                            active_tab.object_ddl = None;
+                        }
                         // SQL databases - use regular SELECT query with proper database context
                         let query_content = if let Some(db_name) = &database_name {
                             match conn.connection_type {
@@ -2389,8 +2407,11 @@ impl Tabular {
                                 _ => format!("SELECT * FROM `{}` LIMIT 100;", table_name),
                             }
                         };
-
-                        let tab_title = format!("Table: {}", table_name);
+                        let tab_title = if is_view {
+                            format!("View: {}", table_name)
+                        } else {
+                            format!("Table: {}", table_name)
+                        };
                         editor::create_new_tab_with_connection_and_database(
                             self,
                             tab_title.clone(),
@@ -2412,8 +2433,10 @@ impl Tabular {
                         }
 
                         // Set early so infer_current_table_name() bekerja saat Structure view aktif
+                        let label_prefix = if is_view { "View" } else { "Table" };
                         self.current_table_name = format!(
-                            "Table: {} (Database: {})",
+                            "{}: {} (Database: {})",
+                            label_prefix,
                             table_name,
                             database_name.as_deref().unwrap_or("Unknown")
                         );
@@ -2698,7 +2721,24 @@ impl Tabular {
                             }
                         }
                     }
+
                 };
+
+                if is_view {
+                    let ddl = connection::fetch_view_definition(
+                        &conn,
+                        database_name.as_deref(),
+                        &table_name,
+                    )
+                    .unwrap_or_else(|| {
+                        format!("-- Unable to fetch view definition for {}", table_name)
+                    });
+                    self.current_object_ddl = Some(ddl.clone());
+                    if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        active_tab.object_ddl = Some(ddl);
+                    }
+                    self.table_bottom_view = models::structs::TableBottomView::Query;
+                }
             }
 
             // FIX: Jika user sedang berada pada view Structure dan berpindah klik ke table lain,
@@ -2920,8 +2960,8 @@ impl Tabular {
         let has_children = !node.children.is_empty();
         let mut expansion_request = None;
         let mut table_expansion = None;
-        let mut context_menu_request = None;
-        let mut table_click_request = None;
+    let mut context_menu_request = None;
+    let mut table_click_request: Option<(i64, String, models::enums::NodeType)> = None;
         let mut folder_removal_mapping: Option<(i64, String)> = None;
         let mut connection_click_request = None;
         let mut query_file_to_open = None;
@@ -3221,7 +3261,7 @@ impl Tabular {
                 {
                     // Use table_name field if available (for search results), otherwise use node.name
                     let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
-                    table_click_request = Some((conn_id, actual_table_name));
+                    table_click_request = Some((conn_id, actual_table_name, node.node_type.clone()));
                 }
 
                 // Index items: no left-click action; use context menu for Alter Index
@@ -3370,7 +3410,7 @@ impl Tabular {
                             if let Some(conn_id) = node.connection_id {
                                 let actual_table_name =
                                     node.table_name.as_ref().unwrap_or(&node.name).clone();
-                                table_click_request = Some((conn_id, actual_table_name));
+                                table_click_request = Some((conn_id, actual_table_name, models::enums::NodeType::Table));
                             }
                             ui.close();
                         }
@@ -3487,7 +3527,7 @@ impl Tabular {
                             if let Some(conn_id) = node.connection_id {
                                 let actual_table_name =
                                     node.table_name.as_ref().unwrap_or(&node.name).clone();
-                                table_click_request = Some((conn_id, actual_table_name));
+                                table_click_request = Some((conn_id, actual_table_name, models::enums::NodeType::View));
                             }
                             ui.close();
                         }
@@ -3610,8 +3650,8 @@ impl Tabular {
                                 table_expansion = Some((child_index, child_conn_id, table_name));
                             }
                         }
-                        if let Some((conn_id, table_name)) = child_table_click {
-                            table_click_request = Some((conn_id, table_name));
+                        if let Some((conn_id, table_name, node_type)) = child_table_click {
+                            table_click_request = Some((conn_id, table_name, node_type));
                         }
                         if let Some(v) = _child_drop_collection_request {
                             drop_collection_request = Some(v);
@@ -3698,8 +3738,8 @@ impl Tabular {
                             }
 
                             // Handle child table clicks - propagate to parent
-                            if let Some((conn_id, table_name)) = child_table_click {
-                                table_click_request = Some((conn_id, table_name));
+                            if let Some((conn_id, table_name, node_type)) = child_table_click {
+                                table_click_request = Some((conn_id, table_name, node_type));
                             }
                             // Propagate drop collection request to parent
                             if let Some(v) = _child_drop_collection_request {
@@ -3840,7 +3880,7 @@ impl Tabular {
                         if let Some(conn_id) = node.connection_id {
                             let actual_table_name =
                                 node.table_name.as_ref().unwrap_or(&node.name).clone();
-                            table_click_request = Some((conn_id, actual_table_name));
+                            table_click_request = Some((conn_id, actual_table_name, node.node_type.clone()));
                         }
                     }
                     // DBA quick views: emit a click request to be handled by parent (needs self)
@@ -5030,6 +5070,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                             info!("   Tables count: {} -> {}", before_count, after_count);
                             return true;
                         }
+
                     }
                 }
             }
@@ -10797,7 +10838,11 @@ impl App for Tabular {
                 let is_table_tab = self
                     .query_tabs
                     .get(self.active_tab_index)
-                    .map(|t| t.title.starts_with("Table:") || t.title.starts_with("Collection:"))
+                    .map(|t| {
+                        t.title.starts_with("Table:")
+                            || t.title.starts_with("View:")
+                            || t.title.starts_with("Collection:")
+                    })
                     .unwrap_or(false);
 
                 if is_table_tab {
@@ -10890,6 +10935,31 @@ impl App for Tabular {
                                         data_table::load_structure_info_for_current_table(self);
                                     }
                                 }
+
+                                // Show Query toggle only for View tabs and when we have DDL
+                                let is_view_tab = self
+                                    .query_tabs
+                                    .get(self.active_tab_index)
+                                    .map(|t| t.title.starts_with("View:"))
+                                    .unwrap_or(false);
+                                let has_ddl = self.current_object_ddl.is_some()
+                                    || self
+                                        .query_tabs
+                                        .get(self.active_tab_index)
+                                        .and_then(|t| t.object_ddl.clone())
+                                        .is_some();
+                                if is_view_tab && has_ddl {
+                                    let is_query = self.table_bottom_view
+                                        == models::structs::TableBottomView::Query;
+                                    let query_text = egui::RichText::new("📝 Query").color(if is_query {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        default_text
+                                    });
+                                    if ui.selectable_label(is_query, query_text).clicked() {
+                                        self.table_bottom_view = models::structs::TableBottomView::Query;
+                                    }
+                                }
                             });
                         });
 
@@ -10901,13 +10971,243 @@ impl App for Tabular {
                             egui::vec2(ui.available_width(), remaining_height),
                             egui::Layout::top_down(egui::Align::LEFT),
                             |ui| {
-                                // Render Data or Structure based on toggle
-                                if self.table_bottom_view
-                                    == models::structs::TableBottomView::Structure
-                                {
-                                    data_table::render_structure_view(self, ui);
-                                } else {
-                                    data_table::render_table_data(self, ui);
+                                // Render Data / Structure / Query (DDL) based on toggle
+                                match self.table_bottom_view {
+                                    models::structs::TableBottomView::Structure => {
+                                        data_table::render_structure_view(self, ui);
+                                    }
+                                    models::structs::TableBottomView::Query => {
+                                        // Mirror the regular query editor UI exactly, using the DDL as editor content
+                                        // 1) Ensure editor text = DDL for this view
+                                        let ddl_text = self
+                                            .query_tabs
+                                            .get(self.active_tab_index)
+                                            .and_then(|tab| tab.object_ddl.clone())
+                                            .or_else(|| self.current_object_ddl.clone())
+                                            .unwrap_or_default();
+                                        if self.editor.text != ddl_text {
+                                            self.editor.set_text(ddl_text.clone());
+                                        }
+
+                                        // 2) Render editor and floating execute button exactly like regular query tabs
+                                        let avail = ui.available_height();
+                                        let executed = self
+                                            .query_tabs
+                                            .get(self.active_tab_index)
+                                            .map(|t| t.has_executed_query)
+                                            .unwrap_or(false);
+                                        let has_headers = !self.current_table_headers.is_empty();
+                                        let has_message = !self.current_table_name.is_empty();
+                                        let show_bottom = has_headers || has_message || executed;
+                                        if show_bottom {
+                                            self.table_split_ratio = self.table_split_ratio.clamp(0.05, 0.995);
+                                        }
+                                        let editor_h = if show_bottom {
+                                            let mut h = avail * self.table_split_ratio;
+                                            if has_headers {
+                                                h = h.clamp(100.0, (avail - 50.0).max(100.0));
+                                            } else {
+                                                h = h.clamp(140.0, (avail - 30.0).max(140.0));
+                                            }
+                                            h
+                                        } else {
+                                            avail
+                                        };
+                                        egui::Frame::NONE
+                                            .fill(if ui.visuals().dark_mode {
+                                                egui::Color32::from_rgb(30, 30, 30)
+                                            } else {
+                                                egui::Color32::WHITE
+                                            })
+                                            .show(ui, |ui| {
+                                                let editor_area_height = editor_h.max(200.0);
+                                                let mono_h = ui
+                                                    .text_style_height(&egui::TextStyle::Monospace)
+                                                    .max(1.0);
+                                                let rows = ((editor_area_height / mono_h).floor() as i32) as usize;
+                                                self.advanced_editor.desired_rows = rows;
+                                                let avail_w = ui.available_width() - 4.0;
+                                                let desired = egui::vec2(avail_w, editor_area_height);
+                                                let (rect, _resp) = ui
+                                                    .allocate_exact_size(desired, egui::Sense::hover());
+                                                let mut child_ui = ui
+                                                    .new_child(egui::UiBuilder::new().max_rect(rect));
+                                                egui::ScrollArea::vertical()
+                                                    .id_salt("view_query_editor_scroll")
+                                                    .auto_shrink([false, false])
+                                                    .show(&mut child_ui, |ui| {
+                                                        ui.set_min_width(avail_w - 4.0);
+                                                        editor::render_advanced_editor(self, ui);
+                                                    });
+
+                                                // Floating execute button (identical behavior)
+                                                let button_margin = 4.0;
+                                                let button_size = egui::vec2(32.0, 32.0);
+                                                let button_pos = egui::pos2(
+                                                    rect.max.x - button_size.x - button_margin,
+                                                    rect.min.y + button_margin,
+                                                );
+                                                let play_fill = egui::Color32::TRANSPARENT;
+                                                let is_loading = self.query_execution_in_progress
+                                                    || self.pool_wait_in_progress;
+                                                let (play_icon, play_color, play_border, tooltip_text) = if is_loading {
+                                                    (
+                                                        "⏳",
+                                                        egui::Color32::WHITE,
+                                                        egui::Color32::TRANSPARENT,
+                                                        "Executing query…",
+                                                    )
+                                                } else {
+                                                    (
+                                                        "▶",
+                                                        egui::Color32::GREEN,
+                                                        egui::Color32::TRANSPARENT,
+                                                        "CMD+Enter to execute",
+                                                    )
+                                                };
+                                                let play_text = egui::RichText::new(play_icon)
+                                                    .color(play_color)
+                                                    .size(18.0);
+                                                let button_corner =
+                                                    (button_size.y / 2.0).round().clamp(2.0, u8::MAX as f32)
+                                                        as u8;
+
+                                                let mut execute_clicked = false;
+                                                let mut captured_selection_text = String::new();
+                                                egui::Area::new(egui::Id::new((
+                                                    "floating_execute_button_view_query",
+                                                    self.active_tab_index,
+                                                )))
+                                                .order(egui::Order::Foreground)
+                                                .fixed_pos(button_pos)
+                                                .show(ui.ctx(), |area_ui| {
+                                                    let mut button = egui::Button::new(play_text.clone())
+                                                        .fill(play_fill)
+                                                        .stroke(egui::Stroke::new(1.5, play_border))
+                                                        .corner_radius(egui::CornerRadius::same(button_corner));
+                                                    if is_loading {
+                                                        button = button.sense(egui::Sense::hover());
+                                                    }
+                                                    let response = area_ui
+                                                        .add_sized(button_size, button)
+                                                        .on_hover_text(tooltip_text);
+                                                    if !is_loading && response.clicked() {
+                                                        let id = egui::Id::new("sql_editor");
+                                                        let mut direct_selected = String::new();
+                                                        if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(area_ui.ctx(), id)
+                                                        {
+                                                            let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                                                                s.char_indices()
+                                                                    .map(|(b, _)| b)
+                                                                    .chain(std::iter::once(s.len()))
+                                                                    .nth(char_idx)
+                                                                    .unwrap_or(s.len())
+                                                            };
+                                                            let start_b = to_byte_index(&self.editor.text, range.start);
+                                                            let end_b = to_byte_index(&self.editor.text, range.end);
+                                                            if start_b < end_b && end_b <= self.editor.text.len() {
+                                                                direct_selected =
+                                                                    self.editor.text[start_b..end_b].to_string();
+                                                            }
+                                                        }
+
+                                                        self.query_execution_in_progress = true;
+                                                        execute_clicked = true;
+                                                        captured_selection_text = if !direct_selected.is_empty() {
+                                                            direct_selected
+                                                        } else {
+                                                            self.selected_text.clone()
+                                                        };
+                                                    }
+                                                });
+                                                if execute_clicked {
+                                                    self.is_table_browse_mode = false;
+                                                    self.query_execution_in_progress = true;
+                                                    self.extend_query_icon_hold();
+                                                    editor::execute_query_with_text(self, captured_selection_text);
+                                                    ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                                                    ui.ctx().request_repaint();
+                                                }
+
+                                                // Keyboard shortcut check
+                                                if ui.input(|i| {
+                                                    (i.modifiers.ctrl || i.modifiers.mac_cmd)
+                                                        && i.key_pressed(egui::Key::Enter)
+                                                }) {
+                                                    let has_q = if !self.selected_text.trim().is_empty() {
+                                                        true
+                                                    } else {
+                                                        let cq = editor::extract_query_from_cursor(self);
+                                                        !cq.trim().is_empty() || !self.editor.text.trim().is_empty()
+                                                    };
+                                                    if has_q {
+                                                        let id = egui::Id::new("sql_editor");
+                                                        let mut direct_selected = String::new();
+                                                        if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                                                        {
+                                                            let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                                                                s.char_indices()
+                                                                    .map(|(b, _)| b)
+                                                                    .chain(std::iter::once(s.len()))
+                                                                    .nth(char_idx)
+                                                                    .unwrap_or(s.len())
+                                                            };
+                                                            let start_b = to_byte_index(&self.editor.text, range.start);
+                                                            let end_b = to_byte_index(&self.editor.text, range.end);
+                                                            if start_b < end_b && end_b <= self.editor.text.len() {
+                                                                direct_selected =
+                                                                    self.editor.text[start_b..end_b].to_string();
+                                                            }
+                                                        }
+
+                                                        self.extend_query_icon_hold();
+                                                        let captured_selection = if !direct_selected.is_empty() {
+                                                            direct_selected
+                                                        } else {
+                                                            self.selected_text.clone()
+                                                        };
+                                                        editor::execute_query_with_text(self, captured_selection);
+                                                    }
+                                                }
+                                            });
+
+                                        self.render_lint_panel(ui);
+                                        if show_bottom {
+                                            let handle_id = ui.make_persistent_id("editor_table_splitter_view_query");
+                                            let desired_h = 6.0;
+                                            let available_w = ui.available_width();
+                                            let (rect, resp) = ui.allocate_at_least(
+                                                egui::vec2(available_w, desired_h),
+                                                egui::Sense::click_and_drag(),
+                                            );
+                                            let stroke = egui::Stroke::new(
+                                                1.0,
+                                                ui.visuals().widgets.noninteractive.fg_stroke.color,
+                                            );
+                                            ui.painter().hline(rect.x_range(), rect.center().y, stroke);
+                                            if resp.dragged() {
+                                                let drag_delta = resp.drag_delta().y;
+                                                if avail > 0.0 {
+                                                    self.table_split_ratio =
+                                                        (self.table_split_ratio + (drag_delta / avail)).clamp(0.05, 0.995);
+                                                }
+                                                ui.memory_mut(|m| m.request_focus(handle_id));
+                                            }
+                                            ui.add_space(2.0);
+
+                                            data_table::render_table_data(self, ui);
+                                        }
+
+                                        // 3) Keep object_ddl in sync with the active editor content
+                                        let current_text = self.editor.text.clone();
+                                        self.current_object_ddl = Some(current_text.clone());
+                                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                            tab.object_ddl = Some(current_text);
+                                        }
+                                    }
+                                    _ => {
+                                        data_table::render_table_data(self, ui);
+                                    }
                                 }
                             },
                         );

@@ -3269,7 +3269,9 @@ pub(crate) fn start_inline_add_index(tabular: &mut window_egui::Tabular) {
 
 pub(crate) fn infer_current_table_name(tabular: &mut window_egui::Tabular) -> String {
     // Priority 1: if current_table_name starts with "Table:" extract
-    if tabular.current_table_name.starts_with("Table:") {
+    if tabular.current_table_name.starts_with("Table:")
+        || tabular.current_table_name.starts_with("View:")
+    {
         let after = tabular
             .current_table_name
             .split_once(':')

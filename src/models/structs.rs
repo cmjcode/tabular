@@ -82,6 +82,7 @@ pub struct QueryTab {
     pub base_query: String, // Store the base query (without LIMIT/OFFSET) for pagination
     // DBA quick view special post-processing mode (Replication Status, Master Status, etc.)
     pub dba_special_mode: Option<models::enums::DBASpecialMode>,
+    pub object_ddl: Option<String>, // Optional DDL (e.g., ALTER VIEW) for browsed objects
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,6 +221,7 @@ pub enum TableBottomView {
     #[default]
     Data,
     Structure,
+    Query,
 }
 
 // Simplified column info for Structure tab (can be extended later per RDBMS)
@@ -424,7 +426,7 @@ pub type RenderTreeNodeResult = (
     Option<models::structs::ExpansionRequest>,
     Option<(usize, i64, String)>,
     Option<i64>,
-    Option<(i64, String)>,
+    Option<(i64, String, models::enums::NodeType)>,
     Option<i64>,
     Option<(String, String, String)>,
     Option<String>,

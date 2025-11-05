@@ -355,6 +355,7 @@ pub(crate) fn open_query_file(
         total_rows: 0,
         base_query: String::new(), // Empty base query for file queries
         dba_special_mode: None,
+        object_ddl: None,
     };
 
     tabular.query_tabs.push(new_tab);
@@ -364,6 +365,7 @@ pub(crate) fn open_query_file(
     tabular.highlight_cache.clear();
     tabular.last_highlight_hash = None;
     tabular.sql_semantic_snapshot = None;
+    tabular.current_object_ddl = None;
 
     // If the file specified a connection, set it for active tab and eagerly create the pool
     if let Some(conn_id) = effective_connection_id {
