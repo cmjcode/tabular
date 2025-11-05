@@ -4,6 +4,7 @@ use egui::text::{CCursor, CCursorRange};
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
 // syntax highlighting module temporarily disabled
 use log::debug;
+use sqlformat::{format as sqlfmt, FormatOptions, Indent, QueryParams};
 
 use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
@@ -268,6 +269,8 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
 }
 
 pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(), String> {
+    // Reformat entire SQL content before saving
+    reformat_all_sql_before_save(tabular);
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         // Ensure content holds editor text plus metadata header (id + optional db)
         let mut final_content = tabular.editor.text.clone();
@@ -400,6 +403,8 @@ pub(crate) fn save_current_tab_with_name(
     tabular: &mut window_egui::Tabular,
     filename: String,
 ) -> Result<(), String> {
+    // Reformat entire SQL content before saving
+    reformat_all_sql_before_save(tabular);
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         // Mirror header injection as in save_current_tab
         let mut final_content = tabular.editor.text.clone();
@@ -659,6 +664,35 @@ fn find_word_boundaries(text: &str, pos: usize) -> (usize, usize) {
 }
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
+    let mut trigger_format_sql = false;
+    ui.input(|i| {
+        // Accept platform command (command on macOS, control elsewhere)
+        if (i.modifiers.mac_cmd || i.modifiers.command)
+            && i.modifiers.shift
+            && i.key_pressed(egui::Key::F)
+        {
+            trigger_format_sql = true;
+        }
+    });
+    if trigger_format_sql {
+        // Consume the key event so TextEdit doesn't see it
+        ui.ctx().input_mut(|ri| {
+            ri.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::F,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+        });
+        reformat_current_sql(tabular, ui);
+        // Early repaint for snappy UX
+        ui.ctx().request_repaint();
+    }
     // Find & Replace panel
     if tabular.advanced_editor.show_find_replace {
         ui.horizontal(|ui| {
@@ -3282,6 +3316,105 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.memory_mut(|m| m.request_focus(response.id));
         tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(8);
         ui.ctx().request_repaint();
+    }
+}
+
+/// Format the selected SQL text if a selection exists, otherwise format the entire editor content.
+/// Preserves caret and selection where possible.
+pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
+    let id = egui::Id::new("sql_editor");
+    // Helper: convert char idx -> byte idx
+    let to_b = |s: &str, ci: usize| -> usize {
+        match s.char_indices().nth(ci) {
+            Some((b, _)) => b,
+            None => s.len(),
+        }
+    };
+    // Try to read selection from egui state first (in chars), then map to bytes
+    let text_len = tabular.editor.text.len();
+    let (start_b, end_b) = if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+        let s_b = to_b(&tabular.editor.text, rng.start).min(text_len);
+        let e_b = to_b(&tabular.editor.text, rng.end).min(text_len);
+        (s_b.min(e_b), s_b.max(e_b))
+    } else {
+        // Fallback to stored selection (bytes)
+        let s = tabular.selection_start.min(text_len);
+        let e = tabular.selection_end.min(text_len);
+        (s.min(e), s.max(e))
+    };
+
+    let (range_start, range_end) = if start_b < end_b { (start_b, end_b) } else { (0, text_len) };
+    let original = &tabular.editor.text[range_start..range_end];
+    // Apply sqlformat with sane defaults: 4-space indent, uppercase keywords, 1 line between queries
+    let opts = FormatOptions {
+        indent: Indent::Spaces(4),
+        uppercase: true,
+        lines_between_queries: 1,
+    };
+    let formatted = sqlfmt(original, &QueryParams::None, opts);
+    if formatted == original {
+        return; // no change
+    }
+
+    // Replace in editor text using rope-friendly method
+    tabular
+        .editor
+        .apply_single_replace(range_start..range_end, &formatted);
+
+    // Update caret and selection: select the newly formatted block
+    let new_end = range_start + formatted.len();
+    tabular.selection_start = range_start;
+    tabular.selection_end = new_end;
+    tabular.cursor_position = new_end;
+
+    // Sync egui selection/caret using char indices
+    let to_ci = |s: &str, bi: usize| -> usize { s[..bi.min(s.len())].chars().count() };
+    let start_ci = to_ci(&tabular.editor.text, range_start);
+    let end_ci = to_ci(&tabular.editor.text, new_end);
+    crate::editor_state_adapter::EditorStateAdapter::set_selection(
+        ui.ctx(),
+        id,
+        start_ci,
+        end_ci,
+        end_ci,
+    );
+    ui.memory_mut(|m| m.request_focus(id));
+
+    // Mark tab modified and keep content synced
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.content = tabular.editor.text.clone();
+        tab.is_modified = true;
+    } else {
+        tabular.editor.mark_text_modified();
+    }
+
+    // Recompute autocomplete, lint etc. if needed
+    editor_autocomplete::update_autocomplete(tabular);
+}
+
+/// Reformat the entire editor content prior to saving (UI-agnostic; does not require egui::Ui).
+pub(crate) fn reformat_all_sql_before_save(tabular: &mut window_egui::Tabular) {
+    // Format entire document
+    let original = tabular.editor.text.clone();
+    if original.is_empty() {
+        return;
+    }
+    let opts = FormatOptions {
+        indent: Indent::Spaces(4),
+        uppercase: true,
+        lines_between_queries: 1,
+    };
+    let formatted = sqlfmt(&original, &QueryParams::None, opts);
+    if formatted == original {
+        return;
+    }
+    // Update editor text and tab content
+    tabular.editor.set_text(formatted.clone());
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.content = formatted;
+        tab.is_modified = true;
+    } else {
+        tabular.editor.mark_text_modified();
     }
 }
 
