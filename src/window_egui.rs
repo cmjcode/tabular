@@ -11218,27 +11218,16 @@ impl App for Tabular {
                                                     button_pos.x - button_size.x - format_spacing,
                                                     button_pos.y,
                                                 );
-                                                let format_icon = "🌈";
-                                                let format_text = egui::RichText::new(format_icon)
-                                                    .size(16.0);
-                                                egui::Area::new(egui::Id::new((
-                                                    "floating_format_button_view_query",
-                                                    self.active_tab_index,
-                                                )))
-                                                .order(egui::Order::Foreground)
-                                                .fixed_pos(format_button_pos)
-                                                .show(ui.ctx(), |area_ui| {
-                                                    let button = egui::Button::new(format_text.clone())
-                                                        .fill(egui::Color32::TRANSPARENT)
-                                                        .stroke(egui::Stroke::new(1.5, egui::Color32::TRANSPARENT))
-                                                        .corner_radius(egui::CornerRadius::same(button_corner));
-                                                    let response = area_ui
-                                                        .add_sized(button_size, button)
-                                                        .on_hover_text("Format SQL (Cmd+Shift+F)");
-                                                    if response.clicked() {
-                                                        format_clicked = true;
-                                                    }
-                                                });
+                                                format_clicked = draw_format_sql_button(
+                                                    ui.ctx(),
+                                                    egui::Id::new((
+                                                        "floating_format_button_view_query",
+                                                        self.active_tab_index,
+                                                    )),
+                                                    format_button_pos,
+                                                    button_size,
+                                                    button_corner,
+                                                );
                                                 if execute_clicked {
                                                     self.is_table_browse_mode = false;
                                                     self.query_execution_in_progress = true;
@@ -11498,24 +11487,13 @@ impl App for Tabular {
             button_pos.x - button_size.x - format_spacing,
             button_pos.y,
         );
-        let format_icon = "</>";
-        let format_text = egui::RichText::new(format_icon)
-            .size(16.0);
-        egui::Area::new(egui::Id::new(("floating_format_button", self.active_tab_index)))
-            .order(egui::Order::Foreground)
-            .fixed_pos(format_button_pos)
-            .show(ui.ctx(), |area_ui| {
-                let button = egui::Button::new(format_text.clone())
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::new(1.5, egui::Color32::TRANSPARENT))
-                    .corner_radius(egui::CornerRadius::same(button_corner));
-                let response = area_ui
-                    .add_sized(button_size, button)
-                    .on_hover_text("Format SQL (Cmd+Shift+F)");
-                if response.clicked() {
-                    format_clicked = true;
-                }
-            });
+        format_clicked = draw_format_sql_button(
+            ui.ctx(),
+            egui::Id::new(("floating_format_button", self.active_tab_index)),
+            format_button_pos,
+            button_size,
+            button_corner,
+        );
                             if execute_clicked {
                                 self.is_table_browse_mode = false;
                                 self.query_execution_in_progress = true;
@@ -11835,6 +11813,35 @@ impl App for Tabular {
             });
     } // end update
 } // end impl App for Tabular
+
+// Small reusable helper to render the floating "Format SQL" button.
+// Returns true if the button was clicked in this frame.
+fn draw_format_sql_button(
+    ctx: &egui::Context,
+    area_id: egui::Id,
+    pos: egui::Pos2,
+    size: egui::Vec2,
+    corner: u8,
+) -> bool {
+    let mut clicked = false;
+    let format_text = egui::RichText::new("</>").size(16.0);
+    egui::Area::new(area_id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |area_ui| {
+            let button = egui::Button::new(format_text.clone())
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(1.5, egui::Color32::TRANSPARENT))
+                .corner_radius(egui::CornerRadius::same(corner));
+            let response = area_ui
+                .add_sized(size, button)
+                .on_hover_text("Format SQL (Cmd+Shift+F)");
+            if response.clicked() {
+                clicked = true;
+            }
+        });
+    clicked
+}
 
 // Helper to finalize query result display from a raw execution result
 impl Tabular {
