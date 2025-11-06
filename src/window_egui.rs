@@ -3133,7 +3133,7 @@ impl Tabular {
                 } else { (ui.visuals().text_color(), "") };
 
                 let mut response = if node.node_type == models::enums::NodeType::Connection {
-                    // Draw colored status dot then a button for the connection name
+                    // Draw colored status dot then a clickable, truncated label occupying full row width
                     ui.colored_label(status_color, egui::RichText::new("●").strong());
                     let mut name_text = node.name.clone();
                     if let Some(conn_id) = node.connection_id {
@@ -3146,15 +3146,26 @@ impl Tabular {
                             name_text.push_str(&format!(" 📦 {}/{}", completed, total));
                         }
                     }
-                    ui.button(name_text)
+                    // Use a regular left-aligned label (no explicit width) so text is not centered.
+                    // truncate() will respect the remaining available width in this row.
+                    ui.add(
+                        egui::Label::new(name_text)
+                            .truncate()
+                            .sense(egui::Sense::click()),
+                    )
                 } else {
-                    // Non-connection nodes: keep icon + name label
+                    // Non-connection nodes: icon + name, truncated to available width and clickable
                     let label_text = if icon.is_empty() {
                         node.name.clone()
                     } else {
                         format!("{} {}", icon, node.name)
                     };
-                    ui.label(label_text)
+                    // Left-align non-connection labels as well; rely on parent row width for truncation.
+                    ui.add(
+                        egui::Label::new(label_text)
+                            .truncate()
+                            .sense(egui::Sense::click()),
+                    )
                 };
 
                 // Tooltip for connection status
@@ -3822,8 +3833,12 @@ impl Tabular {
                     button_response
                 }
             } else {
-                // For all other node types, use horizontal layout with icons
+                // For all other node types, use horizontal layout with icons.
+                // Add a spacer equal to the triangle width so leaf rows align with expandable rows (left-aligned look).
                 ui.horizontal(|ui| {
+                    // Reserve space equal to triangle toggle width (16px) for alignment
+                    let _sp = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+
                     let icon = match node.node_type {
                         models::enums::NodeType::Database => "🗄",
                         models::enums::NodeType::Table => "",
@@ -3862,7 +3877,13 @@ impl Tabular {
                         _ => "❓",
                     };
 
-                    ui.button(format!("{} {}", icon, node.name))
+                    let label_text = format!("{} {}", icon, node.name);
+                    // Use left-aligned label without forcing a full-row size to avoid centered look.
+                    ui.add(
+                        egui::Label::new(label_text)
+                            .truncate()
+                            .sense(egui::Sense::click()),
+                    )
                 })
                 .inner
             };
@@ -10348,6 +10369,16 @@ impl App for Tabular {
             .default_width(250.0)
             .min_width(150.0)
             .max_width(500.0)
+            // Reduce default inner padding so tree rows (connection/database/table) start closer to the left edge
+            .frame(
+                egui::Frame::default()
+                    .fill(if ctx.style().visuals.dark_mode {
+                        egui::Color32::from_rgb(20, 20, 20)
+                    } else {
+                        egui::Color32::from_rgb(245, 245, 245)
+                    })
+                    .inner_margin(egui::Margin::symmetric(4, 6)),
+            )
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
                     // Top section with tabs
