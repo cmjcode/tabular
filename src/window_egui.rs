@@ -11164,7 +11164,6 @@ impl App for Tabular {
                                                         as u8;
 
                                                 let mut execute_clicked = false;
-                                                let mut format_clicked = false;
                                                 let mut captured_selection_text = String::new();
                                                 egui::Area::new(egui::Id::new((
                                                     "floating_execute_button_view_query",
@@ -11218,7 +11217,7 @@ impl App for Tabular {
                                                     button_pos.x - button_size.x - format_spacing,
                                                     button_pos.y,
                                                 );
-                                                format_clicked = draw_format_sql_button(
+                                                let format_clicked = draw_format_sql_button(
                                                     ui.ctx(),
                                                     egui::Id::new((
                                                         "floating_format_button_view_query",
@@ -11426,7 +11425,6 @@ impl App for Tabular {
                                 (button_size.y / 2.0).round().clamp(2.0, u8::MAX as f32) as u8;
 
                             let mut execute_clicked = false;
-                            let mut format_clicked = false;
                             let mut captured_selection_text = String::new();
                             egui::Area::new(egui::Id::new(("floating_execute_button", self.active_tab_index)))
                                 .order(egui::Order::Foreground)
@@ -11487,7 +11485,7 @@ impl App for Tabular {
             button_pos.x - button_size.x - format_spacing,
             button_pos.y,
         );
-        format_clicked = draw_format_sql_button(
+        let format_clicked = draw_format_sql_button(
             ui.ctx(),
             egui::Id::new(("floating_format_button", self.active_tab_index)),
             format_button_pos,
