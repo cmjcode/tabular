@@ -251,3 +251,14 @@ pub fn format_sql(sql: &str) -> Option<String> {
         Some(formatted)
     }
 }
+
+// Centralized sqlformat options used across the app
+pub fn default_sqlformat_options() -> sqlformat::FormatOptions {
+    use sqlformat::{FormatOptions, Indent};
+    FormatOptions {
+        indent: Indent::Spaces(4),
+        uppercase: true,
+        // One blank line between statements
+        lines_between_queries: 1,
+    }
+}

@@ -11164,6 +11164,7 @@ impl App for Tabular {
                                                         as u8;
 
                                                 let mut execute_clicked = false;
+                                                let mut format_clicked = false;
                                                 let mut captured_selection_text = String::new();
                                                 egui::Area::new(egui::Id::new((
                                                     "floating_execute_button_view_query",
@@ -11211,12 +11212,46 @@ impl App for Tabular {
                                                         };
                                                     }
                                                 });
+                                                // Floating format button to the left of Execute (View Query variant)
+                                                let format_spacing = 6.0;
+                                                let format_button_pos = egui::pos2(
+                                                    button_pos.x - button_size.x - format_spacing,
+                                                    button_pos.y,
+                                                );
+                                                let format_icon = "🌈";
+                                                let format_text = egui::RichText::new(format_icon)
+                                                    .size(16.0);
+                                                egui::Area::new(egui::Id::new((
+                                                    "floating_format_button_view_query",
+                                                    self.active_tab_index,
+                                                )))
+                                                .order(egui::Order::Foreground)
+                                                .fixed_pos(format_button_pos)
+                                                .show(ui.ctx(), |area_ui| {
+                                                    let button = egui::Button::new(format_text.clone())
+                                                        .fill(egui::Color32::TRANSPARENT)
+                                                        .stroke(egui::Stroke::new(1.5, egui::Color32::TRANSPARENT))
+                                                        .corner_radius(egui::CornerRadius::same(button_corner));
+                                                    let response = area_ui
+                                                        .add_sized(button_size, button)
+                                                        .on_hover_text("Format SQL (Cmd+Shift+F)");
+                                                    if response.clicked() {
+                                                        format_clicked = true;
+                                                    }
+                                                });
                                                 if execute_clicked {
                                                     self.is_table_browse_mode = false;
                                                     self.query_execution_in_progress = true;
                                                     self.extend_query_icon_hold();
                                                     editor::execute_query_with_text(self, captured_selection_text);
                                                     ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                                                    ui.ctx().request_repaint();
+                                                }
+
+                                                if format_clicked {
+                                                    editor::reformat_current_sql(self, ui);
+                                                    ui.ctx()
+                                                        .memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
                                                     ui.ctx().request_repaint();
                                                 }
 
@@ -11402,6 +11437,7 @@ impl App for Tabular {
                                 (button_size.y / 2.0).round().clamp(2.0, u8::MAX as f32) as u8;
 
                             let mut execute_clicked = false;
+                            let mut format_clicked = false;
                             let mut captured_selection_text = String::new();
                             egui::Area::new(egui::Id::new(("floating_execute_button", self.active_tab_index)))
                                 .order(egui::Order::Foreground)
@@ -11456,6 +11492,30 @@ impl App for Tabular {
                                         };
                                     }
                                 });
+        // Floating format button to the left of Execute
+        let format_spacing = 6.0;
+        let format_button_pos = egui::pos2(
+            button_pos.x - button_size.x - format_spacing,
+            button_pos.y,
+        );
+        let format_icon = "</>";
+        let format_text = egui::RichText::new(format_icon)
+            .size(16.0);
+        egui::Area::new(egui::Id::new(("floating_format_button", self.active_tab_index)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(format_button_pos)
+            .show(ui.ctx(), |area_ui| {
+                let button = egui::Button::new(format_text.clone())
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::new(1.5, egui::Color32::TRANSPARENT))
+                    .corner_radius(egui::CornerRadius::same(button_corner));
+                let response = area_ui
+                    .add_sized(button_size, button)
+                    .on_hover_text("Format SQL (Cmd+Shift+F)");
+                if response.clicked() {
+                    format_clicked = true;
+                }
+            });
                             if execute_clicked {
                                 self.is_table_browse_mode = false;
                                 self.query_execution_in_progress = true;
@@ -11469,6 +11529,13 @@ impl App for Tabular {
                                     captured_selection_text.chars().take(150).collect::<String>());
                                 editor::execute_query_with_text(self, captured_selection_text);
 
+                                ui.ctx()
+                                    .memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                                ui.ctx().request_repaint();
+                            }
+
+                            if format_clicked {
+                                editor::reformat_current_sql(self, ui);
                                 ui.ctx()
                                     .memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
                                 ui.ctx().request_repaint();

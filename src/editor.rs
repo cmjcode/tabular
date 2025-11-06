@@ -4,7 +4,7 @@ use egui::text::{CCursor, CCursorRange};
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
 // syntax highlighting module temporarily disabled
 use log::debug;
-use sqlformat::{format as sqlfmt, FormatOptions, Indent, QueryParams};
+use sqlformat::{format as sqlfmt, QueryParams};
 
 use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
@@ -269,8 +269,6 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
 }
 
 pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(), String> {
-    // Reformat entire SQL content before saving
-    reformat_all_sql_before_save(tabular);
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         // Ensure content holds editor text plus metadata header (id + optional db)
         let mut final_content = tabular.editor.text.clone();
@@ -403,8 +401,7 @@ pub(crate) fn save_current_tab_with_name(
     tabular: &mut window_egui::Tabular,
     filename: String,
 ) -> Result<(), String> {
-    // Reformat entire SQL content before saving
-    reformat_all_sql_before_save(tabular);
+    // Keep editor content as-is when saving (no auto-format on save)
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         // Mirror header injection as in save_current_tab
         let mut final_content = tabular.editor.text.clone();
@@ -3346,11 +3343,7 @@ pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui
     let (range_start, range_end) = if start_b < end_b { (start_b, end_b) } else { (0, text_len) };
     let original = &tabular.editor.text[range_start..range_end];
     // Apply sqlformat with sane defaults: 4-space indent, uppercase keywords, 1 line between queries
-    let opts = FormatOptions {
-        indent: Indent::Spaces(4),
-        uppercase: true,
-        lines_between_queries: 1,
-    };
+    let opts = crate::query_tools::default_sqlformat_options();
     let formatted = sqlfmt(original, &QueryParams::None, opts);
     if formatted == original {
         return; // no change
@@ -3390,32 +3383,6 @@ pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui
 
     // Recompute autocomplete, lint etc. if needed
     editor_autocomplete::update_autocomplete(tabular);
-}
-
-/// Reformat the entire editor content prior to saving (UI-agnostic; does not require egui::Ui).
-pub(crate) fn reformat_all_sql_before_save(tabular: &mut window_egui::Tabular) {
-    // Format entire document
-    let original = tabular.editor.text.clone();
-    if original.is_empty() {
-        return;
-    }
-    let opts = FormatOptions {
-        indent: Indent::Spaces(4),
-        uppercase: true,
-        lines_between_queries: 1,
-    };
-    let formatted = sqlfmt(&original, &QueryParams::None, opts);
-    if formatted == original {
-        return;
-    }
-    // Update editor text and tab content
-    tabular.editor.set_text(formatted.clone());
-    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-        tab.content = formatted;
-        tab.is_modified = true;
-    } else {
-        tabular.editor.mark_text_modified();
-    }
 }
 
 pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
