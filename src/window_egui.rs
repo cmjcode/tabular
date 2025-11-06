@@ -1634,6 +1634,7 @@ impl Tabular {
         let mut alter_table_requests: Vec<(i64, Option<String>, String)> = Vec::new();
         let mut query_files_to_open = Vec::new();
         let mut create_table_requests: Vec<(i64, Option<String>)> = Vec::new();
+    let mut stored_procedure_click_requests: Vec<(i64, Option<String>, String)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -1653,6 +1654,7 @@ impl Tabular {
                 drop_collection_request,
                 drop_table_request,
                 create_table_request,
+                stored_procedure_click_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -1771,6 +1773,9 @@ impl Tabular {
             if let Some((conn_id, db_name)) = create_table_request {
                 create_table_requests.push((conn_id, db_name));
             }
+            if let Some((conn_id, db_name, proc_name)) = stored_procedure_click_request {
+                stored_procedure_click_requests.push((conn_id, db_name, proc_name));
+            }
         }
 
         for (conn_id, db_name) in create_table_requests {
@@ -1779,6 +1784,42 @@ impl Tabular {
 
         for (connection_id, database_name, table_name) in alter_table_requests {
             self.handle_alter_table_request(connection_id, database_name, table_name);
+        }
+
+        // Handle stored procedure clicks - open the actual definition in a new tab (no templates)
+        for (conn_id, db_name, proc_name) in stored_procedure_click_requests {
+            if let Some(conn) = self
+                .connections
+                .iter()
+                .find(|c| c.id == Some(conn_id))
+                .cloned()
+            {
+                let script = connection::fetch_procedure_definition(
+                    &conn,
+                    db_name.as_deref(),
+                    &proc_name,
+                )
+                // If we can't fetch, just show the procedure name (no template as requested)
+                .unwrap_or_else(|| proc_name.clone());
+
+                let title = format!("Procedure: {}", proc_name);
+                editor::create_new_tab_with_connection_and_database(
+                    self,
+                    title,
+                    script,
+                    Some(conn_id),
+                    db_name.clone(),
+                );
+                // Ensure the active tab stores selected database context for later executions
+                if let (Some(dbn), Some(active_tab)) = (
+                    db_name,
+                    self.query_tabs.get_mut(self.active_tab_index),
+                ) {
+                    active_tab.database_name = Some(dbn);
+                }
+                // Focus Query view
+                self.table_bottom_view = models::structs::TableBottomView::Query;
+            }
         }
 
         // Handle connection clicks (create new tab with that connection)
@@ -2972,8 +3013,9 @@ impl Tabular {
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
         let mut alter_table_request: Option<(i64, Option<String>, String)> = None;
         let mut drop_collection_request: Option<(i64, String, String)> = None;
-        let mut drop_table_request: Option<(i64, String, String, String)> = None;
-        let mut create_table_request: Option<(i64, Option<String>)> = None;
+    let mut drop_table_request: Option<(i64, String, String, String)> = None;
+    let mut create_table_request: Option<(i64, Option<String>)> = None;
+    let mut stored_procedure_click_request: Option<(i64, Option<String>, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -3633,6 +3675,7 @@ impl Tabular {
                             _child_drop_collection_request,
                             _child_drop_table_request,
                             child_create_table_request,
+                            child_stored_procedure_click_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -3685,6 +3728,9 @@ impl Tabular {
                         if let Some(v) = child_create_table_request {
                             create_table_request = Some(v);
                         }
+                        if let Some(v) = child_stored_procedure_click_request {
+                            stored_procedure_click_request = Some(v);
+                        }
                         if let Some(child_context_id) = child_context {
                             context_menu_request = Some(child_context_id);
                         }
@@ -3713,6 +3759,7 @@ impl Tabular {
                                 _child_drop_collection_request,
                                 _child_drop_table_request,
                                 child_create_table_request,
+                                child_stored_procedure_click_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -3775,6 +3822,9 @@ impl Tabular {
                             }
                             if let Some(v) = child_create_table_request {
                                 create_table_request = Some(v);
+                            }
+                            if let Some(v) = child_stored_procedure_click_request {
+                                stored_procedure_click_request = Some(v);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -3987,6 +4037,15 @@ impl Tabular {
                             // Fallback to display name if no original query stored
                         }
                     }
+                    models::enums::NodeType::StoredProcedure => {
+                        if let Some(conn_id) = node.connection_id {
+                            stored_procedure_click_request = Some((
+                                conn_id,
+                                node.database_name.clone(),
+                                node.name.clone(),
+                            ));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -4091,6 +4150,7 @@ impl Tabular {
             drop_collection_request,
             drop_table_request,
             create_table_request,
+            stored_procedure_click_request,
         )
     }
 

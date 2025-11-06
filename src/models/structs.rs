@@ -443,4 +443,6 @@ pub type RenderTreeNodeResult = (
     Option<(i64, String, String, String)>,
     // New: request to open Create Table wizard (connection_id, optional database/schema)
     Option<(i64, Option<String>)>,
+    // New: request to open ALTER script for stored procedure (connection_id, database, procedure_name)
+    Option<(i64, Option<String>, String)>,
 );
