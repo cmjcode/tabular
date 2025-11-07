@@ -3344,7 +3344,7 @@ pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui
     let original = &tabular.editor.text[range_start..range_end];
     // Apply sqlformat with sane defaults: 4-space indent, uppercase keywords, 1 line between queries
     let opts = crate::query_tools::default_sqlformat_options();
-    let formatted = sqlfmt(original, &QueryParams::None, opts);
+    let formatted = sqlfmt(original, &QueryParams::None, &opts);
     if formatted == original {
         return; // no change
     }

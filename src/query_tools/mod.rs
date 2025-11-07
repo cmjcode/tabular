@@ -1,4 +1,5 @@
 use std::ops::Range;
+use sqlformat::{FormatOptions, Indent};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LintSeverity {
@@ -253,12 +254,16 @@ pub fn format_sql(sql: &str) -> Option<String> {
 }
 
 // Centralized sqlformat options used across the app
-pub fn default_sqlformat_options() -> sqlformat::FormatOptions {
-    use sqlformat::{FormatOptions, Indent};
+pub fn default_sqlformat_options() -> FormatOptions<'static> {
     FormatOptions {
-        indent: Indent::Spaces(4),
-        uppercase: true,
-        // One blank line between statements
-        lines_between_queries: 1,
+        joins_as_top_level: true,
+        indent: Indent::Spaces(6),
+        uppercase: Some(true),
+        lines_between_queries: 4,
+        inline: false,
+        max_inline_block: 50,       // characters allowed to keep a parenthesized block inline
+        max_inline_arguments: Some(40),
+        max_inline_top_level: Some(40),
+        ..Default::default()
     }
 }
