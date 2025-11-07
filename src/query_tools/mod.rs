@@ -259,7 +259,7 @@ pub fn default_sqlformat_options() -> FormatOptions<'static> {
         joins_as_top_level: true,
         indent: Indent::Spaces(6),
         uppercase: Some(true),
-        lines_between_queries: 4,
+        lines_between_queries: 2,
         inline: false,
         max_inline_block: 50,       // characters allowed to keep a parenthesized block inline
         max_inline_arguments: Some(40),
