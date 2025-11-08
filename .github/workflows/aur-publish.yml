@@ -19,7 +19,6 @@ permissions:
   contents: read
 
 env:
-  PKGNAME: tabular
   GIT_AUTHOR_NAME: Tabular CI
   GIT_AUTHOR_EMAIL: support@tabular.id
 
@@ -29,6 +28,16 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
+    strategy:
+      matrix:
+        package:
+          - name: tabular
+            manifest: PKGBUILD
+          - name: tabular-bin
+            manifest: aur/tabular-bin/PKGBUILD
+    env:
+      PKGNAME: ${{ matrix.package.name }}
+      PKGBUILD_PATH: ${{ matrix.package.manifest }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -53,8 +62,8 @@ jobs:
           PKGREL_INPUT: ${{ github.event.inputs.pkgrel }}
         run: |
           set -euo pipefail
-          ORIG_VER=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
-          ORIG_REL=$(sed -n 's/^pkgrel=//p' PKGBUILD | head -n1)
+          ORIG_VER=$(sed -n 's/^pkgver=//p' "${PKGBUILD_PATH}" | head -n1)
+          ORIG_REL=$(sed -n 's/^pkgrel=//p' "${PKGBUILD_PATH}" | head -n1)
 
           VERSION=""
           if [[ "${TAG_REF}" =~ ^refs/tags/v ]]; then
@@ -78,8 +87,8 @@ jobs:
             REL="${ORIG_REL}";
           fi
 
-          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
-          sed -i "s/^pkgrel=.*/pkgrel=${REL}/" PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "${PKGBUILD_PATH}"
+          sed -i "s/^pkgrel=.*/pkgrel=${REL}/" "${PKGBUILD_PATH}"
 
           echo "pkgver=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "pkgrel=${REL}" >> "$GITHUB_OUTPUT"
@@ -101,7 +110,7 @@ jobs:
         run: |
           set -euo pipefail
           git clone ssh://aur@aur.archlinux.org/${PKGNAME}.git aur-repo
-          cp PKGBUILD aur-repo/PKGBUILD
+          cp "${PKGBUILD_PATH}" aur-repo/PKGBUILD
           cd aur-repo
           makepkg --printsrcinfo > .SRCINFO
           if [[ -n "$(git status --porcelain)" ]]; then
