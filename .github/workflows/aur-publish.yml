@@ -1,0 +1,120 @@
+name: Publish AUR Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      pkgver:
+        description: 'Override pkgver (without leading v)' 
+        required: false
+        default: ''
+      pkgrel:
+        description: 'Override pkgrel (defaults to auto-calculated)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  PKGNAME: tabular
+  GIT_AUTHOR_NAME: Tabular CI
+  GIT_AUTHOR_EMAIL: support@tabular.id
+
+jobs:
+  aur:
+    if: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tooling
+        run: |
+          pacman -Sy --noconfirm --needed git openssh rsync
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "${GIT_AUTHOR_NAME}"
+          git config --global user.email "${GIT_AUTHOR_EMAIL}"
+
+      - name: Determine package version
+        id: pkg
+        env:
+          TAG_REF: ${{ github.ref }}
+          TAG_REF_NAME: ${{ github.ref_name }}
+          PKGVER_INPUT: ${{ github.event.inputs.pkgver }}
+          PKGREL_INPUT: ${{ github.event.inputs.pkgrel }}
+        run: |
+          set -euo pipefail
+          ORIG_VER=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
+          ORIG_REL=$(sed -n 's/^pkgrel=//p' PKGBUILD | head -n1)
+
+          VERSION=""
+          if [[ "${TAG_REF}" =~ ^refs/tags/v ]]; then
+            VERSION="${TAG_REF_NAME#v}"
+          elif [[ -n "${PKGVER_INPUT}" ]]; then
+            VERSION="${PKGVER_INPUT}"
+          else
+            VERSION="$ORIG_VER"
+          fi
+
+          if [[ -z "$VERSION" ]]; then
+            echo "Unable to determine pkgver." >&2
+            exit 1
+          fi
+
+          if [[ -n "${PKGREL_INPUT}" ]]; then
+            REL="${PKGREL_INPUT}"
+          elif [[ "$VERSION" != "$ORIG_VER" ]]; then
+            REL="1"
+          else
+            REL="${ORIG_REL}";
+          fi
+
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=${REL}/" PKGBUILD
+
+          echo "pkgver=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "pkgrel=${REL}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure SSH for AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -t rsa aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - name: Synchronise PKGBUILD into AUR repo
+        env:
+          PKGVER: ${{ steps.pkg.outputs.pkgver }}
+          PKGREL: ${{ steps.pkg.outputs.pkgrel }}
+        run: |
+          set -euo pipefail
+          git clone ssh://aur@aur.archlinux.org/${PKGNAME}.git aur-repo
+          cp PKGBUILD aur-repo/PKGBUILD
+          cd aur-repo
+          makepkg --printsrcinfo > .SRCINFO
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git add PKGBUILD .SRCINFO
+            git commit -m "Update to ${PKGVER}-${PKGREL}"
+            git push origin master
+          else
+            echo "No changes to push.";
+          fi
+
+      - name: Summary
+        env:
+          PKGVER: ${{ steps.pkg.outputs.pkgver }}
+          PKGREL: ${{ steps.pkg.outputs.pkgrel }}
+        run: |
+          echo "Published ${PKGNAME} ${PKGVER}-${PKGREL} to AUR" >> "$GITHUB_STEP_SUMMARY"

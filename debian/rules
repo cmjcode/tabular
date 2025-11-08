@@ -1,0 +1,39 @@
+#!/usr/bin/make -f
+
+export CARGO_HOME = $(CURDIR)/debian/cargo-home
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+
+%:
+	dh $@ --parallel
+
+override_dh_auto_configure:
+	rm -rf $(CARGO_HOME)
+	mkdir -p $(CARGO_HOME)
+	rm -rf debian/vendor
+	mkdir -p debian/vendor
+	tar -xf debian/vendor.tar.xz -C debian/vendor
+	printf '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "%s/debian/vendor"\n' "$(CURDIR)" > $(CARGO_HOME)/config.toml
+	dh_auto_configure
+
+override_dh_auto_build:
+	cargo build --release --locked --offline
+
+override_dh_auto_test:
+	@echo "Skipping tests (covered upstream)"
+
+override_dh_auto_install:
+	install -d debian/tabular/usr/bin
+	install -m755 target/release/tabular debian/tabular/usr/bin/tabular
+	install -d debian/tabular/usr/share/applications
+	install -m644 tabular.desktop debian/tabular/usr/share/applications/tabular.desktop
+	install -d debian/tabular/usr/share/icons/hicolor/512x512/apps
+	install -m644 assets/logo.png debian/tabular/usr/share/icons/hicolor/512x512/apps/tabular.png
+	install -d debian/tabular/usr/share/doc/tabular
+	install -m644 LICENSE debian/tabular/usr/share/doc/tabular/LICENSE
+	[ -f LICENSE-AGPL ] && install -m644 LICENSE-AGPL debian/tabular/usr/share/doc/tabular/LICENSE-AGPL || true
+
+override_dh_auto_clean:
+	cargo clean || true
+	rm -rf $(CARGO_HOME)
+	rm -rf debian/vendor
