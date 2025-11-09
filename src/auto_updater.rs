@@ -4,17 +4,26 @@ use std::path::PathBuf;
 
 #[derive(Clone)]
 pub struct AutoUpdater {
+    #[cfg(target_os = "macos")]
     temp_dir: PathBuf,
 }
 
 impl AutoUpdater {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let temp_dir = std::env::temp_dir().join("tabular_update");
+        #[cfg(target_os = "macos")]
+        {
+            let temp_dir = std::env::temp_dir().join("tabular_update");
 
-        // Create temp directory if it doesn't exist
-        std::fs::create_dir_all(&temp_dir)?;
+            // Create temp directory if it doesn't exist
+            std::fs::create_dir_all(&temp_dir)?;
 
-        Ok(AutoUpdater { temp_dir })
+            Ok(AutoUpdater { temp_dir })
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(AutoUpdater {})
+        }
     }
 
     /// Download and prepare update, then schedule replacement on next restart

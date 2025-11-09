@@ -226,36 +226,47 @@ pub fn open_release_page(update_info: &UpdateInfo) {
 
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open")
+        let status = std::process::Command::new("open")
             .arg(url)
-            .spawn()
+            .status()
             .unwrap_or_else(|e| {
                 error!("Failed to open URL on macOS: {}", e);
                 std::process::exit(1);
-            })
-            .wait();
+            });
+
+        if !status.success() {
+            error!("Failed to open URL on macOS, exit status: {:?}", status.code());
+        }
     }
 
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
+        let status = std::process::Command::new("xdg-open")
             .arg(url)
-            .spawn()
+            .status()
             .unwrap_or_else(|e| {
                 error!("Failed to open URL on Linux: {}", e);
                 std::process::exit(1);
             });
+
+        if !status.success() {
+            error!("Failed to open URL on Linux, exit status: {:?}", status.code());
+        }
     }
 
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        let status = std::process::Command::new("cmd")
             .args(["/c", "start", url])
-            .spawn()
+            .status()
             .unwrap_or_else(|e| {
                 error!("Failed to open URL on Windows: {}", e);
                 std::process::exit(1);
             });
+
+        if !status.success() {
+            error!("Failed to open URL on Windows, exit status: {:?}", status.code());
+        }
     }
 }
 

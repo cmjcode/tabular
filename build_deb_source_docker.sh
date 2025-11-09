@@ -5,7 +5,9 @@ set -euo pipefail
 # Requires Docker (or Podman with alias) available on the host Arch system.
 
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-IMAGE="${DEB_DOCKER_IMAGE:-ubuntu:noble}"
+IMAGE="${DEB_DOCKER_IMAGE:-tabular-deb-builder:noble}"
+DOCKERFILE_PATH="${PROJECT_ROOT}/docker/deb-builder/Dockerfile"
+FORCE_REBUILD="${FORCE_REBUILD:-0}"
 DEBFULLNAME="${DEBFULLNAME:-Tabular Team}"
 DEBEMAIL="${DEBEMAIL:-support@tabular.id}"
 
@@ -14,7 +16,16 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 1
 fi
 
-# Launch container, install build deps, and run dpkg-buildpackage.
+if [ "${FORCE_REBUILD}" = "1" ] || ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+    if [ ! -f "${DOCKERFILE_PATH}" ]; then
+        echo "Error: Dockerfile not found at ${DOCKERFILE_PATH}." >&2
+        exit 1
+    fi
+    echo "Building Docker image ${IMAGE} ..."
+    docker build -f "${DOCKERFILE_PATH}" -t "${IMAGE}" "${PROJECT_ROOT}"/docker/deb-builder
+fi
+
+# Launch container with the prebuilt toolchain and run dpkg-buildpackage.
 # Build artifacts (.dsc, .changes, .orig.tar.gz, .debian.tar.xz) will be written to PROJECT_ROOT/.. as usual.
 docker run --rm \
     -e DEBFULLNAME="${DEBFULLNAME}" \
@@ -24,22 +35,17 @@ docker run --rm \
     "${IMAGE}" \
     bash -ceu '
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update
-        apt-get install -y --no-install-recommends \
-            build-essential \
-            debhelper \
-            devscripts \
-            cargo \
-            rustc \
-            pkg-config \
-            libssl-dev \
-            libgtk-3-dev \
-            libxcb1-dev \
-            libxkbcommon-dev \
-            libglib2.0-dev \
-            libudev-dev \
-            libpango1.0-dev \
-            libatk1.0-dev
+
+        # Create an upstream orig tarball so dpkg-source (3.0 (quilt)) can find it.
+        # dpkg-source expects tabular_<upstream-version>.orig.tar.* in the parent dir
+        # of the source directory. /build is the mounted project; create the tar
+        # in / (the parent) and exclude debian/ so it's a clean upstream tarball.
+        PACKAGE_VERSION=$(sed -n 's/^tabular (\([^)]*\)).*/\1/p' /build/debian/changelog | head -n1)
+        UPSTREAM_VERSION=${PACKAGE_VERSION%%-*}
+        cd /
+        tar -czf /tabular_${UPSTREAM_VERSION}.orig.tar.gz -C /build --exclude=debian .
+        cd /build
+
         dpkg-buildpackage -S -sa -us -uc
     '
 
