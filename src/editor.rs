@@ -3998,11 +3998,7 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         {
             let upper = query.to_uppercase();
             // Broader detection: consider LIMIT/OFFSET/FETCH/TOP patterns without requiring trailing spaces
-            let has_pagination_clause = upper.contains("LIMIT")
-                || upper.contains("OFFSET")
-                || upper.contains(" FETCH ")
-                || upper.contains(" TOP ")
-                || upper.contains("TOP(");
+            let has_pagination_clause = connection::query_contains_pagination(&query);
 
             // Heuristic: auto-paginate when there's at least one SELECT statement in the batch (e.g., "USE ...; SELECT ...")
             let is_select_like = upper

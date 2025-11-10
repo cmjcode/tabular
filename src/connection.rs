@@ -21,6 +21,49 @@ use std::time::Instant;
 // Limit concurrent prefetch tasks to avoid overwhelming servers and local machine
 const PREFETCH_CONCURRENCY: usize = 6;
 
+fn keyword_in_sql(upper_sql: &str, keyword: &str) -> bool {
+    let bytes = upper_sql.as_bytes();
+    let key_bytes = keyword.as_bytes();
+    let mut search_from = 0;
+    while search_from + key_bytes.len() <= bytes.len() {
+        if let Some(rel_pos) = upper_sql[search_from..].find(keyword) {
+            let start = search_from + rel_pos;
+            let end = start + key_bytes.len();
+            let prev_is_ident = if start == 0 {
+                false
+            } else {
+                let prev = bytes[start - 1];
+                prev.is_ascii_alphanumeric() || prev == b'_' 
+            };
+            let next_is_ident = match bytes.get(end) {
+                Some(next) => next.is_ascii_alphanumeric() || *next == b'_',
+                None => false,
+            };
+            if !prev_is_ident && !next_is_ident {
+                return true;
+            }
+            search_from = end;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+pub fn query_contains_pagination(sql: &str) -> bool {
+    let upper = sql.to_uppercase();
+    let upper_ref = upper.as_str();
+    keyword_in_sql(upper_ref, "LIMIT")
+        || keyword_in_sql(upper_ref, "OFFSET")
+        || keyword_in_sql(upper_ref, "FETCH")
+        || keyword_in_sql(upper_ref, "TOP")
+        || upper_ref.contains("FETCH NEXT")
+        || upper_ref.contains("FETCH FIRST")
+        || upper_ref.contains("FETCH PRIOR")
+        || upper_ref.contains("FETCH ROW")
+        || upper_ref.contains("FETCH ROWS")
+}
+
 #[derive(Clone, Debug)]
 pub struct QueryExecutionOptions {
     pub connection_id: i64,
@@ -265,7 +308,9 @@ async fn execute_mysql_query_job(
             .to_uppercase()
             .starts_with("SELECT")
     {
-        let pagination_opt = if options.use_server_pagination {
+        let should_paginate = options.use_server_pagination
+            && !query_contains_pagination(statements_raw[0]);
+        let pagination_opt = if should_paginate {
             Some((options.current_page as u64, options.page_size as u64))
         } else {
             None
@@ -694,7 +739,9 @@ async fn execute_postgres_query_job(
             .to_uppercase()
             .starts_with("SELECT")
     {
-        let pagination_opt = if options.use_server_pagination {
+        let should_paginate = options.use_server_pagination
+            && !query_contains_pagination(statements_raw[0]);
+        let pagination_opt = if should_paginate {
             Some((options.current_page as u64, options.page_size as u64))
         } else {
             None
@@ -845,7 +892,9 @@ async fn execute_sqlite_query_job(
             .to_uppercase()
             .starts_with("SELECT")
     {
-        let pagination_opt = if options.use_server_pagination {
+        let should_paginate = options.use_server_pagination
+            && !query_contains_pagination(statements_raw[0]);
+        let pagination_opt = if should_paginate {
             Some((options.current_page as u64, options.page_size as u64))
         } else {
             None
@@ -1428,18 +1477,13 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
     let trimmed_query = query.trim();
 
     // Don't add LIMIT/TOP if the entire query already has LIMIT/TOP/OFFSET/FETCH
-    // Detect regardless of whitespace/newlines
-    let upper_query = trimmed_query.to_uppercase();
-    if upper_query.contains("LIMIT")
-        || upper_query.contains("OFFSET")
-        || upper_query.contains(" FETCH ")
-        || upper_query.contains(" TOP ")
-        || upper_query.contains("TOP(")
-    {
+    // Detect regardless of whitespace/newlines using robust keyword boundaries
+    if query_contains_pagination(trimmed_query) {
         return trimmed_query.to_string();
     }
 
     // Only operate on simple SELECT queries
+    let upper_query = trimmed_query.to_uppercase();
     if !upper_query.starts_with("SELECT") {
         return trimmed_query.to_string();
     }
@@ -1509,11 +1553,7 @@ pub(crate) fn execute_query_with_connection(
         // rewrite to paginated query and set pagination state (handles cases like "USE db; SELECT ...").
         {
             let upper = final_query.to_uppercase();
-            let has_pagination_clause = upper.contains("LIMIT")
-                || upper.contains("OFFSET")
-                || upper.contains(" FETCH ")
-                || upper.contains(" TOP ")
-                || upper.contains("TOP(");
+            let has_pagination_clause = query_contains_pagination(&final_query);
             let has_select_stmt = upper
                 .split(';')
                 .any(|s| s.trim_start().starts_with("SELECT"));
@@ -1619,7 +1659,8 @@ pub(crate) fn execute_table_query_sync(
                         let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
                         #[cfg(feature = "query_ast")]
                         let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
-                            let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
+                            let should_paginate = tabular.use_server_pagination && !query_contains_pagination(statements[0]);
+                            let pagination_opt = if should_paginate { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
                             match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
                                 Ok((new_sql, hdrs)) => {
                                     if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs.clone()); }
@@ -1914,7 +1955,8 @@ pub(crate) fn execute_table_query_sync(
                         let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
                         #[cfg(feature = "query_ast")]
                         let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
-                            let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
+                            let should_paginate = tabular.use_server_pagination && !query_contains_pagination(statements[0]);
+                            let pagination_opt = if should_paginate { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
                             match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
                                 Ok((new_sql, hdrs)) => {
                                     if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs.clone()); }
@@ -2038,7 +2080,8 @@ pub(crate) fn execute_table_query_sync(
                         let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
                         #[cfg(feature = "query_ast")]
                         let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
-                            let pagination_opt = if tabular.use_server_pagination { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
+                            let should_paginate = tabular.use_server_pagination && !query_contains_pagination(statements[0]);
+                            let pagination_opt = if should_paginate { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
                             match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
                                 Ok((new_sql, hdrs)) => { if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs); } vec![new_sql] },
                                 Err(_)=> statements.iter().map(|s| s.to_string()).collect(),
