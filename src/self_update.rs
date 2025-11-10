@@ -235,7 +235,10 @@ pub fn open_release_page(update_info: &UpdateInfo) {
             });
 
         if !status.success() {
-            error!("Failed to open URL on macOS, exit status: {:?}", status.code());
+            error!(
+                "Failed to open URL on macOS, exit status: {:?}",
+                status.code()
+            );
         }
     }
 
@@ -250,7 +253,10 @@ pub fn open_release_page(update_info: &UpdateInfo) {
             });
 
         if !status.success() {
-            error!("Failed to open URL on Linux, exit status: {:?}", status.code());
+            error!(
+                "Failed to open URL on Linux, exit status: {:?}",
+                status.code()
+            );
         }
     }
 
@@ -265,7 +271,10 @@ pub fn open_release_page(update_info: &UpdateInfo) {
             });
 
         if !status.success() {
-            error!("Failed to open URL on Windows, exit status: {:?}", status.code());
+            error!(
+                "Failed to open URL on Windows, exit status: {:?}",
+                status.code()
+            );
         }
     }
 }

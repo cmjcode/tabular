@@ -90,6 +90,8 @@ pub struct Tabular {
     pub query_result_sender: Sender<connection::QueryResultMessage>,
     pub query_result_receiver: Receiver<connection::QueryResultMessage>,
     pub active_query_jobs: std::collections::HashMap<u64, connection::QueryJobStatus>,
+    pub active_query_handles: std::collections::HashMap<u64, tokio::task::JoinHandle<()>>,
+    pub cancelled_query_jobs: std::collections::HashMap<u64, std::time::Instant>,
     pub pending_paginated_jobs: std::collections::HashSet<u64>,
     pub next_query_job_id: u64,
     // Background refresh status tracking
@@ -573,7 +575,7 @@ impl Tabular {
             current_table_data: Vec::new(),
             current_table_headers: Vec::new(),
             current_table_name: String::new(),
-        current_object_ddl: None,
+            current_object_ddl: None,
             current_connection_id: None,
             current_page: 0,
             page_size: 500, // Default 500 rows per page
@@ -593,6 +595,8 @@ impl Tabular {
             query_result_sender,
             query_result_receiver,
             active_query_jobs: std::collections::HashMap::new(),
+            active_query_handles: std::collections::HashMap::new(),
+            cancelled_query_jobs: std::collections::HashMap::new(),
             pending_paginated_jobs: std::collections::HashSet::new(),
             next_query_job_id: 1,
             refreshing_connections: std::collections::HashSet::new(),
@@ -890,6 +894,18 @@ impl Tabular {
     }
 
     fn handle_query_result_message(&mut self, message: connection::QueryResultMessage) {
+        self.prune_cancelled_jobs();
+        self.active_query_handles.remove(&message.job_id);
+
+        if self.cancelled_query_jobs.remove(&message.job_id).is_some() {
+            self.pending_paginated_jobs.remove(&message.job_id);
+            if self.active_query_jobs.is_empty() {
+                self.query_execution_in_progress = false;
+                self.extend_query_icon_hold();
+            }
+            return;
+        }
+
         if let Some(status) = self.active_query_jobs.get_mut(&message.job_id) {
             status.completed = true;
         }
@@ -1472,13 +1488,15 @@ impl Tabular {
     }
 
     fn render_active_query_jobs_overlay(&mut self, ctx: &egui::Context) {
+        self.prune_cancelled_jobs();
         if self.active_query_jobs.is_empty() {
             return;
         }
 
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
 
-        let mut jobs: Vec<&connection::QueryJobStatus> = self.active_query_jobs.values().collect();
+        let mut jobs: Vec<connection::QueryJobStatus> =
+            self.active_query_jobs.values().cloned().collect();
         jobs.sort_by_key(|status| status.started_at);
 
         let count = jobs.len();
@@ -1551,18 +1569,91 @@ impl Tabular {
                                     preview.trim()
                                 );
 
-                                let response = ui
-                                    .add(
+                                let job_id = status.job_id;
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+
+                                    let response = ui.add(
                                         egui::Label::new(
                                             egui::RichText::new(chip_text.clone()).size(11.0),
                                         )
                                         .wrap(),
                                     );
-                                response.on_hover_text(status.query_preview.clone());
+                                    response.on_hover_text(status.query_preview.clone());
+
+                                    let cancel_button = ui.add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Cancel")
+                                                .size(11.0)
+                                                .color(egui::Color32::from_rgb(230, 80, 60)),
+                                        )
+                                        .min_size(egui::vec2(64.0, 22.0)),
+                                    );
+
+                                    if cancel_button.clicked()
+                                        && self.cancel_active_query_job(job_id)
+                                    {
+                                        ctx.request_repaint();
+                                    }
+                                });
                             }
                         });
                     });
             });
+    }
+
+    fn cancel_active_query_job(&mut self, job_id: u64) -> bool {
+        self.prune_cancelled_jobs();
+
+        let preview_text = self
+            .active_query_jobs
+            .get(&job_id)
+            .map(|status| status.query_preview.replace('\n', " "));
+
+        let mut cancelled = false;
+        if let Some(handle) = self.active_query_handles.remove(&job_id) {
+            handle.abort();
+            cancelled = true;
+        }
+
+        let had_status = self.active_query_jobs.remove(&job_id).is_some();
+        let was_paginated = self.pending_paginated_jobs.remove(&job_id);
+
+        if had_status || was_paginated || cancelled {
+            self.cancelled_query_jobs
+                .insert(job_id, std::time::Instant::now());
+
+            if self.active_query_jobs.is_empty() {
+                self.query_execution_in_progress = false;
+                self.extend_query_icon_hold();
+            }
+
+            if !was_paginated {
+                if let Some(preview) = preview_text.filter(|p| !p.is_empty()) {
+                    let truncated: String = if preview.chars().count() > 80 {
+                        preview.chars().take(80).collect::<String>() + "…"
+                    } else {
+                        preview
+                    };
+                    self.error_message = format!("Query cancelled: {}", truncated.trim());
+                } else {
+                    self.error_message = "Query cancelled.".to_string();
+                }
+                self.show_error_message = true;
+                self.current_table_name = "Query cancelled".to_string();
+            }
+
+            true
+        } else {
+            false
+        }
+    }
+
+    fn prune_cancelled_jobs(&mut self) {
+        let now = std::time::Instant::now();
+        let ttl = std::time::Duration::from_secs(30);
+        self.cancelled_query_jobs
+            .retain(|_, timestamp| now.duration_since(*timestamp) < ttl);
     }
 
     fn render_tree(
@@ -1611,7 +1702,7 @@ impl Tabular {
         let mut expansion_requests = Vec::new();
         let mut tables_to_expand = Vec::new();
         let mut context_menu_requests = Vec::new();
-    let mut table_click_requests: Vec<(i64, String, models::enums::NodeType)> = Vec::new();
+        let mut table_click_requests: Vec<(i64, String, models::enums::NodeType)> = Vec::new();
         let mut connection_click_requests = Vec::new();
         let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> =
             Vec::new();
@@ -1619,7 +1710,7 @@ impl Tabular {
         let mut alter_table_requests: Vec<(i64, Option<String>, String)> = Vec::new();
         let mut query_files_to_open = Vec::new();
         let mut create_table_requests: Vec<(i64, Option<String>)> = Vec::new();
-    let mut stored_procedure_click_requests: Vec<(i64, Option<String>, String)> = Vec::new();
+        let mut stored_procedure_click_requests: Vec<(i64, Option<String>, String)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -1779,13 +1870,10 @@ impl Tabular {
                 .find(|c| c.id == Some(conn_id))
                 .cloned()
             {
-                let script = connection::fetch_procedure_definition(
-                    &conn,
-                    db_name.as_deref(),
-                    &proc_name,
-                )
-                // If we can't fetch, just show the procedure name (no template as requested)
-                .unwrap_or_else(|| proc_name.clone());
+                let script =
+                    connection::fetch_procedure_definition(&conn, db_name.as_deref(), &proc_name)
+                        // If we can't fetch, just show the procedure name (no template as requested)
+                        .unwrap_or_else(|| proc_name.clone());
 
                 let title = format!("Procedure: {}", proc_name);
                 editor::create_new_tab_with_connection_and_database(
@@ -1796,10 +1884,9 @@ impl Tabular {
                     db_name.clone(),
                 );
                 // Ensure the active tab stores selected database context for later executions
-                if let (Some(dbn), Some(active_tab)) = (
-                    db_name,
-                    self.query_tabs.get_mut(self.active_tab_index),
-                ) {
+                if let (Some(dbn), Some(active_tab)) =
+                    (db_name, self.query_tabs.get_mut(self.active_tab_index))
+                {
                     active_tab.database_name = Some(dbn);
                 }
                 // Focus Query view
@@ -2379,16 +2466,12 @@ impl Tabular {
                     }
                     _ => {
                         if !is_view
-                            && self.table_bottom_view
-                                == models::structs::TableBottomView::Query
+                            && self.table_bottom_view == models::structs::TableBottomView::Query
                         {
-                            self.table_bottom_view =
-                                models::structs::TableBottomView::Data;
+                            self.table_bottom_view = models::structs::TableBottomView::Data;
                         }
                         self.current_object_ddl = None;
-                        if let Some(active_tab) =
-                            self.query_tabs.get_mut(self.active_tab_index)
-                        {
+                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
                             active_tab.object_ddl = None;
                         }
                         // SQL databases - use regular SELECT query with proper database context
@@ -2747,7 +2830,6 @@ impl Tabular {
                             }
                         }
                     }
-
                 };
 
                 if is_view {
@@ -2986,8 +3068,8 @@ impl Tabular {
         let has_children = !node.children.is_empty();
         let mut expansion_request = None;
         let mut table_expansion = None;
-    let mut context_menu_request = None;
-    let mut table_click_request: Option<(i64, String, models::enums::NodeType)> = None;
+        let mut context_menu_request = None;
+        let mut table_click_request: Option<(i64, String, models::enums::NodeType)> = None;
         let mut folder_removal_mapping: Option<(i64, String)> = None;
         let mut connection_click_request = None;
         let mut query_file_to_open = None;
@@ -2998,9 +3080,9 @@ impl Tabular {
         let mut create_index_request: Option<(i64, Option<String>, Option<String>)> = None;
         let mut alter_table_request: Option<(i64, Option<String>, String)> = None;
         let mut drop_collection_request: Option<(i64, String, String)> = None;
-    let mut drop_table_request: Option<(i64, String, String, String)> = None;
-    let mut create_table_request: Option<(i64, Option<String>)> = None;
-    let mut stored_procedure_click_request: Option<(i64, Option<String>, String)> = None;
+        let mut drop_table_request: Option<(i64, String, String, String)> = None;
+        let mut create_table_request: Option<(i64, Option<String>)> = None;
+        let mut stored_procedure_click_request: Option<(i64, Option<String>, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -3936,7 +4018,8 @@ impl Tabular {
                         if let Some(conn_id) = node.connection_id {
                             let actual_table_name =
                                 node.table_name.as_ref().unwrap_or(&node.name).clone();
-                            table_click_request = Some((conn_id, actual_table_name, node.node_type.clone()));
+                            table_click_request =
+                                Some((conn_id, actual_table_name, node.node_type.clone()));
                         }
                     }
                     // DBA quick views: emit a click request to be handled by parent (needs self)
@@ -4024,11 +4107,8 @@ impl Tabular {
                     }
                     models::enums::NodeType::StoredProcedure => {
                         if let Some(conn_id) = node.connection_id {
-                            stored_procedure_click_request = Some((
-                                conn_id,
-                                node.database_name.clone(),
-                                node.name.clone(),
-                            ));
+                            stored_procedure_click_request =
+                                Some((conn_id, node.database_name.clone(), node.name.clone()));
                         }
                     }
                     _ => {}
@@ -5136,7 +5216,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                             info!("   Tables count: {} -> {}", before_count, after_count);
                             return true;
                         }
-
                     }
                 }
             }
@@ -7653,19 +7732,21 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     self.active_query_jobs.insert(job_id, status);
                     self.pending_paginated_jobs.insert(job_id);
 
-                    if let Err(err) =
-                        connection::spawn_query_job(self, job, self.query_result_sender.clone())
-                    {
-                        debug!(
-                            "⚠️ Failed to spawn paginated query job {:?}. Falling back to sync execution.",
-                            err
-                        );
-                        self.active_query_jobs.remove(&job_id);
-                        self.pending_paginated_jobs.remove(&job_id);
-                    } else {
-                        self.current_table_name =
-                            format!("Loading page {}…", self.current_page.saturating_add(1));
-                        return;
+                    match connection::spawn_query_job(self, job, self.query_result_sender.clone()) {
+                        Ok(handle) => {
+                            self.active_query_handles.insert(job_id, handle);
+                            self.current_table_name =
+                                format!("Loading page {}…", self.current_page.saturating_add(1));
+                            return;
+                        }
+                        Err(err) => {
+                            debug!(
+                                "⚠️ Failed to spawn paginated query job {:?}. Falling back to sync execution.",
+                                err
+                            );
+                            self.active_query_jobs.remove(&job_id);
+                            self.pending_paginated_jobs.remove(&job_id);
+                        }
                     }
                 }
                 Err(err) => {

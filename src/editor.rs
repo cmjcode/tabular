@@ -4,7 +4,7 @@ use egui::text::{CCursor, CCursorRange};
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
 // syntax highlighting module temporarily disabled
 use log::debug;
-use sqlformat::{format as sqlfmt, QueryParams};
+use sqlformat::{QueryParams, format as sqlfmt};
 
 use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
@@ -3332,7 +3332,9 @@ pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui
     };
     // Try to read selection from egui state first (in chars), then map to bytes
     let text_len = tabular.editor.text.len();
-    let (start_b, end_b) = if let Some(rng) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+    let (start_b, end_b) = if let Some(rng) =
+        crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+    {
         let s_b = to_b(&tabular.editor.text, rng.start).min(text_len);
         let e_b = to_b(&tabular.editor.text, rng.end).min(text_len);
         (s_b.min(e_b), s_b.max(e_b))
@@ -3343,7 +3345,11 @@ pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui
         (s.min(e), s.max(e))
     };
 
-    let (range_start, range_end) = if start_b < end_b { (start_b, end_b) } else { (0, text_len) };
+    let (range_start, range_end) = if start_b < end_b {
+        (start_b, end_b)
+    } else {
+        (0, text_len)
+    };
     let original = &tabular.editor.text[range_start..range_end];
     // Apply sqlformat with sane defaults: 4-space indent, uppercase keywords, 1 line between queries
     let opts = crate::query_tools::default_sqlformat_options();
@@ -4058,22 +4064,25 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
                 };
                 tabular.active_query_jobs.insert(job_id, status);
 
-                if let Err(err) =
-                    connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone())
+                match connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone())
                 {
-                    tabular.active_query_jobs.remove(&job_id);
-                    debug!("Failed to spawn async job: {:?}", err);
-                    let result = connection::execute_query_with_connection(
-                        tabular,
-                        connection_id,
-                        query.clone(),
-                    );
+                    Ok(handle) => {
+                        tabular.active_query_handles.insert(job_id, handle);
+                        tabular.current_table_name = "Running query…".to_string();
+                    }
+                    Err(err) => {
+                        tabular.active_query_jobs.remove(&job_id);
+                        debug!("Failed to spawn async job: {:?}", err);
+                        let result = connection::execute_query_with_connection(
+                            tabular,
+                            connection_id,
+                            query.clone(),
+                        );
 
-                    debug!("Query execution result: {:?}", result.is_some());
+                        debug!("Query execution result: {:?}", result.is_some());
 
-                    process_query_result(tabular, &query, connection_id, result);
-                } else {
-                    tabular.current_table_name = "Running query…".to_string();
+                        process_query_result(tabular, &query, connection_id, result);
+                    }
                 }
             }
             Err(err) => {

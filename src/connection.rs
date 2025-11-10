@@ -156,18 +156,18 @@ pub(crate) fn spawn_query_job(
     tabular: &mut Tabular,
     job: QueryJob,
     sender: std::sync::mpsc::Sender<QueryResultMessage>,
-) -> Result<(), QueryPreparationError> {
+) -> Result<tokio::task::JoinHandle<()>, QueryPreparationError> {
     let runtime = tabular
         .runtime
         .clone()
         .ok_or(QueryPreparationError::RuntimeUnavailable)?;
 
-    runtime.spawn(async move {
+    let handle = runtime.spawn(async move {
         let result = execute_query_job(job).await;
         let _ = sender.send(result);
     });
 
-    Ok(())
+    Ok(handle)
 }
 
 async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
@@ -4641,7 +4641,6 @@ pub(crate) fn fetch_view_definition(
         }
     })
 }
-
 
 /// Fetch stored procedure definition (raw) and return it unchanged.
 /// - For MsSQL: returns the CREATE PROCEDURE text from OBJECT_DEFINITION
