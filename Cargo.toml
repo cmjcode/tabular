@@ -1,8 +1,6 @@
-cargo-features = ["edition2024"]
-
 [package]
 name = "tabular"
-version = "0.5.15"
+version = "0.5.16"
 edition = "2024"
 
 [lib]

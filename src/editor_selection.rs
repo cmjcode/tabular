@@ -57,7 +57,7 @@ impl MultiSelection {
         let regs = self.regions.clone();
         let mut out: Vec<SelRegion> = Vec::with_capacity(regs.len());
         for r in regs {
-            let p = r.max();
+            let p = r.min();
             out.push(SelRegion::new(p, p, None));
         }
         sort_and_dedup(&mut out);

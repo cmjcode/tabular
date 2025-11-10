@@ -1129,11 +1129,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     tabular.selection_start = start;
                     tabular.selection_end = caret;
                     tabular.cursor_position = caret;
+                    tabular.pending_cursor_set = Some(caret);
                 } else {
                     let caret = tabular.cursor_position.min(tabular.editor.text.len());
                     tabular.selection_start = caret;
                     tabular.selection_end = caret;
                     tabular.cursor_position = caret;
+                    tabular.pending_cursor_set = Some(caret);
                 }
                 tabular.selected_text.clear();
                 tabular.selection_force_clear = true;
@@ -1185,6 +1187,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     tabular.cursor_position = start_b;
                     tabular.selection_start = start_b;
                     tabular.selection_end = start_b;
+                    tabular.pending_cursor_set = Some(start_b);
                     tabular.selected_text.clear();
                     // Mark for hard selection clear enforcement next frame
                     tabular.selection_force_clear = true;
