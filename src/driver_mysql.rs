@@ -113,6 +113,28 @@ fn looks_textual(bytes: &[u8]) -> bool {
     (printable as f32) / (bytes.len() as f32) > 0.85
 }
 
+fn looks_unicode_printable(text: &str) -> bool {
+    if text.is_empty() {
+        return true;
+    }
+
+    let mut printable = 0usize;
+    let mut total = 0usize;
+
+    for ch in text.chars() {
+        total += 1;
+        if !ch.is_control() || matches!(ch, '\n' | '\r' | '\t') {
+            printable += 1;
+        }
+    }
+
+    if total == 0 {
+        return true;
+    }
+
+    (printable as f32) / (total as f32) > 0.85
+}
+
 fn bytes_to_string_or_marker(bytes: Vec<u8>) -> String {
     // Trim trailing NULs often present in MySQL BINARY/VARBINARY padding
     let mut b = bytes;
@@ -123,18 +145,29 @@ fn bytes_to_string_or_marker(bytes: Vec<u8>) -> String {
         return String::new();
     }
 
-    if looks_textual(&b) {
-        String::from_utf8_lossy(&b).into_owned()
-    } else {
-        // Show as hex instead of a vague [BINARY:n bytes]
-        let mut s = String::with_capacity(2 + b.len() * 2);
-        s.push_str("0x");
-        for byte in &b {
-            use std::fmt::Write as _;
-            let _ = write!(&mut s, "{:02X}", byte);
+    if let Ok(text) = String::from_utf8(b.clone()) {
+        if looks_unicode_printable(&text) {
+            return text;
         }
-        s
     }
+
+    let lossy = String::from_utf8_lossy(&b);
+    if !lossy.contains('\u{FFFD}') && looks_unicode_printable(lossy.as_ref()) {
+        return lossy.into_owned();
+    }
+
+    if looks_textual(&b) {
+        return lossy.into_owned();
+    }
+
+    // Show as hex instead of a vague [BINARY:n bytes]
+    let mut s = String::with_capacity(2 + b.len() * 2);
+    s.push_str("0x");
+    for byte in &b {
+        use std::fmt::Write as _;
+        let _ = write!(&mut s, "{:02X}", byte);
+    }
+    s
 }
 
 // Helper function to convert MySQL rows to Vec<Vec<String>> with proper type checking
