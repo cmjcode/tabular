@@ -33,7 +33,7 @@ fn keyword_in_sql(upper_sql: &str, keyword: &str) -> bool {
                 false
             } else {
                 let prev = bytes[start - 1];
-                prev.is_ascii_alphanumeric() || prev == b'_' 
+                prev.is_ascii_alphanumeric() || prev == b'_'
             };
             let next_is_ident = match bytes.get(end) {
                 Some(next) => next.is_ascii_alphanumeric() || *next == b'_',
@@ -308,8 +308,8 @@ async fn execute_mysql_query_job(
             .to_uppercase()
             .starts_with("SELECT")
     {
-        let should_paginate = options.use_server_pagination
-            && !query_contains_pagination(statements_raw[0]);
+        let should_paginate =
+            options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
         let pagination_opt = if should_paginate {
             Some((options.current_page as u64, options.page_size as u64))
         } else {
@@ -739,8 +739,8 @@ async fn execute_postgres_query_job(
             .to_uppercase()
             .starts_with("SELECT")
     {
-        let should_paginate = options.use_server_pagination
-            && !query_contains_pagination(statements_raw[0]);
+        let should_paginate =
+            options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
         let pagination_opt = if should_paginate {
             Some((options.current_page as u64, options.page_size as u64))
         } else {
@@ -892,8 +892,8 @@ async fn execute_sqlite_query_job(
             .to_uppercase()
             .starts_with("SELECT")
     {
-        let should_paginate = options.use_server_pagination
-            && !query_contains_pagination(statements_raw[0]);
+        let should_paginate =
+            options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
         let pagination_opt = if should_paginate {
             Some((options.current_page as u64, options.page_size as u64))
         } else {

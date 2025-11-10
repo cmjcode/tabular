@@ -145,10 +145,10 @@ fn bytes_to_string_or_marker(bytes: Vec<u8>) -> String {
         return String::new();
     }
 
-    if let Ok(text) = String::from_utf8(b.clone()) {
-        if looks_unicode_printable(&text) {
-            return text;
-        }
+    if let Ok(text) = String::from_utf8(b.clone())
+        && looks_unicode_printable(&text)
+    {
+        return text;
     }
 
     let lossy = String::from_utf8_lossy(&b);
