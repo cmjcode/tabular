@@ -1499,17 +1499,6 @@ impl Tabular {
         } else {
             egui::Color32::from_rgb(225, 190, 170)
         };
-        let chip_fill = if visuals.dark_mode {
-            egui::Color32::from_rgb(58, 58, 58)
-        } else {
-            egui::Color32::from_rgb(255, 255, 255)
-        };
-        let chip_stroke = if visuals.dark_mode {
-            egui::Color32::from_rgb(96, 96, 96)
-        } else {
-            egui::Color32::from_rgb(210, 210, 210)
-        };
-
         egui::Area::new(egui::Id::new("active_query_jobs_overlay"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
@@ -1531,8 +1520,9 @@ impl Tabular {
 
                         ui.add_space(4.0);
 
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                        ui.vertical(|ui| {
+                            ui.set_max_width(420.0);
+                            ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
                             for status in jobs.iter() {
                                 let connection_label = self
                                     .get_connection_name(status.connection_id)
@@ -1561,18 +1551,13 @@ impl Tabular {
                                     preview.trim()
                                 );
 
-                                let response = egui::Frame::default()
-                                    .fill(chip_fill)
-                                    .stroke(egui::Stroke::new(1.0, chip_stroke))
-                                    .corner_radius(egui::CornerRadius::same(4))
-                                    .inner_margin(egui::Margin::symmetric(8, 4))
-                                    .show(ui, |chip_ui| {
-                                        chip_ui.label(
+                                let response = ui
+                                    .add(
+                                        egui::Label::new(
                                             egui::RichText::new(chip_text.clone()).size(11.0),
-                                        );
-                                    })
-                                    .response;
-
+                                        )
+                                        .wrap(),
+                                    );
                                 response.on_hover_text(status.query_preview.clone());
                             }
                         });
