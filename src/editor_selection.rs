@@ -259,6 +259,101 @@ impl MultiSelection {
         sort_and_dedup(&mut updated);
         self.regions = updated;
     }
+    /// Extend each region's head toward the start of the grapheme to the left while keeping anchors.
+    pub fn extend_left(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let anchor = r.anchor.min(len);
+            let head = r.head.min(len);
+            let target = prev_grapheme_boundary(text, head);
+            updated.push(SelRegion::new(anchor, target, None));
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
+    /// Extend each region's head toward the next grapheme on the right while keeping anchors.
+    pub fn extend_right(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let anchor = r.anchor.min(len);
+            let head = r.head.min(len);
+            let target = next_grapheme_boundary(text, head);
+            updated.push(SelRegion::new(anchor, target, None));
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
+    /// Extend each region's head one line up, preserving anchors.
+    pub fn extend_up(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let anchor = r.anchor.min(len);
+            let head = r.head.min(len);
+            let current_start = line_start(text, head);
+            let current_column = column_at(text, current_start, head);
+            if let Some(prev_start) = previous_line_start(text, current_start) {
+                let prev_end = line_end(text, prev_start);
+                let prev_len = text[prev_start..prev_end].chars().count();
+                let target_column = current_column.min(prev_len);
+                let target = column_to_byte(text, prev_start, prev_end, target_column);
+                updated.push(SelRegion::new(anchor, target, None));
+            } else {
+                let target = current_start;
+                updated.push(SelRegion::new(anchor, target, None));
+            }
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
+    /// Extend each region's head one line down, preserving anchors.
+    pub fn extend_down(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let anchor = r.anchor.min(len);
+            let head = r.head.min(len);
+            let current_start = line_start(text, head);
+            let current_end = line_end(text, head);
+            let current_column = column_at(text, current_start, head);
+            if current_end >= len {
+                updated.push(SelRegion::new(anchor, len, None));
+            } else {
+                let mut next_start = current_end;
+                if next_start < len && text.as_bytes()[next_start] == b'\n' {
+                    next_start += 1;
+                }
+                if next_start > len {
+                    next_start = len;
+                }
+                if next_start >= len {
+                    updated.push(SelRegion::new(anchor, len, None));
+                } else {
+                    let next_end = line_end(text, next_start);
+                    let next_len = text[next_start..next_end].chars().count();
+                    let target_column = current_column.min(next_len);
+                    let target = column_to_byte(text, next_start, next_end, target_column);
+                    updated.push(SelRegion::new(anchor, target, None));
+                }
+            }
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
     /// Extend each caret selection towards the start of the line while preserving anchors.
     pub fn extend_line_start(&mut self, text: &str) {
         if self.regions.is_empty() {

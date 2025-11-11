@@ -4,7 +4,7 @@ use egui::text::{CCursor, CCursorRange};
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
 // syntax highlighting module temporarily disabled
 use log::debug;
-use sqlformat::{QueryParams, format as sqlfmt};
+use sqlformat::{format as sqlfmt, QueryParams};
 
 use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
@@ -110,7 +110,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.is_modified = false;
             tab.connection_id = None; // Clear connection as well
             tab.database_name = None; // Clear database as well
-            // Clear per-tab result state as well
+                                      // Clear per-tab result state as well
             tab.result_headers.clear();
             tab.result_rows.clear();
             tab.result_all_rows.clear();
@@ -837,6 +837,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut multi_nav_end = false;
     let mut multi_nav_home_extend = false;
     let mut multi_nav_end_extend = false;
+    let mut multi_extend_left = false;
+    let mut multi_extend_right = false;
+    let mut multi_extend_up = false;
+    let mut multi_extend_down = false;
     let mut single_nav_home = false;
     let mut single_nav_end = false;
     let mut single_nav_home_extend = false;
@@ -1690,12 +1694,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     modifiers,
                     ..
                 } if tabular.multi_selection.len() > 1
-                    && !modifiers.shift
                     && !modifiers.alt
                     && !modifiers.ctrl
                     && !modifiers.command =>
                 {
-                    multi_nav_left = true;
+                    if modifiers.shift {
+                        multi_extend_left = true;
+                    } else {
+                        multi_nav_left = true;
+                    }
                 }
                 egui::Event::Key {
                     key: egui::Key::ArrowRight,
@@ -1712,12 +1719,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     modifiers,
                     ..
                 } if tabular.multi_selection.len() > 1
-                    && !modifiers.shift
                     && !modifiers.alt
                     && !modifiers.ctrl
                     && !modifiers.command =>
                 {
-                    multi_nav_right = true;
+                    if modifiers.shift {
+                        multi_extend_right = true;
+                    } else {
+                        multi_nav_right = true;
+                    }
                 }
                 egui::Event::Key {
                     key: egui::Key::ArrowUp,
@@ -1741,12 +1751,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     modifiers,
                     ..
                 } if tabular.multi_selection.len() > 1
-                    && !modifiers.shift
                     && !modifiers.alt
                     && !modifiers.ctrl
                     && !modifiers.command =>
                 {
-                    multi_nav_up = true;
+                    if modifiers.shift {
+                        multi_extend_up = true;
+                    } else {
+                        multi_nav_up = true;
+                    }
                 }
                 egui::Event::Key {
                     key: egui::Key::ArrowDown,
@@ -1754,12 +1767,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     modifiers,
                     ..
                 } if tabular.multi_selection.len() > 1
-                    && !modifiers.shift
                     && !modifiers.alt
                     && !modifiers.ctrl
                     && !modifiers.command =>
                 {
-                    multi_nav_down = true;
+                    if modifiers.shift {
+                        multi_extend_down = true;
+                    } else {
+                        multi_nav_down = true;
+                    }
                 }
                 egui::Event::Key {
                     key: egui::Key::Home,
@@ -1965,6 +1981,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         || multi_nav_end
         || multi_nav_home_extend
         || multi_nav_end_extend
+        || multi_extend_left
+        || multi_extend_right
+        || multi_extend_up
+        || multi_extend_down
     {
         let id = egui::Id::new("sql_editor");
         if multi_nav_left {
@@ -1975,6 +1995,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tabular.multi_selection.move_up(&tabular.editor.text);
         } else if multi_nav_down {
             tabular.multi_selection.move_down(&tabular.editor.text);
+        } else if multi_extend_left {
+            tabular.multi_selection.extend_left(&tabular.editor.text);
+        } else if multi_extend_right {
+            tabular.multi_selection.extend_right(&tabular.editor.text);
+        } else if multi_extend_up {
+            tabular.multi_selection.extend_up(&tabular.editor.text);
+        } else if multi_extend_down {
+            tabular.multi_selection.extend_down(&tabular.editor.text);
         } else if multi_nav_home_extend {
             tabular
                 .multi_selection
@@ -3905,7 +3933,8 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
                                     egui::RichText::new(*name)
                                         .size(16.0)
                                         .strong()
-                                        .color(egui::Color32::from_rgb(0, 150, 255)) // Blue for current
+                                        .color(egui::Color32::from_rgb(0, 150, 255))
+                                // Blue for current
                                 } else {
                                     // Normal text for other themes
                                     egui::RichText::new(*name).size(16.0)
