@@ -837,6 +837,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut multi_nav_end = false;
     let mut multi_nav_home_extend = false;
     let mut multi_nav_end_extend = false;
+    let mut single_nav_home = false;
+    let mut single_nav_end = false;
+    let mut single_nav_home_extend = false;
+    let mut single_nav_end_extend = false;
     let mut word_nav_shift = false;
     let mut move_line_up = false;
     let mut move_line_down = false;
@@ -1774,6 +1778,22 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     }
                 }
                 egui::Event::Key {
+                    key: egui::Key::Home,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if tabular.multi_selection.len() <= 1
+                    && !modifiers.alt
+                    && !modifiers.ctrl
+                    && !modifiers.command =>
+                {
+                    if modifiers.shift {
+                        single_nav_home_extend = true;
+                    } else {
+                        single_nav_home = true;
+                    }
+                }
+                egui::Event::Key {
                     key: egui::Key::End,
                     pressed: true,
                     modifiers,
@@ -1787,6 +1807,22 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         multi_nav_end_extend = true;
                     } else {
                         multi_nav_end = true;
+                    }
+                }
+                egui::Event::Key {
+                    key: egui::Key::End,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if tabular.multi_selection.len() <= 1
+                    && !modifiers.alt
+                    && !modifiers.ctrl
+                    && !modifiers.command =>
+                {
+                    if modifiers.shift {
+                        single_nav_end_extend = true;
+                    } else {
+                        single_nav_end = true;
                     }
                 }
                 egui::Event::Key {
@@ -1855,6 +1891,71 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tabular.cursor_position = new_pos;
         }
         ui.memory_mut(|m| m.request_focus(id));
+    }
+    if single_nav_home || single_nav_end || single_nav_home_extend || single_nav_end_extend {
+        let id = egui::Id::new("sql_editor");
+        let text = &tabular.editor.text;
+        let len = text.len();
+        let range_opt = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id);
+        let (start_char, end_char, primary_char) = if let Some(r) = range_opt {
+            (r.start, r.end, r.primary)
+        } else {
+            let caret_b = tabular.cursor_position.min(len);
+            let caret_ci = to_char_index(text, caret_b);
+            (caret_ci, caret_ci, caret_ci)
+        };
+        let caret_b = to_byte_index(text, primary_char);
+        let anchor_char = if start_char == end_char {
+            start_char
+        } else if primary_char == end_char {
+            start_char
+        } else {
+            end_char
+        };
+        let anchor_b = to_byte_index(text, anchor_char).min(len);
+        let (line_start, line_end, _) = line_bounds(text, caret_b);
+        let target_b = if single_nav_home || single_nav_home_extend {
+            line_start
+        } else {
+            line_end
+        };
+        let (new_anchor_b, new_head_b) = if single_nav_home_extend || single_nav_end_extend {
+            (anchor_b, target_b.min(len))
+        } else {
+            let clamped = target_b.min(len);
+            (clamped, clamped)
+        };
+        let new_anchor_b = new_anchor_b.min(len);
+        let new_head_b = new_head_b.min(len);
+        tabular.cursor_position = new_head_b;
+        tabular.selection_start = new_anchor_b.min(new_head_b);
+        tabular.selection_end = new_anchor_b.max(new_head_b);
+        if tabular.selection_start < tabular.selection_end && tabular.selection_end <= text.len() {
+            tabular.selected_text =
+                text[tabular.selection_start..tabular.selection_end].to_string();
+        } else {
+            tabular.selected_text.clear();
+        }
+        tabular.multi_selection.clear();
+        tabular.selection_force_clear = false;
+        tabular.pending_cursor_set = None;
+
+        let anchor_ci = to_char_index(text, new_anchor_b);
+        let head_ci = to_char_index(text, new_head_b);
+        if single_nav_home_extend || single_nav_end_extend {
+            crate::editor_state_adapter::EditorStateAdapter::set_selection(
+                ui.ctx(),
+                id,
+                anchor_ci.min(head_ci),
+                anchor_ci.max(head_ci),
+                head_ci,
+            );
+        } else {
+            crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, head_ci);
+        }
+        ui.memory_mut(|m| m.request_focus(id));
+        ui.ctx().request_repaint();
+        tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
     }
     if multi_nav_left
         || multi_nav_right
