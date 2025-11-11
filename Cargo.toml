@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.5.18"
+version = "0.5.19-beta"
 edition = "2024"
 
 [lib]
