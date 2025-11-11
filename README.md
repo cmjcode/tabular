@@ -2,82 +2,76 @@
 
 # Tabular
 
-Your fast, cross‑platform, multi‑database SQL & NoSQL client – built in Rust. (Desktop + early iPadOS groundwork)
+Your fast, native, cross‑platform SQL & NoSQL database client (Desktop, with early groundwork for iPadOS) — built in Rust.
 
 ![Main Window](screenshots/halaman-utama.jpg)
 
 
 ## macOS Xcode Project (App Store)
 
-Now includes an Xcode project under `macos/Xcode/` so you can open, archive, and submit to the Mac App Store using native Xcode workflows (automatic signing, Organizer distribution). See `macos/Xcode/README.md` for detailed steps.
+This repo includes an Xcode project in `macos/Xcode/` so you can archive and submit to the Mac App Store using the native Xcode workflow (automatic signing, distribution via Organizer). See `macos/Xcode/README.md` for step‑by‑step instructions.
 
 </div>
 
 ## 1. About Tabular
-Tabular is a lightweight, native, and efficient database client written in Rust using the `eframe`/`egui` stack. It focuses on fast startup, responsive UI, safe concurrency, and a distraction‑free workflow for developers, data engineers, and DBAs. Unlike web/electron clients, Tabular ships as a single native binary with minimal memory footprint while still supporting rich features like autocomplete, multiple drivers, query history, export tools, and self‑update.
+Tabular is a lightweight, native database client built with the `eframe`/`egui` stack. It focuses on instant startup, responsive UI, safe concurrency, and a distraction‑free workflow for developers, data engineers, and DBAs. Unlike web/electron apps, Tabular ships as a single native binary with a small memory footprint while still offering rich features like autocomplete, multiple drivers, query history, export tools, and self‑update.
 
 ## 2. Key Features
-* Unified UI for multiple relational & non‑relational databases
-* Drivers: PostgreSQL, MySQL/MariaDB, SQLite, SQL Server (TDS), Redis, MongoDB
-* Async runtime (Tokio) – non‑blocking query execution
-* Multiple query tabs & saved query library (`queries/` dir)
-* Query history panel with search & filtering
-* Result grid with copy cell / row / full result set
-* Export to CSV & XLSX
-* Rich value formatting (dates, decimals, JSON, BSON, HEX)
-* Connection caching & quick reconnect
-* Self‑update (GitHub releases) with semantic version check
-* Configurable data directory (supports `TABULAR_DATA_DIR` env var)
-* Native file dialogs (via `rfd`)
-* Cross‑platform theming via egui
-* Sandboxing & macOS notarization ready
+- Unified UI for multiple relational & non‑relational databases
+- Drivers: PostgreSQL, MySQL/MariaDB, SQLite, SQL Server (TDS), Redis, MongoDB
+- Async runtime (Tokio) for non‑blocking execution
+- Multiple query tabs & saved query library (`queries/` folder)
+- Query history panel with search & filtering
+- Result grid with copy cell / row / full result set
+- Export to CSV & XLSX
+- Rich value formatting (dates, decimals, JSON, BSON, HEX)
+- Connection caching & quick reconnect
+- Self‑update (GitHub Releases) with semantic version check
+- Configurable data directory (env `TABULAR_DATA_DIR`)
+- Native file dialogs (`rfd`)
+- Cross‑platform theming via egui
+- Sandboxing & notarization ready for macOS
 
-### Experimental New Editor (In Progress)
-The legacy `egui` `TextEdit` driven query input is being replaced with a custom widget backed by `lapce-core` rope buffer.
+### Query Editor (New, In Progress)
+The legacy `egui::TextEdit` editor is being replaced with a custom widget backed by a rope buffer. Current capabilities:
+- Multi‑caret editing
+- Per‑line syntax highlighting cache (SQL focus first)
+- Basic scroll‑to‑caret
+- Undo/Redo
+- Multi‑line/column selection
 
-Current capabilities:
-* Multi‑caret editing (Cmd+D to add next occurrence planned)
-* Incremental per‑line syntax highlighting cache (SQL focus first)
-* Primitive scroll‑into‑view for caret
-* Undo / Redo (Cmd/Ctrl+Z, Shift+Cmd/Ctrl+Z or Ctrl+Y)
-* Selection highlighting & vertical multi‑cursor movement
-
-Planned next steps:
-* Autocomplete integration with rope indices
-* Efficient diff-based rope edits (avoid full rebuild)
-* Proper revision tracking & partial highlight invalidation
-* Removal of legacy editor path after feature parity
+Planned next: full autocomplete integration, diff‑based edits, revision tracking, and removal of the legacy path after feature parity.
 
 ## 3. Supported Databases
-| Category    | Engines / Protocols |
-|-------------|---------------------|
-| Relational  | PostgreSQL, MySQL/MariaDB, SQLite, Microsoft SQL Server |
-| Document    | MongoDB (with BSON & compression) |
-| Key/Value   | Redis (async connection manager) |
+| Category   | Engines / Protocols |
+|------------|----------------------|
+| Relational | PostgreSQL, MySQL/MariaDB, SQLite, Microsoft SQL Server |
+| Document   | MongoDB (BSON & compression) |
+| Key/Value  | Redis (async connection manager) |
 
-> Notes:
-> * Microsoft SQL Server uses the `tiberius` (TDS over TLS) driver.
-> * Redis connections use pooled async managers.
-> * SQLite works in process (file mode) – ensure write permissions.
+Notes:
+- Microsoft SQL Server uses `tiberius` (TDS over TLS)
+- Redis uses pooled async managers
+- SQLite runs in‑process (file mode) — ensure write permissions
 
 ## 4. Installation
 
 ### Option A: Download Prebuilt Release (Recommended)
 1. Visit: https://github.com/tabular-id/tabular/releases
-2. Download the archive/bundle for your platform:
-   * macOS: `.dmg` (notarized) or `.pkg` (if provided)
-   * Linux: `.tar.gz` (extract and place binary in `$HOME/.local/bin` or `/usr/local/bin`)
-   * Windows (future): Portable `.zip` (planned)
+2. Download the bundle for your platform:
+    - macOS: `.dmg` (notarized) or `.pkg` (if available)
+    - Linux: `.tar.gz` (extract, then place the binary in `$HOME/.local/bin` or `/usr/local/bin`)
+    - Windows: portable package is planned
 3. (macOS) Drag `Tabular.app` into `/Applications`.
 4. Run Tabular.
 
 ### Option B: Build From Source
-Requirements (general):
-* Rust (stable, latest; install via https://rustup.rs)
-* Cargo (bundled with rustup)
-* Clang/LLVM (for bindgen / some native crates)
-* libclang headers available (Linux)
-* (Linux) pkg-config, OpenSSL dev packages may be required by transitive dependencies depending on environment
+General requirements:
+- Rust (stable; https://rustup.rs)
+- Cargo (bundled with rustup)
+- Clang/LLVM (for bindgen / some native crates)
+- libclang headers (Linux)
+- (Linux) pkg-config, OpenSSL dev packages may be required depending on environment
 
 #### Arch Linux
 ```bash
@@ -99,32 +93,26 @@ cargo build --release
 
 #### macOS
 ```bash
-xcode-select --install   # command line tools
-brew install llvm        # (optional) newer clang
+xcode-select --install   # Command Line Tools
+brew install llvm        # (opsional) clang lebih baru
 git clone https://github.com/tabular-id/tabular.git
 cd tabular
 cargo build --release
 ```
-If Homebrew LLVM is used:
+Jika memakai LLVM dari Homebrew:
 ```bash
 export LIBCLANG_PATH="$(brew --prefix llvm)/lib"
 ```
 
-#### Windows (MSVC) – Planned
-Install the MSVC toolchain + `rustup toolchain install stable-x86_64-pc-windows-msvc` then:
-```powershell
-git clone https://github.com/tabular-id/tabular.git
-cd tabular
-cargo build --release
-```
+#### Windows (MSVC) – planned
+Install the MSVC toolchain, then build with `cargo build --release`.
 
-#### Multi‑Architecture / Cross Compilation (Desktop + Experimental iOS)
-Install cross:
+#### Multi‑Arsitektur / Cross Compilation (Desktop + Eksperimental iOS)
 ```bash
 cargo install cross
 cross build --target aarch64-apple-darwin --release
 
-# Experimental iPadOS (build Rust lib + binary – Xcode/iOS wrapper required)
+# Eksperimental iPadOS (butuh wrapper Xcode/iOS)
 rustup target add aarch64-apple-ios
 cargo build --target aarch64-apple-ios --release
 ```
@@ -135,10 +123,10 @@ cargo build --target aarch64-apple-ios --release
 ```
 
 ### Optional Environment Variables
-| Variable | Purpose | Example |
-|----------|---------|---------|
-| TABULAR_DATA_DIR | Override data directory location | /data/tabular |
-| RUST_LOG | Enable logging | RUST_LOG=info ./tabular |
+| Variable         | Purpose                             | Example                      |
+|------------------|-------------------------------------|------------------------------|
+| TABULAR_DATA_DIR | Override data directory location    | /data/tabular                |
+| RUST_LOG         | Enable logging                      | RUST_LOG=info ./tabular      |
 
 ## 5. macOS Notarized / Signed Builds
 For distributing outside the Mac App Store:
@@ -165,37 +153,37 @@ make pkg-macos-store
 ```
 
 ## 6. Data Directory (Configurable)
-Default locations:
-* macOS / Linux: `~/.tabular`
-* Windows: `%USERPROFILE%\.tabular`
+Default location:
+- macOS / Linux: `~/.tabular`
 
-You can change it inside Preferences (native folder picker) or force it using:
+Change it via Preferences (native folder picker) or force it with:
 ```bash
-export TABULAR_DATA_DIR="/custom/path"
+export TABULAR_DATA_DIR="/absolute/custom/path"
 ./tabular
 ```
-Migration (manual): copy old folder to the new location before switching & restarting.
+Manual migration: copy the old folder to the new location before switching & restarting.
 
-Contents:
-* `preferences.*` – UI & app settings
-* `cache.*` – metadata / driver caches
-* `queries/` – saved queries
-* `history/` – executed query history
+Contents of the data directory:
+- `preferences.*` — UI & app settings
+- `cache.*` — metadata & driver caches
+- `queries/` — saved queries
+- `history/` — executed query history
 
 ## 7. Development Guide
 ### Project Layout (selected)
 ```
 src/
-  main.rs              # Entry point
-  window_egui.rs       # UI / egui integration
-  editor.rs            # Query editor logic
-  editor_autocomplete.rs
-  sidebar_*.rs         # Side panels (database, history, queries)
-  driver_*.rs          # Database drivers abstraction layers
-  export.rs            # CSV / XLSX exporting
-  self_update.rs       # Update checker & apply logic
-  config.rs            # Preferences & data directory handling
-  models/              # Data structures & enums
+    main.rs              # Entry point
+    window_egui.rs       # UI / egui integration
+    editor.rs            # Logika editor query
+    editor_autocomplete.rs
+    sidebar_*.rs         # Panel samping (database, history, queries)
+    driver_*.rs          # Abstraksi driver database
+    export.rs            # Ekspor CSV / XLSX
+    self_update.rs       # Cek & aplikasi update
+    config.rs            # Preferensi & direktori data
+    models/              # Struktur data & enum
+    query_ast/           # Lapisan AST kueri (eksperimental, default aktif)
 ```
 
 ### Quick Start (Dev)
@@ -206,86 +194,83 @@ cargo run
 ```
 
 ### Common Tasks
-| Action | Command |
-|--------|---------|
-| Build debug | `cargo build` |
-| Run | `cargo run` |
-| Tests (if/when added) | `cargo test` |
-| Lint (clippy) | `cargo clippy -- -D warnings` |
-| Format | `cargo fmt` |
-| Release build | `cargo build --release` |
+| Action        | Command                          |
+|---------------|----------------------------------|
+| Build debug   | `cargo build`                    |
+| Run           | `cargo run`                      |
+| Test          | `cargo test`                     |
+| Lint (clippy) | `cargo clippy -- -D warnings`    |
+| Format        | `cargo fmt`                      |
+| Release build | `cargo build --release`          |
 
 ### Logging
-Enable logs (INFO):
 ```bash
 RUST_LOG=info cargo run
 ```
 
-### Adding a New Driver
-1. Create `driver_<engine>.rs`
-2. Implement connection open / close / query streaming
-3. Add feature flags if optional
-4. Register module inside `modules.rs` / relevant factory
-5. Update README & supported database table
-
-### Autocomplete
-Implemented in `editor_autocomplete.rs` leveraging schema introspection & regex helpers. Future enhancements may include partial AST parsing.
+### Adding a New Driver (short)
+1) Create `driver_<engine>.rs`  2) Implement connection & execution  3) Add feature flag if optional  4) Register in `modules.rs`/factory  5) Update README.
 
 ## 8. Core Dependencies (Crates)
-| Purpose | Crate(s) |
-|---------|----------|
-| UI & App Shell | `eframe`, `egui_extras` (custom TextEdit + `lapce-core` buffer) |
-| Async Runtime | `tokio`, `futures`, `futures-util`, `tokio-util` |
-| Relational DB | `sqlx` (postgres, mysql, sqlite features) |
-| SQL Server | `tiberius` (TLS via rustls) |
-| Redis | `redis` (tokio + connection-manager) |
-| MongoDB | `mongodb`, `bson` |
-| Data Formats | `serde`, `serde_json`, `chrono`, `rust_decimal`, `hex`, `csv`, `xlsxwriter` |
-| File Dialog | `rfd` |
-| Update | `reqwest`, `self_update`, `semver` |
-| Logging | `log`, `env_logger`, `dotenv` |
-| Utility | `dirs`, `regex`, `colorful` |
+| Purpose        | Crate |
+|----------------|-------|
+| UI & App Shell | eframe, egui_extras |
+| Async Runtime  | tokio, futures, futures-util, tokio-util |
+| Relational DB  | sqlx (postgres, mysql, sqlite) |
+| SQL Server     | tiberius |
+| Redis          | redis |
+| MongoDB        | mongodb, bson |
+| Data Formats   | serde, serde_json, chrono, rust_decimal, hex, csv, xlsxwriter |
+| File Dialog    | rfd |
+| Update         | reqwest, self_update, semver |
+| Logging        | log, env_logger, dotenv |
+| Utilities      | dirs, regex, colorful |
 
-See `Cargo.toml` for exact versions.
+See `Cargo.toml` for exact versions (current package version: 0.5.18).
 
 ## 9. Contributing
-Contributions are welcome: bug fixes, new drivers, UI refinements, performance tweaks. Suggested workflow:
-1. Fork & create feature branch.
+Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested workflow:
+1. Fork & create a feature branch.
 2. Run `cargo fmt && cargo clippy` before committing.
 3. Ensure release build compiles: `cargo build --release`.
-4. Open a PR with a concise description & screenshots (if UI changes).
+4. Open a PR with a concise description & screenshots (for UI changes).
 
 ## 10. Troubleshooting
-| Issue | Hint |
-|-------|------|
-| Build fails: clang not found | Install clang / set `LIBCLANG_PATH` |
-| Cannot connect (TLS errors) | Verify server certificates / network reachability |
-| SQLite file locked | Close other processes; check permissions |
-| UI freeze during long query | Future improvement: streaming pagination (in progress) |
+| Issue                           | Hint                                               |
+|---------------------------------|----------------------------------------------------|
+| Build fails: clang not found    | Install clang / set `LIBCLANG_PATH`                |
+| TLS errors on connect           | Verify certificates & network reachability         |
+| SQLite file locked              | Close other processes; check file permissions      |
+| UI freeze on long queries       | Use server pagination; streaming improvements WIP  |
 
-## 11. Roadmap (High‑Level)
-* Windows build & signing
-* iPadOS adaptive layout (touch hit areas, keyboard inset, gestures)
-* Query formatting & beautifier
-* Result pagination for large sets
-* Connection grouping & tags
-* Plugin / extension scripting layer
-* Secure secrets storage integration (Keychain / KWallet / Credential Manager)
+## 11. Roadmap (High level)
+- Windows build & signing
+- iPadOS adaptive layout
+- Query formatter / beautifier
+- Result pagination for large datasets
+- Connection grouping & tags
+- Scripting/extension layer
+- Secure secrets storage (Keychain/KWallet/Credential Manager)
 
 ## 12. License
-Pending (No LICENSE file committed yet). Until a license is added, usage is implicitly restricted—please open an issue to clarify before redistribution.
+This project is dual‑licensed:
+
+1) GNU Affero General Public License v3 (AGPL‑3.0) — see `LICENSE-AGPL`
+2) Commercial License — contact PT. Vneu Teknologi Indonesia (see `LICENSE`)
+
+In short: use AGPL for OSS/non‑commercial; obtain a commercial license for closed‑source/commercial integration.
 
 ## 13. Acknowledgements
-Built with the Rust community ecosystem. egui & sqlx projects are especially instrumental.
+Built with the Rust ecosystem. egui & sqlx projects are especially instrumental.
 
 ---
 Made with Rust 🦀 for people who love fast, native tools.
 
-# Agnostic AST Architecture - Implementation Summary
+## 14. Agnostic AST Architecture (Advanced)
 
 ## 📋 Overview
 
-Project Tabular menggunakan **Database-Agnostic AST (Abstract Syntax Tree)** untuk memisahkan logika query dari implementasi database spesifik. Ini memberikan:
+Tabular uses a **database‑agnostic AST (Abstract Syntax Tree)** to separate query logic from database‑specific implementations. Benefits:
 
 - ✅ **Performa Optimal**: Plan caching, rewrite optimization
 - ✅ **Kemudahan Extensibility**: Tambah database baru tanpa ubah core logic
@@ -294,17 +279,17 @@ Project Tabular menggunakan **Database-Agnostic AST (Abstract Syntax Tree)** unt
 
 ## 🏗️ Architecture Layers
 
-### Layer 1: Parser (Database-Agnostic)
+### Layer 1: Parser (Database‑agnostic)
 ```
 Raw SQL → sqlparser → AST (generic) → Logical Plan
 ```
-- Menggunakan `sqlparser` crate untuk parsing SQL universal
-- Tidak tahu tentang database spesifik
-- Output: `LogicalQueryPlan` (database-agnostic IR)
+- Uses the `sqlparser` crate for universal SQL parsing
+- Not aware of any specific database
+- Output: `LogicalQueryPlan` (database‑agnostic IR)
 
 **File**: `src/query_ast/parser.rs`
 
-### Layer 2: Logical Plan (Database-Agnostic)
+### Layer 2: Logical Plan (Agnostik DB)
 ```rust
 pub enum LogicalQueryPlan {
     Projection { exprs: Vec<Expr>, input: Box<LogicalQueryPlan> },
@@ -320,21 +305,21 @@ pub enum LogicalQueryPlan {
 **File**: `src/query_ast/logical.rs`
 
 **Benefits**:
-- Semua database pakai structure yang sama
+- All databases share the same structure
 - Optimizations apply to all databases
 - Easy to visualize and debug
 
-### Layer 3: Rewrite/Optimizer (Database-Agnostic)
+### Layer 3: Rewrite/Optimizer (Database‑agnostic)
 ```
 Logical Plan → Apply Rules → Optimized Logical Plan
 ```
 
-**Rules** (apply ke semua database):
+**Rules** (apply to all databases):
 - Filter pushdown
 - Projection pruning
 - CTE inlining
 - Predicate merging
-- Auto-limit injection
+- Auto‑limit injection
 - Pagination rewrite
 
 **File**: `src/query_ast/rewrite.rs`
@@ -347,7 +332,7 @@ Projection -> Filter -> Filter -> TableScan
 Projection -> Filter(merged) -> TableScan
 ```
 
-### Layer 4: Emitter (Database-Specific)
+### Layer 4: Emitter (Database‑specific)
 ```
 Optimized Plan → Dialect → SQL for Target DB
 ```
@@ -374,7 +359,7 @@ pub trait SqlDialect {
 - `src/query_ast/emitter/mod.rs` (core emitter)
 - `src/query_ast/emitter/dialect.rs` (dialect trait + implementations)
 
-### Layer 5: Executor (Database-Specific)
+### Layer 5: Executor (Database‑specific)
 ```
 Emitted SQL → Connection Pool → Execute → Results
 ```
@@ -426,13 +411,13 @@ Parse once → Rewrite once → Emit N times (one per DB type)
 - String interning untuk column/table names
 - COW (Copy-on-Write) untuk rewrites
 
-## 🔧 Current Implementation Status
+## 🔧 Implementation Status
 
 ### ✅ Completed
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Basic SELECT parsing | ✅ | Single table, no subqueries |
+| Basic SELECT parsing | ✅ | Includes JOIN, GROUP BY, HAVING, LIMIT |
 | Filter/WHERE | ✅ | AND/OR/NOT, comparison ops |
 | Projection/SELECT list | ✅ | Columns, aliases, * |
 | Sorting/ORDER BY | ✅ | Multiple columns, ASC/DESC |
@@ -466,7 +451,7 @@ Parse once → Rewrite once → Emit N times (one per DB type)
 | Correlated subquery rewrite | LOW | High |
 | Cost-based optimization | LOW | Very High |
 
-## 📈 Performance Benchmarks
+## 📈 Benchmarks (indicative)
 
 ### Query Compilation Time
 
@@ -476,7 +461,7 @@ With JOIN:         < 5ms   (cache hit: < 0.1ms)
 Complex (3+ JOINs): < 20ms (cache hit: < 0.1ms)
 ```
 
-### Cache Hit Rates (Production)
+### Cache Hit Rates
 
 ```
 Repeated queries:  95%+ hit rate
@@ -494,7 +479,7 @@ Total overhead:    ~5MB for 1000 plans
 
 ## 🎯 Best Practices
 
-### For Database Driver Authors
+### Untuk Penulis Driver
 
 1. **Use the AST pipeline** instead of raw SQL where possible
 2. **Implement SqlDialect** for your database
@@ -502,14 +487,14 @@ Total overhead:    ~5MB for 1000 plans
 4. **Test with real queries** from your database
 5. **Measure performance** before/after AST integration
 
-### For Query Writers
+### Untuk Penulis Query
 
 1. **Use standard SQL** for best cross-database compatibility
 2. **Avoid database-specific features** in shared code
 3. **Let the AST handle optimization** (don't manually optimize)
 4. **Check cache stats** to verify query reuse
 
-### For Maintainers
+### Untuk Maintainer
 
 1. **Keep layers separate** (don't mix concerns)
 2. **Add tests for new rewrites** (prevent regressions)
@@ -552,7 +537,7 @@ let (hash, cache_key) = query_ast::plan_structural_hash(&sql, &db_type, paginati
 println!("Plan hash: {:x}", hash);
 ```
 
-## 📚 References
+## 📚 Referensi
 
 ### Key Files
 
@@ -626,8 +611,8 @@ See `Adding a New Database to Tabular` for step-by-step guide to adding new data
 
 ---
 
-**Last Updated**: 2025-10-06
-**Version**: 1.0.0 (Phase 1 Complete)
+**Last Updated**: 2025-11-11
+**Version**: 0.5.18
 **Maintainer**: Tabular Team
 
 
