@@ -4,14 +4,7 @@
 
 Your fast, native, cross‑platform SQL & NoSQL database client (Desktop, with early groundwork for iPadOS) — built in Rust.
 
-![Main Window](screenshots/halaman-utama.jpg)
-
-
-## macOS Xcode Project (App Store)
-
-This repo includes an Xcode project in `macos/Xcode/` so you can archive and submit to the Mac App Store using the native Xcode workflow (automatic signing, distribution via Organizer). See `macos/Xcode/README.md` for step‑by‑step instructions.
-
-</div>
+![Main Window](screenshots/halaman-utama.jpeg
 
 ## 1. About Tabular
 Tabular is a lightweight, native database client built with the `eframe`/`egui` stack. It focuses on instant startup, responsive UI, safe concurrency, and a distraction‑free workflow for developers, data engineers, and DBAs. Unlike web/electron apps, Tabular ships as a single native binary with a small memory footprint while still offering rich features like autocomplete, multiple drivers, query history, export tools, and self‑update.
