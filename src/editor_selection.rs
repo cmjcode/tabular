@@ -226,6 +226,68 @@ impl MultiSelection {
         sort_and_dedup(&mut updated);
         self.regions = updated;
     }
+    /// Move all carets to the start of their current lines.
+    pub fn move_line_start(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let head = r.head.min(len);
+            let target = line_start(text, head);
+            updated.push(SelRegion::new(target, target, None));
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
+    /// Move all carets to the end of their current lines (before the newline if present).
+    pub fn move_line_end(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let head = r.head.min(len);
+            let mut target = line_end(text, head);
+            if target > len {
+                target = len;
+            }
+            updated.push(SelRegion::new(target, target, None));
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+    }
+    /// Extend each caret selection towards the start of the line while preserving anchors.
+    pub fn extend_line_start(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        for r in &mut self.regions {
+            let head = r.head.min(len);
+            let target = line_start(text, head);
+            r.head = target;
+        }
+        sort_and_dedup(&mut self.regions);
+    }
+    /// Extend each caret selection towards the end of the line while preserving anchors.
+    pub fn extend_line_end(&mut self, text: &str) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let len = text.len();
+        for r in &mut self.regions {
+            let head = r.head.min(len);
+            let mut target = line_end(text, head);
+            if target > len {
+                target = len;
+            }
+            r.head = target;
+        }
+        sort_and_dedup(&mut self.regions);
+    }
     /// Apply same inserted text at each collapsed caret (multi-cursor typing).
     /// Assumes all carets are collapsed. Processes from right to left to avoid shifting earlier indices.
     pub fn apply_insert_text(&mut self, text: &mut String, insert: &str) {
