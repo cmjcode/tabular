@@ -123,6 +123,9 @@ pub struct Tabular {
     pub advanced_editor: models::structs::AdvancedEditor,
     // Selected text for executing only selected queries
     pub selected_text: String,
+    pub clipboard_multi_segments: Option<Vec<String>>,
+    pub clipboard_multi_regions: Option<Vec<crate::editor_selection::SelRegion>>,
+    pub clipboard_multi_version: Option<u64>,
     // Cursor position for query extraction
     pub cursor_position: usize,
     // Selection range indices (start inclusive, end exclusive) for advanced editing (indent/outdent)
@@ -618,6 +621,9 @@ impl Tabular {
             show_error_message: false,
             advanced_editor: models::structs::AdvancedEditor::default(),
             selected_text: String::new(),
+            clipboard_multi_segments: None,
+            clipboard_multi_regions: None,
+            clipboard_multi_version: None,
             cursor_position: 0,
             selection_start: 0,
             selection_end: 0,

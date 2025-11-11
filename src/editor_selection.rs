@@ -27,6 +27,7 @@ impl SelRegion {
 pub struct MultiSelection {
     /// Source of truth for multi-range selection (ordered, non-overlapping preferred but not enforced)
     regions: Vec<SelRegion>,
+    version: u64,
 }
 
 impl Default for MultiSelection {
@@ -39,19 +40,23 @@ impl MultiSelection {
     pub fn new() -> Self {
         Self {
             regions: Vec::new(),
+            version: 0,
         }
     }
     pub fn clear(&mut self) {
         self.regions.clear();
+        self.bump_version();
     }
     pub fn ensure_primary(&mut self, pos: usize) {
         if self.regions.is_empty() {
             self.regions.push(SelRegion::new(pos, pos, None));
+            self.bump_version();
         }
     }
     pub fn add_collapsed(&mut self, pos: usize) {
         self.regions.push(SelRegion::new(pos, pos, None));
         sort_and_dedup(&mut self.regions);
+        self.bump_version();
     }
     pub fn collapse_all(&mut self) {
         let regs = self.regions.clone();
@@ -62,6 +67,34 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut out);
         self.regions = out;
+        self.bump_version();
+    }
+    /// Replace current regions while keeping provided order (deduped by position).
+    pub fn replace_regions_preserving_order(&mut self, mut regions: Vec<SelRegion>) {
+        sort_and_dedup(&mut regions);
+        self.regions = regions;
+        self.bump_version();
+    }
+    /// Rebuild with collapsed carets ensuring the requested primary stays first.
+    pub fn rebuild_collapsed_with_primary(&mut self, primary: usize, rest: &[usize]) {
+        log::debug!(
+            "[multi selection] rebuild primary={} rest={:?}",
+            primary,
+            rest
+        );
+        let mut regions: Vec<SelRegion> = Vec::with_capacity(1 + rest.len());
+        regions.push(SelRegion::new(primary, primary, None));
+        let mut last_inserted = Some(primary);
+        for &pos in rest {
+            if Some(pos) == last_inserted || pos == primary {
+                continue;
+            }
+            regions.push(SelRegion::new(pos, pos, None));
+            last_inserted = Some(pos);
+        }
+        self.regions = regions;
+        log::debug!("[multi selection] rebuilt regions={:?}", self.regions);
+        self.bump_version();
     }
     pub fn apply_simple_insert(&mut self, at: usize, len: usize) {
         let regs = self.regions.clone();
@@ -79,6 +112,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut out);
         self.regions = out;
+        self.bump_version();
     }
     pub fn apply_simple_delete(&mut self, at: usize, del_len: usize) {
         let end = at + del_len;
@@ -103,6 +137,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut out);
         self.regions = out;
+        self.bump_version();
     }
     /// Return a Vec of (anchor, head) sorted & deduped by the min position.
     pub fn ranges(&self) -> Vec<(usize, usize)> {
@@ -141,6 +176,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Move all carets one grapheme to the right (collapses selections first).
     pub fn move_right(&mut self, text: &str) {
@@ -162,6 +198,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Move all carets one line up, clamping to the available column on the target line.
     pub fn move_up(&mut self, text: &str) {
@@ -187,6 +224,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Move all carets one line down, clamping to the available column on the target line.
     pub fn move_down(&mut self, text: &str) {
@@ -225,6 +263,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Move all carets to the start of their current lines.
     pub fn move_line_start(&mut self, text: &str) {
@@ -240,6 +279,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Move all carets to the end of their current lines (before the newline if present).
     pub fn move_line_end(&mut self, text: &str) {
@@ -258,6 +298,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Extend each region's head toward the start of the grapheme to the left while keeping anchors.
     pub fn extend_left(&mut self, text: &str) {
@@ -274,6 +315,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Extend each region's head toward the next grapheme on the right while keeping anchors.
     pub fn extend_right(&mut self, text: &str) {
@@ -290,6 +332,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Extend each region's head one line up, preserving anchors.
     pub fn extend_up(&mut self, text: &str) {
@@ -316,6 +359,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Extend each region's head one line down, preserving anchors.
     pub fn extend_down(&mut self, text: &str) {
@@ -353,6 +397,7 @@ impl MultiSelection {
         }
         sort_and_dedup(&mut updated);
         self.regions = updated;
+        self.bump_version();
     }
     /// Extend each caret selection towards the start of the line while preserving anchors.
     pub fn extend_line_start(&mut self, text: &str) {
@@ -366,6 +411,7 @@ impl MultiSelection {
             r.head = target;
         }
         sort_and_dedup(&mut self.regions);
+        self.bump_version();
     }
     /// Extend each caret selection towards the end of the line while preserving anchors.
     pub fn extend_line_end(&mut self, text: &str) {
@@ -382,6 +428,7 @@ impl MultiSelection {
             r.head = target;
         }
         sort_and_dedup(&mut self.regions);
+        self.bump_version();
     }
     /// Apply same inserted text at each collapsed caret (multi-cursor typing).
     /// Assumes all carets are collapsed. Processes from right to left to avoid shifting earlier indices.
@@ -468,6 +515,50 @@ impl MultiSelection {
             "[multi] apply_insert_text_others done text_len_after={} delta={} positions_after={:?}",
             after_len,
             after_len.saturating_sub(before_len),
+            caret_positions_after
+        );
+    }
+
+    /// Insert distinct strings at each collapsed caret (processed from right to left).
+    pub fn apply_insert_segments(&mut self, text: &mut String, inserts: &[String]) {
+        if inserts.is_empty() || self.regions.is_empty() {
+            return;
+        }
+        if inserts.len() != self.regions.len() {
+            return;
+        }
+        if self.regions.iter().any(|r| r.anchor != r.head) {
+            self.apply_replace_segments(text, inserts);
+            return;
+        }
+
+        let original_len = text.len();
+        let mut items: Vec<(usize, &String)> = self
+            .regions
+            .iter()
+            .zip(inserts.iter())
+            .filter(|(_, seg)| !seg.is_empty())
+            .map(|(region, seg)| (region.max().min(text.len()), seg))
+            .collect();
+
+        if items.is_empty() {
+            return;
+        }
+
+        items.sort_by_key(|(pos, _)| *pos);
+        for (pos, seg) in items.into_iter().rev() {
+            if pos <= text.len() {
+                text.insert_str(pos, seg);
+                self.apply_simple_insert(pos, seg.len());
+            }
+        }
+        let after_len = text.len();
+        let caret_positions_after = self.caret_positions();
+        log::debug!(
+            "[multi] apply_insert_segments text_len_before={} text_len_after={} delta={} positions_after={:?}",
+            original_len,
+            after_len,
+            after_len.saturating_sub(original_len),
             caret_positions_after
         );
     }
@@ -609,7 +700,44 @@ impl MultiSelection {
         }
         if repl_len == 0 {
             self.collapse_all();
+        } else {
+            self.bump_version();
         }
+    }
+
+    /// Replace each region with the corresponding string from `replacements`.
+    /// The number of replacements must match the number of regions.
+    pub fn apply_replace_segments(&mut self, text: &mut String, replacements: &[String]) {
+        if replacements.is_empty() || self.regions.is_empty() {
+            return;
+        }
+        if replacements.len() != self.regions.len() {
+            return;
+        }
+
+        let mut items: Vec<(usize, usize, &String)> = self
+            .regions
+            .iter()
+            .zip(replacements.iter())
+            .map(|(region, repl)| (region.min(), region.max(), repl))
+            .collect();
+        items.sort_by_key(|(start, _, _)| *start);
+
+        for (start, end, repl) in items.iter().rev() {
+            let s = (*start).min(text.len());
+            let e = (*end).min(text.len());
+            text.replace_range(s..e, repl.as_str());
+        }
+
+        let mut updated: Vec<SelRegion> = Vec::with_capacity(items.len());
+        for (start, _, repl) in items {
+            let s = start.min(text.len());
+            let head = (s.saturating_add(repl.len())).min(text.len());
+            updated.push(SelRegion::new(s, head, None));
+        }
+        sort_and_dedup(&mut updated);
+        self.regions = updated;
+        self.bump_version();
     }
 
     /// Simple helpers keeping compatibility with previous API surface
@@ -639,6 +767,7 @@ impl MultiSelection {
             self.regions[0] = SelRegion::new(anchor, head, None);
         }
         sort_and_dedup(&mut self.regions);
+        self.bump_version();
     }
 
     /// Find next occurrence of the given text starting from the specified position.
@@ -706,6 +835,7 @@ impl MultiSelection {
                 self.regions.push(SelRegion::new(start, end, None));
                 // Keep regions sorted by position for consistent behavior
                 self.regions.sort_by_key(|r| r.min());
+                self.bump_version();
                 return true;
             } else {
                 log::debug!("   Already exists, wrapping around to find next");
@@ -727,6 +857,18 @@ impl MultiSelection {
             .enumerate()
             .map(|(i, r)| (r.min(), r.max(), i == 0))
             .collect()
+    }
+}
+
+impl MultiSelection {
+    #[inline]
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    #[inline]
+    fn bump_version(&mut self) {
+        self.version = self.version.wrapping_add(1);
     }
 }
 

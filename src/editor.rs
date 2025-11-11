@@ -4,12 +4,13 @@ use egui::text::{CCursor, CCursorRange};
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
 // syntax highlighting module temporarily disabled
 use log::debug;
-use sqlformat::{format as sqlfmt, QueryParams};
+use sqlformat::{QueryParams, format as sqlfmt};
 
 use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
     sidebar_history, sidebar_query, window_egui,
 };
+use std::borrow::Cow;
 use std::time::Instant;
 
 // Tab management methods
@@ -110,7 +111,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.is_modified = false;
             tab.connection_id = None; // Clear connection as well
             tab.database_name = None; // Clear database as well
-                                      // Clear per-tab result state as well
+            // Clear per-tab result state as well
             tab.result_headers.clear();
             tab.result_rows.clear();
             tab.result_all_rows.clear();
@@ -660,6 +661,41 @@ fn find_word_boundaries(text: &str, pos: usize) -> (usize, usize) {
     (word_start, word_end)
 }
 
+#[inline]
+fn clamp_char_boundary_left(text: &str, idx: usize) -> usize {
+    let len = text.len();
+    let mut pos = idx.min(len);
+    while pos > 0 && !text.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    pos
+}
+
+#[inline]
+fn clamp_char_boundary_right(text: &str, idx: usize) -> usize {
+    let len = text.len();
+    let mut pos = idx.min(len);
+    while pos < len && !text.is_char_boundary(pos) {
+        pos += 1;
+    }
+    pos
+}
+
+#[inline]
+fn slice_on_char_boundaries(
+    text: &str,
+    start: usize,
+    end: usize,
+) -> Option<(usize, usize, String)> {
+    let s = clamp_char_boundary_left(text, start);
+    let e = clamp_char_boundary_right(text, end);
+    if s <= e && e <= text.len() {
+        Some((s, e, text[s..e].to_string()))
+    } else {
+        None
+    }
+}
+
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
     let mut trigger_format_sql = false;
@@ -855,21 +891,76 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut intercepted_multi_pastes: Vec<String> = Vec::new();
     let mut intercept_multi_backspace = false;
     let mut intercept_multi_delete = false;
+    let mut copy_requested = false;
+    let mut cut_requested = false;
     // Intercept arrow keys when autocomplete popup shown so caret tidak ikut bergerak
     let mut arrow_down_pressed = false;
     let mut arrow_up_pressed = false;
     ui.input(|i| {
+        let cmd_or_ctrl = i.modifiers.command || i.modifiers.ctrl || i.modifiers.mac_cmd;
+        if cmd_or_ctrl && i.key_pressed(egui::Key::C) {
+            copy_requested = true;
+        }
+        if cmd_or_ctrl && i.key_pressed(egui::Key::X) {
+            cut_requested = true;
+        }
         for ev in &i.events {
-            if let egui::Event::Key {
-                key: egui::Key::Tab,
-                pressed: true,
-                ..
-            } = ev
-            {
-                raw_tab = true;
+            match ev {
+                egui::Event::Key {
+                    key: egui::Key::Tab,
+                    pressed: true,
+                    ..
+                } => {
+                    raw_tab = true;
+                }
+                egui::Event::Copy => {
+                    copy_requested = true;
+                }
+                egui::Event::Cut => {
+                    copy_requested = true;
+                    cut_requested = true;
+                }
+                egui::Event::Key {
+                    key: egui::Key::C,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command || modifiers.ctrl || modifiers.mac_cmd => {
+                    copy_requested = true;
+                }
+                egui::Event::Key {
+                    key: egui::Key::X,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command || modifiers.ctrl || modifiers.mac_cmd => {
+                    cut_requested = true;
+                }
+                _ => {}
             }
         }
     });
+
+    if copy_requested || cut_requested {
+        ui.ctx().input_mut(|ri| {
+            ri.events.retain(|ev| match ev {
+                egui::Event::Copy | egui::Event::Cut => false,
+                egui::Event::Key {
+                    key: egui::Key::C,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command || modifiers.ctrl || modifiers.mac_cmd => false,
+                egui::Event::Key {
+                    key: egui::Key::X,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command || modifiers.ctrl || modifiers.mac_cmd => false,
+                _ => true,
+            });
+        });
+    }
     // Defer actual accept application until after TextEdit is rendered to avoid borrow conflicts
     let mut defer_accept_autocomplete = false;
     if tabular.show_autocomplete {
@@ -1343,6 +1434,130 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         intercept_multi_backspace = false;
         intercept_multi_delete = false;
     }
+
+    if copy_requested || cut_requested {
+        let text_snapshot = tabular.editor.text.clone();
+        let text_len = text_snapshot.len();
+        let multi_mode = tabular.multi_selection.len() > 1;
+        let mut collected_segments: Vec<String> = Vec::new();
+        let mut collected_ranges: Vec<(usize, usize)> = Vec::new();
+        let mut multi_cut_has_content = false;
+
+        if multi_mode {
+            for region in tabular.multi_selection.regions() {
+                let raw_start = region.min().min(text_len);
+                let raw_end = region.max().min(text_len);
+                if let Some((start, end, segment)) =
+                    slice_on_char_boundaries(&text_snapshot, raw_start, raw_end)
+                {
+                    if cut_requested && start < end {
+                        multi_cut_has_content = true;
+                    }
+                    collected_ranges.push((start, end));
+                    collected_segments.push(segment);
+                } else {
+                    collected_ranges.push((raw_start, raw_start));
+                    collected_segments.push(String::new());
+                }
+            }
+        } else {
+            let raw_start = tabular.selection_start.min(text_len);
+            let raw_end = tabular.selection_end.min(text_len);
+            if raw_start < raw_end {
+                if let Some((start, end, segment)) =
+                    slice_on_char_boundaries(&text_snapshot, raw_start, raw_end)
+                {
+                    collected_ranges.push((start, end));
+                    collected_segments.push(segment);
+                }
+            } else if !tabular.selected_text.is_empty() {
+                collected_segments.push(tabular.selected_text.clone());
+            }
+        }
+
+        if !collected_segments.is_empty() {
+            let clipboard_payload = if collected_segments.len() == 1 {
+                collected_segments[0].clone()
+            } else {
+                collected_segments.join("\n")
+            };
+            ui.ctx().copy_text(clipboard_payload);
+        }
+
+        if multi_mode {
+            if collected_segments.is_empty() {
+                tabular.clipboard_multi_segments = None;
+            } else {
+                tabular.clipboard_multi_segments = Some(collected_segments.clone());
+            }
+            if !cut_requested && collected_segments.len() == tabular.multi_selection.len() {
+                tabular.clipboard_multi_regions = Some(tabular.multi_selection.regions().to_vec());
+                tabular.clipboard_multi_version = Some(tabular.multi_selection.version());
+            } else {
+                tabular.clipboard_multi_regions = None;
+                tabular.clipboard_multi_version = None;
+            }
+        } else {
+            tabular.clipboard_multi_segments = None;
+            tabular.clipboard_multi_regions = None;
+            tabular.clipboard_multi_version = None;
+        }
+
+        let mut cut_performed = false;
+        if cut_requested {
+            if multi_mode && multi_cut_has_content {
+                tabular
+                    .multi_selection
+                    .apply_replace_selected(&mut tabular.editor.text, "");
+                cut_performed = true;
+                multi_edit_pre_applied = true;
+            } else if !multi_mode && collected_ranges.len() == 1 {
+                let (start, end) = collected_ranges[0];
+                if end > start {
+                    tabular.editor.apply_single_replace(start..end, "");
+                    tabular.cursor_position = start;
+                    tabular.selection_start = start;
+                    tabular.selection_end = start;
+                    tabular.selected_text.clear();
+                    cut_performed = true;
+                }
+            }
+
+            if cut_performed {
+                tabular.editor.mark_text_modified();
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    let new_owned = tabular.editor.text.clone();
+                    tabular.editor.set_text(new_owned.clone());
+                    tab.content = new_owned;
+                    tab.is_modified = true;
+                }
+
+                let id = egui::Id::new("sql_editor");
+                if multi_mode {
+                    if let Some((start, caret)) = tabular.multi_selection.primary_range() {
+                        tabular.selection_start = start;
+                        tabular.selection_end = caret;
+                        tabular.cursor_position = caret;
+                    } else {
+                        let caret = tabular.cursor_position.min(tabular.editor.text.len());
+                        tabular.selection_start = caret;
+                        tabular.selection_end = caret;
+                        tabular.cursor_position = caret;
+                    }
+                } else {
+                    let caret = tabular.cursor_position.min(tabular.editor.text.len());
+                    tabular.selection_start = caret;
+                    tabular.selection_end = caret;
+                }
+                tabular.selected_text.clear();
+                let caret_ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+                crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, caret_ci);
+                tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
+                ui.memory_mut(|m| m.request_focus(id));
+                ui.ctx().request_repaint();
+            }
+        }
+    }
     // Apply queued multi-cursor edits immediately so TextEdit reflects the final state this frame
     if tabular.multi_selection.len() > 1
         && (!intercepted_multi_texts.is_empty()
@@ -1369,6 +1584,42 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             multi_applied_in_frame = true;
         }
         for text in intercepted_multi_pastes.drain(..) {
+            let mut handled_segmented_paste = false;
+            if tabular.multi_selection.len() > 1 {
+                if let Some(segments) = tabular.clipboard_multi_segments.as_ref()
+                    && segments.len() == tabular.multi_selection.len()
+                {
+                    let expected: Cow<'_, str> = if segments.len() == 1 {
+                        Cow::Borrowed(segments[0].as_str())
+                    } else {
+                        Cow::Owned(segments.join("\n"))
+                    };
+                    if expected.as_ref() == text {
+                        let had_expanded = tabular.multi_selection.has_expanded_ranges();
+                        if had_expanded {
+                            tabular
+                                .multi_selection
+                                .apply_replace_segments(&mut tabular.editor.text, segments);
+                        } else {
+                            tabular
+                                .multi_selection
+                                .apply_insert_segments(&mut tabular.editor.text, segments);
+                        }
+                        log::debug!(
+                            "[multi] applied segmented paste segments={} has_expanded={}",
+                            segments.len(),
+                            had_expanded
+                        );
+                        multi_applied_in_frame = true;
+                        handled_segmented_paste = true;
+                    }
+                }
+            }
+
+            if handled_segmented_paste {
+                continue;
+            }
+
             if tabular.multi_selection.has_expanded_ranges() {
                 tabular
                     .multi_selection
@@ -1379,7 +1630,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     .apply_insert_text(&mut tabular.editor.text, &text);
             }
             log::debug!(
-                "[multi] applied paste len={} across {} carets",
+                "[multi] applied paste len={} across {} carets (uniform)",
                 text.len(),
                 tabular.multi_selection.len()
             );
