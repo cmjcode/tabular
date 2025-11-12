@@ -1585,34 +1585,33 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
         for text in intercepted_multi_pastes.drain(..) {
             let mut handled_segmented_paste = false;
-            if tabular.multi_selection.len() > 1 {
-                if let Some(segments) = tabular.clipboard_multi_segments.as_ref()
-                    && segments.len() == tabular.multi_selection.len()
-                {
-                    let expected: Cow<'_, str> = if segments.len() == 1 {
-                        Cow::Borrowed(segments[0].as_str())
+            if tabular.multi_selection.len() > 1
+                && let Some(segments) = tabular.clipboard_multi_segments.as_ref()
+                && segments.len() == tabular.multi_selection.len()
+            {
+                let expected: Cow<'_, str> = if segments.len() == 1 {
+                    Cow::Borrowed(segments[0].as_str())
+                } else {
+                    Cow::Owned(segments.join("\n"))
+                };
+                if expected.as_ref() == text {
+                    let had_expanded = tabular.multi_selection.has_expanded_ranges();
+                    if had_expanded {
+                        tabular
+                            .multi_selection
+                            .apply_replace_segments(&mut tabular.editor.text, segments);
                     } else {
-                        Cow::Owned(segments.join("\n"))
-                    };
-                    if expected.as_ref() == text {
-                        let had_expanded = tabular.multi_selection.has_expanded_ranges();
-                        if had_expanded {
-                            tabular
-                                .multi_selection
-                                .apply_replace_segments(&mut tabular.editor.text, segments);
-                        } else {
-                            tabular
-                                .multi_selection
-                                .apply_insert_segments(&mut tabular.editor.text, segments);
-                        }
-                        log::debug!(
-                            "[multi] applied segmented paste segments={} has_expanded={}",
-                            segments.len(),
-                            had_expanded
-                        );
-                        multi_applied_in_frame = true;
-                        handled_segmented_paste = true;
+                        tabular
+                            .multi_selection
+                            .apply_insert_segments(&mut tabular.editor.text, segments);
                     }
+                    log::debug!(
+                        "[multi] applied segmented paste segments={} has_expanded={}",
+                        segments.len(),
+                        had_expanded
+                    );
+                    multi_applied_in_frame = true;
+                    handled_segmented_paste = true;
                 }
             }
 
@@ -2172,9 +2171,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             (caret_ci, caret_ci, caret_ci)
         };
         let caret_b = to_byte_index(text, primary_char);
-        let anchor_char = if start_char == end_char {
-            start_char
-        } else if primary_char == end_char {
+        let anchor_char = if start_char == end_char || primary_char == end_char {
             start_char
         } else {
             end_char
@@ -4469,9 +4466,7 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
                 tab.page_size = tabular.page_size;
             }
 
-            debug!(
-                "🚀 Auto server-pagination enabled (simple SELECT). Executing first page..."
-            );
+            debug!("🚀 Auto server-pagination enabled (simple SELECT). Executing first page...");
             tabular.execute_paginated_query();
             return;
         }
@@ -4590,7 +4585,8 @@ pub(crate) fn process_query_result(
             String::new()
         };
 
-        let allows_auto_pagination = connection::should_enable_auto_pagination(&base_query_for_pagination);
+        let allows_auto_pagination =
+            connection::should_enable_auto_pagination(&base_query_for_pagination);
 
         if allows_auto_pagination {
             tabular.current_base_query = base_query_for_pagination.clone();
@@ -4600,9 +4596,7 @@ pub(crate) fn process_query_result(
             );
         } else {
             tabular.current_base_query.clear();
-            debug!(
-                "📝 Skipping base_query persistence (not eligible for auto pagination)"
-            );
+            debug!("📝 Skipping base_query persistence (not eligible for auto pagination)");
         }
 
         // Save query to history hanya jika bukan hasil error

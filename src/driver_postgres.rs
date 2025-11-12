@@ -157,10 +157,8 @@ pub(crate) fn load_postgresql_structure(
 
     let mut dba_children = Vec::new();
 
-    let mut users_folder = models::structs::TreeNode::new(
-        "Users".to_string(),
-        models::enums::NodeType::UsersFolder,
-    );
+    let mut users_folder =
+        models::structs::TreeNode::new("Users".to_string(), models::enums::NodeType::UsersFolder);
     users_folder.connection_id = Some(connection_id);
     users_folder.is_loaded = false;
     dba_children.push(users_folder);
@@ -181,10 +179,8 @@ pub(crate) fn load_postgresql_structure(
     proc_folder.is_loaded = false;
     dba_children.push(proc_folder);
 
-    let mut status_folder = models::structs::TreeNode::new(
-        "Status".to_string(),
-        models::enums::NodeType::StatusFolder,
-    );
+    let mut status_folder =
+        models::structs::TreeNode::new("Status".to_string(), models::enums::NodeType::StatusFolder);
     status_folder.connection_id = Some(connection_id);
     status_folder.is_loaded = false;
     dba_children.push(status_folder);

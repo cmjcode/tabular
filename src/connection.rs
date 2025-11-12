@@ -78,8 +78,7 @@ fn normalize_sql_token(token: &str) -> String {
 fn is_reserved_after_from(token: &str) -> bool {
     matches!(
         token,
-        ""
-            | "WHERE"
+        "" | "WHERE"
             | "ORDER"
             | "GROUP"
             | "HAVING"
@@ -135,9 +134,7 @@ fn contains_complex_keywords(tokens: &[String]) -> bool {
 }
 
 fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &[String]) -> bool {
-    let from_pos = normalized_tokens
-        .iter()
-        .position(|tok| tok == "FROM");
+    let from_pos = normalized_tokens.iter().position(|tok| tok == "FROM");
     let Some(from_idx) = from_pos else {
         debug!(
             "🛑 select_has_alias: no FROM found in tokens: {:?}",
@@ -153,9 +150,7 @@ fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &
 
     let table_token_raw = raw_tokens[from_idx + 1];
     let table_token_clean = table_token_raw
-        .trim_matches(|c: char| {
-            matches!(c, ',' | ';' | '`' | '"' | '\'' | '[' | ']' | '{' | '}' )
-        })
+        .trim_matches(|c: char| matches!(c, ',' | ';' | '`' | '"' | '\'' | '[' | ']' | '{' | '}'))
         .trim();
 
     if table_token_clean.is_empty()
@@ -169,9 +164,7 @@ fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &
         return true;
     }
 
-    let mut idx = from_idx + 2;
-    while idx < normalized_tokens.len() {
-        let token_upper = &normalized_tokens[idx];
+    if let Some(token_upper) = normalized_tokens.get(from_idx + 2) {
         if token_upper == "AS" {
             debug!("🛑 select_has_alias: alias via AS detected");
             return true;
@@ -181,14 +174,14 @@ fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &
                 "✅ select_has_alias: reserved token '{}' stops scan",
                 token_upper
             );
-            break;
+        } else {
+            // Any non-reserved token after table indicates alias or additional tables
+            debug!(
+                "🛑 select_has_alias: token '{}' treated as alias/additional table",
+                token_upper
+            );
+            return true;
         }
-        // Any non-reserved token after table indicates alias or additional tables
-        debug!(
-            "🛑 select_has_alias: token '{}' treated as alias/additional table",
-            token_upper
-        );
-        return true;
     }
 
     debug!(
@@ -215,11 +208,7 @@ fn is_simple_select_statement(stmt: &str) -> bool {
         raw_tokens, normalized_tokens
     );
 
-    if normalized_tokens
-        .first()
-        .map(|tok| tok.as_str())
-        != Some("SELECT")
-    {
+    if normalized_tokens.first().map(|tok| tok.as_str()) != Some("SELECT") {
         return false;
     }
 
@@ -237,9 +226,7 @@ fn is_simple_select_statement(stmt: &str) -> bool {
     }
 
     if normalized_tokens.get(1).map(|tok| tok.as_str()) != Some("*") {
-        debug!(
-            "🛑 is_simple_select_statement: only SELECT * patterns are eligible"
-        );
+        debug!("🛑 is_simple_select_statement: only SELECT * patterns are eligible");
         return false;
     }
 
@@ -253,9 +240,7 @@ fn is_simple_select_statement(stmt: &str) -> bool {
 
 pub fn should_enable_auto_pagination(sql: &str) -> bool {
     if query_contains_pagination(sql) {
-        debug!(
-            "🛑 should_enable_auto_pagination: pagination clause already present"
-        );
+        debug!("🛑 should_enable_auto_pagination: pagination clause already present");
         return false;
     }
 
@@ -266,7 +251,7 @@ pub fn should_enable_auto_pagination(sql: &str) -> bool {
             continue;
         }
 
-        if trimmed.trim_start().starts_with(|c: char| c == '-' || c == '#') {
+        if trimmed.trim_start().starts_with(['-', '#']) {
             continue;
         }
 
@@ -277,16 +262,12 @@ pub fn should_enable_auto_pagination(sql: &str) -> bool {
                 trimmed, is_simple
             );
             if !is_simple {
-                debug!(
-                    "🛑 should_enable_auto_pagination: statement not simple enough"
-                );
+                debug!("🛑 should_enable_auto_pagination: statement not simple enough");
                 return false;
             }
             simple_select_count += 1;
             if simple_select_count > 1 {
-                debug!(
-                    "🛑 should_enable_auto_pagination: more than one SELECT statement"
-                );
+                debug!("🛑 should_enable_auto_pagination: more than one SELECT statement");
                 return false;
             }
         }
@@ -294,9 +275,12 @@ pub fn should_enable_auto_pagination(sql: &str) -> bool {
 
     let enable = simple_select_count == 1;
     if enable {
-        debug!("✅ should_enable_auto_pagination: enabling for sql='{}'", sql);
+        debug!(
+            "✅ should_enable_auto_pagination: enabling for sql='{}'",
+            sql
+        );
     } else {
-            debug!("ℹ️ should_enable_auto_pagination: no eligible SELECT statements detected");
+        debug!("ℹ️ should_enable_auto_pagination: no eligible SELECT statements detected");
     }
     enable
 }
@@ -681,11 +665,7 @@ async fn execute_mysql_query_job(
                 continue;
             }
 
-            debug!(
-                "[mysql] about to run statement[{}]: {:?}",
-                idx + 1,
-                trimmed
-            );
+            debug!("[mysql] about to run statement[{}]: {:?}", idx + 1, trimmed);
 
             let upper = trimmed.to_uppercase();
             if upper.starts_with("USE ") {
@@ -1863,17 +1843,19 @@ mod tests {
     #[test]
     fn simple_select_allows_auto_pagination() {
         assert!(should_enable_auto_pagination("SELECT * FROM users"));
-        assert!(should_enable_auto_pagination("USE mydb; SELECT * FROM `users`"));
-        assert!(should_enable_auto_pagination("SELECT * FROM schema.table_name"));
+        assert!(should_enable_auto_pagination(
+            "USE mydb; SELECT * FROM `users`"
+        ));
+        assert!(should_enable_auto_pagination(
+            "SELECT * FROM schema.table_name"
+        ));
     }
 
     #[test]
     fn select_with_alias_skips_auto_pagination() {
         assert!(!should_enable_auto_pagination("SELECT * FROM users u"));
         assert!(!should_enable_auto_pagination("SELECT * FROM `users` AS u"));
-        assert!(!should_enable_auto_pagination(
-            "SELECT column1 FROM users"
-        ));
+        assert!(!should_enable_auto_pagination("SELECT column1 FROM users"));
     }
 
     #[test]
