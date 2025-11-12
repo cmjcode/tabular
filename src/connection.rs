@@ -64,6 +64,243 @@ pub fn query_contains_pagination(sql: &str) -> bool {
         || upper_ref.contains("FETCH ROWS")
 }
 
+fn normalize_sql_token(token: &str) -> String {
+    token
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                ',' | ';' | '(' | ')' | '`' | '"' | '\'' | '[' | ']' | '{' | '}'
+            )
+        })
+        .to_uppercase()
+}
+
+fn is_reserved_after_from(token: &str) -> bool {
+    matches!(
+        token,
+        ""
+            | "WHERE"
+            | "ORDER"
+            | "GROUP"
+            | "HAVING"
+            | "LIMIT"
+            | "OFFSET"
+            | "FETCH"
+            | "FOR"
+            | "UNION"
+            | "INTERSECT"
+            | "EXCEPT"
+            | "JOIN"
+            | "INNER"
+            | "LEFT"
+            | "RIGHT"
+            | "FULL"
+            | "CROSS"
+            | "ON"
+            | "USING"
+            | "WINDOW"
+            | "TABLESAMPLE"
+    )
+}
+
+fn contains_complex_keywords(tokens: &[String]) -> bool {
+    for window in tokens.windows(2) {
+        if window[0] == "GROUP" && window[1] == "BY" {
+            return true;
+        }
+        if window[0] == "ORDER" && window[1] == "BY" {
+            return true;
+        }
+    }
+
+    tokens.iter().any(|tok| {
+        matches!(
+            tok.as_str(),
+            "JOIN"
+                | "WHERE"
+                | "HAVING"
+                | "UNION"
+                | "INTERSECT"
+                | "EXCEPT"
+                | "WITH"
+                | "LIMIT"
+                | "OFFSET"
+                | "FETCH"
+                | "FOR"
+                | "PIVOT"
+                | "UNPIVOT"
+                | "RETURNING"
+        )
+    })
+}
+
+fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &[String]) -> bool {
+    let from_pos = normalized_tokens
+        .iter()
+        .position(|tok| tok == "FROM");
+    let Some(from_idx) = from_pos else {
+        debug!(
+            "🛑 select_has_alias: no FROM found in tokens: {:?}",
+            normalized_tokens
+        );
+        return true; // Cannot determine target without FROM
+    };
+
+    if from_idx + 1 >= raw_tokens.len() {
+        debug!("🛑 select_has_alias: missing table token after FROM");
+        return true;
+    }
+
+    let table_token_raw = raw_tokens[from_idx + 1];
+    let table_token_clean = table_token_raw
+        .trim_matches(|c: char| {
+            matches!(c, ',' | ';' | '`' | '"' | '\'' | '[' | ']' | '{' | '}' )
+        })
+        .trim();
+
+    if table_token_clean.is_empty()
+        || table_token_raw.contains(',')
+        || table_token_raw.contains('(')
+    {
+        debug!(
+            "🛑 select_has_alias: table segment unclear '{}', raw='{}'",
+            table_token_clean, table_token_raw
+        );
+        return true;
+    }
+
+    let mut idx = from_idx + 2;
+    while idx < normalized_tokens.len() {
+        let token_upper = &normalized_tokens[idx];
+        if token_upper == "AS" {
+            debug!("🛑 select_has_alias: alias via AS detected");
+            return true;
+        }
+        if is_reserved_after_from(token_upper) {
+            debug!(
+                "✅ select_has_alias: reserved token '{}' stops scan",
+                token_upper
+            );
+            break;
+        }
+        // Any non-reserved token after table indicates alias or additional tables
+        debug!(
+            "🛑 select_has_alias: token '{}' treated as alias/additional table",
+            token_upper
+        );
+        return true;
+    }
+
+    debug!(
+        "✅ select_has_alias: no alias detected (tokens after FROM: {:?})",
+        &normalized_tokens[from_idx..]
+    );
+    false
+}
+
+fn is_simple_select_statement(stmt: &str) -> bool {
+    let raw_tokens: Vec<&str> = stmt.split_whitespace().collect();
+    if raw_tokens.is_empty() {
+        return false;
+    }
+
+    let normalized_tokens: Vec<String> = raw_tokens
+        .iter()
+        .map(|tok| normalize_sql_token(tok))
+        .filter(|tok| !tok.is_empty())
+        .collect();
+
+    debug!(
+        "🔍 is_simple_select_statement tokens raw={:?}, normalized={:?}",
+        raw_tokens, normalized_tokens
+    );
+
+    if normalized_tokens
+        .first()
+        .map(|tok| tok.as_str())
+        != Some("SELECT")
+    {
+        return false;
+    }
+
+    if contains_complex_keywords(&normalized_tokens) {
+        debug!("🛑 is_simple_select_statement: complex keyword detected");
+        return false;
+    }
+
+    if normalized_tokens.len() != 4 {
+        debug!(
+            "🛑 is_simple_select_statement: expected 4 tokens, got {}",
+            normalized_tokens.len()
+        );
+        return false;
+    }
+
+    if normalized_tokens.get(1).map(|tok| tok.as_str()) != Some("*") {
+        debug!(
+            "🛑 is_simple_select_statement: only SELECT * patterns are eligible"
+        );
+        return false;
+    }
+
+    let result = !select_has_alias_or_multiple_tables(&raw_tokens, &normalized_tokens);
+    debug!(
+        "✅ is_simple_select_statement result={} for stmt='{}'",
+        result, stmt
+    );
+    result
+}
+
+pub fn should_enable_auto_pagination(sql: &str) -> bool {
+    if query_contains_pagination(sql) {
+        debug!(
+            "🛑 should_enable_auto_pagination: pagination clause already present"
+        );
+        return false;
+    }
+
+    let mut simple_select_count = 0;
+    for stmt in sql.split(';') {
+        let trimmed = stmt.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.trim_start().starts_with(|c: char| c == '-' || c == '#') {
+            continue;
+        }
+
+        if trimmed.to_uppercase().starts_with("SELECT") {
+            let is_simple = is_simple_select_statement(trimmed);
+            debug!(
+                "🔍 should_enable_auto_pagination: stmt='{}' is_simple={}",
+                trimmed, is_simple
+            );
+            if !is_simple {
+                debug!(
+                    "🛑 should_enable_auto_pagination: statement not simple enough"
+                );
+                return false;
+            }
+            simple_select_count += 1;
+            if simple_select_count > 1 {
+                debug!(
+                    "🛑 should_enable_auto_pagination: more than one SELECT statement"
+                );
+                return false;
+            }
+        }
+    }
+
+    let enable = simple_select_count == 1;
+    if enable {
+        debug!("✅ should_enable_auto_pagination: enabling for sql='{}'", sql);
+    } else {
+            debug!("ℹ️ should_enable_auto_pagination: no eligible SELECT statements detected");
+    }
+    enable
+}
+
 #[derive(Clone, Debug)]
 pub struct QueryExecutionOptions {
     pub connection_id: i64,
@@ -302,36 +539,42 @@ async fn execute_mysql_query_job(
     let mut inferred_headers_from_ast: Option<Vec<String>> = None;
     let mut ast_headers: Option<Vec<String>> = None;
     #[cfg(feature = "query_ast")]
-    let statements: Vec<String> = if statements_raw.len() == 1
-        && statements_raw[0]
-            .trim_start()
-            .to_uppercase()
-            .starts_with("SELECT")
-    {
-        let should_paginate =
-            options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
-        let pagination_opt = if should_paginate {
-            Some((options.current_page as u64, options.page_size as u64))
-        } else {
-            None
-        };
-        match crate::query_ast::compile_single_select(
-            statements_raw[0],
-            &options.connection.connection_type,
-            pagination_opt,
-            true,
-        ) {
-            Ok((new_sql, hdrs)) => {
-                if !hdrs.is_empty() {
-                    inferred_headers_from_ast = Some(hdrs.clone());
-                    ast_headers = Some(hdrs.clone());
+    let statements: Vec<String> = {
+        let allow_ast_rewrite = options.ast_enabled
+            && statements_raw.len() == 1
+            && statements_raw[0]
+                .trim_start()
+                .to_uppercase()
+                .starts_with("SELECT")
+            && is_simple_select_statement(statements_raw[0]);
+
+        if allow_ast_rewrite {
+            let should_paginate =
+                options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
+            let pagination_opt = if should_paginate {
+                Some((options.current_page as u64, options.page_size as u64))
+            } else {
+                None
+            };
+            let inject_auto_limit = should_paginate;
+            match crate::query_ast::compile_single_select(
+                statements_raw[0],
+                &options.connection.connection_type,
+                pagination_opt,
+                inject_auto_limit,
+            ) {
+                Ok((new_sql, hdrs)) => {
+                    if !hdrs.is_empty() {
+                        inferred_headers_from_ast = Some(hdrs.clone());
+                        ast_headers = Some(hdrs.clone());
+                    }
+                    vec![new_sql]
                 }
-                vec![new_sql]
+                Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
             }
-            Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
+        } else {
+            statements_raw.iter().map(|s| s.to_string()).collect()
         }
-    } else {
-        statements_raw.iter().map(|s| s.to_string()).collect()
     };
     #[cfg(not(feature = "query_ast"))]
     let statements: Vec<String> = statements_raw.iter().map(|s| s.to_string()).collect();
@@ -339,15 +582,6 @@ async fn execute_mysql_query_job(
     let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
     #[cfg(not(feature = "query_ast"))]
     let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
-
-    let replication_status_mode = matches!(
-        options.dba_special_mode,
-        Some(models::enums::DBASpecialMode::ReplicationStatus)
-    );
-    let master_status_mode = matches!(
-        options.dba_special_mode,
-        Some(models::enums::DBASpecialMode::MasterStatus)
-    );
 
     let encoded_username = modules::url_encode(&options.connection.username);
     let encoded_password = modules::url_encode(&options.connection.password);
@@ -366,6 +600,15 @@ async fn execute_mysql_query_job(
     debug!(
         "[mysql] target={}:{}, selected_database={:?}, default_db={}",
         target_host, target_port, options.selected_database, default_db
+    );
+
+    let replication_status_mode = matches!(
+        options.dba_special_mode,
+        Some(models::enums::DBASpecialMode::ReplicationStatus)
+    );
+    let master_status_mode = matches!(
+        options.dba_special_mode,
+        Some(models::enums::DBASpecialMode::MasterStatus)
     );
 
     let mut ast_debug_sql: Option<String> = None;
@@ -437,6 +680,12 @@ async fn execute_mysql_query_job(
             {
                 continue;
             }
+
+            debug!(
+                "[mysql] about to run statement[{}]: {:?}",
+                idx + 1,
+                trimmed
+            );
 
             let upper = trimmed.to_uppercase();
             if upper.starts_with("USE ") {
@@ -733,37 +982,43 @@ async fn execute_postgres_query_job(
     let mut ast_debug_sql: Option<String> = None;
 
     #[cfg(feature = "query_ast")]
-    let statements: Vec<String> = if statements_raw.len() == 1
-        && statements_raw[0]
-            .trim_start()
-            .to_uppercase()
-            .starts_with("SELECT")
-    {
-        let should_paginate =
-            options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
-        let pagination_opt = if should_paginate {
-            Some((options.current_page as u64, options.page_size as u64))
-        } else {
-            None
-        };
-        match crate::query_ast::compile_single_select(
-            statements_raw[0],
-            &options.connection.connection_type,
-            pagination_opt,
-            true,
-        ) {
-            Ok((new_sql, hdrs)) => {
-                if !hdrs.is_empty() {
-                    inferred_headers_from_ast = Some(hdrs.clone());
-                    ast_headers = Some(hdrs.clone());
+    let statements: Vec<String> = {
+        let allow_ast_rewrite = options.ast_enabled
+            && statements_raw.len() == 1
+            && statements_raw[0]
+                .trim_start()
+                .to_uppercase()
+                .starts_with("SELECT")
+            && is_simple_select_statement(statements_raw[0]);
+
+        if allow_ast_rewrite {
+            let should_paginate =
+                options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
+            let pagination_opt = if should_paginate {
+                Some((options.current_page as u64, options.page_size as u64))
+            } else {
+                None
+            };
+            let inject_auto_limit = should_paginate;
+            match crate::query_ast::compile_single_select(
+                statements_raw[0],
+                &options.connection.connection_type,
+                pagination_opt,
+                inject_auto_limit,
+            ) {
+                Ok((new_sql, hdrs)) => {
+                    if !hdrs.is_empty() {
+                        inferred_headers_from_ast = Some(hdrs.clone());
+                        ast_headers = Some(hdrs.clone());
+                    }
+                    ast_debug_sql = Some(new_sql.clone());
+                    vec![new_sql]
                 }
-                ast_debug_sql = Some(new_sql.clone());
-                vec![new_sql]
+                Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
             }
-            Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
+        } else {
+            statements_raw.iter().map(|s| s.to_string()).collect()
         }
-    } else {
-        statements_raw.iter().map(|s| s.to_string()).collect()
     };
     #[cfg(not(feature = "query_ast"))]
     let statements: Vec<String> = statements_raw.iter().map(|s| s.to_string()).collect();
@@ -886,37 +1141,43 @@ async fn execute_sqlite_query_job(
     let mut ast_debug_sql: Option<String> = None;
 
     #[cfg(feature = "query_ast")]
-    let statements: Vec<String> = if statements_raw.len() == 1
-        && statements_raw[0]
-            .trim_start()
-            .to_uppercase()
-            .starts_with("SELECT")
-    {
-        let should_paginate =
-            options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
-        let pagination_opt = if should_paginate {
-            Some((options.current_page as u64, options.page_size as u64))
-        } else {
-            None
-        };
-        match crate::query_ast::compile_single_select(
-            statements_raw[0],
-            &options.connection.connection_type,
-            pagination_opt,
-            true,
-        ) {
-            Ok((new_sql, hdrs)) => {
-                if !hdrs.is_empty() {
-                    inferred_headers_from_ast = Some(hdrs.clone());
-                    ast_headers = Some(hdrs.clone());
+    let statements: Vec<String> = {
+        let allow_ast_rewrite = options.ast_enabled
+            && statements_raw.len() == 1
+            && statements_raw[0]
+                .trim_start()
+                .to_uppercase()
+                .starts_with("SELECT")
+            && is_simple_select_statement(statements_raw[0]);
+
+        if allow_ast_rewrite {
+            let should_paginate =
+                options.use_server_pagination && !query_contains_pagination(statements_raw[0]);
+            let pagination_opt = if should_paginate {
+                Some((options.current_page as u64, options.page_size as u64))
+            } else {
+                None
+            };
+            let inject_auto_limit = should_paginate;
+            match crate::query_ast::compile_single_select(
+                statements_raw[0],
+                &options.connection.connection_type,
+                pagination_opt,
+                inject_auto_limit,
+            ) {
+                Ok((new_sql, hdrs)) => {
+                    if !hdrs.is_empty() {
+                        inferred_headers_from_ast = Some(hdrs.clone());
+                        ast_headers = Some(hdrs.clone());
+                    }
+                    ast_debug_sql = Some(new_sql.clone());
+                    vec![new_sql]
                 }
-                ast_debug_sql = Some(new_sql.clone());
-                vec![new_sql]
+                Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
             }
-            Err(_) => statements_raw.iter().map(|s| s.to_string()).collect(),
+        } else {
+            statements_raw.iter().map(|s| s.to_string()).collect()
         }
-    } else {
-        statements_raw.iter().map(|s| s.to_string()).collect()
     };
     #[cfg(not(feature = "query_ast"))]
     let statements: Vec<String> = statements_raw.iter().map(|s| s.to_string()).collect();
@@ -1552,13 +1813,9 @@ pub(crate) fn execute_query_with_connection(
         // Server pagination fallback: if batch contains a SELECT without LIMIT/TOP/OFFSET/FETCH,
         // rewrite to paginated query and set pagination state (handles cases like "USE db; SELECT ...").
         {
-            let upper = final_query.to_uppercase();
-            let has_pagination_clause = query_contains_pagination(&final_query);
-            let has_select_stmt = upper
-                .split(';')
-                .any(|s| s.trim_start().starts_with("SELECT"));
+            let should_auto_paginate = should_enable_auto_pagination(&final_query);
 
-            if has_select_stmt && !has_pagination_clause {
+            if should_auto_paginate {
                 match connection.connection_type {
                     models::enums::DatabaseType::MySQL
                     | models::enums::DatabaseType::PostgreSQL
@@ -1583,25 +1840,57 @@ pub(crate) fn execute_query_with_connection(
                             final_query
                         );
                     }
-                    _ => {
-                        // Non-SQL engines (Mongo/Redis/MsSQL handled elsewhere); do nothing here
-                    }
-                }
-            } else {
-                // Add auto LIMIT if still plain SELECT without clauses and not handled by pagination
-                let original_query = final_query.clone();
-                final_query = add_auto_limit_if_needed(&final_query, &connection.connection_type);
-                if original_query != final_query {
-                    debug!("Auto LIMIT applied. Original: {}", original_query);
-                    debug!("Modified: {}", final_query);
+                    _ => {}
                 }
             }
         }
+
+        println!("===============CCCCC=================");
+        // log final query
+        debug!("Final query to execute: {}", final_query);
 
         execute_table_query_sync(tabular, connection_id, &connection, &final_query)
     } else {
         debug!("Connection not found for ID: {}", connection_id);
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simple_select_allows_auto_pagination() {
+        assert!(should_enable_auto_pagination("SELECT * FROM users"));
+        assert!(should_enable_auto_pagination("USE mydb; SELECT * FROM `users`"));
+        assert!(should_enable_auto_pagination("SELECT * FROM schema.table_name"));
+    }
+
+    #[test]
+    fn select_with_alias_skips_auto_pagination() {
+        assert!(!should_enable_auto_pagination("SELECT * FROM users u"));
+        assert!(!should_enable_auto_pagination("SELECT * FROM `users` AS u"));
+        assert!(!should_enable_auto_pagination(
+            "SELECT column1 FROM users"
+        ));
+    }
+
+    #[test]
+    fn select_with_join_or_filters_skips_auto_pagination() {
+        assert!(!should_enable_auto_pagination(
+            "SELECT * FROM users JOIN orders ON users.id = orders.user_id"
+        ));
+        assert!(!should_enable_auto_pagination(
+            "SELECT * FROM users WHERE users.active = 1"
+        ));
+    }
+
+    #[test]
+    fn multiple_selects_do_not_auto_paginate() {
+        assert!(!should_enable_auto_pagination(
+            "SELECT * FROM users; SELECT * FROM orders"
+        ));
     }
 }
 
@@ -1658,22 +1947,54 @@ pub(crate) fn execute_table_query_sync(
                         #[cfg(feature = "query_ast")]
                         let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
                         #[cfg(feature = "query_ast")]
-                        let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
-                            let should_paginate = tabular.use_server_pagination && !query_contains_pagination(statements[0]);
-                            let pagination_opt = if should_paginate { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
-                            match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
-                                Ok((new_sql, hdrs)) => {
-                                    if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs.clone()); }
-                                    // Store debug info for UI panel
-                                    tabular.last_compiled_sql = Some(new_sql.clone());
-                                    tabular.last_compiled_headers = hdrs.clone();
-                                    if let Ok(plan_txt) = crate::query_ast::debug_plan(statements[0], &connection.connection_type) { tabular.last_debug_plan = Some(plan_txt); }
-                                    let (h,m) = crate::query_ast::cache_stats(); tabular.last_cache_hits = h; tabular.last_cache_misses = m;
-                                    vec![new_sql] },
-                                Err(_e) => statements.iter().map(|s| s.to_string()).collect(),
+                        let statements: Vec<String> = {
+                            let allow_ast_rewrite = statements.len() == 1
+                                && statements[0].to_uppercase().starts_with("SELECT")
+                                && is_simple_select_statement(statements[0]);
+
+                            if allow_ast_rewrite {
+                                let should_paginate = tabular.use_server_pagination
+                                    && !query_contains_pagination(statements[0]);
+                                let pagination_opt = if should_paginate {
+                                    Some((tabular.current_page as u64, tabular.page_size as u64))
+                                } else {
+                                    None
+                                };
+                                let inject_auto_limit = should_paginate;
+                                match crate::query_ast::compile_single_select(
+                                    statements[0],
+                                    &connection.connection_type,
+                                    pagination_opt,
+                                    inject_auto_limit,
+                                ) {
+                                    Ok((new_sql, hdrs)) => {
+                                        if !hdrs.is_empty() {
+                                            _inferred_headers_from_ast = Some(hdrs.clone());
+                                        }
+                                        // Store debug info for UI panel
+                                        tabular.last_compiled_sql = Some(new_sql.clone());
+                                        tabular.last_compiled_headers = hdrs.clone();
+                                        if let Ok(plan_txt) =
+                                            crate::query_ast::debug_plan(statements[0], &connection.connection_type)
+                                        {
+                                            tabular.last_debug_plan = Some(plan_txt);
+                                        }
+                                        let (h, m) = crate::query_ast::cache_stats();
+                                        tabular.last_cache_hits = h;
+                                        tabular.last_cache_misses = m;
+                                        vec![new_sql]
+                                    }
+                                    Err(_e) => statements.iter().map(|s| s.to_string()).collect(),
+                                }
+                            } else {
+                                statements.iter().map(|s| s.to_string()).collect()
                             }
-                        } else { statements.iter().map(|s| s.to_string()).collect() };
+                        };
+                        #[cfg(not(feature = "query_ast"))]
+                        let statements: Vec<String> = statements.iter().map(|s| s.to_string()).collect();
                         #[cfg(feature = "query_ast")]
+                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+                        #[cfg(not(feature = "query_ast"))]
                         let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
                         debug!("Found {} SQL statements to execute", statements.len());
                         for (idx, stmt) in statements.iter().enumerate() {
@@ -1954,21 +2275,53 @@ pub(crate) fn execute_table_query_sync(
                         #[cfg(feature = "query_ast")]
                         let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
                         #[cfg(feature = "query_ast")]
-                        let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
-                            let should_paginate = tabular.use_server_pagination && !query_contains_pagination(statements[0]);
-                            let pagination_opt = if should_paginate { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
-                            match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
-                                Ok((new_sql, hdrs)) => {
-                                    if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs.clone()); }
-                                    tabular.last_compiled_sql = Some(new_sql.clone());
-                                    tabular.last_compiled_headers = hdrs.clone();
-                                    if let Ok(plan_txt) = crate::query_ast::debug_plan(statements[0], &connection.connection_type) { tabular.last_debug_plan = Some(plan_txt); }
-                                    let (h,m) = crate::query_ast::cache_stats(); tabular.last_cache_hits = h; tabular.last_cache_misses = m;
-                                    vec![new_sql] },
-                                Err(_)=> statements.iter().map(|s| s.to_string()).collect(),
+                        let statements: Vec<String> = {
+                            let allow_ast_rewrite = statements.len() == 1
+                                && statements[0].to_uppercase().starts_with("SELECT")
+                                && is_simple_select_statement(statements[0]);
+
+                            if allow_ast_rewrite {
+                                let should_paginate = tabular.use_server_pagination
+                                    && !query_contains_pagination(statements[0]);
+                                let pagination_opt = if should_paginate {
+                                    Some((tabular.current_page as u64, tabular.page_size as u64))
+                                } else {
+                                    None
+                                };
+                                let inject_auto_limit = should_paginate;
+                                match crate::query_ast::compile_single_select(
+                                    statements[0],
+                                    &connection.connection_type,
+                                    pagination_opt,
+                                    inject_auto_limit,
+                                ) {
+                                    Ok((new_sql, hdrs)) => {
+                                        if !hdrs.is_empty() {
+                                            _inferred_headers_from_ast = Some(hdrs.clone());
+                                        }
+                                        tabular.last_compiled_sql = Some(new_sql.clone());
+                                        tabular.last_compiled_headers = hdrs.clone();
+                                        if let Ok(plan_txt) =
+                                            crate::query_ast::debug_plan(statements[0], &connection.connection_type)
+                                        {
+                                            tabular.last_debug_plan = Some(plan_txt);
+                                        }
+                                        let (h, m) = crate::query_ast::cache_stats();
+                                        tabular.last_cache_hits = h;
+                                        tabular.last_cache_misses = m;
+                                        vec![new_sql]
+                                    }
+                                    Err(_) => statements.iter().map(|s| s.to_string()).collect(),
+                                }
+                            } else {
+                                statements.iter().map(|s| s.to_string()).collect()
                             }
-                        } else { statements.iter().map(|s| s.to_string()).collect() };
+                        };
+                        #[cfg(not(feature = "query_ast"))]
+                        let statements: Vec<String> = statements.iter().map(|s| s.to_string()).collect();
                         #[cfg(feature = "query_ast")]
+                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+                        #[cfg(not(feature = "query_ast"))]
                         let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
                         debug!("Found {} SQL statements to execute", statements.len());
 
@@ -2079,15 +2432,43 @@ pub(crate) fn execute_table_query_sync(
                         #[cfg(feature = "query_ast")]
                         let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
                         #[cfg(feature = "query_ast")]
-                        let statements: Vec<String> = if statements.len() == 1 && statements[0].to_uppercase().starts_with("SELECT") {
-                            let should_paginate = tabular.use_server_pagination && !query_contains_pagination(statements[0]);
-                            let pagination_opt = if should_paginate { Some((tabular.current_page as u64, tabular.page_size as u64)) } else { None };
-                            match crate::query_ast::compile_single_select(statements[0], &connection.connection_type, pagination_opt, true) {
-                                Ok((new_sql, hdrs)) => { if !hdrs.is_empty() { _inferred_headers_from_ast = Some(hdrs); } vec![new_sql] },
-                                Err(_)=> statements.iter().map(|s| s.to_string()).collect(),
+                        let statements: Vec<String> = {
+                            let allow_ast_rewrite = statements.len() == 1
+                                && statements[0].to_uppercase().starts_with("SELECT")
+                                && is_simple_select_statement(statements[0]);
+
+                            if allow_ast_rewrite {
+                                let should_paginate = tabular.use_server_pagination
+                                    && !query_contains_pagination(statements[0]);
+                                let pagination_opt = if should_paginate {
+                                    Some((tabular.current_page as u64, tabular.page_size as u64))
+                                } else {
+                                    None
+                                };
+                                let inject_auto_limit = should_paginate;
+                                match crate::query_ast::compile_single_select(
+                                    statements[0],
+                                    &connection.connection_type,
+                                    pagination_opt,
+                                    inject_auto_limit,
+                                ) {
+                                    Ok((new_sql, hdrs)) => {
+                                        if !hdrs.is_empty() {
+                                            _inferred_headers_from_ast = Some(hdrs.clone());
+                                        }
+                                        vec![new_sql]
+                                    }
+                                    Err(_) => statements.iter().map(|s| s.to_string()).collect(),
+                                }
+                            } else {
+                                statements.iter().map(|s| s.to_string()).collect()
                             }
-                        } else { statements.iter().map(|s| s.to_string()).collect() };
+                        };
+                        #[cfg(not(feature = "query_ast"))]
+                        let statements: Vec<String> = statements.iter().map(|s| s.to_string()).collect();
                         #[cfg(feature = "query_ast")]
+                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
+                        #[cfg(not(feature = "query_ast"))]
                         let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
                         debug!("Found {} SQL statements to execute", statements.len());
 

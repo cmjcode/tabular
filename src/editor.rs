@@ -4332,6 +4332,12 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
 fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String) {
     query = query.trim().to_string();
 
+    // Reset pagination state for each fresh execution; we will re-enable if heuristics say so.
+    tabular.use_server_pagination = false;
+    tabular.current_base_query.clear();
+    tabular.current_page = 0;
+    tabular.actual_total_rows = None;
+
     tabular.lint_messages = query_tools::lint_sql(&query);
     tabular.show_lint_panel = !tabular.lint_messages.is_empty();
 
@@ -4361,6 +4367,9 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         tabular.current_table_data.clear();
         return;
     }
+
+    // Reset pagination state before evaluating auto-pagination rules
+    tabular.use_server_pagination = false;
 
     // We no longer branch on first execution; per-tab connection must always be set explicitly.
 
@@ -4446,55 +4455,25 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
 
         // Auto-enable server-side pagination when the query does not specify LIMIT/TOP/OFFSET/FETCH
         // This prevents fetching huge result sets and uses paginated execution instead.
-        {
-            let upper = query.to_uppercase();
-            // Broader detection: consider LIMIT/OFFSET/FETCH/TOP patterns without requiring trailing spaces
-            let has_pagination_clause = connection::query_contains_pagination(&query);
+        if connection::should_enable_auto_pagination(&query) {
+            let base_query = query.trim().trim_end_matches(';').to_string();
 
-            // Heuristic: auto-paginate when there's at least one SELECT statement in the batch (e.g., "USE ...; SELECT ...")
-            let is_select_like = upper
-                .split(';')
-                .any(|stmt| stmt.trim_start().starts_with("SELECT"));
-            // Avoid auto-paginating for DML/DDL-only batches
-            let is_mutating = upper.contains("INSERT ")
-                || upper.contains("UPDATE ")
-                || upper.contains("DELETE ")
-                || upper.contains("MERGE ")
-                || upper.contains("CREATE ")
-                || upper.contains("ALTER ")
-                || upper.contains("DROP ")
-                || upper.contains("TRUNCATE ")
-                || upper.contains("GRANT ")
-                || upper.contains("REVOKE ")
-                || upper.contains("EXEC ")
-                || upper.contains("CALL ");
+            tabular.use_server_pagination = true;
+            tabular.current_base_query = base_query.clone();
+            tabular.current_page = 0;
+            tabular.actual_total_rows = Some(10_000);
 
-            if is_select_like && !has_pagination_clause && !is_mutating {
-                // Prepare base query (trim trailing semicolon to avoid issues when appending LIMIT/OFFSET)
-                let base_query = query.trim().trim_end_matches(';').to_string();
-
-                // Force-enable server pagination for this execution as requested
-                tabular.use_server_pagination = true;
-
-                // Initialize server pagination state
-                tabular.current_base_query = base_query.clone();
-                tabular.current_page = 0;
-                tabular.actual_total_rows = Some(10_000); // default total pages assumption
-
-                // Persist base query into the active tab for consistent pagination behavior
-                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                    tab.base_query = base_query;
-                    tab.current_page = tabular.current_page;
-                    tab.page_size = tabular.page_size;
-                }
-
-                // Execute first page and exit normal path
-                debug!(
-                    "🚀 Auto server-pagination enabled (no LIMIT/TOP found). Executing first page..."
-                );
-                tabular.execute_paginated_query();
-                return;
+            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                tab.base_query = base_query;
+                tab.current_page = tabular.current_page;
+                tab.page_size = tabular.page_size;
             }
+
+            debug!(
+                "🚀 Auto server-pagination enabled (simple SELECT). Executing first page..."
+            );
+            tabular.execute_paginated_query();
+            return;
         }
 
         let job_id = tabular.next_query_job_id;
@@ -4610,11 +4589,21 @@ pub(crate) fn process_query_result(
         } else {
             String::new()
         };
-        tabular.current_base_query = base_query_for_pagination.clone();
-        debug!(
-            "📝 Set base_query for pagination: '{}'",
-            base_query_for_pagination
-        );
+
+        let allows_auto_pagination = connection::should_enable_auto_pagination(&base_query_for_pagination);
+
+        if allows_auto_pagination {
+            tabular.current_base_query = base_query_for_pagination.clone();
+            debug!(
+                "📝 Set base_query for pagination: '{}'",
+                base_query_for_pagination
+            );
+        } else {
+            tabular.current_base_query.clear();
+            debug!(
+                "📝 Skipping base_query persistence (not eligible for auto pagination)"
+            );
+        }
 
         // Save query to history hanya jika bukan hasil error
         if !is_error_result {
@@ -4632,7 +4621,11 @@ pub(crate) fn process_query_result(
             tab.current_page = tabular.current_page;
             tab.page_size = tabular.page_size;
             tab.total_rows = tabular.total_rows;
-            tab.base_query = tabular.current_base_query.clone(); // Save the base query to the tab
+            if allows_auto_pagination {
+                tab.base_query = tabular.current_base_query.clone();
+            } else {
+                tab.base_query.clear();
+            }
         }
     } else {
         tabular.current_table_name = "Query execution failed".to_string();

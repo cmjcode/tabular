@@ -3996,7 +3996,7 @@ impl Tabular {
                         models::enums::NodeType::SQLiteFolder => "📄",
                         models::enums::NodeType::RedisFolder => "🔴",
                         models::enums::NodeType::MongoDBFolder => "🍃",
-                        models::enums::NodeType::MsSQLFolder => "�",
+                        models::enums::NodeType::MsSQLFolder => "⛁",
                         models::enums::NodeType::CustomFolder => "📁",
                         models::enums::NodeType::QueryFolder => "📂",
                         models::enums::NodeType::HistoryDateFolder => "📅",
