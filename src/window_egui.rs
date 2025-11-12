@@ -3208,6 +3208,7 @@ impl Tabular {
                     models::enums::NodeType::PrivilegesFolder => "🔒",
                     models::enums::NodeType::ProcessesFolder => "⚡",
                     models::enums::NodeType::StatusFolder => "📊",
+                    models::enums::NodeType::BlockedQueriesFolder => "🚫",
                     models::enums::NodeType::ReplicationStatusFolder => "🔁",
                     models::enums::NodeType::MasterStatusFolder => "⭐",
                     models::enums::NodeType::MetricsUserActiveFolder => "👨‍💼",
@@ -3308,6 +3309,7 @@ impl Tabular {
                                 | models::enums::NodeType::PrivilegesFolder
                                 | models::enums::NodeType::ProcessesFolder
                                 | models::enums::NodeType::StatusFolder
+                                | models::enums::NodeType::BlockedQueriesFolder
                                 | models::enums::NodeType::ReplicationStatusFolder
                                 | models::enums::NodeType::MasterStatusFolder
                                 | models::enums::NodeType::MetricsUserActiveFolder
@@ -3981,6 +3983,7 @@ impl Tabular {
                         models::enums::NodeType::PrivilegesFolder => "🔒",
                         models::enums::NodeType::ProcessesFolder => "⚡",
                         models::enums::NodeType::StatusFolder => "📊",
+                        models::enums::NodeType::BlockedQueriesFolder => "🚫",
                         models::enums::NodeType::ReplicationStatusFolder => "🔁",
                         models::enums::NodeType::MasterStatusFolder => "⭐",
                         models::enums::NodeType::View => "👁",
@@ -4033,6 +4036,7 @@ impl Tabular {
                     | models::enums::NodeType::PrivilegesFolder
                     | models::enums::NodeType::ProcessesFolder
                     | models::enums::NodeType::StatusFolder
+                    | models::enums::NodeType::BlockedQueriesFolder
                     | models::enums::NodeType::ReplicationStatusFolder
                     | models::enums::NodeType::MasterStatusFolder
                     | models::enums::NodeType::MetricsUserActiveFolder => {
@@ -4275,6 +4279,11 @@ ORDER BY GRANTEE, PRIVILEGE_TYPE;".to_string(),
                         "SHOW GLOBAL STATUS;".to_string(),
                         None
                     )),
+                    NodeType::BlockedQueriesFolder => Some((
+                        format!("DBA: MySQL Blocked Queries - {}", connection.name),
+                        "SELECT * FROM information_schema.PROCESSLIST WHERE STATE LIKE '%lock%';".to_string(),
+                        None
+                    )),
                     NodeType::ReplicationStatusFolder => Some((
                         format!("DBA: MySQL Replication Status - {}", connection.name),
                         "SHOW REPLICA STATUS;".to_string(),
@@ -4316,6 +4325,11 @@ FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_n
                         "SELECT name, setting FROM pg_settings ORDER BY name;".to_string(),
                         None
                     )),
+                    NodeType::BlockedQueriesFolder => Some((
+                        format!("DBA: PostgreSQL Blocked Queries - {}", connection.name),
+                        "SELECT\n    blocked.pid AS blocked_pid,\n    blocked.usename AS blocked_user,\n    blocked.application_name AS blocked_app,\n    blocked.client_addr AS blocked_client,\n    blocked.wait_event_type,\n    blocked.wait_event,\n    blocked.query_start AS blocked_query_start,\n    blocked.query AS blocked_query,\n    blocking.pid AS blocking_pid,\n    blocking.usename AS blocking_user,\n    blocking.application_name AS blocking_app,\n    blocking.client_addr AS blocking_client,\n    blocking.query_start AS blocking_query_start,\n    blocking.query AS blocking_query\nFROM pg_stat_activity blocked\nJOIN pg_locks blocked_locks ON blocked.pid = blocked_locks.pid AND NOT blocked_locks.granted\nJOIN pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype\n    AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database\n    AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation\n    AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page\n    AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple\n    AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid\n    AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid\n    AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid\n    AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid\n    AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid\nJOIN pg_stat_activity blocking ON blocking.pid = blocking_locks.pid\nWHERE blocked.wait_event_type IS NOT NULL\nORDER BY blocked.query_start;".to_string(),
+                        None
+                    )),
                     NodeType::MetricsUserActiveFolder => Some((
                         format!("DBA: PostgreSQL User Active - {}", connection.name),
                         "SELECT usename AS user, COUNT(*) AS session_count FROM pg_stat_activity GROUP BY usename ORDER BY session_count DESC;".to_string(),
@@ -4349,6 +4363,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     NodeType::StatusFolder => Some((
                         format!("DBA: MsSQL Performance Counters - {}", connection.name),
                         "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;".to_string(),
+                        None
+                    )),
+                    NodeType::BlockedQueriesFolder => Some((
+                        format!("DBA: MsSQL Blocked Queries - {}", connection.name),
+                        "SELECT\n    blocked_req.session_id AS blocked_session_id,\n    blocked.login_name AS blocked_login,\n    blocked.status AS blocked_status,\n    blocked.wait_type AS blocked_wait_type,\n    blocked_req.wait_time AS blocked_wait_ms,\n    blocked_req.last_wait_type AS blocked_last_wait_type,\n    DB_NAME(blocked_req.database_id) AS database_name,\n    blocked_text.text AS blocked_query,\n    blocked_req.blocking_session_id AS blocking_session_id,\n    blocking.login_name AS blocking_login,\n    blocking.status AS blocking_status,\n    blocking_text.text AS blocking_query\nFROM sys.dm_exec_requests blocked_req\nJOIN sys.dm_exec_sessions blocked ON blocked_req.session_id = blocked.session_id\nLEFT JOIN sys.dm_exec_sessions blocking ON blocked_req.blocking_session_id = blocking.session_id\nLEFT JOIN sys.dm_exec_requests blocking_req ON blocked_req.blocking_session_id = blocking_req.session_id\nOUTER APPLY sys.dm_exec_sql_text(blocked_req.sql_handle) AS blocked_text\nOUTER APPLY sys.dm_exec_sql_text(blocking_req.sql_handle) AS blocking_text\nWHERE blocked_req.blocking_session_id <> 0\nORDER BY blocked_req.wait_time DESC;".to_string(),
                         None
                     )),
                     NodeType::MetricsUserActiveFolder => Some((
@@ -5351,6 +5370,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                         models::enums::NodeType::DatabasesFolder,
                     );
                     databases_folder.connection_id = Some(connection_id);
+                    databases_folder.is_loaded = false;
 
                     // Add each database from cache
                     for db_name in databases {
@@ -5473,6 +5493,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     status_folder.is_loaded = false;
                     dba_children.push(status_folder);
 
+                    let mut blocked_folder = models::structs::TreeNode::new(
+                        "Blocked Query".to_string(),
+                        models::enums::NodeType::BlockedQueriesFolder,
+                    );
+                    blocked_folder.connection_id = Some(connection_id);
+                    blocked_folder.is_loaded = false;
+                    dba_children.push(blocked_folder);
+
                     // User Active
                     let mut metrics_user_active_folder = models::structs::TreeNode::new(
                         "User Active".to_string(),
@@ -5545,6 +5573,65 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     }
 
                     main_children.push(databases_folder);
+
+                    let mut dba_folder = models::structs::TreeNode::new(
+                        "DBA Views".to_string(),
+                        models::enums::NodeType::DBAViewsFolder,
+                    );
+                    dba_folder.connection_id = Some(connection_id);
+
+                    let mut dba_children = Vec::new();
+
+                    let mut users_folder = models::structs::TreeNode::new(
+                        "Users".to_string(),
+                        models::enums::NodeType::UsersFolder,
+                    );
+                    users_folder.connection_id = Some(connection_id);
+                    users_folder.is_loaded = false;
+                    dba_children.push(users_folder);
+
+                    let mut priv_folder = models::structs::TreeNode::new(
+                        "Privileges".to_string(),
+                        models::enums::NodeType::PrivilegesFolder,
+                    );
+                    priv_folder.connection_id = Some(connection_id);
+                    priv_folder.is_loaded = false;
+                    dba_children.push(priv_folder);
+
+                    let mut proc_folder = models::structs::TreeNode::new(
+                        "Processes".to_string(),
+                        models::enums::NodeType::ProcessesFolder,
+                    );
+                    proc_folder.connection_id = Some(connection_id);
+                    proc_folder.is_loaded = false;
+                    dba_children.push(proc_folder);
+
+                    let mut status_folder = models::structs::TreeNode::new(
+                        "Status".to_string(),
+                        models::enums::NodeType::StatusFolder,
+                    );
+                    status_folder.connection_id = Some(connection_id);
+                    status_folder.is_loaded = false;
+                    dba_children.push(status_folder);
+
+                    let mut blocked_folder = models::structs::TreeNode::new(
+                        "Blocked Query".to_string(),
+                        models::enums::NodeType::BlockedQueriesFolder,
+                    );
+                    blocked_folder.connection_id = Some(connection_id);
+                    blocked_folder.is_loaded = false;
+                    dba_children.push(blocked_folder);
+
+                    let mut metrics_user_active_folder = models::structs::TreeNode::new(
+                        "User Active".to_string(),
+                        models::enums::NodeType::MetricsUserActiveFolder,
+                    );
+                    metrics_user_active_folder.connection_id = Some(connection_id);
+                    metrics_user_active_folder.is_loaded = false;
+                    dba_children.push(metrics_user_active_folder);
+
+                    dba_folder.children = dba_children;
+                    main_children.push(dba_folder);
                 }
                 models::enums::DatabaseType::MongoDB => {
                     // MongoDB: Databases -> Collections
@@ -5710,6 +5797,14 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     status_folder.connection_id = Some(connection_id);
                     status_folder.is_loaded = false;
                     dba_children.push(status_folder);
+
+                    let mut blocked_folder = models::structs::TreeNode::new(
+                        "Blocked Query".to_string(),
+                        models::enums::NodeType::BlockedQueriesFolder,
+                    );
+                    blocked_folder.connection_id = Some(connection_id);
+                    blocked_folder.is_loaded = false;
+                    dba_children.push(blocked_folder);
 
                     // User Active
                     let mut metrics_user_active_folder = models::structs::TreeNode::new(

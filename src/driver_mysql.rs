@@ -763,6 +763,15 @@ pub(crate) fn load_mysql_structure(
     status_folder.is_loaded = false;
     dba_children.push(status_folder);
 
+    // Blocked Query
+    let mut blocked_folder = models::structs::TreeNode::new(
+        "Blocked Query".to_string(),
+        models::enums::NodeType::BlockedQueriesFolder,
+    );
+    blocked_folder.connection_id = Some(connection_id);
+    blocked_folder.is_loaded = false;
+    dba_children.push(blocked_folder);
+
     // User Active
     let mut metrics_user_active_folder = models::structs::TreeNode::new(
         "User Active".to_string(),

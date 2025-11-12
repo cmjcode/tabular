@@ -28,6 +28,7 @@ pub enum NodeType {
     PrivilegesFolder,
     ProcessesFolder,
     StatusFolder,
+    BlockedQueriesFolder,
     MetricsUserActiveFolder,
     // MySQL specific DBA quick views
     ReplicationStatusFolder,
