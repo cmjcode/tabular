@@ -94,7 +94,9 @@ build-linux: create-dirs
 	cargo build --release --target $(LINUX_X86_TARGET)
 # 	cargo build --release --target $(LINUX_ARM_TARGET)
 	cp $(BUILD_DIR)/$(LINUX_X86_TARGET)/release/tabular $(LINUX_DIR)/tabular-x86_64
+	cp $(BUILD_DIR)/$(LINUX_X86_TARGET)/release/tabular $(LINUX_DIR)/tabular-x86_64-unknown-linux-gnu
 # 	cp $(BUILD_DIR)/$(LINUX_ARM_TARGET)/release/tabular $(LINUX_DIR)/tabular-aarch64
+# 	cp $(BUILD_DIR)/$(LINUX_ARM_TARGET)/release/tabular $(LINUX_DIR)/tabular-aarch64-unknown-linux-gnu
 	@echo "✅ Linux builds ready."
 
 build-windows: create-dirs
@@ -179,14 +181,26 @@ bundle-linux: build-linux
 	@echo "📦 Package Linux"
 	# Create traditional tarballs (for manual installation)
 	cd $(LINUX_DIR) && tar -czf tabular-$(VERSION)-linux-x86_64.tar.gz tabular-x86_64
-	cd $(LINUX_DIR) && tar -czf tabular-$(VERSION)-linux-aarch64.tar.gz tabular-aarch64
+	cd $(LINUX_DIR) && tar -czf tabular-x86_64-unknown-linux-gnu.tar.gz tabular-x86_64-unknown-linux-gnu
+	@if [ -f $(LINUX_DIR)/tabular-aarch64 ]; then \
+		cd $(LINUX_DIR) && tar -czf tabular-$(VERSION)-linux-aarch64.tar.gz tabular-aarch64; \
+	fi
+	@if [ -f $(LINUX_DIR)/tabular-aarch64-unknown-linux-gnu ]; then \
+		cd $(LINUX_DIR) && tar -czf tabular-aarch64-unknown-linux-gnu.tar.gz tabular-aarch64-unknown-linux-gnu; \
+	fi
 	
 	# Create AppImage-style binaries (for auto-updater)
 	# These will be detected by auto-updater as executable binaries
 	cp $(LINUX_DIR)/tabular-x86_64 $(LINUX_DIR)/Tabular-$(VERSION)-linux-x86_64
-	cp $(LINUX_DIR)/tabular-aarch64 $(LINUX_DIR)/Tabular-$(VERSION)-linux-aarch64
+	@if [ -f $(LINUX_DIR)/tabular-aarch64 ]; then \
+		cp $(LINUX_DIR)/tabular-aarch64 $(LINUX_DIR)/Tabular-$(VERSION)-linux-aarch64; \
+	fi
+	chmod +x $(LINUX_DIR)/tabular-x86_64
+	chmod +x $(LINUX_DIR)/tabular-x86_64-unknown-linux-gnu
 	chmod +x $(LINUX_DIR)/Tabular-$(VERSION)-linux-x86_64
-	chmod +x $(LINUX_DIR)/Tabular-$(VERSION)-linux-aarch64
+	@if [ -f $(LINUX_DIR)/tabular-aarch64 ]; then chmod +x $(LINUX_DIR)/tabular-aarch64; fi
+	@if [ -f $(LINUX_DIR)/tabular-aarch64-unknown-linux-gnu ]; then chmod +x $(LINUX_DIR)/tabular-aarch64-unknown-linux-gnu; fi
+	@if [ -f $(LINUX_DIR)/Tabular-$(VERSION)-linux-aarch64 ]; then chmod +x $(LINUX_DIR)/Tabular-$(VERSION)-linux-aarch64; fi
 	
 	# Create AppDir structure for traditional packaging
 	@mkdir -p $(LINUX_DIR)/AppDir/usr/bin \
