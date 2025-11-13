@@ -28,6 +28,9 @@ sqlx = { version = "0.8.6", features = [
        "chrono",
        "rust_decimal",
 ] }
+# Force bundled SQLite to avoid missing runtime symbols (e.g., sqlite3_db_config) in
+# Arch build chroot; ensures libsqlite3-sys builds its own recent SQLite.
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 sqlparser = { version = "0.50", optional = true }
 sqlformat = "0.5.0"
 redis = { version = "1.0.0-rc.3", features = [
