@@ -10,8 +10,17 @@ rustflags = [
 ]
 
 [env]
-# sesuaikan path brew mingw-w64
-CFLAGS_x86_64_pc_windows_gnu = "--sysroot=/opt/homebrew/opt/mingw-w64/toolchain-x86_64"
+# Toolchain for cross-compiling C/C++ deps of crates to Windows (gnu)
+CC_x86_64-pc-windows-gnu = "x86_64-w64-mingw32-gcc"
+AR_x86_64-pc-windows-gnu = "x86_64-w64-mingw32-ar"
+CXX_x86_64-pc-windows-gnu = "x86_64-w64-mingw32-g++"
+
+# Optional: flags/sysroot if needed by local Homebrew install
+CFLAGS_x86_64-pc-windows-gnu = "--sysroot=/opt/homebrew/opt/mingw-w64/toolchain-x86_64"
+CPPFLAGS_x86_64-pc-windows-gnu = "--sysroot=/opt/homebrew/opt/mingw-w64/toolchain-x86_64"
+PKG_CONFIG_x86_64-pc-windows-gnu = "x86_64-w64-mingw32-pkg-config"
+PKG_CONFIG_ALLOW_CROSS = "1"
+BINDGEN_EXTRA_CLANG_ARGS = "-I/opt/homebrew/opt/mingw-w64/toolchain-x86_64/x86_64-w64-mingw32/include -I/opt/homebrew/opt/mingw-w64/toolchain-x86_64/include -I/opt/homebrew/opt/mingw-w64/toolchain-x86_64/mingw/include --target=x86_64-w64-mingw32"
 
 
 
