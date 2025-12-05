@@ -3342,7 +3342,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // and race conditions with the "After show()" block that applies pending cursors.
         // The cursor_position is already correct from the diff calculation above.
         // Just sync egui state directly without using pending mechanism.
-        if tabular.selection_start == tabular.selection_end {
+        if !just_inserted_newline && tabular.selection_start == tabular.selection_end {
             let id = response.id;
             let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
             let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
