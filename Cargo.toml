@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.5.22"
+version = "0.5.25"
 edition = "2024"
 
 [lib]
@@ -33,12 +33,12 @@ sqlx = { version = "0.8.6", features = [
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 sqlparser = { version = "0.50", optional = true }
 sqlformat = "0.5.0"
-redis = { version = "1.0.0-rc.3", features = [
+redis = { version = "1.0.0-rc.5", features = [
        "tokio-comp",
        "connection-manager",
 ] }
 bson = { version = "3", features = ["uuid-1"] }
-mongodb = { version = "3.3.0", features = ["zlib-compression"] }
+mongodb = { version = "3.4.1", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = "0.32.3"

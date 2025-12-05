@@ -393,7 +393,7 @@ impl Tabular {
 
     pub fn stop_auto_refresh(&mut self) {
         self.auto_refresh_active = false;
-        self.auto_refresh_query = None;
+        self.auto_refresh_query = None; // Reset the query to None
         self.auto_refresh_connection_id = None;
         self.auto_refresh_last_run = None;
     }
@@ -9239,22 +9239,20 @@ impl App for Tabular {
 
         // Handle pending Auto Refresh request coming from History context menu
         ctx.data_mut(|data| {
-            if let Some(conn_id) = data.get_persisted::<i64>(egui::Id::new("auto_refresh_request_conn_id")) {
-                if let Some(query) = data
-                    .get_persisted::<String>(egui::Id::new("auto_refresh_request_query"))
-                {
-                    // Initialize auto-refresh parameters but wait for user to confirm interval
-                    self.auto_refresh_connection_id = Some(conn_id);
-                    self.auto_refresh_query = Some(query);
-                    // Show global auto-refresh dialog for interval input
-                    self.auto_refresh_active = false;
-                    self.auto_refresh_last_run = None;
-                    self.show_auto_refresh_dialog = true;
-                    self.auto_refresh_interval_input = self.auto_refresh_interval_seconds.to_string();
-                    // Clear request markers to avoid repeated dialogs
-                    data.remove::<i64>(egui::Id::new("auto_refresh_request_conn_id"));
-                    data.remove::<String>(egui::Id::new("auto_refresh_request_query"));
-                }
+            if let Some(conn_id) = data.get_persisted::<i64>(egui::Id::new("auto_refresh_request_conn_id"))
+                && let Some(query) = data.get_persisted::<String>(egui::Id::new("auto_refresh_request_query"))
+            {
+                // Initialize auto-refresh parameters but wait for user to confirm interval
+                self.auto_refresh_connection_id = Some(conn_id);
+                self.auto_refresh_query = Some(query);
+                // Show global auto-refresh dialog for interval input
+                self.auto_refresh_active = false;
+                self.auto_refresh_last_run = None;
+                self.show_auto_refresh_dialog = true;
+                self.auto_refresh_interval_input = self.auto_refresh_interval_seconds.to_string();
+                // Clear request markers to avoid repeated dialogs
+                data.remove::<i64>(egui::Id::new("auto_refresh_request_conn_id"));
+                data.remove::<String>(egui::Id::new("auto_refresh_request_query"));
             }
         });
 
@@ -9300,7 +9298,7 @@ impl App for Tabular {
                         None => true,
                         Some(last) => {
                             let interval = std::time::Duration::from_secs(
-                                (self.auto_refresh_interval_seconds.max(1) as u64),
+                                self.auto_refresh_interval_seconds.max(1) as u64,
                             );
                             now.duration_since(last) >= interval
                         }
@@ -10899,12 +10897,12 @@ impl App for Tabular {
                             "History" => {
                                 // Auto Refresh status bar + STOP button
                                 if self.auto_refresh_active {
-                                    egui::Frame::none()
+                                    egui::Frame::new()
                                         .stroke(egui::Stroke::new(
                                             1.0,
                                             egui::Color32::from_rgb(255, 30, 0),
                                         ))
-                                        .rounding(egui::Rounding::same(3))
+                                        .corner_radius(3.0)
                                         .inner_margin(egui::Margin::symmetric(4, 4))
                                         .show(ui, |ui| {
                                             ui.vertical(|ui| {
