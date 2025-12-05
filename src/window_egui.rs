@@ -200,6 +200,8 @@ pub struct Tabular {
     pub temp_data_directory: String,
     pub show_directory_picker: bool,
     pub directory_picker_result: Option<std::sync::mpsc::Receiver<String>>,
+    pub sqlite_path_picker_result: Option<std::sync::mpsc::Receiver<String>>,
+    pub temp_sqlite_path: Option<String>,
     // Logo texture
     pub logo_texture: Option<egui::TextureHandle>,
     // Database cache for performance
@@ -757,6 +759,8 @@ impl Tabular {
             temp_data_directory: String::new(),
             show_directory_picker: false,
             directory_picker_result: None,
+            sqlite_path_picker_result: None,
+            temp_sqlite_path: None,
             // Self-update settings
             update_info: None,
             show_update_dialog: false,
@@ -913,6 +917,19 @@ impl Tabular {
                             // We'll need to pass the necessary data or fetch from cache
                             let _ = result_sender.send(
                                 models::enums::BackgroundResult::PrefetchComplete { connection_id },
+                            );
+                        }
+                    }
+                    models::enums::BackgroundTask::PickSqlitePath => {
+                        // Open picker on this background thread and send result back
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Pilih File / Folder SQLite")
+                            .pick_folder()
+                        {
+                            let _ = result_sender.send(
+                                models::enums::BackgroundResult::SqlitePathPicked {
+                                    path: path.to_string_lossy().to_string(),
+                                },
                             );
                         }
                     }
@@ -8942,6 +8959,28 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         self.show_directory_picker = false;
     }
 
+    // Handle SQLite file/folder picker for new connection dialog
+    pub(crate) fn handle_sqlite_path_picker(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.sqlite_path_picker_result = Some(receiver);
+
+        let default_dir = if !self.data_directory.is_empty() {
+            self.data_directory.clone()
+        } else {
+            crate::config::get_data_dir().to_string_lossy().to_string()
+        };
+
+        std::thread::spawn(move || {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Pilih File / Folder SQLite")
+                .set_directory(&default_dir)
+                .pick_folder()
+            {
+                let _ = sender.send(path.to_string_lossy().to_string());
+            }
+        });
+    }
+
     // Handle save directory picker dialog
     pub(crate) fn handle_save_directory_picker(&mut self) {
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -10432,6 +10471,14 @@ impl App for Tabular {
             self.save_directory_picker_result = None; // Clean up the receiver
         }
 
+        // Check for SQLite path picker results (for new SQLite connection)
+        if let Some(receiver) = &self.sqlite_path_picker_result
+            && let Ok(selected_path) = receiver.try_recv()
+        {
+            self.temp_sqlite_path = Some(selected_path);
+            self.sqlite_path_picker_result = None;
+        }
+
         // Check for background task results
         if let Some(receiver) = &self.background_receiver {
             while let Ok(result) = receiver.try_recv() {
@@ -10539,6 +10586,10 @@ impl App for Tabular {
                         self.prefetch_in_progress.remove(&connection_id);
                         self.prefetch_progress.remove(&connection_id);
                         debug!("Prefetch completed for connection {}", connection_id);
+                        ctx.request_repaint();
+                    }
+                    models::enums::BackgroundResult::SqlitePathPicked { path } => {
+                        self.temp_sqlite_path = Some(path);
                         ctx.request_repaint();
                     }
                     models::enums::BackgroundResult::UpdateCheckComplete { result } => {

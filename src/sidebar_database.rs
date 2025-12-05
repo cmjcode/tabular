@@ -260,36 +260,67 @@ pub(crate) fn render_connection_dialog(
                             connection_data.ssh_enabled = false;
                         }
 
-                        ui.label("Host:");
-                        ui.text_edit_singleline(&mut connection_data.host);
-                        ui.end_row();
+                        match connection_data.connection_type {
+                            models::enums::DatabaseType::SQLite => {
+                                // SQLite: use "Database" as file name, "Folder" as directory
+                                ui.label("Database File:");
+                                ui.text_edit_singleline(&mut connection_data.database);
+                                ui.end_row();
+                            }
+                            _ => {
+                                ui.label("Host:");
+                                ui.text_edit_singleline(&mut connection_data.host);
+                                ui.end_row();
 
-                        ui.label("Port:");
-                        ui.text_edit_singleline(&mut connection_data.port);
-                        ui.end_row();
+                                ui.label("Port:");
+                                ui.text_edit_singleline(&mut connection_data.port);
+                                ui.end_row();
 
-                        ui.label("Username:");
-                        ui.text_edit_singleline(&mut connection_data.username);
-                        ui.end_row();
+                                ui.label("Username:");
+                                ui.text_edit_singleline(&mut connection_data.username);
+                                ui.end_row();
 
-                        ui.label("Password:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut connection_data.password)
-                                .password(true),
-                        );
-                        ui.end_row();
+                                ui.label("Password:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut connection_data.password)
+                                        .password(true),
+                                );
+                                ui.end_row();
 
-                        ui.label("Database:");
-                        ui.text_edit_singleline(&mut connection_data.database);
-                        ui.end_row();
+                                ui.label("Database:");
+                                ui.text_edit_singleline(&mut connection_data.database);
+                                ui.end_row();
+                            }
+                        }
 
+                        // Folder field: for SQLite, used as directory picker; for others, plain text
                         ui.label("Folder (Optional):");
                         let mut folder_text = connection_data
                             .folder
                             .as_ref()
                             .unwrap_or(&String::new())
                             .clone();
-                        ui.text_edit_singleline(&mut folder_text);
+
+                        if connection_data.connection_type == models::enums::DatabaseType::SQLite {
+                            ui.horizontal(|ui| {
+                                ui.text_edit_singleline(&mut folder_text);
+                                if ui.button("📂").clicked() {
+                                    if let Some(sender) = &tabular.background_sender {
+                                        let _ = sender
+                                            .send(models::enums::BackgroundTask::PickSqlitePath);
+                                    }
+                                }
+                            });
+
+                            if let Some(temp_path) = &tabular.temp_sqlite_path {
+                                if !temp_path.is_empty() {
+                                    folder_text = temp_path.clone();
+                                }
+                            }
+                        } else {
+                            ui.text_edit_singleline(&mut folder_text);
+                        }
+
                         connection_data.folder = if folder_text.trim().is_empty() {
                             None
                         } else {
@@ -356,7 +387,19 @@ pub(crate) fn render_connection_dialog(
                                     format!("postgresql://{}{}:{}{}", auth, host, port, path)
                                 }
                                 models::enums::DatabaseType::SQLite => {
-                                    format!("sqlite:{}", host)
+                                    // For SQLite, build absolute-like path from optional folder + file name
+                                    let file_name = if db.is_empty() { host } else { db };
+                                    let mut path = String::new();
+                                    if let Some(folder) = &connection_data.folder {
+                                        if !folder.is_empty() {
+                                            path.push_str(folder);
+                                            if !path.ends_with('/') {
+                                                path.push('/');
+                                            }
+                                        }
+                                    }
+                                    path.push_str(file_name);
+                                    format!("sqlite:{}", path)
                                 }
                                 models::enums::DatabaseType::Redis => {
                                     if pass.is_empty() && user.is_empty() {

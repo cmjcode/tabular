@@ -5461,7 +5461,35 @@ pub(crate) fn test_database_connection(
                 }
             }
             models::enums::DatabaseType::SQLite => {
-                let connection_string = format!("sqlite:{}", connection.host);
+                // For SQLite, we expect a "sqlite:/abs/path" style url in connection.database
+                // or host. Normalize it and ensure the parent directory and file exist so the
+                // database can be opened.
+                let raw = if connection.database.starts_with("sqlite:") {
+                    connection.database.clone()
+                } else if !connection.host.is_empty() && connection.host.starts_with("sqlite:") {
+                    connection.host.clone()
+                } else if !connection.host.is_empty() {
+                    format!("sqlite:{}", connection.host)
+                } else {
+                    format!("sqlite:{}", connection.database)
+                };
+
+                // Strip scheme to get filesystem path, create parent dirs and file if missing
+                if let Some(path_str) = raw.strip_prefix("sqlite:") {
+                    let path = std::path::PathBuf::from(path_str);
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+
+                    // If file does not exist yet, create an empty file so SQLite can open it
+                    if !path.exists() {
+                        if let Ok(_file) = std::fs::File::create(&path) {
+                            // file created successfully
+                        }
+                    }
+                }
+
+                let connection_string = raw;
 
                 match SqlitePoolOptions::new()
                     .max_connections(1)

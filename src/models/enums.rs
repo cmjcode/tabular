@@ -70,6 +70,8 @@ pub enum BackgroundTask {
         connection_id: i64,
         show_progress: bool, // Whether to show progress in UI
     },
+    // Ask UI thread to open SQLite file/folder picker for new connection
+    PickSqlitePath,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +91,8 @@ pub enum BackgroundResult {
     PrefetchComplete {
         connection_id: i64,
     },
+    // Result from SQLite folder/file picker for new connection dialog
+    SqlitePathPicked { path: String },
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
