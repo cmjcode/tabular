@@ -9287,6 +9287,8 @@ impl App for Tabular {
 
         // Auto Refresh execution loop: run query when interval elapsed
         if self.auto_refresh_active {
+            // Ensure UI updates regularly so countdown label stays smooth
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
             if let (Some(query), Some(conn_id)) = (
                 self.auto_refresh_query.clone(),
                 self.auto_refresh_connection_id,
