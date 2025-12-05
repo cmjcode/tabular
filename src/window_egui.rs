@@ -345,6 +345,14 @@ pub struct Tabular {
     pub lint_panel_auto_hide_ms: u64,
     pub lint_panel_pinned: bool,
     pub auto_format_on_execute: bool,
+    // Auto-refresh execute from history
+    pub auto_refresh_active: bool,
+    pub auto_refresh_interval_seconds: u32,
+    pub auto_refresh_last_run: Option<std::time::Instant>,
+    pub auto_refresh_query: Option<String>,
+    pub auto_refresh_connection_id: Option<i64>,
+    pub show_auto_refresh_dialog: bool,
+    pub auto_refresh_interval_input: String,
 }
 
 // Preference tabs enumeration
@@ -381,6 +389,13 @@ impl Tabular {
 
     pub fn clear_extra_cursors(&mut self) {
         self.extra_cursors.clear();
+    }
+
+    pub fn stop_auto_refresh(&mut self) {
+        self.auto_refresh_active = false;
+        self.auto_refresh_query = None;
+        self.auto_refresh_connection_id = None;
+        self.auto_refresh_last_run = None;
     }
 
     // Duplicate selected row for editing
@@ -793,6 +808,13 @@ impl Tabular {
             lint_panel_auto_hide_ms: 2_000,
             lint_panel_pinned: false,
             auto_format_on_execute: false,
+            auto_refresh_active: false,
+            auto_refresh_interval_seconds: 1,
+            auto_refresh_last_run: None,
+            auto_refresh_query: None,
+            auto_refresh_connection_id: None,
+            show_auto_refresh_dialog: false,
+            auto_refresh_interval_input: String::new(),
         };
 
         // Clear any old cached pools
@@ -4184,6 +4206,33 @@ impl Tabular {
                             }
                             editor.mark_text_modified();
                             // This will trigger the execution flow when the context menu closes
+                        }
+                        ui.close();
+                    }
+
+                    if ui.button("🔁 Auto Refresh Execute").clicked() {
+                        if let Some(data) = &node.file_path {
+                            if let Some((_connection_name, original_query)) = data.split_once("||")
+                            {
+                                editor.set_text(original_query.to_string());
+                            } else {
+                                editor.set_text(data.clone());
+                            }
+                            editor.mark_text_modified();
+                            // Store query + connection for auto refresh; central UI will read these fields
+                            if let Some(conn_id) = node.connection_id {
+                                let query_text = editor.text_snapshot();
+                                ui.ctx().data_mut(|data| {
+                                    data.insert_persisted(
+                                        egui::Id::new("auto_refresh_request_conn_id"),
+                                        conn_id,
+                                    );
+                                    data.insert_persisted(
+                                        egui::Id::new("auto_refresh_request_query"),
+                                        query_text,
+                                    );
+                                });
+                            }
                         }
                         ui.close();
                     }
@@ -7861,6 +7910,11 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             if let Some((headers, data)) =
                 connection::execute_query_with_connection(self, connection_id, paginated_query)
             {
+                debug!(
+                    "[execute_paginated_query] got result: rows={}, cols={}",
+                    data.len(),
+                    headers.len()
+                );
                 // If we navigated past the last page (offset beyond available rows), keep previous headers and revert page
                 if data.is_empty() && offset > 0 {
                     // Heuristic: previous page had < page_size rows or actual_total_rows known and offset >= actual_total_rows
@@ -7898,11 +7952,22 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 } else {
                     headers
                 };
+                debug!(
+                    "[execute_paginated_query] assigning to current_table: rows={}, cols={}",
+                    self.current_table_data.len(),
+                    self.current_table_headers.len()
+                );
                 self.current_table_data = data;
                 // For server pagination, total_rows represents current page row count only (used for UI row count display)
                 self.total_rows = self.current_table_data.len();
                 // Sync ke tab aktif agar mode table tab (tanpa editor) bisa menampilkan Data
                 if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                    debug!(
+                        "[execute_paginated_query] sync to tab {}: rows={} cols={}",
+                        self.active_tab_index,
+                        self.current_table_data.len(),
+                        self.current_table_headers.len()
+                    );
                     active_tab.result_headers = self.current_table_headers.clone();
                     active_tab.result_rows = self.current_table_data.clone();
                     active_tab.result_all_rows = self.current_table_data.clone(); // single page snapshot
@@ -7987,6 +8052,21 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         } else {
             &models::enums::DatabaseType::MySQL
         };
+
+        // If base_query already contains a LIMIT clause, avoid appending another LIMIT/OFFSET
+        let has_limit = {
+            let upper = base_query.to_uppercase();
+            upper.contains(" LIMIT ")
+                || upper.ends_with(" LIMIT")
+                || upper.contains("\nLIMIT ")
+        };
+
+        if has_limit {
+            debug!(
+                "🔍 build_paginated_query: base_query already has LIMIT, returning without pagination"
+            );
+            return base_query.clone();
+        }
 
         match db_type {
             models::enums::DatabaseType::MySQL | models::enums::DatabaseType::SQLite => {
@@ -9155,6 +9235,104 @@ impl App for Tabular {
 
             // Request UI repaint
             ctx.request_repaint();
+        }
+
+        // Handle pending Auto Refresh request coming from History context menu
+        ctx.data_mut(|data| {
+            if let Some(conn_id) = data.get_persisted::<i64>(egui::Id::new("auto_refresh_request_conn_id")) {
+                if let Some(query) = data
+                    .get_persisted::<String>(egui::Id::new("auto_refresh_request_query"))
+                {
+                    // Initialize auto-refresh parameters but wait for user to confirm interval
+                    self.auto_refresh_connection_id = Some(conn_id);
+                    self.auto_refresh_query = Some(query);
+                    // Show global auto-refresh dialog for interval input
+                    self.auto_refresh_active = false;
+                    self.auto_refresh_last_run = None;
+                    self.show_auto_refresh_dialog = true;
+                    self.auto_refresh_interval_input = self.auto_refresh_interval_seconds.to_string();
+                    // Clear request markers to avoid repeated dialogs
+                    data.remove::<i64>(egui::Id::new("auto_refresh_request_conn_id"));
+                    data.remove::<String>(egui::Id::new("auto_refresh_request_query"));
+                }
+            }
+        });
+
+        // Render Auto Refresh interval popup dialog if requested
+        if self.show_auto_refresh_dialog {
+            egui::Window::new("Auto Refresh Interval")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Set auto refresh interval (seconds):");
+                    ui.text_edit_singleline(&mut self.auto_refresh_interval_input);
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() {
+                            if let Ok(v) = self.auto_refresh_interval_input.trim().parse::<u32>() {
+                                let v = std::cmp::max(1, v); // minimum 1 second
+                                self.auto_refresh_interval_seconds = v;
+                                self.auto_refresh_active = true;
+                                self.auto_refresh_last_run = None;
+                                self.show_auto_refresh_dialog = false;
+                            } else {
+                                // Invalid input keeps dialog open; user can correct it
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_auto_refresh_dialog = false;
+                            self.stop_auto_refresh();
+                        }
+                    });
+                });
+        }
+
+        // Auto Refresh execution loop: run query when interval elapsed
+        if self.auto_refresh_active {
+            if let (Some(query), Some(conn_id)) = (
+                self.auto_refresh_query.clone(),
+                self.auto_refresh_connection_id,
+            ) {
+                // Do not start new run while previous execution still in progress
+                if !self.query_execution_in_progress {
+                    let now = std::time::Instant::now();
+                    let should_run = match self.auto_refresh_last_run {
+                        None => true,
+                        Some(last) => {
+                            let interval = std::time::Duration::from_secs(
+                                (self.auto_refresh_interval_seconds.max(1) as u64),
+                            );
+                            now.duration_since(last) >= interval
+                        }
+                    };
+
+                    if should_run {
+                        debug!(
+                            "[auto-refresh] firing run: conn_id={:?}, len(query)={}, active_tab_index={}",
+                            conn_id,
+                            query.len(),
+                            self.active_tab_index
+                        );
+                        // Ensure active tab has the right connection
+                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                            active_tab.connection_id = Some(conn_id);
+                            active_tab.has_executed_query = true;
+                            active_tab.base_query = query.clone();
+                        }
+                        self.current_connection_id = Some(conn_id);
+                        self.is_table_browse_mode = false;
+                        // Put query into editor
+                        self.editor.set_text(query.clone());
+                        self.editor.mark_text_modified();
+                        // Execute using existing flow (button Execute behavior)
+                        self.execute_paginated_query();
+                        self.auto_refresh_last_run = Some(now);
+                    }
+                }
+            } else {
+                // Missing data: stop auto refresh to avoid looping
+                self.stop_auto_refresh();
+            }
         }
 
         // Lazy load preferences once (before applying visuals)
@@ -10719,6 +10897,57 @@ impl App for Tabular {
                                 }
                             }
                             "History" => {
+                                // Auto Refresh status bar + STOP button
+                                if self.auto_refresh_active {
+                                    egui::Frame::none()
+                                        .stroke(egui::Stroke::new(
+                                            1.0,
+                                            egui::Color32::from_rgb(255, 30, 0),
+                                        ))
+                                        .rounding(egui::Rounding::same(3))
+                                        .inner_margin(egui::Margin::symmetric(4, 4))
+                                        .show(ui, |ui| {
+                                            ui.vertical(|ui| {
+                                                ui.horizontal(|ui| {
+                                                    // Show countdown until next auto-refresh
+                                                    let remaining = if let Some(last) = self.auto_refresh_last_run {
+                                                        let elapsed = last.elapsed().as_secs();
+                                                        let interval = self.auto_refresh_interval_seconds.max(1) as u64;
+                                                        if elapsed >= interval {
+                                                            0
+                                                        } else {
+                                                            (interval - elapsed) as u32
+                                                        }
+                                                    } else {
+                                                        self.auto_refresh_interval_seconds
+                                                    };
+                                                    ui.label(format!(
+                                                        "Auto Query {} second(s)",
+                                                        remaining
+                                                    ));
+                                                    ui.add_space(ui.available_width() - 60.0);
+                                                    let stop_button = egui::Button::new(
+                                                        egui::RichText::new("⏹ STOP")
+                                                            .color(egui::Color32::WHITE),
+                                                    )
+                                                    .fill(egui::Color32::from_rgb(255, 30, 0));
+                                                    if ui.add(stop_button).clicked() {
+                                                        self.stop_auto_refresh();
+                                                    }
+                                                });
+                                                // Show the query currently being auto-refreshed
+                                                if let Some(q) = &self.auto_refresh_query {
+                                                    ui.add(
+                                                        egui::TextEdit::multiline(&mut q.clone())
+                                                            .desired_rows(3)
+                                                            .desired_width(f32::INFINITY)
+                                                            .interactive(false),
+                                                    );
+                                                }
+                                            });
+                                        });
+                                }
+
                                 // Render history tree and process clicks into new tabs
                                 let mut history_tree = std::mem::take(&mut self.history_tree);
                                 let query_files_to_open = self.render_tree(ui, &mut history_tree, false);
