@@ -1,7 +1,7 @@
 #!/bin/bash
 # Quick build script for Tabular
 # Usage: ./build.sh [platform]
-# Platforms: macos, linux, windows, all
+# Platforms: macos, linux, linux-aarch64, windows, all
 
 set -e
 
@@ -61,6 +61,7 @@ show_help() {
     echo "  macos        - Build macOS universal + .app (DMG optional)"
     echo "  macos-pkg    - Build macOS .app lalu signed .pkg (App Store / distribusi)"
     echo "  linux        - Build + package Linux (x86_64 + aarch64)"
+    echo "  linux-aarch64- Build + package Linux (aarch64 only)"
     echo "  windows      - Build + package Windows (x86_64 + aarch64)"
     echo "  all          - Release build semua platform"
     echo ""
@@ -84,7 +85,7 @@ CLEAN_FIRST=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-    macos|macos-pkg|linux|windows|all)
+    macos|macos-pkg|linux|linux-aarch64|windows|all)
             PLATFORM="$1"
             shift
             ;;
@@ -182,8 +183,53 @@ main() {
             ;;
         linux)
             print_status "Building Linux binaries..."
-            make bundle-linux
+            # Ensure targets are available
+            rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu || true
+            
+            # Prefer cross if available, fallback to cargo
+            if command -v cross >/dev/null 2>&1; then
+                print_status "Using cross to build x86_64 and aarch64"
+                cross build --release --target x86_64-unknown-linux-gnu
+                cross build --release --target aarch64-unknown-linux-gnu
+            else
+                print_status "Using cargo to build x86_64 and aarch64"
+                cargo build --release --target x86_64-unknown-linux-gnu
+                cargo build --release --target aarch64-unknown-linux-gnu
+            fi
+
+            # Prepare dist directory
+            mkdir -p dist/linux
+            cp target/x86_64-unknown-linux-gnu/release/tabular dist/linux/tabular-x86_64 || true
+            cp target/aarch64-unknown-linux-gnu/release/tabular dist/linux/tabular-aarch64 || true
+            
+            # Also keep explicit target-name copies
+            cp target/x86_64-unknown-linux-gnu/release/tabular dist/linux/tabular-x86_64-unknown-linux-gnu || true
+            cp target/aarch64-unknown-linux-gnu/release/tabular dist/linux/tabular-aarch64-unknown-linux-gnu || true
+
+            # Package tarballs
+            (cd dist/linux && tar -czf tabular-${VERSION}-linux-x86_64.tar.gz tabular-x86_64) || true
+            (cd dist/linux && tar -czf tabular-x86_64-unknown-linux-gnu.tar.gz tabular-x86_64-unknown-linux-gnu) || true
+            (cd dist/linux && tar -czf tabular-${VERSION}-linux-aarch64.tar.gz tabular-aarch64) || true
+            (cd dist/linux && tar -czf tabular-aarch64-unknown-linux-gnu.tar.gz tabular-aarch64-unknown-linux-gnu) || true
+
             print_success "Linux build completed!"
+            ;;
+        linux-aarch64)
+            print_status "Building Linux aarch64 binary..."
+            rustup target add aarch64-unknown-linux-gnu || true
+            if command -v cross >/dev/null 2>&1; then
+                print_status "Using cross to build aarch64"
+                cross build --release --target aarch64-unknown-linux-gnu
+            else
+                print_status "Using cargo to build aarch64"
+                cargo build --release --target aarch64-unknown-linux-gnu
+            fi
+            mkdir -p dist/linux
+            cp target/aarch64-unknown-linux-gnu/release/tabular dist/linux/tabular-aarch64 || true
+            cp target/aarch64-unknown-linux-gnu/release/tabular dist/linux/tabular-aarch64-unknown-linux-gnu || true
+            (cd dist/linux && tar -czf tabular-${VERSION}-linux-aarch64.tar.gz tabular-aarch64) || true
+            (cd dist/linux && tar -czf tabular-aarch64-unknown-linux-gnu.tar.gz tabular-aarch64-unknown-linux-gnu) || true
+            print_success "Linux aarch64 build completed!"
             ;;
         windows)
             print_status "Building Windows binaries..."
