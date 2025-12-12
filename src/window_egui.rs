@@ -355,6 +355,11 @@ pub struct Tabular {
     pub auto_refresh_connection_id: Option<i64>,
     pub show_auto_refresh_dialog: bool,
     pub auto_refresh_interval_input: String,
+    // Query execution message panel (similar to TablePlus message tab)
+    pub query_message: String,
+    pub query_message_is_error: bool,
+    pub show_message_panel: bool,
+    pub message_panel_height: f32, // Height of message panel in pixels
 }
 
 // Preference tabs enumeration
@@ -819,6 +824,11 @@ impl Tabular {
             auto_refresh_connection_id: None,
             show_auto_refresh_dialog: false,
             auto_refresh_interval_input: String::new(),
+            // Query message panel
+            query_message: String::new(),
+            query_message_is_error: false,
+            show_message_panel: false,
+            message_panel_height: 100.0,
         };
 
         // Clear any old cached pools
@@ -963,6 +973,34 @@ impl Tabular {
         }
         if let Some(ast_headers) = message.ast_headers.clone() {
             self.last_compiled_headers = ast_headers;
+        }
+
+        // Update query message panel
+        if message.success {
+            let duration_ms = message.duration.as_millis();
+            let row_count = message.affected_rows.unwrap_or(message.rows.len());
+            self.query_message = format!(
+                "Query executed successfully in {}.{:03}s • {} row(s) affected",
+                duration_ms / 1000,
+                duration_ms % 1000,
+                row_count
+            );
+            self.query_message_is_error = false;
+            // Auto-switch to Data tab to show results
+            self.table_bottom_view = models::structs::TableBottomView::Data;
+        } else {
+            let error_msg = message.error.clone().unwrap_or_else(|| "Unknown error".to_string());
+            self.query_message = format!("Error: {}", error_msg);
+            self.query_message_is_error = true;
+            // Auto-switch to Messages tab to show error
+            self.table_bottom_view = models::structs::TableBottomView::Messages;
+        }
+        self.show_message_panel = true;
+
+        // Update active tab message
+        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            active_tab.query_message = self.query_message.clone();
+            active_tab.query_message_is_error = self.query_message_is_error;
         }
 
         if was_paginated && message.success {
@@ -1170,6 +1208,58 @@ impl Tabular {
                 }
             }
         }
+    }
+
+    fn render_messages_content(&mut self, ui: &mut egui::Ui) {
+        if self.query_message.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(40.0);
+                ui.label(
+                    egui::RichText::new("No messages")
+                        .size(16.0)
+                        .weak()
+                );
+            });
+            return;
+        }
+
+        // Full-height messages view
+        egui::ScrollArea::vertical()
+            .id_salt("messages_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(12.0);
+
+                let (text_color, icon) = if self.query_message_is_error {
+                    // Error styling
+                    if ui.visuals().dark_mode {
+                        (egui::Color32::from_rgb(255, 120, 120), "❌")
+                    } else {
+                        (egui::Color32::from_rgb(180, 40, 40), "❌")
+                    }
+                } else {
+                    // Success styling
+                    if ui.visuals().dark_mode {
+                        (egui::Color32::from_rgb(120, 220, 120), "👍")
+                    } else {
+                        (egui::Color32::from_rgb(40, 140, 40), "👍")
+                    }
+                };
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(icon)
+                            .size(20.0)
+                            .color(text_color)
+                    );
+                    ui.label(
+                        egui::RichText::new(&self.query_message)
+                            .color(text_color)
+                    );
+                });
+
+                ui.add_space(8.0);
+            });
     }
 
     fn open_create_table_wizard(&mut self, connection_id: i64, database_name: Option<String>) {
@@ -11499,6 +11589,20 @@ impl App for Tabular {
                                         self.table_bottom_view = models::structs::TableBottomView::Query;
                                     }
                                 }
+
+                                // Messages tab - show when there's a query message
+                                if !self.query_message.is_empty() {
+                                    let is_messages = self.table_bottom_view
+                                        == models::structs::TableBottomView::Messages;
+                                    let messages_text = egui::RichText::new("💬 Messages").color(if is_messages {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        default_text
+                                    });
+                                    if ui.selectable_label(is_messages, messages_text).clicked() {
+                                        self.table_bottom_view = models::structs::TableBottomView::Messages;
+                                    }
+                                }
                             });
                         });
 
@@ -11766,6 +11870,10 @@ impl App for Tabular {
                                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                             tab.object_ddl = Some(current_text);
                                         }
+                                    }
+                                    models::structs::TableBottomView::Messages => {
+                                        // Render messages panel content
+                                        self.render_messages_content(ui);
                                     }
                                     _ => {
                                         data_table::render_table_data(self, ui);
@@ -12047,8 +12155,96 @@ impl App for Tabular {
                         }
                         ui.add_space(2.0);
 
-                        // Regular query result display
-                        data_table::render_table_data(self, ui);
+                        // Render content based on selected tab
+                        match self.table_bottom_view {
+                            models::structs::TableBottomView::Messages => {
+                                self.render_messages_content(ui);
+                            }
+                            _ => {
+                                // Regular query result display
+                                data_table::render_table_data(self, ui);
+                            }
+                        }
+                    }
+                    
+                    // Floating tab buttons at bottom-right corner (only show if executed or has message)
+                    // Move outside show_bottom so it appears even when there's an error
+                    if executed || has_headers || !self.query_message.is_empty() {
+                        let margin = 6.0;
+                        let button_height = 18.0; // Match Clear selection button height
+                        let button_spacing = 4.0;
+                        
+                        // Calculate total width needed for buttons
+                        let data_button_width = 80.0;
+                        let messages_button_width = if !self.query_message.is_empty() { 110.0 } else { 0.0 };
+                        let total_width = data_button_width + if !self.query_message.is_empty() { button_spacing + messages_button_width } else { 0.0 };
+                        
+                        // Position at bottom-right
+                        let screen_rect = ui.ctx().screen_rect();
+                        let button_pos = egui::pos2(
+                            screen_rect.max.x - total_width - margin,
+                            screen_rect.max.y - button_height - margin
+                        );
+
+                        egui::Area::new(egui::Id::new("bottom_tab_buttons"))
+                            .order(egui::Order::Foreground)
+                            .fixed_pos(button_pos)
+                            .show(ui.ctx(), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = button_spacing;
+                                    
+                                    let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
+                                    let data_bg = if is_data {
+                                        egui::Color32::from_rgb(255, 30, 0)
+                                    } else {
+                                        if ui.visuals().dark_mode {
+                                            egui::Color32::from_rgb(50, 50, 50)
+                                        } else {
+                                            egui::Color32::from_rgb(230, 230, 230)
+                                        }
+                                    };
+                                    let data_text_color = if is_data {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        ui.visuals().text_color()
+                                    };
+                                    
+                                    if ui.add_sized(
+                                        [data_button_width, button_height],
+                                        egui::Button::new(egui::RichText::new("📊 Data").color(data_text_color))
+                                            .fill(data_bg)
+                                    ).clicked() {
+                                        self.table_bottom_view = models::structs::TableBottomView::Data;
+                                    }
+
+                                    // Messages button - only show when there's a query message
+                                    if !self.query_message.is_empty() {
+                                        let is_messages = self.table_bottom_view == models::structs::TableBottomView::Messages;
+                                        let messages_bg = if is_messages {
+                                            egui::Color32::from_rgb(255, 30, 0)
+                                        } else {
+                                            if ui.visuals().dark_mode {
+                                                egui::Color32::from_rgb(50, 50, 50)
+                                            } else {
+                                                egui::Color32::from_rgb(230, 230, 230)
+                                            }
+                                        };
+                                        let messages_text_color = if is_messages {
+                                            egui::Color32::WHITE
+                                        } else {
+                                            ui.visuals().text_color()
+                                        };
+                                        
+                                        if ui.add_sized(
+                                            [messages_button_width, button_height],
+                                            egui::Button::new(egui::RichText::new("💬 Messages").color(messages_text_color))
+                                                .fill(messages_bg)
+                                        ).clicked() {
+                                            self.table_bottom_view = models::structs::TableBottomView::Messages;
+                                        }
+                                    }
+                                });
+                            });
                     }
                 }
 

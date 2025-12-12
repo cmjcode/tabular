@@ -330,6 +330,7 @@ pub struct QueryResultMessage {
     pub dba_special_mode: Option<models::enums::DBASpecialMode>,
     pub ast_debug_sql: Option<String>,
     pub ast_headers: Option<Vec<String>>,
+    pub affected_rows: Option<usize>, // Number of affected rows for INSERT/UPDATE/DELETE
 }
 
 #[derive(Debug, Clone)]
@@ -466,14 +467,15 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
             job_id: job.job_id,
             connection_id,
             success: true,
-            headers: output.headers,
-            rows: output.rows,
+            headers: output.headers.clone(),
+            rows: output.rows.clone(),
             error: None,
             duration: start.elapsed(),
-            query,
+            query: query.clone(),
             dba_special_mode,
             ast_debug_sql: output.ast_debug_sql,
             ast_headers: output.ast_headers,
+            affected_rows: Some(output.rows.len()), // For now, use rows.len() as affected rows
         },
         Err(err) => {
             let message = describe_execution_error(err);
@@ -489,6 +491,7 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
                 dba_special_mode,
                 ast_debug_sql: None,
                 ast_headers: None,
+                affected_rows: None,
             }
         }
     }
@@ -2089,7 +2092,7 @@ pub(crate) fn execute_table_query_sync(
                                 match query_result {
                                     Ok(Ok(rows)) => {
                                         // Log query execution time and row count for performance monitoring
-                                        debug!("✅ Query executed successfully: {} rows returned", rows.len());
+                                        debug!("Query executed successfully: {} rows returned", rows.len());
 
                                         if i == statements.len() - 1 {
                                             // Get headers from metadata, even if no rows

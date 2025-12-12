@@ -42,6 +42,8 @@ pub(crate) fn create_new_tab(
         base_query: String::new(), // Empty base query initially
         dba_special_mode: None,
         object_ddl: None,
+        query_message: String::new(),
+        query_message_is_error: false,
     };
 
     tabular.query_tabs.push(new_tab);
@@ -201,6 +203,9 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 tabular.active_tab_index, current_tab.base_query
             );
             std::mem::swap(&mut current_tab.object_ddl, &mut tabular.current_object_ddl);
+            // Save query message state
+            current_tab.query_message = tabular.query_message.clone();
+            current_tab.query_message_is_error = tabular.query_message_is_error;
             // dba_special_mode already resides on current_tab; no action required here
         }
 
@@ -234,6 +239,10 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             std::mem::swap(&mut tabular.current_object_ddl, &mut new_tab.object_ddl);
             // IMPORTANT: kembalikan connection id aktif sesuai tab baru
             tabular.current_connection_id = new_tab.connection_id;
+            // Restore query message state
+            tabular.query_message = new_tab.query_message.clone();
+            tabular.query_message_is_error = new_tab.query_message_is_error;
+            tabular.show_message_panel = !tabular.query_message.is_empty();
             // dba_special_mode automatically follows with new_tab
 
             // Auto-connect restoration: jika tab memiliki connection_id dan pool belum siap, trigger creation

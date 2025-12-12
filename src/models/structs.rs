@@ -83,6 +83,9 @@ pub struct QueryTab {
     // DBA quick view special post-processing mode (Replication Status, Master Status, etc.)
     pub dba_special_mode: Option<models::enums::DBASpecialMode>,
     pub object_ddl: Option<String>, // Optional DDL (e.g., ALTER VIEW) for browsed objects
+    // Query execution message (similar to TablePlus message tab)
+    pub query_message: String,      // Message text (success/error)
+    pub query_message_is_error: bool, // Whether the message is an error or success
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,6 +225,7 @@ pub enum TableBottomView {
     Data,
     Structure,
     Query,
+    Messages,
 }
 
 // Simplified column info for Structure tab (can be extended later per RDBMS)
