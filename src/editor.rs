@@ -726,6 +726,36 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Early repaint for snappy UX
         ui.ctx().request_repaint();
     }
+    
+    // Shortcut: Toggle Comment (Cmd/Ctrl + /)
+    let mut trigger_toggle_comment = false;
+    ui.input(|i| {
+        if (i.modifiers.mac_cmd || i.modifiers.command)
+            && !i.modifiers.shift
+            && i.key_pressed(egui::Key::Slash)
+        {
+            trigger_toggle_comment = true;
+        }
+    });
+    if trigger_toggle_comment {
+        // Consume the key event so TextEdit doesn't see it
+        ui.ctx().input_mut(|ri| {
+            ri.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Slash,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+        });
+        toggle_line_comment(tabular);
+        // Early repaint for snappy UX
+        ui.ctx().request_repaint();
+    }
+    
     // Find & Replace panel
     if tabular.advanced_editor.show_find_replace {
         ui.horizontal(|ui| {
@@ -3838,6 +3868,150 @@ pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui
     }
 
     // Recompute autocomplete, lint etc. if needed
+    editor_autocomplete::update_autocomplete(tabular);
+}
+
+/// Toggle line comment (CMD/CTRL + /) for SQL queries
+/// Supports both single line and multi-line selections
+pub(crate) fn toggle_line_comment(tabular: &mut window_egui::Tabular) {
+    let text_len = tabular.editor.text.len();
+    if text_len == 0 {
+        return;
+    }
+
+    // Get selection range
+    let sel_start = tabular.selection_start.min(text_len);
+    let sel_end = tabular.selection_end.min(text_len);
+    let (range_start, range_end) = if sel_start < sel_end {
+        (sel_start, sel_end)
+    } else {
+        // No selection, use cursor position to find current line
+        let cursor = tabular.cursor_position.min(text_len);
+        (cursor, cursor)
+    };
+
+    // Find the start of the first line
+    let mut line_start = range_start;
+    while line_start > 0 && tabular.editor.text.as_bytes()[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+
+    // Find the end of the last line (include the line with cursor if no selection)
+    let mut line_end = if range_end > range_start {
+        range_end
+    } else {
+        // Single line: find end of current line
+        let mut end = range_start;
+        while end < text_len && tabular.editor.text.as_bytes()[end] != b'\n' {
+            end += 1;
+        }
+        end
+    };
+    
+    // Clamp to text length
+    line_end = line_end.min(text_len);
+
+    // Extract the block of lines
+    let block = &tabular.editor.text[line_start..line_end];
+    
+    // Check if all non-empty lines are commented
+    let mut all_commented = true;
+    let mut has_content_lines = false;
+    
+    for line in block.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.is_empty() {
+            has_content_lines = true;
+            if !trimmed.starts_with("--") {
+                all_commented = false;
+                break;
+            }
+        }
+    }
+
+    // If no content lines, treat as uncommented
+    if !has_content_lines {
+        all_commented = false;
+    }
+
+    // Build the new block
+    let mut new_block = String::with_capacity(block.len() + 100);
+    
+    if all_commented {
+        // Uncomment: remove "-- " or "--" from start of each line
+        for line in block.split_inclusive('\n') {
+            if line == "\n" {
+                new_block.push('\n');
+                continue;
+            }
+            
+            let (content, nl) = if let Some(p) = line.rfind('\n') {
+                (&line[..p], &line[p..])
+            } else {
+                (line, "")
+            };
+            
+            let trimmed = content.trim_start();
+            let indent_len = content.len() - trimmed.len();
+            let indent = &content[..indent_len];
+            
+            if let Some(rest) = trimmed.strip_prefix("-- ") {
+                new_block.push_str(indent);
+                new_block.push_str(rest);
+            } else if let Some(rest) = trimmed.strip_prefix("--") {
+                new_block.push_str(indent);
+                new_block.push_str(rest);
+            } else {
+                new_block.push_str(content);
+            }
+            new_block.push_str(nl);
+        }
+    } else {
+        // Comment: add "-- " to start of each line
+        for line in block.split_inclusive('\n') {
+            if line == "\n" {
+                new_block.push('\n');
+                continue;
+            }
+            
+            let (content, nl) = if let Some(p) = line.rfind('\n') {
+                (&line[..p], &line[p..])
+            } else {
+                (line, "")
+            };
+            
+            let trimmed = content.trim_start();
+            let indent_len = content.len() - trimmed.len();
+            let indent = &content[..indent_len];
+            
+            // Add comment marker
+            new_block.push_str(indent);
+            new_block.push_str("-- ");
+            new_block.push_str(trimmed);
+            new_block.push_str(nl);
+        }
+    }
+
+    // Apply the change
+    tabular
+        .editor
+        .apply_single_replace(line_start..line_end, &new_block);
+
+    // Update selection to cover the modified block
+    let new_end = line_start + new_block.len();
+    tabular.selection_start = line_start;
+    tabular.selection_end = new_end;
+    tabular.cursor_position = new_end;
+
+    // Mark tab as modified
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.content = tabular.editor.text.clone();
+        tab.is_modified = true;
+    } else {
+        tabular.editor.mark_text_modified();
+    }
+
+    // Update autocomplete
     editor_autocomplete::update_autocomplete(tabular);
 }
 
