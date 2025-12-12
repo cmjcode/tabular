@@ -1837,6 +1837,7 @@ pub(crate) fn execute_query_with_connection(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -5482,10 +5483,10 @@ pub(crate) fn test_database_connection(
                     }
 
                     // If file does not exist yet, create an empty file so SQLite can open it
-                    if !path.exists() {
-                        if let Ok(_file) = std::fs::File::create(&path) {
-                            // file created successfully
-                        }
+                    if !path.exists()
+                        && let Ok(_file) = std::fs::File::create(&path)
+                    {
+                        // file created successfully
                     }
                 }
 

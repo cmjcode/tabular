@@ -8960,6 +8960,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 
     // Handle SQLite file/folder picker for new connection dialog
+    #[allow(dead_code)]
     pub(crate) fn handle_sqlite_path_picker(&mut self) {
         let (sender, receiver) = std::sync::mpsc::channel();
         self.sqlite_path_picker_result = Some(receiver);

@@ -2838,7 +2838,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             // Only render if within visible gutter area
             if y >= final_rect.top() && y <= final_rect.bottom() + 20.0 {
                 painter.text(
-                    egui::pos2(final_rect.right() - 8.0, y + 1.0),
+                    egui::pos2(final_rect.right() - 8.0, y + 1.5),
                     egui::Align2::RIGHT_TOP,
                     line_num.to_string(),
                     egui::TextStyle::Monospace.resolve(ui.style()),

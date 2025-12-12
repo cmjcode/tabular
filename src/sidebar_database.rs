@@ -304,18 +304,18 @@ pub(crate) fn render_connection_dialog(
                         if connection_data.connection_type == models::enums::DatabaseType::SQLite {
                             ui.horizontal(|ui| {
                                 ui.text_edit_singleline(&mut folder_text);
-                                if ui.button("📂").clicked() {
-                                    if let Some(sender) = &tabular.background_sender {
-                                        let _ = sender
-                                            .send(models::enums::BackgroundTask::PickSqlitePath);
-                                    }
+                                if ui.button("📂").clicked()
+                                    && let Some(sender) = &tabular.background_sender
+                                {
+                                    let _ = sender
+                                        .send(models::enums::BackgroundTask::PickSqlitePath);
                                 }
                             });
 
-                            if let Some(temp_path) = &tabular.temp_sqlite_path {
-                                if !temp_path.is_empty() {
-                                    folder_text = temp_path.clone();
-                                }
+                            if let Some(temp_path) = &tabular.temp_sqlite_path
+                                && !temp_path.is_empty()
+                            {
+                                folder_text = temp_path.clone();
                             }
                         } else {
                             ui.text_edit_singleline(&mut folder_text);
@@ -390,12 +390,12 @@ pub(crate) fn render_connection_dialog(
                                     // For SQLite, build absolute-like path from optional folder + file name
                                     let file_name = if db.is_empty() { host } else { db };
                                     let mut path = String::new();
-                                    if let Some(folder) = &connection_data.folder {
-                                        if !folder.is_empty() {
-                                            path.push_str(folder);
-                                            if !path.ends_with('/') {
-                                                path.push('/');
-                                            }
+                                    if let Some(folder) = &connection_data.folder
+                                        && !folder.is_empty()
+                                    {
+                                        path.push_str(folder);
+                                        if !path.ends_with('/') {
+                                            path.push('/');
                                         }
                                     }
                                     path.push_str(file_name);
