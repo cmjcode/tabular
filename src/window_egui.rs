@@ -12196,12 +12196,10 @@ impl App for Tabular {
                                     let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
                                     let data_bg = if is_data {
                                         egui::Color32::from_rgb(255, 30, 0)
+                                    } else if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(50, 50, 50)
                                     } else {
-                                        if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(50, 50, 50)
-                                        } else {
-                                            egui::Color32::from_rgb(230, 230, 230)
-                                        }
+                                        egui::Color32::from_rgb(230, 230, 230)
                                     };
                                     let data_text_color = if is_data {
                                         egui::Color32::WHITE
@@ -12222,12 +12220,10 @@ impl App for Tabular {
                                         let is_messages = self.table_bottom_view == models::structs::TableBottomView::Messages;
                                         let messages_bg = if is_messages {
                                             egui::Color32::from_rgb(255, 30, 0)
+                                        } else if ui.visuals().dark_mode {
+                                            egui::Color32::from_rgb(50, 50, 50)
                                         } else {
-                                            if ui.visuals().dark_mode {
-                                                egui::Color32::from_rgb(50, 50, 50)
-                                            } else {
-                                                egui::Color32::from_rgb(230, 230, 230)
-                                            }
+                                            egui::Color32::from_rgb(230, 230, 230)
                                         };
                                         let messages_text_color = if is_messages {
                                             egui::Color32::WHITE
