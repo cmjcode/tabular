@@ -2818,31 +2818,42 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         && let Some(gutter_rect) =
             ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("gutter_rect")))
     {
-        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let total_lines = tabular.editor.text.lines().count().max(1);
         let editor_height = response.rect.height();
-        let needed_height = line_height * total_lines as f32;
+        let painter = ui.painter();
+        
+        // Use galley to get actual line positions for perfect alignment
         let final_rect = egui::Rect::from_min_size(
             gutter_rect.min,
-            egui::vec2(gutter_rect.width(), editor_height.max(needed_height)),
+            egui::vec2(gutter_rect.width(), editor_height),
         );
-        let painter = ui.painter();
         painter.rect_filled(final_rect, 0.0, ui.visuals().faint_bg_color);
 
-        // CRITICAL: Use SAME coordinate system as text editor (response.rect.top() + 6.0)
-        // NOT final_rect.top() + 4.0!
-        let mut y = response.rect.top() + 6.0;
-        for (i, _) in tabular.editor.text.lines().enumerate() {
-            painter.text(
-                egui::pos2(final_rect.right() - 6.0, y),
-                egui::Align2::RIGHT_TOP,
-                (i + 1).to_string(),
-                egui::TextStyle::Monospace.resolve(ui.style()),
-                ui.visuals().weak_text_color(),
-            );
-            y += line_height;
-            if y > final_rect.bottom() {
-                break;
+        // Render line numbers aligned with actual galley rows
+        let mut line_num = 1;
+        for row in &galley.rows {
+            // Use galley_pos to get the actual vertical position of each row
+            let y = galley_pos.y + row.rect().min.y;
+            
+            // Only render if within visible gutter area
+            if y >= final_rect.top() && y <= final_rect.bottom() + 20.0 {
+                painter.text(
+                    egui::pos2(final_rect.right() - 8.0, y + 1.0),
+                    egui::Align2::RIGHT_TOP,
+                    line_num.to_string(),
+                    egui::TextStyle::Monospace.resolve(ui.style()),
+                    ui.visuals().weak_text_color(),
+                );
+            }
+            
+            // Increment line number after rendering each row that ends with newline
+            // This ensures wrapped lines show the same line number
+            if row.ends_with_newline {
+                line_num += 1;
+                // Stop if we've rendered all lines
+                if line_num > total_lines {
+                    break;
+                }
             }
         }
     }
