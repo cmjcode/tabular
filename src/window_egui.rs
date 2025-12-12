@@ -360,6 +360,7 @@ pub struct Tabular {
     pub query_message_is_error: bool,
     pub show_message_panel: bool,
     pub message_panel_height: f32, // Height of message panel in pixels
+    pub query_message_display_buffer: String, // Buffer for TextEdit to maintain selection state
 }
 
 // Preference tabs enumeration
@@ -829,6 +830,7 @@ impl Tabular {
             query_message_is_error: false,
             show_message_panel: false,
             message_panel_height: 100.0,
+            query_message_display_buffer: String::new(),
         };
 
         // Clear any old cached pools
@@ -1246,16 +1248,72 @@ impl Tabular {
                     }
                 };
 
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(icon)
                             .size(20.0)
                             .color(text_color)
                     );
-                    ui.label(
-                        egui::RichText::new(&self.query_message)
-                            .color(text_color)
-                    );
+                    
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    
+                    // Sync display buffer with actual message if they differ
+                    if self.query_message_display_buffer != self.query_message {
+                        self.query_message_display_buffer = self.query_message.clone();
+                    }
+                    
+                    // Use TextEdit with persistent buffer for selection state
+                    // Use absolute ID so we can check focus in copy handler
+                    let message_text_id = egui::Id::new("tabular_message_text_edit_widget");
+                    let output = egui::TextEdit::multiline(&mut self.query_message_display_buffer)
+                        .id(message_text_id)
+                        .desired_width(f32::INFINITY)
+                        .text_color(text_color)
+                        .font(egui::TextStyle::Body)
+                        .frame(false)
+                        .interactive(true)
+                        .show(ui);
+                    
+                    // Request focus when clicked to ensure CMD+C works
+                    if output.response.clicked() {
+                        output.response.request_focus();
+                    }
+                    
+                    // Manual copy handling for CMD+C in message TextEdit
+                    if output.response.has_focus() {
+                        ui.input(|i| {
+                            let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+                            let key_combo = (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
+                            
+                            if copy_event || key_combo {
+                                // Get cursor range to find selected text
+                                if let Some(state) = egui::TextEdit::load_state(ui.ctx(), message_text_id) {
+                                    if let Some(cursor_range) = state.cursor.char_range() {
+                                        let start = cursor_range.primary.index;
+                                        let end = cursor_range.secondary.index;
+                                        let (min, max) = if start < end { (start, end) } else { (end, start) };
+                                        
+                                        if min < max && max <= self.query_message_display_buffer.len() {
+                                            let selected_text = &self.query_message_display_buffer[min..max];
+                                            ui.ctx().copy_text(selected_text.to_string());
+                                            debug!("📋 Copied selected text from message: {} chars", selected_text.len());
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    
+                    // Don't sync changes back - keep it read-only
+                    // But preserve selection state by keeping the buffer
+                    
+                    // Context menu on right-click
+                    output.response.context_menu(|ui| {
+                        if ui.button("📋 Copy Text").clicked() {
+                            ui.ctx().copy_text(self.query_message.clone());
+                            ui.close();
+                        }
+                    });
                 });
 
                 ui.add_space(8.0);
@@ -9743,14 +9801,26 @@ impl App for Tabular {
             }
         });
 
+        // Check if message TextEdit has focus before processing copy
+        let message_text_edit_id = egui::Id::new("tabular_message_text_edit_widget");
+        let message_has_focus = ctx.memory(|mem| mem.has_focus(message_text_edit_id));
+        
+        if message_has_focus {
+            debug!("📝 Message TextEdit has focus, letting it handle CMD+C");
+        }
+
         ctx.input(|i| {
             // Detect Copy event (Cmd/Ctrl+C) which on some platforms (macOS) may emit Event::Copy instead of Key::C with modifiers
             let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             let key_combo =
                 (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
             if copy_event || key_combo {
-                // First, handle Structure view selections (Columns/Indexes)
-                if self.table_bottom_view == models::structs::TableBottomView::Structure {
+                // If message TextEdit has focus, let it handle the copy - don't process here
+                if message_has_focus {
+                    // Skip our copy logic
+                } else {
+                    // First, handle Structure view selections (Columns/Indexes)
+                    if self.table_bottom_view == models::structs::TableBottomView::Structure {
                     // Multi-cell block selection in Structure
                     if let (Some((ar, ac)), Some((br, bc))) =
                         (self.structure_sel_anchor, self.structure_selected_cell)
@@ -9918,22 +9988,21 @@ impl App for Tabular {
                 } else if !self.selected_rows.is_empty() {
                     if let Some(csv) = data_table::copy_selected_rows_as_csv(self) {
                         snapshot_rows_csv = Some(csv);
-                        copy_mode = 2;
-                        do_copy = true;
-                    }
-                } else if !self.selected_columns.is_empty() {
-                    if let Some(csv) = data_table::copy_selected_columns_as_csv(self) {
-                        snapshot_cols_csv = Some(csv);
-                        copy_mode = 3;
-                        do_copy = true;
-                    }
-                } else {
-                    debug!("⚠️ copy intent but no selection");
+                    copy_mode = 2;
+                    do_copy = true;
                 }
+            } else if !self.selected_columns.is_empty() {
+                if let Some(csv) = data_table::copy_selected_columns_as_csv(self) {
+                    snapshot_cols_csv = Some(csv);
+                    copy_mode = 3;
+                    do_copy = true;
+                }
+            } else {
+                debug!("⚠️ copy intent but no selection");
             }
-            // (Save shortcut is handled via consume_key above)
-
-            // CMD+W or CTRL+W to close current tab
+                } // end else block for !message_has_focus
+            }
+            // (Save shortcut is handled via consume_key above)            // CMD+W or CTRL+W to close current tab
             if (i.modifiers.mac_cmd || i.modifiers.ctrl)
                 && i.key_pressed(egui::Key::W)
                 && !self.query_tabs.is_empty()
