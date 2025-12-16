@@ -1,0 +1,48 @@
+app-id: id.tabular.database
+branch: stable
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: tabular
+
+finish-args:
+  # GUI & graphics
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+
+  # Network access to databases
+  - --share=network
+
+  # Allow access to user files (you can tighten this later)
+  - --filesystem=home
+
+  # Optional: access to SSH agent (for tunnels)
+  - --socket=ssh-auth
+
+modules:
+  - name: tabular
+    buildsystem: simple
+    build-options:
+      env:
+        RUSTFLAGS: "-C debuginfo=0 -C opt-level=3"
+    build-commands:
+      # Enable Rust from the SDK extension
+      - . /usr/lib/sdk/rust-stable/enable.sh
+      # Build release binary
+      - cargo build --release
+      # Install binary into /app
+      - install -Dm755 target/release/tabular /app/bin/tabular
+      # Install desktop file; adapt for Flatpak
+      - install -Dm644 tabular.desktop /app/share/applications/id.tabular.database.desktop
+      - sed -i 's|^Exec=.*$|Exec=tabular|' /app/share/applications/id.tabular.database.desktop
+      - sed -i 's|^TryExec=.*$|TryExec=tabular|' /app/share/applications/id.tabular.database.desktop || true
+      - sed -i 's|^Icon=.*$|Icon=id.tabular.database|' /app/share/applications/id.tabular.database.desktop
+      # Install icon using the app-id as the icon name
+      - install -Dm644 assets/logo.png /app/share/icons/hicolor/512x512/apps/id.tabular.database.png
+    sources:
+      # Local build: use current checkout as the source
+      - type: dir
+        path: ..
