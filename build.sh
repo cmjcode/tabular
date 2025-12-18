@@ -187,30 +187,19 @@ main() {
             rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu || true
             
             # Prefer cross if available, fallback to cargo
-            if command -v cross >/dev/null 2>&1; then
-                print_status "Using cross to build x86_64 and aarch64"
-                cross build --release --target x86_64-unknown-linux-gnu
-                cross build --release --target aarch64-unknown-linux-gnu
-            else
-                print_status "Using cargo to build x86_64 and aarch64"
-                cargo build --release --target x86_64-unknown-linux-gnu
-                cargo build --release --target aarch64-unknown-linux-gnu
-            fi
+            print_status "Using cargo to build x86_64 and aarch64"
+            cargo build --release --target x86_64-unknown-linux-gnu
 
             # Prepare dist directory
             mkdir -p dist/linux
             cp target/x86_64-unknown-linux-gnu/release/tabular dist/linux/tabular-x86_64 || true
-            cp target/aarch64-unknown-linux-gnu/release/tabular dist/linux/tabular-aarch64 || true
             
             # Also keep explicit target-name copies
             cp target/x86_64-unknown-linux-gnu/release/tabular dist/linux/tabular-x86_64-unknown-linux-gnu || true
-            cp target/aarch64-unknown-linux-gnu/release/tabular dist/linux/tabular-aarch64-unknown-linux-gnu || true
 
             # Package tarballs
             (cd dist/linux && tar -czf tabular-${VERSION}-linux-x86_64.tar.gz tabular-x86_64) || true
             (cd dist/linux && tar -czf tabular-x86_64-unknown-linux-gnu.tar.gz tabular-x86_64-unknown-linux-gnu) || true
-            (cd dist/linux && tar -czf tabular-${VERSION}-linux-aarch64.tar.gz tabular-aarch64) || true
-            (cd dist/linux && tar -czf tabular-aarch64-unknown-linux-gnu.tar.gz tabular-aarch64-unknown-linux-gnu) || true
 
             print_success "Linux build completed!"
             ;;
