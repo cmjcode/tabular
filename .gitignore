@@ -8,3 +8,8 @@ dist/
 build_apple.sh
 notarize-simple.sh
 notarize.sh
+.flatpak-builder/
+flatpak/.build-dir
+flatpak/dist
+flatpak/cargo-vendor
+flatpak/repo

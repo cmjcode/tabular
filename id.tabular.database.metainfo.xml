@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>id.tabular.database</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Tabular</name>
+  <summary>SQL and NoSQL database client</summary>
+  
+  <description>
+    <p>
+      Tabular helps you explore and query SQL and NoSQL databases from a single desktop app.
+      Connect to PostgreSQL, MySQL, SQLite, MongoDB, Redis, and Microsoft SQL Server.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Support for multiple database types</li>
+      <li>Fast and efficient query execution</li>
+      <li>Data export capabilities</li>
+      <li>SSH tunnel support</li>
+      <li>Built with Rust for performance and safety</li>
+    </ul>
+  </description>
+  
+  <launchable type="desktop-id">id.tabular.database.desktop</launchable>
+  
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main interface</caption>
+      <image>https://raw.githubusercontent.com/tabular-id/tabular/main/screenshots/main.png</image>
+    </screenshot>
+  </screenshots>
+  
+  <url type="homepage">https://tabular.id</url>
+  <url type="bugtracker">https://github.com/tabular-id/tabular/issues</url>
+  <url type="vcs-browser">https://github.com/tabular-id/tabular</url>
+  
+  <developer id="id.tabular">
+    <name>Tabular Team</name>
+  </developer>
+  
+  <content_rating type="oars-1.1" />
+  
+  <releases>
+    <release version="0.5.27" date="2025-12-17">
+      <description>
+        <p>Flatpak release with improvements and fixes</p>
+        <ul>
+          <li>Added Flatpak packaging support</li>
+          <li>Improved database connection handling</li>
+          <li>Bug fixes and performance improvements</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

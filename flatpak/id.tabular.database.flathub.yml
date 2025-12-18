@@ -9,6 +9,7 @@ runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm18
 command: tabular
 
 finish-args:
@@ -33,19 +34,25 @@ modules:
       env:
         RUSTFLAGS: "-C debuginfo=0 -C opt-level=3"
     build-commands:
-      - . /usr/lib/sdk/rust-stable/enable.sh
-      - cargo build --release
+      # Enable Rust and LLVM, then build
+      - . /usr/lib/sdk/rust-stable/enable.sh && . /usr/lib/sdk/llvm18/enable.sh && cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - . /usr/lib/sdk/rust-stable/enable.sh && . /usr/lib/sdk/llvm18/enable.sh && cargo build --release --offline
+      # Install binary into /app
       - install -Dm755 target/release/tabular /app/bin/tabular
+      # Install desktop file; adapt for Flatpak
       - install -Dm644 tabular.desktop /app/share/applications/id.tabular.database.desktop
       - sed -i 's|^Exec=.*$|Exec=tabular|' /app/share/applications/id.tabular.database.desktop
       - sed -i 's|^TryExec=.*$|TryExec=tabular|' /app/share/applications/id.tabular.database.desktop || true
       - sed -i 's|^Icon=.*$|Icon=id.tabular.database|' /app/share/applications/id.tabular.database.desktop
-      - install -Dm644 assets/logo.png /app/share/icons/hicolor/512x512/apps/id.tabular.database.png
+      # Install icon
+      - install -Dm644 assets/logo-512.png /app/share/icons/hicolor/512x512/apps/id.tabular.database.png
+      # Install appstream metadata
+      - install -Dm644 id.tabular.database.metainfo.xml /app/share/metainfo/id.tabular.database.metainfo.xml
     sources:
       - type: git
-        # Ganti URL dan commit/tag di bawah ini sesuai repo kamu
-        # misalnya: https://github.com/username/tabular.git
-        url: https://github.com/YOUR_USERNAME/YOUR_TABULAR_REPO.git
-        branch: main
-        # Atau pakai commit/tag spesifik untuk rilis
-        # tag: v0.5.27
+        url: https://github.com/tabular-id/tabular.git
+        tag: v0.5.27
+        commit: COMMIT_HASH_HERE
+      # Generated cargo sources - run: python3 flatpak-cargo-generator.py Cargo.lock -o generated-sources.json
+      - generated-sources.json
+

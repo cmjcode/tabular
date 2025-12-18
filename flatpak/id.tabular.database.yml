@@ -5,6 +5,7 @@ runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm18
 command: tabular
 
 finish-args:
@@ -27,12 +28,23 @@ modules:
     buildsystem: simple
     build-options:
       env:
+        # Direktori kerja untuk rustup/cargo di dalam sandbox build
+        RUSTUP_HOME: /run/build/tabular/.rustup
+        CARGO_HOME: /run/build/tabular/.cargo
         RUSTFLAGS: "-C debuginfo=0 -C opt-level=3"
+      append-path: /run/build/tabular/.cargo/bin
     build-commands:
-      # Enable Rust from the SDK extension
-      - . /usr/lib/sdk/rust-stable/enable.sh
-      # Build release binary
-      - cargo build --release
+      # Setup cargo config untuk pakai vendored dependencies
+      - |
+        cat > .cargo/config.toml <<EOF
+        [source.crates-io]
+        replace-with = "vendored-sources"
+        
+        [source.vendored-sources]
+        directory = "flatpak/cargo-vendor"
+        EOF
+      # Enable Rust and LLVM extensions, then build (all in one shell)
+      - . /usr/lib/sdk/rust-stable/enable.sh && . /usr/lib/sdk/llvm18/enable.sh && cargo build --release --offline
       # Install binary into /app
       - install -Dm755 target/release/tabular /app/bin/tabular
       # Install desktop file; adapt for Flatpak
@@ -40,8 +52,10 @@ modules:
       - sed -i 's|^Exec=.*$|Exec=tabular|' /app/share/applications/id.tabular.database.desktop
       - sed -i 's|^TryExec=.*$|TryExec=tabular|' /app/share/applications/id.tabular.database.desktop || true
       - sed -i 's|^Icon=.*$|Icon=id.tabular.database|' /app/share/applications/id.tabular.database.desktop
-      # Install icon using the app-id as the icon name
-      - install -Dm644 assets/logo.png /app/share/icons/hicolor/512x512/apps/id.tabular.database.png
+      # Install icon (use pre-resized 512x512 version)
+      - install -Dm644 assets/logo-512.png /app/share/icons/hicolor/512x512/apps/id.tabular.database.png
+      # Install appstream metadata (required for Flathub)
+      - install -Dm644 id.tabular.database.metainfo.xml /app/share/metainfo/id.tabular.database.metainfo.xml
     sources:
       # Local build: use current checkout as the source
       - type: dir

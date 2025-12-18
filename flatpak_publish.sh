@@ -40,6 +40,7 @@ mkdir -p "$BUILD_DIR" "$REPO_DIR" "$BUNDLE_DIR"
 # Build into local repo
 flatpak-builder \
   --force-clean \
+  --disable-rofiles-fuse \
   --repo="$REPO_DIR" \
   "$BUILD_DIR" \
   "$MANIFEST"
@@ -47,7 +48,7 @@ flatpak-builder \
 BUNDLE_FILE="$BUNDLE_DIR/${APP_ID}-${CHANNEL}.flatpak"
 
 # Create a single-file bundle from the repo
-flatpak build-bundle "$REPO_DIR" "$BUNDLE_FILE" "$APP_ID" "$CHANNEL" --runtime
+flatpak build-bundle "$REPO_DIR" "$BUNDLE_FILE" "$APP_ID" "$CHANNEL"
 
 echo "Flatpak bundle created: $BUNDLE_FILE"
 echo "You can distribute this file directly, or use it for testing via:"

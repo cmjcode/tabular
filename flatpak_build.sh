@@ -75,8 +75,10 @@ fi
 mkdir -p "$BUILD_DIR" "$REPO_DIR"
 
 # Build into a local OSTree repo that can be used for bundling or testing.
+# --disable-rofiles-fuse allows network access during build (needed for cargo)
 flatpak-builder \
   --force-clean \
+  --disable-rofiles-fuse \
   --repo="$REPO_DIR" \
   "$BUILD_DIR" \
   "$MANIFEST"
