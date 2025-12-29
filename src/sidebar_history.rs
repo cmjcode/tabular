@@ -161,4 +161,48 @@ pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
 
         tabular.history_tree.push(date_node);
     }
+
+    // Apply search filter if text is present
+    filter_history_tree(tabular);
+}
+
+/// Filter history tree based on search text
+pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
+    if tabular.history_search_text.is_empty() {
+        // Clear filtered tree if search is empty
+        tabular.filtered_history_tree.clear();
+        return;
+    }
+
+    tabular.filtered_history_tree.clear();
+    let search_lower = tabular.history_search_text.to_lowercase();
+
+    for date_node in &tabular.history_tree {
+        let mut filtered_date_node = date_node.clone();
+        filtered_date_node.children.clear();
+
+        for item_node in &date_node.children {
+            // Search in query text and connection name
+            let query_text = item_node.name.to_lowercase();
+            let connection_name = item_node
+                .connection_id
+                .and_then(|id| {
+                    tabular
+                        .connections
+                        .iter()
+                        .find(|c| c.id == Some(id))
+                        .map(|c| c.name.to_lowercase())
+                })
+                .unwrap_or_default();
+
+            if query_text.contains(&search_lower) || connection_name.contains(&search_lower) {
+                filtered_date_node.children.push(item_node.clone());
+            }
+        }
+
+        // Only add date node if it has matching items
+        if !filtered_date_node.children.is_empty() {
+            tabular.filtered_history_tree.push(filtered_date_node);
+        }
+    }
 }

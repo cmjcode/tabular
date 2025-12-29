@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use crate::{
     cache_data, connection, dialog, directory, driver_mysql, driver_postgres, driver_redis,
-    driver_sqlite, editor, models, query_tools, sidebar_database, sidebar_query,
+    driver_sqlite, editor, models, query_tools, sidebar_database, sidebar_history, sidebar_query,
     spreadsheet::SpreadsheetOperations,
 };
 use crate::{data_table, driver_mssql};
@@ -148,6 +148,9 @@ pub struct Tabular {
     pub database_search_text: String,
     pub filtered_items_tree: Vec<models::structs::TreeNode>,
     pub show_search_results: bool,
+    // History search functionality
+    pub history_search_text: String,
+    pub filtered_history_tree: Vec<models::structs::TreeNode>,
     // Query folder management
     pub show_create_folder_dialog: bool,
     pub new_folder_name: String,
@@ -665,6 +668,8 @@ impl Tabular {
             database_search_text: String::new(),
             filtered_items_tree: Vec::new(),
             show_search_results: false,
+            history_search_text: String::new(),
+            filtered_history_tree: Vec::new(),
             // Query folder management
             show_create_folder_dialog: false,
             new_folder_name: String::new(),
@@ -11159,10 +11164,32 @@ impl App for Tabular {
                                         });
                                 }
 
+                                // Search box for history
+                                ui.horizontal(|ui| {
+                                    ui.label("🔍");
+                                    let search_response = ui.text_edit_singleline(&mut self.history_search_text);
+                                    if search_response.changed() {
+                                        // Refilter history when search text changes
+                                        sidebar_history::filter_history_tree(self);
+                                    }
+                                });
+
                                 // Render history tree and process clicks into new tabs
-                                let mut history_tree = std::mem::take(&mut self.history_tree);
+                                let is_searching = !self.history_search_text.is_empty();
+                                
+                                let mut history_tree = if is_searching {
+                                    std::mem::take(&mut self.filtered_history_tree)
+                                } else {
+                                    std::mem::take(&mut self.history_tree)
+                                };
+                                
                                 let query_files_to_open = self.render_tree(ui, &mut history_tree, false);
-                                self.history_tree = history_tree;
+                                
+                                if is_searching {
+                                    self.filtered_history_tree = history_tree;
+                                } else {
+                                    self.history_tree = history_tree;
+                                }
 
                                 for (filename, content, file_data) in query_files_to_open {
                                     // file_data for history contains "connection_name||query"
