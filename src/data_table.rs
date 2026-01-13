@@ -1633,9 +1633,150 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
             }
         }
 
+        // Fetch and cache partitions whenever structure is refreshed (always, not just for sidebar)
+        if tabular.request_structure_refresh {
+            // Force live fetch of partitions and update cache
+            if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
+                let partitions = fetch_partition_details_for_table(
+                    tabular,
+                    conn_id,
+                    &connection,
+                    &database,
+                    &table_guess,
+                );
+                if !partitions.is_empty() {
+                    crate::cache_data::save_partitions_to_cache(
+                        tabular,
+                        conn_id,
+                        &database,
+                        &table_guess,
+                        &partitions,
+                    );
+                    info!(
+                        "✅ Refreshed partition cache for {}/{} ({} partitions)",
+                        database,
+                        table_guess,
+                        partitions.len()
+                    );
+                }
+            }
+        } else {
+            // Background fetch: seed partition cache if empty
+            if crate::cache_data::get_partitions_from_cache(tabular, conn_id, &database, &table_guess).is_none() {
+                if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
+                    let partitions = fetch_partition_details_for_table(
+                        tabular,
+                        conn_id,
+                        &connection,
+                        &database,
+                        &table_guess,
+                    );
+                    if !partitions.is_empty() {
+                        crate::cache_data::save_partitions_to_cache(
+                            tabular,
+                            conn_id,
+                            &database,
+                            &table_guess,
+                            &partitions,
+                        );
+                        info!(
+                            "✅ Seeded partition cache for {}/{} ({} partitions)",
+                            database,
+                            table_guess,
+                            partitions.len()
+                        );
+                    }
+                }
+            }
+        }
+
         // Remember last loaded structure target and clear refresh request
         tabular.last_structure_target = Some((conn_id, database, table_guess));
         tabular.request_structure_refresh = false;
+    }
+}
+
+// Fetch partition details for a table per database type
+pub fn fetch_partition_details_for_table(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+    table_name: &str,
+) -> Vec<models::structs::PartitionStructInfo> {
+    match connection.connection_type {
+        models::enums::DatabaseType::MySQL => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = crate::connection::get_or_create_connection_pool(tabular, connection_id).await {
+                    // First get partition names
+                    let names_q = "SELECT PARTITION_NAME FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL AND SUBPARTITION_NAME IS NULL ORDER BY PARTITION_ORDINAL_POSITION";
+                    let partition_names: Vec<String> = sqlx::query_as::<_, (String,)>(names_q)
+                        .bind(database_name)
+                        .bind(table_name)
+                        .fetch_all(mysql_pool.as_ref())
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(n,)| n)
+                        .collect();
+                    
+                    // Get partition type from SHOW CREATE TABLE
+                    let show_q = format!("SHOW CREATE TABLE `{}`", table_name.replace("`", "``"));
+                    let partition_type = sqlx::query_as::<_, (String, String)>(&show_q)
+                        .fetch_optional(mysql_pool.as_ref())
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|(_, create_sql)| {
+                            // Parse for PARTITION BY <TYPE>
+                            if let Some(partition_idx) = create_sql.to_uppercase().find("PARTITION BY") {
+                                let after_partition = &create_sql[partition_idx + 12..];
+                                let ptype = after_partition.trim_start()
+                                    .split_whitespace()
+                                    .next()
+                                    .map(|s| s.to_uppercase());
+                                ptype
+                            } else {
+                                None
+                            }
+                        });
+                    
+                    partition_names.into_iter()
+                        .map(|name| models::structs::PartitionStructInfo {
+                            name,
+                            partition_type: partition_type.clone(),
+                            partition_expression: None,
+                            subpartition_type: None,
+                        })
+                        .collect()
+                } else { Vec::new() }
+            })
+        }
+        models::enums::DatabaseType::PostgreSQL => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = crate::connection::get_or_create_connection_pool(tabular, connection_id).await {
+                    // Get partition info from PostgreSQL
+                    let q = "SELECT \n  c.relname AS partition_name,\n  CASE \n    WHEN p.relkind = 'p' THEN 'RANGE'\n    WHEN p.relkind = 'r' THEN (SELECT partstrat FROM pg_partitioned_table WHERE partrelid = p.oid LIMIT 1)\n    ELSE NULL\n  END AS partition_type\nFROM pg_class p\nJOIN pg_class c ON c.relfilenode = p.relfilenode OR (p.oid IN (SELECT partrelid FROM pg_partitioned_table WHERE partkeylen > 0))\nWHERE p.relname = $1 AND p.relkind IN ('p', 'r')\nORDER BY c.relname";
+                    match sqlx::query_as::<_, (String, Option<String>)>(q)
+                        .bind(table_name)
+                        .fetch_all(pg_pool.as_ref())
+                        .await {
+                            Ok(rows) => rows.into_iter()
+                                .map(|(name, ptype)| models::structs::PartitionStructInfo {
+                                    name,
+                                    partition_type: ptype,
+                                    partition_expression: None,
+                                    subpartition_type: None,
+                                })
+                                .collect(),
+                            Err(_) => Vec::new(),
+                        }
+                } else { Vec::new() }
+            })
+        }
+        _ => Vec::new(),
     }
 }
 

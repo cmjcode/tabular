@@ -885,35 +885,3 @@ pub(crate) fn get_partitions_from_cache(
     }
 }
 
-// Get only partition NAMES from cache (for quick tree rendering)
-pub(crate) fn get_partition_names_from_cache(
-    tabular: &mut window_egui::Tabular,
-    connection_id: i64,
-    database_name: &str,
-    table_name: &str,
-) -> Option<Vec<String>> {
-    if let Some(ref pool) = tabular.db_pool {
-        let pool_clone = pool.clone();
-        let fut = async move {
-            sqlx::query_as::<_, (String,)>(
-                "SELECT DISTINCT partition_name FROM partition_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY partition_name",
-            )
-            .bind(connection_id)
-            .bind(database_name)
-            .bind(table_name)
-            .fetch_all(pool_clone.as_ref())
-            .await
-        };
-        let result = if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut)
-        } else {
-            tokio::runtime::Runtime::new().unwrap().block_on(fut)
-        };
-        match result {
-            Ok(rows) => Some(rows.into_iter().map(|(n,)| n).collect()),
-            Err(_) => None,
-        }
-    } else {
-        None
-    }
-}
