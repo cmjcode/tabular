@@ -1090,8 +1090,29 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     .execute(&pool)
                     .await;
 
-                    match (create_connections_result, create_db_cache_result, create_table_cache_result, create_column_cache_result, create_history_result, create_row_cache_result, create_index_cache_result) {
-                        (Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_)) => {
+                    // Create partition cache table for cached partition metadata
+                    let create_partition_cache_result = sqlx::query(
+                        r#"
+                        CREATE TABLE IF NOT EXISTS partition_cache (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            connection_id INTEGER NOT NULL,
+                            database_name TEXT NOT NULL,
+                            table_name TEXT NOT NULL,
+                            partition_name TEXT NOT NULL,
+                            partition_type TEXT NULL,
+                            partition_expression TEXT NULL,
+                            subpartition_type TEXT NULL,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE,
+                            UNIQUE(connection_id, database_name, table_name, partition_name)
+                        )
+                        "#
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    match (create_connections_result, create_db_cache_result, create_table_cache_result, create_column_cache_result, create_history_result, create_row_cache_result, create_index_cache_result, create_partition_cache_result) {
+                        (Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_)) => {
                             Some(pool)
                         },
                         _ => {

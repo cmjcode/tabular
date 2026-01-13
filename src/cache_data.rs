@@ -789,3 +789,131 @@ pub(crate) fn get_index_names_from_cache(
         None
     }
 }
+
+// Partition cache: save full partition metadata for a table
+pub(crate) fn save_partitions_to_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+    partitions: &[models::structs::PartitionStructInfo],
+) {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let dbn = database_name.to_string();
+        let tbn = table_name.to_string();
+        let fut = async move {
+            for part in partitions {
+                let _ = sqlx::query(
+                    r#"INSERT OR REPLACE INTO partition_cache
+                        (connection_id, database_name, table_name, partition_name, partition_type, partition_expression, subpartition_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)"#,
+                )
+                .bind(connection_id)
+                .bind(&dbn)
+                .bind(&tbn)
+                .bind(&part.name)
+                .bind(&part.partition_type)
+                .bind(&part.partition_expression)
+                .bind(&part.subpartition_type)
+                .execute(pool_clone.as_ref())
+                .await;
+            }
+        };
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+        info!(
+            "✅ Saved {} partitions to cache for {}.{}",
+            partitions.len(),
+            database_name,
+            table_name
+        );
+    }
+}
+
+// Get full partition metadata from cache
+pub(crate) fn get_partitions_from_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+) -> Option<Vec<models::structs::PartitionStructInfo>> {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let query_sql = "SELECT partition_name, partition_type, partition_expression, subpartition_type FROM partition_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY partition_name";
+
+        let fut = async move {
+            sqlx::query(query_sql)
+                .bind(connection_id)
+                .bind(database_name)
+                .bind(table_name)
+                .fetch_all(pool_clone.as_ref())
+                .await
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+
+        match result {
+            Ok(rows) => {
+                use sqlx::Row;
+                let mut list = Vec::new();
+                for r in rows {
+                    let name: String = r.try_get(0).unwrap_or_default();
+                    let partition_type: Option<String> = r.try_get(1).ok();
+                    let partition_expression: Option<String> = r.try_get(2).ok();
+                    let subpartition_type: Option<String> = r.try_get(3).ok();
+
+                    list.push(models::structs::PartitionStructInfo {
+                        name,
+                        partition_type,
+                        partition_expression,
+                        subpartition_type,
+                    });
+                }
+                Some(list)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    }
+}
+
+// Get only partition NAMES from cache (for quick tree rendering)
+pub(crate) fn get_partition_names_from_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_name: &str,
+) -> Option<Vec<String>> {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let fut = async move {
+            sqlx::query_as::<_, (String,)>(
+                "SELECT DISTINCT partition_name FROM partition_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY partition_name",
+            )
+            .bind(connection_id)
+            .bind(database_name)
+            .bind(table_name)
+            .fetch_all(pool_clone.as_ref())
+            .await
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+        match result {
+            Ok(rows) => Some(rows.into_iter().map(|(n,)| n).collect()),
+            Err(_) => None,
+        }
+    } else {
+        None
+    }
+}

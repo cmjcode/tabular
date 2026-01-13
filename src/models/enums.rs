@@ -50,6 +50,7 @@ pub enum NodeType {
     ColumnsFolder,
     IndexesFolder,
     PrimaryKeysFolder,
+    PartitionsFolder,
     Index,
 }
 

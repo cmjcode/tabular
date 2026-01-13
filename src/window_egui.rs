@@ -3349,7 +3349,8 @@ impl Tabular {
                         || node.node_type == models::enums::NodeType::EventsFolder
                         || node.node_type == models::enums::NodeType::ColumnsFolder
                         || node.node_type == models::enums::NodeType::IndexesFolder
-                        || node.node_type == models::enums::NodeType::PrimaryKeysFolder)
+                        || node.node_type == models::enums::NodeType::PrimaryKeysFolder
+                        || node.node_type == models::enums::NodeType::PartitionsFolder)
                         && !node.is_loaded
                         && node.is_expanded
                         && let Some(conn_id) = node.connection_id
@@ -3383,6 +3384,7 @@ impl Tabular {
                     models::enums::NodeType::ColumnsFolder => "📑",
                     models::enums::NodeType::IndexesFolder => "🧭",
                     models::enums::NodeType::PrimaryKeysFolder => "🔑",
+                    models::enums::NodeType::PartitionsFolder => "📊",
                     models::enums::NodeType::Index => "#",
                     models::enums::NodeType::Query => "🔍",
                     models::enums::NodeType::QueryHistItem => "📜",
@@ -4191,6 +4193,11 @@ impl Tabular {
                         models::enums::NodeType::CustomFolder => "📁",
                         models::enums::NodeType::QueryFolder => "📂",
                         models::enums::NodeType::HistoryDateFolder => "📅",
+                        models::enums::NodeType::ColumnsFolder => "📑",
+                        models::enums::NodeType::IndexesFolder => "🧭",
+                        models::enums::NodeType::PrimaryKeysFolder => "🔑",
+                        models::enums::NodeType::PartitionsFolder => "📊",
+                        models::enums::NodeType::Index => "#",
                         _ => "❓",
                     };
 
@@ -7400,6 +7407,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 self.load_table_columns_from_cache(connection_id, table_name, &database_name);
             let (indexes_list, pk_columns) =
                 self.extract_indexes_and_pks_from_cache(connection_id, &database_name, table_name);
+            let partitions_list = self.extract_partitions_from_cache(connection_id, &database_name, table_name);
 
             let mut columns_folder = models::structs::TreeNode::new(
                 "Columns".to_string(),
@@ -7443,7 +7451,26 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 .map(|col| models::structs::TreeNode::new(col, models::enums::NodeType::Column))
                 .collect();
 
-            let subfolders = vec![columns_folder, indexes_folder, pks_folder];
+            let mut partitions_folder = models::structs::TreeNode::new(
+                "Partitions".to_string(),
+                models::enums::NodeType::PartitionsFolder,
+            );
+            partitions_folder.connection_id = Some(connection_id);
+            partitions_folder.database_name = Some(database_name.clone());
+            partitions_folder.table_name = Some(table_name.to_string());
+            partitions_folder.is_loaded = true;
+            partitions_folder.children = partitions_list
+                .into_iter()
+                .map(|part| {
+                    let mut n = models::structs::TreeNode::new(part, models::enums::NodeType::Index);
+                    n.connection_id = Some(connection_id);
+                    n.database_name = Some(database_name.clone());
+                    n.table_name = Some(table_name.to_string());
+                    n
+                })
+                .collect();
+
+            let subfolders = vec![columns_folder, indexes_folder, pks_folder, partitions_folder];
 
             // Find the table node recursively and update it with subfolders
             let updated = Self::update_table_node_with_columns_recursive(
@@ -7748,6 +7775,96 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         (indexes_list, pk_columns)
     }
 
+    fn extract_partitions_from_cache(
+        &mut self,
+        connection_id: i64,
+        database_name: &str,
+        table_name: &str,
+    ) -> Vec<String> {
+        // Try to get partition names from cache first
+        if let Some(names) = cache_data::get_partition_names_from_cache(
+            self,
+            connection_id,
+            database_name,
+            table_name,
+        ) {
+            if !names.is_empty() {
+                return names;
+            }
+            // Cache is empty, fallback to server query
+            if let Some(connection) = self
+                .connections
+                .iter()
+                .find(|c| c.id == Some(connection_id))
+            {
+                let connection = connection.clone();
+                let names = self.fetch_partition_names_for_table(
+                    connection_id,
+                    &connection,
+                    database_name,
+                    table_name,
+                );
+                if !names.is_empty() {
+                    let stubs: Vec<models::structs::PartitionStructInfo> = names
+                        .iter()
+                        .map(|n| models::structs::PartitionStructInfo {
+                            name: n.clone(),
+                            partition_type: None,
+                            partition_expression: None,
+                            subpartition_type: None,
+                        })
+                        .collect();
+                    cache_data::save_partitions_to_cache(
+                        self,
+                        connection_id,
+                        database_name,
+                        table_name,
+                        &stubs,
+                    );
+                }
+                names
+            } else {
+                Vec::new()
+            }
+        } else {
+            // No cache table or error: fallback and seed cache
+            if let Some(connection) = self
+                .connections
+                .iter()
+                .find(|c| c.id == Some(connection_id))
+            {
+                let connection = connection.clone();
+                let names = self.fetch_partition_names_for_table(
+                    connection_id,
+                    &connection,
+                    database_name,
+                    table_name,
+                );
+                if !names.is_empty() {
+                    let stubs: Vec<models::structs::PartitionStructInfo> = names
+                        .iter()
+                        .map(|n| models::structs::PartitionStructInfo {
+                            name: n.clone(),
+                            partition_type: None,
+                            partition_expression: None,
+                            subpartition_type: None,
+                        })
+                        .collect();
+                    cache_data::save_partitions_to_cache(
+                        self,
+                        connection_id,
+                        database_name,
+                        table_name,
+                        &stubs,
+                    );
+                }
+                names
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
     // Fetch index names per database type
     fn fetch_index_names_for_table(
         &mut self,
@@ -7989,6 +8106,100 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             }
             models::enums::DatabaseType::Redis => Vec::new(),
             models::enums::DatabaseType::MongoDB => vec!["_id".to_string()],
+        }
+    }
+
+    fn fetch_partition_names_for_table(
+        &mut self,
+        connection_id: i64,
+        connection: &models::structs::ConnectionConfig,
+        database_name: &str,
+        table_name: &str,
+    ) -> Vec<String> {
+        match connection.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        let q = "SELECT PARTITION_NAME FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL ORDER BY PARTITION_ORDINAL_POSITION";
+                        match sqlx::query_as::<_, (String,)>(q)
+                            .bind(database_name)
+                            .bind(table_name)
+                            .fetch_all(mysql_pool.as_ref())
+                            .await {
+                                Ok(rows) => rows.into_iter().map(|(n,)| n).collect(),
+                                Err(_) => Vec::new(),
+                            }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                        // Get partitions for a table in PostgreSQL
+                        let q = "SELECT schemaname, tablename FROM pg_tables WHERE tablename LIKE $1 || '%' AND schemaname = 'public' ORDER BY tablename";
+                        match sqlx::query_as::<_, (String, String)>(q)
+                            .bind(table_name)
+                            .fetch_all(pg_pool.as_ref())
+                            .await {
+                                Ok(rows) => {
+                                    // Filter out the parent table and return partition names
+                                    rows.into_iter()
+                                        .filter(|(_, name)| name != table_name)
+                                        .map(|(_, name)| name)
+                                        .collect()
+                                }
+                                Err(_) => Vec::new(),
+                            }
+                    } else { Vec::new() }
+                })
+            }
+            models::enums::DatabaseType::SQLite => {
+                // SQLite doesn't support partitions in the same way, return empty
+                Vec::new()
+            }
+            models::enums::DatabaseType::MsSQL => {
+                // MsSQL partitioning
+                use tiberius::{AuthMethod, Config};
+                use tokio_util::compat::TokioAsyncWriteCompatExt;
+                let host = connection.host.clone();
+                let port: u16 = connection.port.parse().unwrap_or(1433);
+                let user = connection.username.clone();
+                let pass = connection.password.clone();
+                let db = database_name.to_string();
+                let tbl = table_name.to_string();
+                let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                    let mut config = Config::new();
+                    config.host(host.clone());
+                    config.port(port);
+                    config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
+                    config.trust_cert();
+                    if !db.is_empty() { config.database(db.clone()); }
+                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
+                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+                    let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                    let parse = |name: &str| -> (Option<String>, String) {
+                        if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
+                            let trimmed = name.trim_matches(|c| c == '[' || c == ']');
+                            let parts: Vec<&str> = trimmed.split("].[").collect();
+                            if parts.len() >= 2 { return (Some(parts[0].to_string()), parts[1].to_string()); }
+                        }
+                        if let Some((s, t)) = name.split_once('.') { return (Some(s.trim_matches(|c| c=='['||c==']').to_string()), t.trim_matches(|c| c=='['||c==']').to_string()); }
+                        (None, name.trim_matches(|c| c=='['||c==']').to_string())
+                    };
+                    let (_, table_only) = parse(&tbl);
+                    let q = format!("SELECT ps.name FROM sys.partitions p JOIN sys.partition_schemes ps ON p.partition_scheme_id = ps.partition_scheme_id JOIN sys.objects o ON p.object_id = o.object_id WHERE o.name = '{}' GROUP BY ps.name", table_only.replace("'","''"));
+                    let mut stream = client.simple_query(q).await.map_err(|e| e.to_string())?;
+                    let mut list = Vec::new();
+                    use futures_util::TryStreamExt;
+                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let n: Option<&str> = r.get(0); if let Some(nm) = n { list.push(nm.to_string()); } } }
+                    Ok::<_, String>(list)
+                });
+                rt_res.unwrap_or_default()
+            }
+            models::enums::DatabaseType::Redis => Vec::new(),
+            models::enums::DatabaseType::MongoDB => Vec::new(),
         }
     }
 

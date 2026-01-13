@@ -247,6 +247,15 @@ pub struct IndexStructInfo {
     pub columns: Vec<String>,
 }
 
+// Simplified partition info shown in Structure -> Partitions
+#[derive(Clone, Debug, Default)]
+pub struct PartitionStructInfo {
+    pub name: String,
+    pub partition_type: Option<String>, // RANGE, LIST, HASH, etc.
+    pub partition_expression: Option<String>, // PARTITION BY expression
+    pub subpartition_type: Option<String>, // For composite partitioning
+}
+
 // Sub view inside Structure (so kita tidak render dua tabel sekaligus)
 #[derive(Clone, Debug, PartialEq, Default)]
 pub enum StructureSubView {
