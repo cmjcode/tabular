@@ -7402,19 +7402,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             let database_name = Tabular::find_table_database_name(nodes, table_name, connection_id)
                 .unwrap_or_else(|| connection.database.clone());
 
-            info!("📂 Loading table node for: {}/{}", database_name, table_name);
-
             // Load columns, indexes, and primary keys from cache instead of querying server
             let columns_from_cache =
                 self.load_table_columns_from_cache(connection_id, table_name, &database_name);
             let (indexes_list, pk_columns) =
                 self.extract_indexes_and_pks_from_cache(connection_id, &database_name, table_name);
             let partitions_list = self.extract_partitions_from_cache(connection_id, &database_name, table_name);
-            
-            info!("📊 Extracted {} partitions for {}/{}", partitions_list.len(), database_name, table_name);
-            for part in &partitions_list {
-                info!("   - {}: type={:?}", part.name, part.partition_type);
-            }
 
             let mut columns_folder = models::structs::TreeNode::new(
                 "Columns".to_string(),
@@ -7798,14 +7791,20 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
         database_name: &str,
         table_name: &str,
     ) -> Vec<models::structs::PartitionStructInfo> {
-        // Always fetch from database for partitions (bypass cache for now to ensure fresh data)
+        // Try cache first
+        if let Some(cached_partitions) = cache_data::get_partitions_from_cache(self, connection_id, database_name, table_name) {
+            debug!("📚 Using cached partitions for {}/{} ({} partitions)", database_name, table_name, cached_partitions.len());
+            return cached_partitions;
+        }
+        
+        // Cache miss - fetch from database
         if let Some(connection) = self
             .connections
             .iter()
             .find(|c| c.id == Some(connection_id))
         {
             let connection = connection.clone();
-            debug!("🔍 Fetching partition details for {}/{}/{}", connection_id, database_name, table_name);
+            debug!("🔍 Fetching partition details from DB for {}/{}", database_name, table_name);
             // Use the fetch function from data_table module
             let partitions = crate::data_table::fetch_partition_details_for_table(
                 self,
@@ -7814,7 +7813,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 database_name,
                 table_name,
             );
-            debug!("📊 Fetched {} partitions", partitions.len());
+            debug!("📊 Fetched {} partitions from database", partitions.len());
             if !partitions.is_empty() {
                 debug!("💾 Saving {} partitions to cache", partitions.len());
                 cache_data::save_partitions_to_cache(
