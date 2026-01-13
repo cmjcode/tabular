@@ -1292,17 +1292,16 @@ impl Tabular {
                             
                             if copy_event || key_combo {
                                 // Get cursor range to find selected text
-                                if let Some(state) = egui::TextEdit::load_state(ui.ctx(), message_text_id) {
-                                    if let Some(cursor_range) = state.cursor.char_range() {
-                                        let start = cursor_range.primary.index;
-                                        let end = cursor_range.secondary.index;
-                                        let (min, max) = if start < end { (start, end) } else { (end, start) };
-                                        
-                                        if min < max && max <= self.query_message_display_buffer.len() {
-                                            let selected_text = &self.query_message_display_buffer[min..max];
-                                            ui.ctx().copy_text(selected_text.to_string());
-                                            debug!("📋 Copied selected text from message: {} chars", selected_text.len());
-                                        }
+                                if let Some(state) = egui::TextEdit::load_state(ui.ctx(), message_text_id)
+                                    && let Some(cursor_range) = state.cursor.char_range() {
+                                    let start = cursor_range.primary.index;
+                                    let end = cursor_range.secondary.index;
+                                    let (min, max) = if start < end { (start, end) } else { (end, start) };
+                                    
+                                    if min < max && max <= self.query_message_display_buffer.len() {
+                                        let selected_text = &self.query_message_display_buffer[min..max];
+                                        ui.ctx().copy_text(selected_text.to_string());
+                                        debug!("📋 Copied selected text from message: {} chars", selected_text.len());
                                     }
                                 }
                             }

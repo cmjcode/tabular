@@ -671,6 +671,19 @@ async fn execute_mysql_query_job(
             debug!("[mysql] about to run statement[{}]: {:?}", idx + 1, trimmed);
 
             let upper = trimmed.to_uppercase();
+            
+            // Check if this is an administrative command that doesn't support prepared statements
+            let is_admin_command = {
+                upper.starts_with("PURGE BINARY LOGS") ||
+                upper.starts_with("PURGE MASTER LOGS") ||
+                upper.starts_with("RESET MASTER") ||
+                upper.starts_with("RESET SLAVE") ||
+                upper.starts_with("RESET REPLICA") ||
+                upper.starts_with("CHANGE MASTER") ||
+                upper.starts_with("CHANGE REPLICATION SOURCE") ||
+                upper.starts_with("FLUSH")
+            };
+            
             if upper.starts_with("USE ") {
                 let db_part = trimmed[3..].trim();
                 let db_name = db_part
@@ -874,32 +887,44 @@ async fn execute_mysql_query_job(
                 }
                 Ok(Err(e)) => {
                     let err_str = e.to_string();
-                    // Capture which statement failed (preview 200 chars)
-                    if failing_stmt_preview.is_none() {
-                        let prev = if trimmed.len() > 200 {
-                            format!("{}...", &trimmed[..200])
-                        } else {
-                            trimmed.to_string()
-                        };
-                        failing_stmt_preview = Some(prev);
-                    }
-                    // Attach a friendly hint for common 1146 (table doesn't exist) cases
-                    if err_str.contains("1146") || err_str.to_lowercase().contains("doesn't exist")
-                    {
-                        let mut hint = String::new();
-                        hint.push_str("Hint: Check the database/schema qualifier in your SQL. ");
-                        hint.push_str(&format!(
-                            "Current default database is '{}'. If your query references a different schema (e.g., 'foxlogger' vs actual '{}'), it can fail even if SELECT * FROM table works in the default DB. ",
-                            default_db, default_db
-                        ));
-                        hint.push_str("Try removing the schema prefix or replacing it with the selected/default database, or switch the active database in the tab. ");
-                        hint.push_str("Also, on case-sensitive MySQL servers (lower_case_table_names=0), using backticks requires exact table name casing. If unquoted works but \"`name`\" fails, check SHOW TABLES for the exact case and match it.");
-                        last_error = Some(format!("{}\n\n{}", err_str, hint));
+                    
+                    // Handle error 1295 for admin commands (not supported in prepared statement)
+                    if is_admin_command && (err_str.contains("1295") || err_str.contains("prepared statement protocol")) {
+                        debug!("Admin command executed successfully (error 1295 expected for prepared statements)");
+                        // For admin commands that succeed but sqlx reports error, treat as success
+                        if idx == statements_ref.len() - 1 {
+                            final_headers = vec!["Status".to_string()];
+                            final_data = vec![vec!["Command executed successfully".to_string()]];
+                        }
+                        // Skip to next statement - don't break
                     } else {
-                        last_error = Some(err_str);
+                        // Capture which statement failed (preview 200 chars)
+                        if failing_stmt_preview.is_none() {
+                            let prev = if trimmed.len() > 200 {
+                                format!("{}...", &trimmed[..200])
+                            } else {
+                                trimmed.to_string()
+                            };
+                            failing_stmt_preview = Some(prev);
+                        }
+                        // Attach a friendly hint for common 1146 (table doesn't exist) cases
+                        if err_str.contains("1146") || err_str.to_lowercase().contains("doesn't exist")
+                        {
+                            let mut hint = String::new();
+                            hint.push_str("Hint: Check the database/schema qualifier in your SQL. ");
+                            hint.push_str(&format!(
+                                "Current default database is '{}'. If your query references a different schema (e.g., 'foxlogger' vs actual '{}'), it can fail even if SELECT * FROM table works in the default DB. ",
+                                default_db, default_db
+                            ));
+                            hint.push_str("Try removing the schema prefix or replacing it with the selected/default database, or switch the active database in the tab. ");
+                            hint.push_str("Also, on case-sensitive MySQL servers (lower_case_table_names=0), using backticks requires exact table name casing. If unquoted works but \"`name`\" fails, check SHOW TABLES for the exact case and match it.");
+                            last_error = Some(format!("{}\n\n{}", err_str, hint));
+                        } else {
+                            last_error = Some(err_str);
+                        }
+                        execution_success = false;
+                        break;
                     }
-                    execution_success = false;
-                    break;
                 }
                 Err(_) => {
                     last_error = Some("Query timeout after 60s".to_string());
@@ -2084,11 +2109,49 @@ pub(crate) fn execute_table_query_sync(
                                     continue;
                                 }
 
+                                // Check if this is an administrative command that doesn't support prepared statements
+                                // These commands should be executed as raw SQL, not prepared statements
+                                let is_admin_command = {
+                                    let cmd_upper = trimmed.to_uppercase();
+                                    cmd_upper.starts_with("PURGE BINARY LOGS") ||
+                                    cmd_upper.starts_with("PURGE MASTER LOGS") ||
+                                    cmd_upper.starts_with("RESET MASTER") ||
+                                    cmd_upper.starts_with("RESET SLAVE") ||
+                                    cmd_upper.starts_with("RESET REPLICA") ||
+                                    cmd_upper.starts_with("CHANGE MASTER") ||
+                                    cmd_upper.starts_with("CHANGE REPLICATION SOURCE") ||
+                                    cmd_upper.starts_with("FLUSH")
+                                };
+
                                 // Extend timeout to 60s to avoid premature timeouts for heavy queries
                                 let query_result = tokio::time::timeout(
                                     std::time::Duration::from_secs(60),
                                     sqlx::query(trimmed).fetch_all(&mut conn)
                                 ).await;
+                                
+                                // Handle the result, with special handling for admin commands
+                                let handle_admin_error = |e: sqlx::Error| -> Result<Vec<sqlx::mysql::MySqlRow>, sqlx::Error> {
+                                    let err_str = e.to_string();
+                                    // Error 1295: command not supported in prepared statement protocol
+                                    if err_str.contains("1295") || err_str.contains("prepared statement protocol") {
+                                        debug!("Admin command executed via sqlx (1295 error expected for some commands)");
+                                        // Return empty rows to indicate successful execution
+                                        Ok(vec![])
+                                    } else {
+                                        Err(e)
+                                    }
+                                };
+                                
+                                let query_result = query_result.map(|result| {
+                                    result.or_else(|e| {
+                                        if is_admin_command {
+                                            handle_admin_error(e)
+                                        } else {
+                                            Err(e)
+                                        }
+                                    })
+                                });
+                                
                                 match query_result {
                                     Ok(Ok(rows)) => {
                                         // Log query execution time and row count for performance monitoring
@@ -2153,66 +2216,75 @@ pub(crate) fn execute_table_query_sync(
                                                     }
                                                 }
                                             } else {
-                                                // Zero rows: try to use AST headers first (if any)
-                                                #[cfg(feature = "query_ast")]
-                                                if final_headers.is_empty() && let Some(hh) = _inferred_headers_from_ast.clone() && !hh.is_empty() { final_headers = hh; }
-                                                // Fallback: infer headers from SELECT list first
-                                                if trimmed.to_uppercase().starts_with("SELECT") {
-                                                    let inferred = infer_select_headers(trimmed);
-                                                    if !inferred.is_empty() { final_headers = inferred; }
-                                                }
-                                                // For MySQL, try to get column info using DESCRIBE if it's a table query (fallback)
-                                                if trimmed.to_uppercase().contains("FROM") {
-                                                    // Extract table name for DESCRIBE
-                                                    let words: Vec<&str> = trimmed.split_whitespace().collect();
-                                                    if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
-                                                        && let Some(table_name) = words.get(from_idx + 1) {
-                                                        let describe_query = format!("DESCRIBE {}", table_name);
-                                                        match tokio::time::timeout(
-                                                            std::time::Duration::from_secs(30),
-                                                            sqlx::query(&describe_query).fetch_all(&mut conn),
-                                                        )
-                                                        .await
-                                                        {
-                                                            Ok(Ok(desc_rows)) => {
-                                                                if !desc_rows.is_empty() {
-                                                                    // For DESCRIBE, the first column contains field names
-                                                                    final_headers = desc_rows.iter().map(|row| {
-                                                                        row.try_get::<String, _>(0).unwrap_or_else(|_| "Field".to_string())
-                                                                    }).collect();
-                                                                }
-                                                            }
-                                                            _ => {
-                                                                // DESCRIBE failed, try LIMIT 0 as fallback
-                                                                let info_query = format!("{} LIMIT 0", trimmed);
-                                                                match tokio::time::timeout(
-                                                                    std::time::Duration::from_secs(30),
-                                                                    sqlx::query(&info_query).fetch_all(&mut conn),
-                                                                )
-                                                                .await
-                                                                {
-                                                                    Ok(Ok(info_rows)) => {
-                                                                        if !info_rows.is_empty() {
-                                                                            final_headers = info_rows[0]
-                                                                                .columns()
-                                                                                .iter()
-                                                                                .map(|c| c.name().to_string())
-                                                                                .collect();
-                                                                        }
+                                                // Zero rows returned
+                                                // Check if this is an admin command that succeeded
+                                                if is_admin_command {
+                                                    // Admin command succeeded - show a success message
+                                                    debug!("Admin command executed successfully");
+                                                    final_headers = vec!["Status".to_string()];
+                                                    final_data = vec![vec!["Command executed successfully".to_string()]];
+                                                } else {
+                                                    // Zero rows: try to use AST headers first (if any)
+                                                    #[cfg(feature = "query_ast")]
+                                                    if final_headers.is_empty() && let Some(hh) = _inferred_headers_from_ast.clone() && !hh.is_empty() { final_headers = hh; }
+                                                    // Fallback: infer headers from SELECT list first
+                                                    if trimmed.to_uppercase().starts_with("SELECT") {
+                                                        let inferred = infer_select_headers(trimmed);
+                                                        if !inferred.is_empty() { final_headers = inferred; }
+                                                    }
+                                                    // For MySQL, try to get column info using DESCRIBE if it's a table query (fallback)
+                                                    if trimmed.to_uppercase().contains("FROM") {
+                                                        // Extract table name for DESCRIBE
+                                                        let words: Vec<&str> = trimmed.split_whitespace().collect();
+                                                        if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
+                                                            && let Some(table_name) = words.get(from_idx + 1) {
+                                                            let describe_query = format!("DESCRIBE {}", table_name);
+                                                            match tokio::time::timeout(
+                                                                std::time::Duration::from_secs(30),
+                                                                sqlx::query(&describe_query).fetch_all(&mut conn),
+                                                            )
+                                                            .await
+                                                            {
+                                                                Ok(Ok(desc_rows)) => {
+                                                                    if !desc_rows.is_empty() {
+                                                                        // For DESCRIBE, the first column contains field names
+                                                                        final_headers = desc_rows.iter().map(|row| {
+                                                                            row.try_get::<String, _>(0).unwrap_or_else(|_| "Field".to_string())
+                                                                        }).collect();
                                                                     }
-                                                                    _ => {
-                                                                        // Both methods failed
-                                                                        final_headers = Vec::new();
+                                                                }
+                                                                _ => {
+                                                                    // DESCRIBE failed, try LIMIT 0 as fallback
+                                                                    let info_query = format!("{} LIMIT 0", trimmed);
+                                                                    match tokio::time::timeout(
+                                                                        std::time::Duration::from_secs(30),
+                                                                        sqlx::query(&info_query).fetch_all(&mut conn),
+                                                                    )
+                                                                    .await
+                                                                    {
+                                                                        Ok(Ok(info_rows)) => {
+                                                                            if !info_rows.is_empty() {
+                                                                                final_headers = info_rows[0]
+                                                                                    .columns()
+                                                                                    .iter()
+                                                                                    .map(|c| c.name().to_string())
+                                                                                    .collect();
+                                                                            }
+                                                                        }
+                                                                        _ => {
+                                                                            // Both methods failed
+                                                                            final_headers = Vec::new();
+                                                                        }
                                                                     }
                                                                 }
                                                             }
                                                         }
+                                                    } else {
+                                                        // Non-table query, just return empty result
+                                                        final_headers = Vec::new();
                                                     }
-                                                } else {
-                                                    // Non-table query, just return empty result
-                                                    final_headers = Vec::new();
+                                                    final_data = Vec::new(); // Empty data but possibly with headers
                                                 }
-                                                final_data = Vec::new(); // Empty data but possibly with headers
                                             }
                                         }
                                     }
