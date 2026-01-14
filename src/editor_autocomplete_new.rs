@@ -3,6 +3,7 @@ use crate::cache_data::{get_columns_from_cache, get_tables_from_cache};
 use crate::query_tools;
 use crate::window_egui::Tabular;
 use eframe::egui;
+
 use std::collections::HashSet;
 
 const SQL_KEYWORDS: &[&str] = &[
@@ -273,6 +274,7 @@ pub fn build_suggestions(
         .unwrap_or_default();
     match ctx {
         SqlContext::AfterSelect => {
+            add_keywords(&mut out, &pl);
             if let Some(cid) = conn_id
                 && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
             {
@@ -287,6 +289,7 @@ pub fn build_suggestions(
             }
         }
         SqlContext::AfterFrom => {
+            add_keywords(&mut out, &pl);
             if let Some(cid) = conn_id {
                 if let Some(ts) = get_cached_tables(app, cid, &db) {
                     for t in ts {
@@ -304,6 +307,7 @@ pub fn build_suggestions(
             }
         }
         SqlContext::AfterWhere => {
+            add_keywords(&mut out, &pl);
             if let Some(cid) = conn_id
                 && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
             {
@@ -665,12 +669,15 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
         }
     });
 
-    let base_width = max_label_px.max(max_note_px).max(max_heading_px);
-    let popup_w = (base_width + 48.0).clamp(220.0, (screen.width() - 32.0).max(220.0));
+    let base_width = max_label_px.max(max_heading_px) + max_note_px + 20.0;
+    // Ensure we have enough width for the note
+    let popup_w = (base_width + 48.0).clamp(300.0, (screen.width() - 32.0).max(300.0));
 
     let entry_count = suggestions.len() as f32;
+    // Recalculate height estimate since items are now single rows
     let mut desired_h =
-        entry_count * 26.0 + (note_count as f32) * 12.0 + (group_count as f32) * 20.0;
+        entry_count * 22.0 + (group_count as f32) * 25.0 + 10.0; // Slightly taller rows for comfort
+
     if desired_h < 64.0 {
         desired_h = 64.0;
     }
@@ -691,17 +698,23 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     if popup_pos.x + popup_w > screen.right() {
         popup_pos.x = (screen.right() - popup_w).max(screen.left());
     }
+    
+    // nice shadow and generic window styles
+    // nice shadow and generic window styles
     egui::Area::new(egui::Id::new("autocomplete_popup"))
         .fixed_pos(popup_pos)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
-            let bg = ui.style().visuals.window_fill;
-            let translucent = egui::Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 210);
-            egui::Frame::popup(ui.style())
-                .fill(translucent)
-                .stroke(egui::Stroke::new(0.5, egui::Color32::from_rgb(255, 30, 0))) // rgba(255, 30, 0, 1)
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::same(6))
+             egui::Frame::popup(ui.style())
+                .shadow(eframe::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 10,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(96),
+                })
+                .fill(ui.style().visuals.window_fill)
+                .stroke(ui.style().visuals.window_stroke())
+
                 .show(ui, |ui| {
                     ui.set_min_width(popup_w);
                     ui.set_max_width(popup_w);
@@ -710,9 +723,13 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                     let kinds = kinds.clone();
                     let notes = notes.clone();
                     let mut last_kind = None;
+                    
                     egui::ScrollArea::vertical()
-                        .max_height(max_h - 10.0)
+                        .max_height(max_h)
                         .show(ui, |ui| {
+                        
+                            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
                             for (i, s) in suggestions.iter().enumerate() {
                                 if let Some(k) = kinds.get(i).copied()
                                     && last_kind != Some(k)
@@ -729,24 +746,72 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                             "Parameters"
                                         }
                                     };
-                                    if i != 0 {
-                                        ui.add(egui::Separator::default().spacing(4.0));
-                                    }
-                                    ui.label(egui::RichText::new(label).strong());
+                                    // Header grouping
+                                    ui.allocate_ui(egui::vec2(ui.available_width(), 24.0), |ui| {
+                                        ui.horizontal(|ui| {
+                                             ui.add_space(8.0);
+                                             ui.heading(egui::RichText::new(label).size(12.0).strong().color(ui.visuals().text_color().gamma_multiply(0.6)));
+                                        });
+                                    });
+                                    ui.add(egui::Separator::default().spacing(0.0));
                                 }
+                                
                                 let selected = i == app.selected_autocomplete_index;
-                                let mut rt = egui::RichText::new(s.clone());
-                                if selected {
-                                    rt = rt
-                                        .background_color(ui.style().visuals.selection.bg_fill)
-                                        .color(ui.style().visuals.selection.stroke.color);
+                                
+                                // Custom row rendering for "Smooth" look
+                                let row_height = 22.0;
+                                let available_width = ui.available_width();
+                                let (rect, response) = ui.allocate_exact_size(egui::vec2(available_width, row_height), egui::Sense::click());
+                                
+                                if ui.is_rect_visible(rect) {
+                                    let visuals = ui.style().interact_selectable(&response, selected);
+                                    
+                                    // Background
+                                    if selected || response.hovered() {
+                                        ui.painter().add(egui::Shape::rect_filled(
+                                            rect,
+                                            0.0,
+                                            visuals.bg_fill
+                                        ));
+                                    }
+                                    
+                                    let text_color = if selected {
+                                        visuals.text_color()
+                                    } else {
+                                        ui.visuals().text_color()
+                                    };
+
+                                    // Render content using Widgets to avoid FontId/Painter errors
+                                    // Padding
+                                    let content_rect = rect.shrink2(egui::vec2(8.0, 0.0));
+                                    
+                                    ui.allocate_ui_at_rect(content_rect, |ui| {
+                                        ui.horizontal_centered(|ui| {
+                                            // Main Label
+                                            ui.label(egui::RichText::new(s).font(font_id.clone()).color(text_color));
+                                            
+                                            // Spacer
+                                            ui.allocate_space(ui.available_size());
+                                        });
+                                    });
+
+                                    // Note (Right aligned overlay)
+                                    if let Some(note) = notes.get(i).and_then(|n| n.clone()) {
+                                         let note_color = if selected {
+                                            text_color.gamma_multiply(0.7)
+                                        } else {
+                                            ui.visuals().text_color().gamma_multiply(0.5)
+                                        };
+                                        
+                                        ui.allocate_ui_at_rect(content_rect, |ui| {
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.label(egui::RichText::new(note).font(small_font_id.clone()).color(note_color));
+                                            });
+                                        });
+                                    }
                                 }
-                                let resp = ui.selectable_label(selected, rt);
-                                if let Some(note) = notes.get(i).and_then(|n| n.clone()) {
-                                    ui.add_space(6.0);
-                                    ui.label(egui::RichText::new(note).weak().small());
-                                }
-                                if resp.clicked() {
+
+                                if response.clicked() {
                                     app.selected_autocomplete_index = i;
                                     accept_current_suggestion(app);
                                     let id = egui::Id::new("sql_editor");
