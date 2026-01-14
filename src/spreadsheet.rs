@@ -15,6 +15,7 @@ pub trait SpreadsheetOperations {
     fn get_current_table_headers(&self) -> &Vec<String>;
     fn get_current_table_name(&self) -> &str;
     fn get_query_tabs(&self) -> &Vec<models::structs::QueryTab>;
+    fn get_query_tabs_mut(&mut self) -> &mut Vec<models::structs::QueryTab>;
     fn get_active_tab_index(&self) -> usize;
     fn get_connections(&self) -> &Vec<models::structs::ConnectionConfig>;
     fn get_current_connection_id(&self) -> Option<i64>;
@@ -30,6 +31,7 @@ pub trait SpreadsheetOperations {
     fn get_is_table_browse_mode(&self) -> bool;
     fn set_error_message(&mut self, message: String);
     fn set_show_error_message(&mut self, show: bool);
+    fn get_newly_created_rows_mut(&mut self) -> &mut std::collections::HashSet<usize>;
 
     // Methods that need to be implemented by the parent struct
     fn execute_paginated_query(&mut self);
@@ -193,10 +195,6 @@ pub trait SpreadsheetOperations {
             "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
             self.get_selected_row()
         );
-        println!(
-            "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
-            self.get_selected_row()
-        );
 
         if let Some(row) = self.get_selected_row() {
             // Get the row values BEFORE removing from any data structures
@@ -205,42 +203,18 @@ pub trait SpreadsheetOperations {
             } else if let Some(values) = self.get_current_table_data().get(row).cloned() {
                 values
             } else {
-                println!("🔥 Could not get values for row {}", row);
                 debug!("🔥 Could not get values for row {}", row);
                 return;
             };
-
-            println!(
-                "🔥 Adding DeleteRow operation for row {} with {} values: {:?}",
-                row,
-                values.len(),
-                values
-            );
-            debug!(
-                "🔥 Adding DeleteRow operation for row {} with {} values",
-                row,
-                values.len()
-            );
 
             let state = self.get_spreadsheet_state_mut();
             state
                 .pending_operations
                 .push(crate::models::structs::CellEditOperation::DeleteRow {
                     row_index: row,
-                    values,
+                    values: values.clone(),
                 });
             state.is_dirty = true;
-
-            println!(
-                "🔥 Now have {} pending operations, is_dirty: {}",
-                state.pending_operations.len(),
-                state.is_dirty
-            );
-            debug!(
-                "🔥 Now have {} pending operations, is_dirty: {}",
-                state.pending_operations.len(),
-                state.is_dirty
-            );
 
             // Now remove from data structures
             if row < self.get_current_table_data().len() {
@@ -252,9 +226,97 @@ pub trait SpreadsheetOperations {
             self.set_total_rows(self.get_total_rows().saturating_sub(1));
             self.set_selected_row(None);
             self.set_selected_cell(None);
+
+            // Update tab state
+            let current_data = self.get_current_table_data().clone();
+            let all_data = self.get_all_table_data().clone();
+            let total = self.get_total_rows();
+            let idx = self.get_active_tab_index();
+            
+            if let Some(active_tab) = self.get_query_tabs_mut().get_mut(idx) {
+                active_tab.result_rows = current_data;
+                active_tab.result_all_rows = all_data;
+                active_tab.total_rows = total;
+            }
         } else {
-            println!("🔥 No row selected for deletion");
             debug!("🔥 No row selected for deletion");
+        }
+    }
+
+    fn spreadsheet_duplicate_selected_row(&mut self) {
+        if let Some(selected_row_idx) = self.get_selected_row() {
+            let current_len = self.get_current_table_data().len();
+            if selected_row_idx >= current_len {
+                return;
+            }
+
+            // Clone the row data
+            let row_data = self.get_current_table_data()[selected_row_idx].clone();
+
+            // Insert the duplicated row right after the selected row
+            let insert_index = selected_row_idx + 1;
+            
+            // Insert into data structures
+            self.get_current_table_data_mut().insert(insert_index, row_data.clone());
+            // Safe insert into all_table_data
+            if insert_index <= self.get_all_table_data().len() {
+                self.get_all_table_data_mut().insert(insert_index, row_data.clone());
+            } else {
+                self.get_all_table_data_mut().push(row_data.clone());
+            }
+
+            // Update total rows count
+            self.set_total_rows(self.get_current_table_data().len());
+
+            // Mark this row as newly created for highlighting
+            self.get_newly_created_rows_mut().insert(insert_index);
+
+            // Update indices in newly_created_rows for rows that shifted down
+            // We need to collect first to avoid mutation issues
+            let mut rows_to_shift = Vec::new();
+            for &row_idx in self.get_newly_created_rows_mut().iter() {
+                if row_idx >= insert_index && row_idx != insert_index {
+                    rows_to_shift.push(row_idx);
+                }
+            }
+            
+            for row_idx in rows_to_shift {
+                self.get_newly_created_rows_mut().remove(&row_idx);
+                self.get_newly_created_rows_mut().insert(row_idx + 1);
+            }
+
+            // Select the new duplicated row
+            self.set_selected_row(Some(insert_index));
+            self.set_selected_cell(Some((insert_index, 0)));
+            
+            // Mark spreadsheet as dirty
+            let state = self.get_spreadsheet_state_mut();
+            state.is_dirty = true;
+
+            // Create an insert operation for tracking
+            state.pending_operations.push(
+                crate::models::structs::CellEditOperation::InsertRow {
+                    row_index: insert_index,
+                    values: row_data,
+                },
+            );
+
+            // Update tab state
+            let current_data = self.get_current_table_data().clone();
+            let all_data = self.get_all_table_data().clone();
+            let total = self.get_total_rows();
+            let idx = self.get_active_tab_index();
+
+            if let Some(active_tab) = self.get_query_tabs_mut().get_mut(idx) {
+                active_tab.result_rows = current_data;
+                active_tab.result_all_rows = all_data;
+                active_tab.total_rows = total;
+            }
+
+            debug!(
+                "Row {} duplicated successfully. New row at index {}",
+                selected_row_idx, insert_index
+            );
         }
     }
 
@@ -762,6 +824,10 @@ impl SpreadsheetOperations for Tabular {
         &self.query_tabs
     }
 
+    fn get_query_tabs_mut(&mut self) -> &mut Vec<models::structs::QueryTab> {
+        &mut self.query_tabs
+    }
+
     fn get_active_tab_index(&self) -> usize {
         self.active_tab_index
     }
@@ -820,6 +886,10 @@ impl SpreadsheetOperations for Tabular {
 
     fn set_show_error_message(&mut self, show: bool) {
         self.show_error_message = show;
+    }
+
+    fn get_newly_created_rows_mut(&mut self) -> &mut std::collections::HashSet<usize> {
+        &mut self.newly_created_rows
     }
 
     fn execute_paginated_query(&mut self) {
@@ -1070,101 +1140,9 @@ impl SpreadsheetOperations for Tabular {
         }
     }
 
-    fn spreadsheet_add_row(&mut self) {
-        let new_row: Vec<String> = self
-            .get_current_table_headers()
-            .iter()
-            .map(|_| String::new())
-            .collect();
-        let row_index = self.get_all_table_data().len();
-        self.get_all_table_data_mut().push(new_row.clone());
-        self.get_current_table_data_mut().push(new_row.clone());
-        self.set_total_rows(self.get_total_rows().saturating_add(1));
 
-        let state = self.get_spreadsheet_state_mut();
-        state
-            .pending_operations
-            .push(crate::models::structs::CellEditOperation::InsertRow {
-                row_index,
-                values: new_row,
-            });
-        state.is_dirty = true;
 
-        self.set_selected_row(Some(row_index));
-        self.set_selected_cell(Some((row_index, 0)));
-        self.set_table_recently_clicked(true);
-        self.spreadsheet_start_cell_edit(row_index, 0);
-    }
 
-    fn spreadsheet_delete_selected_row(&mut self) {
-        debug!(
-            "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
-            self.get_selected_row()
-        );
-        std::println!(
-            "🔥 spreadsheet_delete_selected_row called, selected_row: {:?}",
-            self.get_selected_row()
-        );
-
-        if let Some(row) = self.get_selected_row() {
-            // Get the row values BEFORE removing from any data structures
-            let values = if let Some(values) = self.get_all_table_data().get(row).cloned() {
-                values
-            } else if let Some(values) = self.get_current_table_data().get(row).cloned() {
-                values
-            } else {
-                std::println!("🔥 Could not get values for row {}", row);
-                debug!("🔥 Could not get values for row {}", row);
-                return;
-            };
-
-            std::println!(
-                "🔥 Adding DeleteRow operation for row {} with {} values: {:?}",
-                row,
-                values.len(),
-                values
-            );
-            debug!(
-                "🔥 Adding DeleteRow operation for row {} with {} values",
-                row,
-                values.len()
-            );
-
-            let state = self.get_spreadsheet_state_mut();
-            state
-                .pending_operations
-                .push(crate::models::structs::CellEditOperation::DeleteRow {
-                    row_index: row,
-                    values,
-                });
-            state.is_dirty = true;
-
-            std::println!(
-                "🔥 Now have {} pending operations, is_dirty: {}",
-                state.pending_operations.len(),
-                state.is_dirty
-            );
-            debug!(
-                "🔥 Now have {} pending operations, is_dirty: {}",
-                state.pending_operations.len(),
-                state.is_dirty
-            );
-
-            // Now remove from data structures
-            if row < self.get_current_table_data().len() {
-                self.get_current_table_data_mut().remove(row);
-            }
-            if row < self.get_all_table_data().len() {
-                self.get_all_table_data_mut().remove(row);
-            }
-            self.set_total_rows(self.get_total_rows().saturating_sub(1));
-            self.set_selected_row(None);
-            self.set_selected_cell(None);
-        } else {
-            std::println!("🔥 No row selected for deletion");
-            debug!("🔥 No row selected for deletion");
-        }
-    }
 
     fn spreadsheet_extract_table_name(&self) -> Option<String> {
         std::println!(

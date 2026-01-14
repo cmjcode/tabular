@@ -5704,3 +5704,125 @@ pub(crate) fn test_database_connection(
         }
     })
 }
+
+pub(crate) fn fetch_table_definition(
+    connection: &models::structs::ConnectionConfig,
+    database_name: Option<&str>,
+    table_name: &str,
+) -> Option<String> {
+    let rt = tokio::runtime::Runtime::new().ok()?;
+
+    let connection_clone = connection.clone();
+    let db_name = database_name
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| connection_clone.database.clone());
+    let tbl_name = table_name.to_string();
+
+    rt.block_on(async {
+        match connection_clone.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                if db_name.is_empty() {
+                    return None;
+                }
+
+                let encoded_username = modules::url_encode(&connection_clone.username);
+                let encoded_password = modules::url_encode(&connection_clone.password);
+                let connection_string = format!(
+                    "mysql://{}:{}@{}:{}/{}",
+                    encoded_username,
+                    encoded_password,
+                    connection_clone.host,
+                    connection_clone.port,
+                    db_name
+                );
+
+                match MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .connect(&connection_string)
+                    .await
+                {
+                    Ok(pool) => {
+                         let qualified = format!(
+                            "`{}`.`{}`",
+                            db_name.replace('`', "``"),
+                            tbl_name.replace('`', "``")
+                        );
+                        let query = format!("SHOW CREATE TABLE {}", qualified);
+                        match sqlx::query(&query).fetch_optional(&pool).await {
+                            Ok(Some(row)) => {
+                                use sqlx::Row;
+                                // SHOW CREATE TABLE returns `Table` and `Create Table`
+                                let def = row
+                                    .try_get::<String, _>(1)
+                                    .ok()
+                                    .or_else(|| row.try_get::<String, _>("Create Table").ok());
+                                def
+                            }
+                            Err(e) => {
+                                debug!("Failed to fetch table definition: {}", e);
+                                None
+                            }
+                            _ => None,
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to connect to MySQL for table definition: {}", e);
+                        None
+                    }
+                }
+            }
+            models::enums::DatabaseType::SQLite => {
+                 let _path = if db_name.is_empty() {
+                    connection_clone.host.clone()
+                } else {
+                     if !db_name.is_empty() && db_name != "main" {
+                         connection_clone.host.clone()
+                     } else {
+                         connection_clone.host.clone()
+                     }
+                };
+                
+                 let connection_string = if connection_clone.host.starts_with("sqlite:") {
+                     connection_clone.host.clone()
+                 } else {
+                      format!("sqlite:{}", connection_clone.host)
+                 };
+
+                 match SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect(&connection_string)
+                    .await
+                {
+                    Ok(pool) => {
+                        // Query sqlite_master
+                         match sqlx::query_scalar::<_, String>(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?"
+                        )
+                        .bind(&tbl_name)
+                        .fetch_optional(&pool)
+                        .await
+                        {
+                            Ok(Some(def)) => Some(def),
+                            Err(e) => {
+                                debug!("Failed to fetch SQLite table definition: {}", e);
+                                None
+                            }
+                            _ => None,
+                        }
+                    }
+                     Err(e) => {
+                        debug!("Failed to connect to SQLite for table definition: {}", e);
+                        None
+                    }
+                }
+            }
+             models::enums::DatabaseType::PostgreSQL => {
+                 // Postgres DDL generation is complex. For now return a message.
+                 Some(format!("-- Generate Create Table is not yet fully supported for PostgreSQL.\n-- You can view columns in the 'Structure' tab."))
+            }
+            _ => None,
+        }
+    })
+}

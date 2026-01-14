@@ -458,4 +458,6 @@ pub type RenderTreeNodeResult = (
     Option<(i64, Option<String>)>,
     // New: request to open ALTER script for stored procedure (connection_id, database, procedure_name)
     Option<(i64, Option<String>, String)>,
+    // New: request to generate CREATE TABLE script (connection_id, database, table_name)
+    Option<(i64, Option<String>, String)>,
 );

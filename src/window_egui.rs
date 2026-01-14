@@ -410,113 +410,10 @@ impl Tabular {
     }
 
     // Duplicate selected row for editing
-    pub fn duplicate_selected_row(&mut self) {
-        if let Some(selected_row_idx) = self.selected_row
-            && selected_row_idx < self.current_table_data.len()
-        {
-            // Clone the row data
-            let row_data = self.current_table_data[selected_row_idx].clone();
 
-            // Insert the duplicated row right after the selected row
-            let insert_index = selected_row_idx + 1;
-            self.current_table_data
-                .insert(insert_index, row_data.clone());
-            self.all_table_data.insert(insert_index, row_data.clone());
-
-            // Update total rows count
-            self.total_rows = self.current_table_data.len();
-
-            // Mark this row as newly created for highlighting
-            self.newly_created_rows.insert(insert_index);
-
-            // Update indices in newly_created_rows for rows that shifted down
-            let mut updated_rows = std::collections::HashSet::new();
-            for &row_idx in &self.newly_created_rows {
-                if row_idx >= insert_index && row_idx != insert_index {
-                    updated_rows.insert(row_idx + 1);
-                } else {
-                    updated_rows.insert(row_idx);
-                }
-            }
-            self.newly_created_rows = updated_rows;
-
-            // Select the new duplicated row
-            self.selected_row = Some(insert_index);
-            self.selected_cell = Some((insert_index, 0)); // Select first cell of new row
-
-            // Clear other selections
-            self.selected_rows.clear();
-            self.selected_columns.clear();
-            self.table_sel_anchor = None;
-
-            // Mark spreadsheet as dirty
-            self.spreadsheet_state.is_dirty = true;
-
-            // Create an insert operation for tracking
-            self.spreadsheet_state.pending_operations.push(
-                models::structs::CellEditOperation::InsertRow {
-                    row_index: insert_index,
-                    values: row_data,
-                },
-            );
-
-            // Update tab state
-            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                active_tab.result_rows = self.current_table_data.clone();
-                active_tab.result_all_rows = self.all_table_data.clone();
-                active_tab.total_rows = self.total_rows;
-            }
-
-            debug!(
-                "Row {} duplicated successfully. New row at index {}",
-                selected_row_idx, insert_index
-            );
-        }
-    }
 
     // Delete selected row
-    pub fn delete_selected_row(&mut self) {
-        if let Some(selected_row_idx) = self.selected_row
-            && selected_row_idx < self.current_table_data.len()
-        {
-            // Store the row data before deletion for undo capability
-            let row_data = self.current_table_data[selected_row_idx].clone();
 
-            // Remove the row
-            self.current_table_data.remove(selected_row_idx);
-            self.all_table_data.remove(selected_row_idx);
-
-            // Update total rows count
-            self.total_rows = self.current_table_data.len();
-
-            // Clear selection
-            self.selected_row = None;
-            self.selected_cell = None;
-            self.selected_rows.clear();
-            self.selected_columns.clear();
-            self.table_sel_anchor = None;
-
-            // Mark spreadsheet as dirty
-            self.spreadsheet_state.is_dirty = true;
-
-            // Create a delete operation for tracking
-            self.spreadsheet_state.pending_operations.push(
-                models::structs::CellEditOperation::DeleteRow {
-                    row_index: selected_row_idx,
-                    values: row_data,
-                },
-            );
-
-            // Update tab state
-            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                active_tab.result_rows = self.current_table_data.clone();
-                active_tab.result_all_rows = self.all_table_data.clone();
-                active_tab.total_rows = self.total_rows;
-            }
-
-            debug!("Row {} deleted successfully", selected_row_idx);
-        }
-    }
 
     // End: Spreadsheet helpers
     // Ensure a shared Tokio runtime exists (lazy init) to avoid spawning many runtimes
@@ -2111,6 +2008,7 @@ impl Tabular {
         let mut query_files_to_open = Vec::new();
         let mut create_table_requests: Vec<(i64, Option<String>)> = Vec::new();
         let mut stored_procedure_click_requests: Vec<(i64, Option<String>, String)> = Vec::new();
+        let mut generate_ddl_requests: Vec<(i64, Option<String>, String)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -2131,6 +2029,7 @@ impl Tabular {
                 drop_table_request,
                 create_table_request,
                 stored_procedure_click_request,
+                generate_ddl_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -2252,10 +2151,33 @@ impl Tabular {
             if let Some((conn_id, db_name, proc_name)) = stored_procedure_click_request {
                 stored_procedure_click_requests.push((conn_id, db_name, proc_name));
             }
+            if let Some((conn_id, db_name, table_name)) = generate_ddl_request {
+                generate_ddl_requests.push((conn_id, db_name, table_name));
+            }
         }
 
         for (conn_id, db_name) in create_table_requests {
             self.open_create_table_wizard(conn_id, db_name);
+        }
+
+        for (conn_id, db_name, table_name) in generate_ddl_requests {
+            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
+                let definition = crate::connection::fetch_table_definition(&conn, db_name.as_deref(), &table_name);
+                if let Some(sql) = definition {
+                    let title = format!("DDL: {}", table_name);
+                    crate::editor::create_new_tab_with_connection_and_database(
+                        self,
+                        title,
+                        sql,
+                        Some(conn_id),
+                        db_name.clone(),
+                    );
+                    self.table_bottom_view = models::structs::TableBottomView::Query;
+                } else {
+                    self.error_message = format!("Could not generate DDL for table '{}'. It might not be supported for this database type.", table_name);
+                    self.show_error_message = true;
+                }
+            }
         }
 
         for (connection_id, database_name, table_name) in alter_table_requests {
@@ -3483,6 +3405,7 @@ impl Tabular {
         let mut drop_table_request: Option<(i64, String, String, String)> = None;
         let mut create_table_request: Option<(i64, Option<String>)> = None;
         let mut stored_procedure_click_request: Option<(i64, Option<String>, String)> = None;
+        let mut generate_ddl_request: Option<(i64, Option<String>, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -3952,26 +3875,16 @@ impl Tabular {
                         }
 
                         if !is_mongodb {
-                            if ui.button("📋 SELECT Query (New Tab)").clicked() {
-                                // We'll create a new tab instead of modifying current editor
-                                // Store the request and handle it in render_tree
-                                ui.close();
-                            }
-                            if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
-                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                                editor.set_text(format!("SELECT COUNT(*) FROM {};", actual_table_name));
-                                editor.mark_text_modified();
-                                ui.close();
-                            }
-                            if ui.button("📝 DESCRIBE Query (Current Tab)").clicked() {
-                                let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                                // Different DESCRIBE syntax for different database types
-                                if node.database_name.is_some() {
-                                    editor.set_text(format!("DESCRIBE {};", actual_table_name));
-                                } else {
-                                    editor.set_text(format!("PRAGMA table_info({});", actual_table_name)); // SQLite syntax
+                            if ui.button("📜 Generate Query Create Table").clicked() {
+                                if let Some(conn_id) = node.connection_id {
+                                    let actual_table_name =
+                                        node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                    generate_ddl_request = Some((
+                                        conn_id,
+                                        node.database_name.clone(),
+                                        actual_table_name,
+                                    ));
                                 }
-                                editor.mark_text_modified();
                                 ui.close();
                             }
                         } else {
@@ -4055,17 +3968,6 @@ impl Tabular {
                             }
                             ui.close();
                         }
-                        if ui.button("📋 SELECT Query (New Tab)").clicked() {
-                            // We'll create a new tab instead of modifying current editor
-                            // Store the request and handle it in render_tree
-                            ui.close();
-                        }
-                        if ui.button("🔍 COUNT Query (Current Tab)").clicked() {
-                            let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name);
-                            editor.set_text(format!("SELECT COUNT(*) FROM {};", actual_table_name));
-                            editor.mark_text_modified();
-                            ui.close();
-                        }
                         if ui.button("📝 DESCRIBE View (Current Tab)").clicked() {
                             // Different DESCRIBE syntax for different database types
                             if node.database_name.is_some() {
@@ -4147,6 +4049,7 @@ impl Tabular {
                             _child_drop_table_request,
                             child_create_table_request,
                             child_stored_procedure_click_request,
+                            child_generate_ddl_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -4202,6 +4105,9 @@ impl Tabular {
                         if let Some(v) = child_stored_procedure_click_request {
                             stored_procedure_click_request = Some(v);
                         }
+                        if let Some(v) = child_generate_ddl_request {
+                            generate_ddl_request = Some(v);
+                        }
                         if let Some(child_context_id) = child_context {
                             context_menu_request = Some(child_context_id);
                         }
@@ -4231,6 +4137,7 @@ impl Tabular {
                                 _child_drop_table_request,
                                 child_create_table_request,
                                 child_stored_procedure_click_request,
+                                child_generate_ddl_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -4296,6 +4203,9 @@ impl Tabular {
                             }
                             if let Some(v) = child_stored_procedure_click_request {
                                 stored_procedure_click_request = Some(v);
+                            }
+                            if let Some(v) = child_generate_ddl_request {
+                                generate_ddl_request = Some(v);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -4654,6 +4564,7 @@ impl Tabular {
             drop_table_request,
             create_table_request,
             stored_procedure_click_request,
+            generate_ddl_request,
         )
     }
 
@@ -11871,12 +11782,12 @@ impl App for Tabular {
                             let frame_response = egui::Frame::popup(ui.style()).show(ui, |ui| {
                                 ui.set_min_width(150.0);
                                 if ui.button("📋 Duplicate Row").clicked() {
-                                    self.duplicate_selected_row();
+                                    self.spreadsheet_duplicate_selected_row();
                                     close_menu = true;
                                 }
                                 ui.separator();
                                 if ui.button("🗑️ Delete Row").clicked() {
-                                    self.delete_selected_row();
+                                    self.spreadsheet_delete_selected_row();
                                     close_menu = true;
                                 }
                             });
@@ -12181,11 +12092,11 @@ impl App for Tabular {
                     }
                     // Single cell
                     else if let Some((r, c)) = self.selected_cell {
-                        if let Some(row) = self.current_table_data.get(r) {
-                            if let Some(val) = row.get(c) {
-                                ctx.copy_text(val.clone());
-                                debug!("📋 Copied cell ({},{}) len={} chars", r, c, val.len());
-                            }
+                        if let Some(row) = self.current_table_data.get(r)
+                            && let Some(val) = row.get(c)
+                        {
+                            ctx.copy_text(val.clone());
+                            debug!("📋 Copied cell ({},{}) len={} chars", r, c, val.len());
                         }
                     }
                     // Selected rows
@@ -12196,11 +12107,15 @@ impl App for Tabular {
                         }
                     }
                     // Selected columns
-                    else if !self.selected_columns.is_empty() {
-                        if let Some(csv) = data_table::copy_selected_columns_as_csv(self) {
-                            ctx.copy_text(csv.clone());
-                            debug!("📋 Copied {} col(s) ({} chars)", self.selected_columns.len(), csv.len());
-                        }
+                    else if !self.selected_columns.is_empty()
+                        && let Some(csv) = data_table::copy_selected_columns_as_csv(self)
+                    {
+                        ctx.copy_text(csv.clone());
+                        debug!(
+                            "📋 Copied {} col(s) ({} chars)",
+                            self.selected_columns.len(),
+                            csv.len()
+                        );
                     }
                 } else {
                     debug!("⚠️ CMD+C but no focus target (table_flag={}, data_sel={:?})", 

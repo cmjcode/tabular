@@ -1662,8 +1662,8 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
             }
         } else {
             // Background fetch: seed partition cache if empty
-            if crate::cache_data::get_partitions_from_cache(tabular, conn_id, &database, &table_guess).is_none() {
-                if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
+            if crate::cache_data::get_partitions_from_cache(tabular, conn_id, &database, &table_guess).is_none()
+                && let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
                     let partitions = fetch_partition_details_for_table(
                         tabular,
                         conn_id,
@@ -1686,7 +1686,6 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                             partitions.len()
                         );
                     }
-                }
             }
         }
 
@@ -1732,11 +1731,10 @@ pub fn fetch_partition_details_for_table(
                             // Parse for PARTITION BY <TYPE>
                             if let Some(partition_idx) = create_sql.to_uppercase().find("PARTITION BY") {
                                 let after_partition = &create_sql[partition_idx + 12..];
-                                let ptype = after_partition.trim_start()
+                                after_partition
                                     .split_whitespace()
                                     .next()
-                                    .map(|s| s.to_uppercase());
-                                ptype
+                                    .map(|s| s.to_uppercase())
                             } else {
                                 None
                             }
