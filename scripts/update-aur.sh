@@ -82,16 +82,25 @@ mkdir -p "${TARGET_REPO}"
 cp "${PKGBUILD_DIR}/PKGBUILD" "${TARGET_REPO}/PKGBUILD"
 cp "${PKGBUILD_DIR}/.SRCINFO" "${TARGET_REPO}/.SRCINFO"
 
-echo "Committing and pushing changes"
-(
-  cd "${TARGET_REPO}"
-  git add PKGBUILD .SRCINFO
-  if git diff --cached --quiet; then
-    echo "No changes to commit."
-  else
-    git commit -m "${PACKAGE} ${CARGO_VERSION}"
-    git push
-  fi
-)
+# Copy .install file if it exists (for tabular-bin)
+if [[ -f "${PKGBUILD_DIR}/tabular-bin.install" ]]; then
+  cp "${PKGBUILD_DIR}/tabular-bin.install" "${TARGET_REPO}/tabular-bin.install"
+fi
+
+if [[ -d "${TARGET_REPO}/.git" ]]; then
+  echo "Committing and pushing changes"
+  (
+    cd "${TARGET_REPO}"
+    git add PKGBUILD .SRCINFO
+    if git diff --cached --quiet; then
+      echo "No changes to commit."
+    else
+      git commit -m "${PACKAGE} ${CARGO_VERSION}"
+      git push
+    fi
+  )
+else
+  echo "Warning: ${TARGET_REPO} is not a git repository. Skipping commit/push."
+fi
 
 echo "AUR packaging update complete."
