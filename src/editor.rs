@@ -4603,41 +4603,23 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
             return;
         }
 
-        // If no pool exists yet, try quick creation; if not immediately available, show loading
+        // If no pool exists yet, trigger background creation; show loading
         if !tabular.connection_pools.contains_key(&connection_id) {
-            // Attempt a quick creation via the runtime without capturing &mut tabular inside the future
-            if let Some(rt) = tabular.runtime.clone() {
-                // Use the non-blocking helper that handles pending state and background spawn
-                let created = rt.block_on(async {
-                    // SAFETY: try_get_connection_pool only briefly borrows tabular inside the await; we avoid
-                    // capturing &mut tabular by doing only a readiness check here and letting the update loop handle execution.
-                    // We return true only if a pool is immediately available; otherwise background creation will be started elsewhere.
-                    crate::connection::try_get_connection_pool(tabular, connection_id)
-                        .await
-                        .is_some()
-                });
-                if !created {
-                    // Not ready now; show loading and queue the query. Background creation will happen via get_or_create on demand.
-                    log::debug!(
-                        "🔧 Pool not ready for {}, queueing and showing loading",
-                        connection_id
-                    );
-                    tabular.pool_wait_in_progress = true;
-                    tabular.pool_wait_connection_id = Some(connection_id);
-                    tabular.pool_wait_query = query.clone();
-                    tabular.pool_wait_started_at = Some(std::time::Instant::now());
-                    tabular.current_table_name = "Connecting… waiting for pool".to_string();
-                    return;
-                }
-            } else {
-                // No runtime configured yet; just set wait state
-                tabular.pool_wait_in_progress = true;
-                tabular.pool_wait_connection_id = Some(connection_id);
-                tabular.pool_wait_query = query.clone();
-                tabular.pool_wait_started_at = Some(std::time::Instant::now());
-                tabular.current_table_name = "Connecting… waiting for pool".to_string();
-                return;
-            }
+            log::debug!(
+                "🔧 Pool not ready for {}, triggering background creation and queuing",
+                connection_id
+            );
+            
+            // Trigger creation (safe to call multiple times, handles dedup)
+            crate::connection::ensure_background_pool_creation(tabular, connection_id);
+
+            // Set wait state so the UI shows a spinner and we retry later
+            tabular.pool_wait_in_progress = true;
+            tabular.pool_wait_connection_id = Some(connection_id);
+            tabular.pool_wait_query = query.clone();
+            tabular.pool_wait_started_at = Some(std::time::Instant::now());
+            tabular.current_table_name = "Connecting… waiting for pool".to_string();
+            return;
         }
 
         debug!("=== EXECUTING QUERY ===");
@@ -4688,29 +4670,38 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
                     Err(err) => {
                         tabular.active_query_jobs.remove(&job_id);
                         debug!("Failed to spawn async job: {:?}", err);
-                        let result = connection::execute_query_with_connection(
-                            tabular,
-                            connection_id,
-                            query.clone(),
-                        );
-
-                        debug!("Query execution result: {:?}", result.is_some());
-
-                        process_query_result(tabular, &query, connection_id, result);
+                        
+                        tabular.current_table_name = "Execution Error".to_string();
+                        tabular.current_table_headers = vec!["Error".to_string()];
+                        tabular.current_table_data = vec![vec![format!("Failed to spawn async job: {:?}", err)]];
+                        
+                        // Notify that execution finished (with error)
+                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                            tab.has_executed_query = true;
+                        }
                     }
                 }
             }
             Err(err) => {
                 debug!("Failed to prepare async job: {:?}", err);
-                let result = connection::execute_query_with_connection(
-                    tabular,
-                    connection_id,
-                    query.clone(),
-                );
-
-                debug!("Query execution result: {:?}", result.is_some());
-
-                process_query_result(tabular, &query, connection_id, result);
+                
+                if matches!(err, connection::QueryPreparationError::PoolUnavailable) {
+                     // If pool unavailable despite our check, trigger creation and wait
+                     crate::connection::ensure_background_pool_creation(tabular, connection_id);
+                     tabular.pool_wait_in_progress = true;
+                     tabular.pool_wait_connection_id = Some(connection_id);
+                     tabular.pool_wait_query = query.clone();
+                     tabular.pool_wait_started_at = Some(std::time::Instant::now());
+                     tabular.current_table_name = "Connecting… waiting for pool".to_string();
+                } else {
+                    tabular.current_table_name = "Preparation Error".to_string();
+                    tabular.current_table_headers = vec!["Error".to_string()];
+                    tabular.current_table_data = vec![vec![format!("Failed to prepare query: {:?}", err)]];
+                    
+                    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                        tab.has_executed_query = true;
+                    }
+                }
             }
         }
     }
