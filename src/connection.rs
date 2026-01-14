@@ -505,15 +505,21 @@ fn describe_execution_error(err: QueryExecutionError) -> String {
 
 async fn execute_mysql_query_job(
     options: &QueryExecutionOptions,
-    _pool: models::enums::DatabasePool,
+    pool: models::enums::DatabasePool,
 ) -> Result<QueryJobOutput, QueryExecutionError> {
     debug!(
         "[async] Executing MySQL query (conn_id={})",
         options.connection_id
     );
 
-    let (target_host, target_port) =
-        resolve_connection_target(&options.connection).map_err(QueryExecutionError::Message)?;
+    let mysql_pool = match pool {
+        models::enums::DatabasePool::MySQL(p) => p,
+        _ => {
+            return Err(QueryExecutionError::Message(
+                "Invalid pool type for MySQL".to_string(),
+            ));
+        }
+    };
 
     let statements_raw: Vec<&str> = options
         .query
@@ -570,9 +576,6 @@ async fn execute_mysql_query_job(
     #[cfg(not(feature = "query_ast"))]
     let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
 
-    let encoded_username = modules::url_encode(&options.connection.username);
-    let encoded_password = modules::url_encode(&options.connection.password);
-
     let default_db = if let Some(db) = &options.selected_database {
         if db.trim().is_empty() {
             options.connection.database.clone()
@@ -583,10 +586,10 @@ async fn execute_mysql_query_job(
         options.connection.database.clone()
     };
 
-    // Log resolved target and database context up front to help diagnose schema issues
+    // Log resolved database context
     debug!(
-        "[mysql] target={}:{}, selected_database={:?}, default_db={}",
-        target_host, target_port, options.selected_database, default_db
+        "[mysql] selected_database={:?}, default_db={}",
+        options.selected_database, default_db
     );
 
     let replication_status_mode = matches!(
@@ -622,37 +625,46 @@ async fn execute_mysql_query_job(
     while attempts < max_attempts {
         attempts += 1;
 
-        let dsn = format!(
-            "mysql://{}:{}@{}:{}/{}",
-            encoded_username, encoded_password, target_host, target_port, default_db
-        );
-
-        let mut conn = match MySqlConnection::connect(&dsn).await {
+        // Acquire connection from pool
+        let mut conn = match mysql_pool.acquire().await {
             Ok(c) => c,
             Err(e) => {
-                last_error = Some(e.to_string());
-                continue;
+                last_error = Some(format!("Pool acquire failed: {}", e));
+                if attempts < max_attempts {
+                    continue;
+                } else {
+                    break;
+                }
             }
         };
 
-        let _ = sqlx::query("SET SESSION wait_timeout = 600")
-            .execute(&mut conn)
-            .await;
-        let _ = sqlx::query("SET SESSION interactive_timeout = 600")
-            .execute(&mut conn)
-            .await;
-        let _ = sqlx::query("SET SESSION net_read_timeout = 120")
-            .execute(&mut conn)
-            .await;
-        let _ = sqlx::query("SET SESSION net_write_timeout = 120")
-            .execute(&mut conn)
-            .await;
-        let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824")
-            .execute(&mut conn)
-            .await;
-        let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
-            .execute(&mut conn)
-            .await;
+        // Check and Switch Database Strategy
+        // We only switch if the current database differs from the desired one.
+        // This avoids unnecessary USE statements.
+        let check_db_start = Instant::now();
+        let current_db_res: Result<Option<String>, _> =
+            sqlx::query_scalar("SELECT DATABASE()").fetch_one(&mut *conn).await;
+
+        let need_switch = match current_db_res {
+            Ok(Some(current)) => current != default_db,
+            Ok(None) => true, // Should generally return a string, but if None, switch to be safe
+            Err(_) => true,   // If check fails, assume we need to switch (or let it fail below)
+        };
+
+        if need_switch {
+            debug!("[mysql] Switching database to '{}'", default_db);
+            if let Err(e) = sqlx::query(&format!("USE `{}`", default_db))
+                .execute(&mut *conn)
+                .await
+            {
+                last_error = Some(format!("Failed to switch database to {}: {}", default_db, e));
+                // If switching fails, the connection might be bad, retry loop handles it
+                continue;
+            }
+        }
+        if attempts == 1 {
+            debug!("[mysql] DB check/switch took {:?}", check_db_start.elapsed());
+        }
 
         let mut final_headers: Vec<String> = Vec::new();
         let mut final_data: Vec<Vec<String>> = Vec::new();
@@ -671,19 +683,19 @@ async fn execute_mysql_query_job(
             debug!("[mysql] about to run statement[{}]: {:?}", idx + 1, trimmed);
 
             let upper = trimmed.to_uppercase();
-            
+
             // Check if this is an administrative command that doesn't support prepared statements
             let is_admin_command = {
-                upper.starts_with("PURGE BINARY LOGS") ||
-                upper.starts_with("PURGE MASTER LOGS") ||
-                upper.starts_with("RESET MASTER") ||
-                upper.starts_with("RESET SLAVE") ||
-                upper.starts_with("RESET REPLICA") ||
-                upper.starts_with("CHANGE MASTER") ||
-                upper.starts_with("CHANGE REPLICATION SOURCE") ||
-                upper.starts_with("FLUSH")
+                upper.starts_with("PURGE BINARY LOGS")
+                    || upper.starts_with("PURGE MASTER LOGS")
+                    || upper.starts_with("RESET MASTER")
+                    || upper.starts_with("RESET SLAVE")
+                    || upper.starts_with("RESET REPLICA")
+                    || upper.starts_with("CHANGE MASTER")
+                    || upper.starts_with("CHANGE REPLICATION SOURCE")
+                    || upper.starts_with("FLUSH")
             };
-            
+
             if upper.starts_with("USE ") {
                 let db_part = trimmed[3..].trim();
                 let db_name = db_part
@@ -694,47 +706,17 @@ async fn execute_mysql_query_job(
                     .trim();
 
                 let use_stmt = format!("USE `{}`", db_name);
-                if sqlx::query(&use_stmt).execute(&mut conn).await.is_err() {
-                    let new_dsn = format!(
-                        "mysql://{}:{}@{}:{}/{}",
-                        encoded_username, encoded_password, target_host, target_port, db_name
-                    );
-                    match MySqlConnection::connect(&new_dsn).await {
-                        Ok(new_conn) => {
-                            let mut new_conn = new_conn;
-                            let _ = sqlx::query("SET SESSION wait_timeout = 600")
-                                .execute(&mut new_conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION interactive_timeout = 600")
-                                .execute(&mut new_conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION net_read_timeout = 120")
-                                .execute(&mut new_conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION net_write_timeout = 120")
-                                .execute(&mut new_conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824")
-                                .execute(&mut new_conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
-                                .execute(&mut new_conn)
-                                .await;
-                            conn = new_conn;
-                        }
-                        Err(e) => {
-                            last_error = Some(format!("USE failed (reconnect): {}", e));
-                            execution_success = false;
-                            break;
-                        }
-                    }
+                if let Err(e) = sqlx::query(&use_stmt).execute(&mut *conn).await {
+                    last_error = Some(format!("USE failed: {}", e));
+                    execution_success = false;
+                    break;
                 }
                 continue;
             }
 
             let query_result = tokio::time::timeout(
                 std::time::Duration::from_secs(60),
-                sqlx::query(trimmed).fetch_all(&mut conn),
+                sqlx::query(trimmed).fetch_all(&mut *conn),
             )
             .await;
 
@@ -751,7 +733,7 @@ async fn execute_mysql_query_job(
 
                             if replication_status_mode || master_status_mode {
                                 let version_str = match sqlx::query("SELECT VERSION() AS v")
-                                    .fetch_one(&mut conn)
+                                    .fetch_one(&mut *conn)
                                     .await
                                 {
                                     Ok(vrow) => vrow.try_get::<String, _>("v").unwrap_or_default(),
@@ -762,7 +744,7 @@ async fn execute_mysql_query_job(
                                 if replication_status_mode
                                     && final_data.is_empty()
                                     && let Ok(fallback_rows) =
-                                        sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await
+                                        sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut *conn).await
                                     && !fallback_rows.is_empty()
                                 {
                                     final_headers = fallback_rows[0]
@@ -887,9 +869,12 @@ async fn execute_mysql_query_job(
                 }
                 Ok(Err(e)) => {
                     let err_str = e.to_string();
-                    
+
                     // Handle error 1295 for admin commands (not supported in prepared statement)
-                    if is_admin_command && (err_str.contains("1295") || err_str.contains("prepared statement protocol")) {
+                    if is_admin_command
+                        && (err_str.contains("1295")
+                            || err_str.contains("prepared statement protocol"))
+                    {
                         debug!("Admin command executed successfully (error 1295 expected for prepared statements)");
                         // For admin commands that succeed but sqlx reports error, treat as success
                         if idx == statements_ref.len() - 1 {
@@ -908,16 +893,17 @@ async fn execute_mysql_query_job(
                             failing_stmt_preview = Some(prev);
                         }
                         // Attach a friendly hint for common 1146 (table doesn't exist) cases
-                        if err_str.contains("1146") || err_str.to_lowercase().contains("doesn't exist")
+                        if err_str.contains("1146")
+                            || err_str.to_lowercase().contains("doesn't exist")
                         {
                             let mut hint = String::new();
                             hint.push_str("Hint: Check the database/schema qualifier in your SQL. ");
                             hint.push_str(&format!(
-                                "Current default database is '{}'. If your query references a different schema (e.g., 'foxlogger' vs actual '{}'), it can fail even if SELECT * FROM table works in the default DB. ",
-                                default_db, default_db
+                                "Current default database is '{}'. If your query references a different schema, it can fail even if SELECT * FROM table works in the default DB. ",
+                                default_db
                             ));
                             hint.push_str("Try removing the schema prefix or replacing it with the selected/default database, or switch the active database in the tab. ");
-                            hint.push_str("Also, on case-sensitive MySQL servers (lower_case_table_names=0), using backticks requires exact table name casing. If unquoted works but \"`name`\" fails, check SHOW TABLES for the exact case and match it.");
+                            hint.push_str("Also, on case-sensitive MySQL servers (lower_case_table_names=0), using backticks requires exact table name casing.");
                             last_error = Some(format!("{}\n\n{}", err_str, hint));
                         } else {
                             last_error = Some(err_str);
@@ -955,6 +941,9 @@ async fn execute_mysql_query_job(
                 ast_headers,
             });
         }
+        
+        // If execution failed, we might want to discard this connection from pool if it's broken,
+        // but sqlx handles pooling health checks.
     }
 
     let mut final_err = last_error.unwrap_or_else(|| "Unknown MySQL error".to_string());
@@ -1575,8 +1564,8 @@ async fn execute_mssql_query_job(
     options: &QueryExecutionOptions,
     pool: models::enums::DatabasePool,
 ) -> Result<QueryJobOutput, QueryExecutionError> {
-    let config = match pool {
-        models::enums::DatabasePool::MsSQL(cfg) => cfg,
+    let pool_arc = match pool {
+        models::enums::DatabasePool::MsSQL(p) => p,
         _ => {
             return Err(QueryExecutionError::Message(
                 "Invalid pool type for MsSQL".to_string(),
@@ -1595,7 +1584,13 @@ async fn execute_mssql_query_job(
         query_str = query_str.replace("TOP 10000", "");
     }
 
-    match driver_mssql::execute_query(config.clone(), &query_str).await {
+    // Acquire connection from pool
+    let mut client = match pool_arc.get().await {
+        Ok(c) => c,
+        Err(e) => return Err(QueryExecutionError::Message(format!("Failed to acquire connection: {}", e))),
+    };
+
+    match driver_mssql::execute_query_with_client(&mut client, &query_str).await {
         Ok((headers, rows)) => Ok(QueryJobOutput {
             headers,
             rows,
@@ -2761,15 +2756,36 @@ pub(crate) fn execute_table_query_sync(
                             _ => Some((vec!["Error".to_string()], vec![vec![format!("Unsupported Redis command: {}", parts[0])]])),
                         }
                     }
-                    models::enums::DatabasePool::MsSQL(mssql_cfg) => {
-                        debug!("Executing MsSQL query: {}", query);
+                    models::enums::DatabasePool::MsSQL(_cfg) => {
+                        debug!("Executing MsSQL query (via temp pool): {}", query);
                         let mut query_str = query.to_string();
                         if query_str.contains("TOP") && query_str.contains("ROWS FETCH NEXT") {
                             query_str = query_str.replace("TOP 10000", "");
                         }
-                        match driver_mssql::execute_query(mssql_cfg.clone(), &query_str).await {
-                            Ok((h, d)) => Some((h, d)),
-                            Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]])),
+                        
+                        // Create temp config
+                        let mut mgr = deadpool_tiberius::Manager::new()
+                             .host(connection.host.clone())
+                             .port(connection.port.parse::<u16>().unwrap_or(1433))
+                             .basic_authentication(connection.username.clone(), connection.password.clone())
+                             .trust_cert();
+
+                        if !connection.database.is_empty() {
+                            mgr = mgr.database(connection.database.clone());
+                        }
+
+                        if let Ok(pool) = deadpool_tiberius::Pool::builder(mgr).max_size(1).build() {
+                             match pool.get().await {
+                                 Ok(mut client) => {
+                                     match driver_mssql::execute_query_with_client(&mut client, &query_str).await {
+                                        Ok((h, d)) => Some((h, d)),
+                                        Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Query error: {}", e)]])),
+                                     }
+                                 }
+                                 Err(e) => Some((vec!["Error".to_string()], vec![vec![format!("Failed to get client: {}", e)]])),
+                             }
+                        } else {
+                            Some((vec!["Error".to_string()], vec![vec!["Failed to create temp pool".to_string()]]))
                         }
                     }
                     models::enums::DatabasePool::MongoDB(_client) => {
@@ -3435,6 +3451,7 @@ async fn create_connection_pool_for_config(
             }
         }
         models::enums::DatabaseType::MsSQL => {
+            // Create deadpool for MsSQL
             let (target_host, target_port) = match resolve_connection_target(connection) {
                 Ok(tuple) => tuple,
                 Err(err) => {
@@ -3445,15 +3462,27 @@ async fn create_connection_pool_for_config(
                     return None;
                 }
             };
-            let cfg = driver_mssql::MssqlConfigWrapper::new(
-                target_host,
-                target_port,
-                connection.database.clone(),
-                connection.username.clone(),
-                connection.password.clone(),
-            );
-            let database_pool = models::enums::DatabasePool::MsSQL(Arc::new(cfg));
-            Some(database_pool)
+
+            let mut mgr = deadpool_tiberius::Manager::new()
+                .host(target_host)
+                .port(target_port.parse::<u16>().unwrap_or(1433))
+                .basic_authentication(connection.username.clone(), connection.password.clone());
+            
+            mgr = mgr.trust_cert();
+            if !connection.database.is_empty() {
+                mgr = mgr.database(connection.database.clone());
+            }
+            
+            match deadpool_tiberius::Pool::builder(mgr)
+                .max_size(20)
+                .build()
+            {
+                Ok(pool) => Some(models::enums::DatabasePool::MsSQL(pool)),
+                Err(e) => {
+                    debug!("MsSQL pool creation failed: {}", e);
+                    None
+                }
+            }
         }
     }
 }
@@ -3837,14 +3866,26 @@ pub(crate) async fn create_database_pool(
                     return None;
                 }
             };
-            let cfg = driver_mssql::MssqlConfigWrapper::new(
-                target_host,
-                target_port,
-                connection.database.clone(),
-                connection.username.clone(),
-                connection.password.clone(),
-            );
-            Some(models::enums::DatabasePool::MsSQL(Arc::new(cfg)))
+            let mut mgr = deadpool_tiberius::Manager::new()
+                .host(target_host)
+                .port(target_port.parse::<u16>().unwrap_or(1433))
+                .basic_authentication(connection.username.clone(), connection.password.clone());
+            
+            mgr = mgr.trust_cert();
+            if !connection.database.is_empty() {
+                mgr = mgr.database(connection.database.clone());
+            }
+
+            match deadpool_tiberius::Pool::builder(mgr)
+                .max_size(5) // Smaller size for temp/check connections
+                .build()
+            {
+                Ok(pool) => Some(models::enums::DatabasePool::MsSQL(pool)),
+                Err(e) => {
+                    debug!("MsSQL temp pool creation failed: {}", e);
+                    None
+                }
+            }
         }
         models::enums::DatabaseType::MongoDB => {
             let (target_host, target_port) = match resolve_connection_target(connection) {
@@ -4237,62 +4278,44 @@ pub(crate) fn fetch_databases_from_connection(
                 debug!("Generated Redis databases: {:?}", databases);
                 Some(databases)
             }
-            models::enums::DatabasePool::MsSQL(ref mssql_cfg) => {
-                // Fetch list of databases from MsSQL server
-                use tokio_util::compat::TokioAsyncWriteCompatExt;
-                use tiberius::{AuthMethod, Config};
-                {
-                    let mssql_cfg = mssql_cfg.clone();
-                    // Attempt connection with master database to enumerate all
-                    let host = mssql_cfg.host.clone();
-                    let port = mssql_cfg.port;
-                    let user = mssql_cfg.username.clone();
-                    let pass = mssql_cfg.password.clone();
-                    let rt_res = async move {
-                        let mut config = Config::new();
-                        config.host(host.clone());
-                        config.port(port);
-                        config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-                        config.trust_cert();
-                        // Always use master for listing
-                        config.database("master");
-                        let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
-                        tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-                        let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
-                        let mut dbs = Vec::new();
-                        let mut stream = client.simple_query("SELECT name FROM sys.databases ORDER BY name").await.map_err(|e| e.to_string())?;
-                        use futures_util::TryStreamExt;
-                        while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
-                            if let tiberius::QueryItem::Row(r) = item {
-                                let name: Option<&str> = r.get(0);
-                                if let Some(n) = name {
-                                    // Optionally skip system DBs? Keep them for completeness; can filter later.
-                                    dbs.push(n.to_string());
-                                }
-                            }
+            models::enums::DatabasePool::MsSQL(pool) => {
+                let rt_res = async move {
+                     let mut client = pool.get().await.map_err(|e| e.to_string())?;
+                     let mut dbs = Vec::new();
+                     let mut stream = client.simple_query("SELECT name FROM sys.databases ORDER BY name").await.map_err(|e| e.to_string())?;
+                     use futures_util::TryStreamExt;
+                     while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
+                         if let tiberius::QueryItem::Row(r) = item {
+                             let name: Option<&str> = r.get(0);
+                             if let Some(n) = name {
+                                 dbs.push(n.to_string());
+                             }
+                         }
+                     }
+                     Ok::<_, String>(dbs)
+                }.await;
+
+                match rt_res {
+                    Ok(mut list) => {
+                        if list.is_empty() {
+                            debug!("MsSQL database list is empty; returning current database only");
+                            // We don't have the config here readily available to fallback to 'connection.database'
+                            // without threading it through. Default to master.
+                            Some(vec!["master".to_string()])
+                        } else {
+                            // Move system DBs (master, model, msdb, tempdb) to end for nicer UX
+                            let system = ["master", "model", "msdb", "tempdb"];
+                            list.sort();
+                            let mut user_dbs: Vec<String> = list.iter().filter(|d| !system.contains(&d.as_str())).cloned().collect();
+                            let mut sys_dbs: Vec<String> = list.into_iter().filter(|d| system.contains(&d.as_str())).collect();
+                            user_dbs.append(&mut sys_dbs);
+                            Some(user_dbs)
                         }
-                        Ok::<_, String>(dbs)
-                    }.await;
-                    match rt_res {
-                        Ok(mut list) => {
-                            if list.is_empty() {
-                                debug!("MsSQL database list is empty; returning current database only");
-                                Some(vec![mssql_cfg.database.clone()])
-                            } else {
-                                // Move system DBs (master, model, msdb, tempdb) to end for nicer UX
-                                let system = ["master", "model", "msdb", "tempdb"];
-                                list.sort();
-                                let mut user_dbs: Vec<String> = list.iter().filter(|d| !system.contains(&d.as_str())).cloned().collect();
-                                let mut sys_dbs: Vec<String> = list.into_iter().filter(|d| system.contains(&d.as_str())).collect();
-                                user_dbs.append(&mut sys_dbs);
-                                Some(user_dbs)
-                            }
-                        }
-                        Err(e) => {
-                            debug!("Failed to fetch MsSQL databases: {}", e);
-                            // Fallback to default known system DBs so UI still shows something
-                            Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()])
-                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to fetch MsSQL databases: {}", e);
+                        // Fallback to default known system DBs so UI still shows something
+                        Some(vec!["master".to_string(), "tempdb".to_string(), "model".to_string(), "msdb".to_string()])
                     }
                 }
             }
@@ -4395,49 +4418,30 @@ pub(crate) async fn fetch_databases_from_connection_async(
             }
             Some(databases)
         }
-        models::enums::DatabasePool::MsSQL(ref mssql_cfg) => {
-            use tiberius::{AuthMethod, Config};
-            use tokio_util::compat::TokioAsyncWriteCompatExt;
-            let mssql_cfg = mssql_cfg.clone();
-            let host = mssql_cfg.host.clone();
-            let port = mssql_cfg.port;
-            let user = mssql_cfg.username.clone();
-            let pass = mssql_cfg.password.clone();
+        models::enums::DatabasePool::MsSQL(pool) => {
             let rt_res = async move {
-                let mut config = Config::new();
-                config.host(host.clone());
-                config.port(port);
-                config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-                config.trust_cert();
-                config.database("master");
-                let tcp = tokio::net::TcpStream::connect((host.as_str(), port))
-                    .await
-                    .map_err(|e| e.to_string())?;
-                tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-                let mut client = tiberius::Client::connect(config, tcp.compat_write())
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let mut dbs = Vec::new();
-                let mut stream = client
-                    .simple_query("SELECT name FROM sys.databases ORDER BY name")
-                    .await
-                    .map_err(|e| e.to_string())?;
-                use futures_util::TryStreamExt;
-                while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
-                    if let tiberius::QueryItem::Row(r) = item {
-                        let name: Option<&str> = r.get(0);
-                        if let Some(n) = name {
-                            dbs.push(n.to_string());
-                        }
-                    }
-                }
-                Ok::<_, String>(dbs)
+                 let mut client = pool.get().await.map_err(|e| e.to_string())?;
+                 let sort_query = "SELECT name FROM sys.databases ORDER BY name";
+                 let mut dbs = Vec::new();
+                 let mut stream = client.simple_query(sort_query).await.map_err(|e| e.to_string())?;
+                 use futures_util::TryStreamExt;
+                 while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
+                     if let tiberius::QueryItem::Row(r) = item {
+                         let name: Option<&str> = r.get(0);
+                         if let Some(n) = name {
+                             dbs.push(n.to_string());
+                         }
+                     }
+                 }
+                 Ok::<_, String>(dbs)
             }
             .await;
+
             match rt_res {
                 Ok(mut list) => {
                     if list.is_empty() {
-                        Some(vec![mssql_cfg.database.clone()])
+                         // Fallback?
+                         Some(vec!["master".to_string()])
                     } else {
                         let system = ["master", "model", "msdb", "tempdb"];
                         list.sort();
@@ -4455,16 +4459,13 @@ pub(crate) async fn fetch_databases_from_connection_async(
                     }
                 }
                 Err(e) => {
-                    debug!("Failed to fetch MsSQL databases: {}", e);
-                    Some(vec![
-                        "master".to_string(),
-                        "tempdb".to_string(),
-                        "model".to_string(),
-                        "msdb".to_string(),
-                    ])
+                    debug!("Failed to fetch databases via pool: {}", e);
+                    None
                 }
             }
         }
+
+
         models::enums::DatabasePool::MongoDB(client) => match client.list_database_names().await {
             Ok(dbs) => Some(dbs),
             Err(e) => {
@@ -5754,11 +5755,10 @@ pub(crate) fn fetch_table_definition(
                             Ok(Some(row)) => {
                                 use sqlx::Row;
                                 // SHOW CREATE TABLE returns `Table` and `Create Table`
-                                let def = row
+                                row
                                     .try_get::<String, _>(1)
                                     .ok()
-                                    .or_else(|| row.try_get::<String, _>("Create Table").ok());
-                                def
+                                    .or_else(|| row.try_get::<String, _>("Create Table").ok())
                             }
                             Err(e) => {
                                 debug!("Failed to fetch table definition: {}", e);
@@ -5774,15 +5774,7 @@ pub(crate) fn fetch_table_definition(
                 }
             }
             models::enums::DatabaseType::SQLite => {
-                 let _path = if db_name.is_empty() {
-                    connection_clone.host.clone()
-                } else {
-                     if !db_name.is_empty() && db_name != "main" {
-                         connection_clone.host.clone()
-                     } else {
-                         connection_clone.host.clone()
-                     }
-                };
+                // let _path removed as it was unused and redundant
                 
                  let connection_string = if connection_clone.host.starts_with("sqlite:") {
                      connection_clone.host.clone()
@@ -5820,7 +5812,7 @@ pub(crate) fn fetch_table_definition(
             }
              models::enums::DatabaseType::PostgreSQL => {
                  // Postgres DDL generation is complex. For now return a message.
-                 Some(format!("-- Generate Create Table is not yet fully supported for PostgreSQL.\n-- You can view columns in the 'Structure' tab."))
+                 Some("-- Generate Create Table is not yet fully supported for PostgreSQL.\n-- You can view columns in the 'Structure' tab.".to_string())
             }
             _ => None,
         }

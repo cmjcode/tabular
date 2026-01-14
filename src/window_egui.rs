@@ -2392,17 +2392,25 @@ impl Tabular {
                                 }
                             }
                             models::enums::DatabaseType::MsSQL => {
-                                // For MsSQL we store config wrapper only (no network call yet) to keep behavior consistent.
-                                let cfgw = crate::driver_mssql::MssqlConfigWrapper::new(
-                                    cfg.host.clone(),
-                                    cfg.port.clone(),
-                                    cfg.database.clone(),
-                                    cfg.username.clone(),
-                                    cfg.password.clone(),
-                                );
-                                Some(models::enums::DatabasePool::MsSQL(std::sync::Arc::new(
-                                    cfgw,
-                                )))
+                                // Create deadpool for MsSQL eager connection
+                                let mut mgr = deadpool_tiberius::Manager::new()
+                                     .host(cfg.host.clone())
+                                     .port(cfg.port.parse::<u16>().unwrap_or(1433))
+                                     .basic_authentication(cfg.username.clone(), cfg.password.clone())
+                                     .trust_cert();
+                                if !cfg.database.is_empty() {
+                                    mgr = mgr.database(cfg.database.clone());
+                                }
+                                match deadpool_tiberius::Pool::builder(mgr)
+                                    .max_size(20)
+                                    .build()
+                                {
+                                    Ok(pool) => Some(models::enums::DatabasePool::MsSQL(pool)),
+                                    Err(e) => {
+                                        debug!("MsSQL pool creation failed: {}", e);
+                                        None
+                                    }
+                                }
                             }
                         }
                     });
@@ -10887,9 +10895,9 @@ impl App for Tabular {
         ctx.style_mut(|style| {
             // Keep text selection visible with a subtle highlight
             if self.is_dark_mode {
-                style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 30, 0); // rgba(132, 33, 3, 1);
+                style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 30, 0, 60);
             } else {
-                style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 30, 0); // rgba(218, 168, 168, 1);
+                style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 30, 0, 60);
             }
             style.visuals.selection.stroke.color = egui::Color32::BLACK;
 

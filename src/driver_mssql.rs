@@ -2,46 +2,19 @@
 use crate::models;
 use crate::window_egui; // for Tabular type
 use futures_util::StreamExt;
-use std::sync::Arc; // for next on tiberius QueryStream
+// use std::sync::Arc; // for next on tiberius QueryStream
 
 // We'll use tiberius for MsSQL. Tiberius uses async-std or tokio with the "rustls" feature.
 // For simplicity here we wrap the basic connection configuration and open connections per query.
 
-pub struct MssqlConfigWrapper {
-    pub host: String,
-    pub port: u16,
-    pub database: String,
-    pub username: String,
-    pub password: String,
-}
+// MssqlConfigWrapper removed as we now use deadpool_tiberius::Pool
 
-impl MssqlConfigWrapper {
-    pub fn new(
-        host: String,
-        port: String,
-        database: String,
-        username: String,
-        password: String,
-    ) -> Self {
-        let port_num: u16 = port.parse().unwrap_or(1433);
-        Self {
-            host,
-            port: port_num,
-            database,
-            username,
-            password,
-        }
-    }
-}
-
-#[allow(dead_code)]
 pub(crate) async fn fetch_mssql_data(
     _connection_id: i64,
-    _cfg: Arc<MssqlConfigWrapper>,
+    _pool: deadpool::managed::Pool<deadpool_tiberius::Manager>,
     _cache_pool: &sqlx::SqlitePool,
 ) -> bool {
-    // TODO: implement metadata caching (databases, tables, columns) using INFORMATION_SCHEMA
-    // Placeholder returning true so UI can proceed.
+    // TODO: implement metadata caching
     true
 }
 
@@ -134,52 +107,25 @@ pub(crate) fn load_mssql_structure(
 pub(crate) fn fetch_tables_from_mssql_connection(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,
-    database_name: &str,
+    _database_name: &str,
     table_type: &str,
 ) -> Option<Vec<String>> {
-    // Create a new runtime (pattern consistent with other drivers)
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
-        // Locate connection config
-        let connection = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
-
-        // Open a direct MsSQL connection to the requested database (may differ from original)
-        use tokio_util::compat::TokioAsyncWriteCompatExt;
-        use tiberius::{AuthMethod, Config};
-
-        let host = connection.host.clone();
-        let port: u16 = connection.port.parse().unwrap_or(1433);
-        let user = connection.username.clone();
-        let pass = connection.password.clone();
-        let db_name = if database_name.is_empty() { connection.database.clone() } else { database_name.to_string() };
-
-        let mut config = Config::new();
-        config.host(host.clone());
-        config.port(port);
-        config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-        config.trust_cert();
-        if !db_name.is_empty() { config.database(db_name.clone()); }
-
-        let tcp = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            tokio::net::TcpStream::connect((host.as_str(), port)),
-        )
-        .await
-        {
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => { log::debug!("MsSQL connect error for table fetch: {}", e); return None; }
-            Err(_) => { log::debug!("MsSQL connect timeout for table fetch"); return None; }
+        // Get or create pool
+        let pool_enum = crate::connection::get_or_create_connection_pool(tabular, connection_id).await?;
+        let pool = match pool_enum {
+             crate::models::enums::DatabasePool::MsSQL(p) => p,
+             _ => return None,
         };
-        let _ = tcp.set_nodelay(true);
-        let mut client = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            tiberius::Client::connect(config, tcp.compat_write()),
-        )
-        .await
-        {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => { log::debug!("MsSQL client connect error: {}", e); return None; }
-            Err(_) => { log::debug!("MsSQL client connect timeout"); return None; }
+        
+        // Get a connection from the pool
+        let mut client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("MsSQL pool get error: {}", e);
+                return None;
+            }
         };
 
         // Choose query based on type (include schema for views)
@@ -224,69 +170,22 @@ pub(crate) fn fetch_tables_from_mssql_connection(
 pub(crate) fn fetch_objects_from_mssql_connection(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,
-    database_name: &str,
+    _database_name: &str,
     object_type: &str,
 ) -> Option<Vec<String>> {
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
-        let connection = tabular
-            .connections
-            .iter()
-            .find(|c| c.id == Some(connection_id))?
-            .clone();
-
-        use tiberius::{AuthMethod, Config};
-        use tokio_util::compat::TokioAsyncWriteCompatExt;
-
-        let host = connection.host.clone();
-        let port: u16 = connection.port.parse().unwrap_or(1433);
-        let user = connection.username.clone();
-        let pass = connection.password.clone();
-        let db_name = if database_name.is_empty() {
-            connection.database.clone()
-        } else {
-            database_name.to_string()
+        // Get or create pool
+        let pool_enum = crate::connection::get_or_create_connection_pool(tabular, connection_id).await?;
+        let pool = match pool_enum {
+             crate::models::enums::DatabasePool::MsSQL(p) => p,
+             _ => return None,
         };
-
-        let mut config = Config::new();
-        config.host(host.clone());
-        config.port(port);
-        config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-        config.trust_cert();
-        if !db_name.is_empty() {
-            config.database(db_name.clone());
-        }
-
-        let tcp = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            tokio::net::TcpStream::connect((host.as_str(), port)),
-        )
-        .await
-        {
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => {
-                log::debug!("MsSQL connect error for object fetch: {}", e);
-                return None;
-            }
-            Err(_) => {
-                log::debug!("MsSQL connect timeout for object fetch");
-                return None;
-            }
-        };
-        let _ = tcp.set_nodelay(true);
-        let mut client = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            tiberius::Client::connect(config, tcp.compat_write()),
-        )
-        .await
-        {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => {
-                log::debug!("MsSQL client connect error: {}", e);
-                return None;
-            }
-            Err(_) => {
-                log::debug!("MsSQL client connect timeout");
+        
+        let mut client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("MsSQL pool get error: {}", e);
                 return None;
             }
         };
@@ -370,46 +269,16 @@ pub(crate) fn fetch_objects_from_mssql_connection(
     })
 }
 
-/// Execute a query and return (headers, rows)
-pub(crate) async fn execute_query(
-    cfg: Arc<MssqlConfigWrapper>,
+/// Execute a query using an existing client and return (headers, rows)
+pub(crate) async fn execute_query_with_client(
+    client: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
     query: &str,
 ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
-    use tiberius::{AuthMethod, Config};
-    use tokio_util::compat::TokioAsyncWriteCompatExt;
-
-    let mut config = Config::new();
-    config.host(cfg.host.clone());
-    config.port(cfg.port);
-    config.authentication(AuthMethod::sql_server(
-        cfg.username.clone(),
-        cfg.password.clone(),
-    ));
-    config.trust_cert(); // for self-signed; in prod expose an option
-    if !cfg.database.is_empty() {
-        config.database(cfg.database.clone());
-    }
-
-    let tcp = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio::net::TcpStream::connect((cfg.host.as_str(), cfg.port)),
-    )
-    .await
-    .map_err(|_| "connect timeout".to_string())?
-    .map_err(|e| e.to_string())?;
-    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-    let tls = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tiberius::Client::connect(config, tcp.compat_write()),
-    )
-    .await
-    .map_err(|_| "handshake timeout".to_string())?
-    .map_err(|e| e.to_string())?;
-    run_query(tls, query).await
+    run_query(client, query).await
 }
 
 async fn run_query(
-    mut client: tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
+    client: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
     query: &str,
 ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     let mut headers: Vec<String> = Vec::new();

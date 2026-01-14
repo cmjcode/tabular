@@ -159,7 +159,6 @@ pub enum DatabasePool {
     PostgreSQL(Arc<PgPool>),
     SQLite(Arc<SqlitePool>),
     Redis(Arc<ConnectionManager>),
-    // For MsSQL we store a lightweight config (connections opened per query for now)
-    MsSQL(Arc<crate::driver_mssql::MssqlConfigWrapper>),
+    MsSQL(deadpool_tiberius::Pool),
     MongoDB(Arc<MongoClient>),
 }

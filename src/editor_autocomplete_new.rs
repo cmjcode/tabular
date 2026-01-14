@@ -785,7 +785,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                     // Padding
                                     let content_rect = rect.shrink2(egui::vec2(8.0, 0.0));
                                     
-                                    ui.allocate_ui_at_rect(content_rect, |ui| {
+                                    ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                                         ui.horizontal_centered(|ui| {
                                             // Main Label
                                             ui.label(egui::RichText::new(s).font(font_id.clone()).color(text_color));
@@ -803,7 +803,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                             ui.visuals().text_color().gamma_multiply(0.5)
                                         };
                                         
-                                        ui.allocate_ui_at_rect(content_rect, |ui| {
+                                        ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                 ui.label(egui::RichText::new(note).font(small_font_id.clone()).color(note_color));
                                             });

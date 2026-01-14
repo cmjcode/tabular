@@ -85,6 +85,8 @@ once_cell = "1"
 thiserror = "1"
 async-trait = "0.1.89"
 cargo-deb = "3.6.2"
+deadpool = "0.12.3"
+deadpool-tiberius = "0.1.9"
 
 [features]
 default = ["tree_sitter_sequel", "query_ast"]
