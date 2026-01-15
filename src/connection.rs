@@ -6,7 +6,7 @@ use crate::{
 use eframe::egui;
 use futures_util::TryStreamExt; // for MsSQL try_next
 use futures_util::stream::StreamExt; // for buffered concurrency
-use log::debug;
+use log::{debug, error};
 use mongodb::{Client as MongoClient, bson::doc};
 use redis::{Client, aio::ConnectionManager};
 use sqlx::Connection; // for MySqlConnection::connect
@@ -3000,6 +3000,36 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
 // - UI remains responsive during connection establishment
 // - Background-created pools are shared and accessible
 //
+
+
+pub(crate) async fn get_foreign_keys(
+    tabular: &mut Tabular,
+    connection_id: i64,
+    database_name: &str,
+) -> Vec<models::structs::ForeignKey> {
+    // Need a separate runtime or clone the pool logic because tabular is passed as mut ref
+    // For now, let's just get the pool
+    if let Some(pool) = tabular.connection_pools.get(&connection_id) {
+         match pool {
+            models::enums::DatabasePool::MySQL(p) => {
+                match crate::driver_mysql::fetch_mysql_foreign_keys(p, database_name).await {
+                    Ok(keys) => return keys,
+                    Err(e) => {
+                        error!("Failed to fetch MySQL foreign keys: {}", e);
+                    }
+                }
+            }
+            _ => {
+                debug!("Foreign keys not yet supported for this DB type");
+            }
+        }
+    } else {
+        // Try creating pool if not exists? Usually expected to be connected.
+        debug!("Pool not found for connection {}", connection_id);
+    }
+    Vec::new()
+}
+
 pub(crate) async fn get_or_create_connection_pool(
     tabular: &mut Tabular,
     connection_id: i64,

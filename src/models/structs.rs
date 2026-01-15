@@ -60,6 +60,43 @@ impl TreeNode {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForeignKey {
+    pub constraint_name: String,
+    pub table_name: String,
+    pub column_name: String,
+    pub referenced_table_name: String,
+    pub referenced_column_name: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiagramNode {
+    pub id: String, // usually table name
+    pub title: String,
+    pub pos: eframe::egui::Pos2,
+    pub size: eframe::egui::Vec2,
+    pub columns: Vec<String>,
+    pub foreign_keys: Vec<ForeignKey>, // FKs originating from this table
+}
+
+#[derive(Clone, Debug)]
+pub struct DiagramEdge {
+    pub source: String,
+    pub target: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DiagramState {
+    pub nodes: Vec<DiagramNode>,
+    pub edges: Vec<DiagramEdge>,
+    pub pan: eframe::egui::Vec2,
+    pub zoom: f32,
+    pub dragging_node: Option<String>,
+    pub dragging_offset: eframe::egui::Vec2,
+    pub last_mouse_pos: Option<eframe::egui::Pos2>,
+}
+
 #[derive(Clone, Debug)]
 pub struct QueryTab {
     pub title: String,
@@ -86,6 +123,9 @@ pub struct QueryTab {
     // Query execution message (similar to TablePlus message tab)
     pub query_message: String,      // Message text (success/error)
     pub query_message_is_error: bool, // Whether the message is an error or success
+
+    // Diagram state for "Diagrams" tab
+    pub diagram_state: Option<DiagramState>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -460,4 +500,6 @@ pub type RenderTreeNodeResult = (
     Option<(i64, Option<String>, String)>,
     // New: request to generate CREATE TABLE script (connection_id, database, table_name)
     Option<(i64, Option<String>, String)>,
+    // New: request to open Database Diagram (connection_id, database_name)
+    Option<(i64, String)>,
 );

@@ -358,6 +358,7 @@ pub(crate) fn open_query_file(
         object_ddl: None,
         query_message: String::new(),
         query_message_is_error: false,
+        diagram_state: None,
     };
 
     tabular.query_tabs.push(new_tab);

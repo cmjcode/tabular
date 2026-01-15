@@ -2043,6 +2043,7 @@ impl Tabular {
         let mut create_table_requests: Vec<(i64, Option<String>)> = Vec::new();
         let mut stored_procedure_click_requests: Vec<(i64, Option<String>, String)> = Vec::new();
         let mut generate_ddl_requests: Vec<(i64, Option<String>, String)> = Vec::new();
+        let mut open_diagram_requests: Vec<(i64, String)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -2064,6 +2065,7 @@ impl Tabular {
                 create_table_request,
                 stored_procedure_click_request,
                 generate_ddl_request,
+                open_diagram_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -2188,10 +2190,146 @@ impl Tabular {
             if let Some((conn_id, db_name, table_name)) = generate_ddl_request {
                 generate_ddl_requests.push((conn_id, db_name, table_name));
             }
+            if let Some((conn_id, db_name)) = open_diagram_request {
+                open_diagram_requests.push((conn_id, db_name));
+            }
         }
 
         for (conn_id, db_name) in create_table_requests {
             self.open_create_table_wizard(conn_id, db_name);
+        }
+
+        for (conn_id, db_name) in open_diagram_requests {
+            // 1. Fetch Foreign Keys (blocking for now, MVP)
+            let mut fks = Vec::new();
+            let mut columns_map = std::collections::HashMap::new();
+            if let Some(rt) = self.runtime.clone() {
+                // Ensure pool exists
+                rt.block_on(async {
+                    let _ = crate::connection::get_or_create_connection_pool(self, conn_id).await;
+                    fks = crate::connection::get_foreign_keys(self, conn_id, &db_name).await;
+                    
+                    // Fetch all columns for diagram (MySQL optimization)
+                    if let Some(pool_enum) = self.connection_pools.get(&conn_id) {
+                         if let models::enums::DatabasePool::MySQL(p) = pool_enum {
+                             if let Ok(cols) = crate::driver_mysql::fetch_mysql_columns(p, &db_name).await {
+                                 columns_map = cols;
+                             }
+                         }
+                    }
+                });
+            }
+
+            // 1b. Fetch All Tables (to ensure isolated tables are shown)
+            let mut all_tables = Vec::new();
+            let db_type = self.connections.iter().find(|c| c.id == Some(conn_id)).map(|c| c.connection_type.clone());
+            match db_type {
+                Some(models::enums::DatabaseType::MySQL) => {
+                     if let Some(t) = crate::driver_mysql::fetch_tables_from_mysql_connection(self, conn_id, &db_name, "table") {
+                         all_tables = t;
+                     }
+                },
+                Some(models::enums::DatabaseType::PostgreSQL) => {
+                      if let Some(t) = crate::driver_postgres::fetch_tables_from_postgres_connection(self, conn_id, &db_name, "BASE TABLE") {
+                          all_tables = t;
+                      }
+                },
+                Some(models::enums::DatabaseType::SQLite) => {
+                      if let Some(t) = crate::driver_sqlite::fetch_tables_from_sqlite_connection(self, conn_id, "table") {
+                          all_tables = t;
+                      }
+                },
+                Some(models::enums::DatabaseType::MsSQL) => {
+                      if let Some(t) = crate::driver_mssql::fetch_tables_from_mssql_connection(self, conn_id, &db_name, "table") {
+                          all_tables = t;
+                      }
+                },
+                _ => {}
+            }
+
+            // 2. Initialize Diagram State
+            let mut state = models::structs::DiagramState::default();
+            // Populate nodes (tables)
+            // Ideally we should fetch actual tables. For now, we infer from FKs + maybe generic table fetch?
+            // Let's rely on cached structure if available, or just FKs nodes.
+            // If we only have FKs, we might miss isolated tables.
+            // But let's start with nodes mentioned in FKs.
+            let mut table_names = std::collections::HashSet::new();
+            for fk in &fks {
+                table_names.insert(fk.table_name.clone());
+                table_names.insert(fk.referenced_table_name.clone());
+            }
+            log::info!("Diagram Init: Found {} FKs and {} tables", fks.len(), all_tables.len());
+            for t in all_tables {
+                table_names.insert(t);
+            }
+            
+            for (t_name, cols) in &columns_map {
+                log::debug!("Table {} has {} columns", t_name, cols.len());
+            }
+
+            // Layout nodes in a grid or circle initially
+            let mut i = 0;
+            let cols = (table_names.len() as f32).sqrt().ceil() as i32;
+            
+            // Clone fks for usage in nodes (since we consume fks for edges later, actually we filtered fks for edges before? No, we mapped them.)
+            // We need to keep fks available or clone them.
+            // Let's create edges FIRST so we can use fks ref, then move fks or clone for nodes.
+            // Actually fks is moved into edges map loop in original code? 
+            // Original: state.edges = fks.into_iter()...
+            // So we should clone fks or change order.
+            
+            let edges: Vec<models::structs::DiagramEdge> = fks.iter().map(|fk| models::structs::DiagramEdge {
+                source: fk.table_name.clone(),
+                target: fk.referenced_table_name.clone(),
+                label: "".to_string(),
+            }).collect();
+            state.edges = edges;
+
+            for table in table_names {
+                let row = i / cols;
+                let col = i % cols;
+                
+                // Filter FKs for this table
+                let node_fks: Vec<models::structs::ForeignKey> = fks.iter()
+                    .filter(|fk| fk.table_name == table)
+                    .cloned()
+                    .collect();
+
+                let columns = columns_map.get(&table).cloned().unwrap_or_default();
+                if columns.is_empty() {
+                    log::warn!("No columns found for table '{}'. Available in map: {:?}", table, columns_map.keys().collect::<Vec<_>>());
+                }
+
+                state.nodes.push(models::structs::DiagramNode {
+                    id: table.clone(),
+                    title: table.clone(),
+                    pos: eframe::egui::pos2(100.0 + (col as f32) * 250.0, 100.0 + (row as f32) * 150.0),
+                    size: eframe::egui::vec2(200.0, 100.0),
+                    columns,
+                    foreign_keys: node_fks,
+                });
+                i += 1;
+            }
+            // fks consumed? No, we used iter().
+            // Original code used into_iter() for edges. I replaced it with iter above.
+
+
+            // 3. Create Tab
+            let title = format!("Diagram: {}", db_name);
+            editor::create_new_tab_with_connection_and_database(
+                self,
+                title,
+                String::new(), // No query content
+                Some(conn_id),
+                Some(db_name.clone()),
+            );
+            
+            // 4. Attach Diagram State to the new active tab
+            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                tab.diagram_state = Some(state);
+            }
+            self.table_bottom_view = models::structs::TableBottomView::Query;
         }
 
         for (conn_id, db_name, table_name) in generate_ddl_requests {
@@ -3448,6 +3586,7 @@ impl Tabular {
         let mut create_table_request: Option<(i64, Option<String>)> = None;
         let mut stored_procedure_click_request: Option<(i64, Option<String>, String)> = None;
         let mut generate_ddl_request: Option<(i64, Option<String>, String)> = None;
+        let mut open_diagram_request: Option<(i64, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -3859,6 +3998,15 @@ impl Tabular {
                                     create_table_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
+                                if ui.button("📊 Diagrams").clicked() {
+                                    let database_name = node
+                                        .database_name
+                                        .clone()
+                                        .or_else(|| Some(node.name.clone()))
+                                        .unwrap_or_default();
+                                    open_diagram_request = Some((conn_id, database_name));
+                                    ui.close();
+                                }
                             } else {
                                 ui.label("Create table not supported for this database");
                             }
@@ -4089,9 +4237,10 @@ impl Tabular {
                             child_alter_table_request,
                             _child_drop_collection_request,
                             _child_drop_table_request,
-                            child_create_table_request,
-                            child_stored_procedure_click_request,
+                            _child_create_table_request,
+                            _child_sp_click,
                             child_generate_ddl_request,
+                            child_open_diagram_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -4141,14 +4290,17 @@ impl Tabular {
                         if let Some(v) = child_alter_table_request {
                             alter_table_request = Some(v);
                         }
-                        if let Some(v) = child_create_table_request {
+                        if let Some(v) = _child_create_table_request {
                             create_table_request = Some(v);
                         }
-                        if let Some(v) = child_stored_procedure_click_request {
+                        if let Some(v) = _child_sp_click {
                             stored_procedure_click_request = Some(v);
                         }
                         if let Some(v) = child_generate_ddl_request {
                             generate_ddl_request = Some(v);
+                        }
+                        if let Some(v) = child_open_diagram_request {
+                            open_diagram_request = Some(v);
                         }
                         if let Some(child_context_id) = child_context {
                             context_menu_request = Some(child_context_id);
@@ -4176,10 +4328,11 @@ impl Tabular {
                                 child_create_index_request,
                                 child_alter_table_request,
                                 _child_drop_collection_request,
-                                _child_drop_table_request,
+                                child_drop_table_request,
                                 child_create_table_request,
                                 child_stored_procedure_click_request,
                                 child_generate_ddl_request,
+                                child_open_diagram_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -4224,7 +4377,7 @@ impl Tabular {
                                 drop_collection_request = Some(v);
                             }
                             // Propagate drop table request to parent
-                            if let Some(v) = _child_drop_table_request {
+                            if let Some(v) = child_drop_table_request {
                                 drop_table_request = Some(v);
                             }
                             // Propagate DBA click to parent
@@ -4248,6 +4401,9 @@ impl Tabular {
                             }
                             if let Some(v) = child_generate_ddl_request {
                                 generate_ddl_request = Some(v);
+                            }
+                            if let Some(v) = child_open_diagram_request {
+                                open_diagram_request = Some(v);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -4607,8 +4763,10 @@ impl Tabular {
             create_table_request,
             stored_procedure_click_request,
             generate_ddl_request,
+            open_diagram_request,
         )
     }
+
 
     // Sanitize a display table name (with icons / annotations) back to the raw table name suitable for SQL queries
     fn sanitize_display_table_name(display: &str) -> String {
@@ -11733,7 +11891,17 @@ impl App for Tabular {
                     });
                 } else {
                     // Regular query tabs: Use consolidated rendering
-                    self.render_query_editor_with_split(ui, "regular_query");
+                    let mut rendered_diagram = false;
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        if let Some(diagram_state) = &mut tab.diagram_state {
+                           crate::diagram_view::render_diagram(ui, diagram_state);
+                           rendered_diagram = true;
+                        }
+                    }
+                    
+                    if !rendered_diagram {
+                        self.render_query_editor_with_split(ui, "regular_query");
+                    }
                     
                     // Floating tab buttons at bottom-right corner (only show if executed or has message)
                     let executed = self.query_tabs.get(self.active_tab_index).map(|t| t.has_executed_query).unwrap_or(false);

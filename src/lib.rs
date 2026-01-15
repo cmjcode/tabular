@@ -6,6 +6,7 @@ pub mod config;
 pub mod connection;
 pub mod data_table;
 pub mod dialog;
+pub mod diagram_view;
 pub mod directory;
 pub mod driver_mongodb;
 pub mod driver_mssql;

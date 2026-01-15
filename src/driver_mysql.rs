@@ -799,13 +799,116 @@ pub(crate) fn load_mysql_structure(
     master_status_folder.is_loaded = false;
     dba_children.push(master_status_folder);
 
+    // Add children to DBA Views
     dba_folder.children = dba_children;
+    dba_folder.is_expanded = false; // Collapsed by default
+    dba_folder.is_loaded = true;
 
-    main_children.push(databases_folder);
+    // Add DBA Views to main children
     main_children.push(dba_folder);
+    main_children.push(databases_folder);
 
     node.children = main_children;
-
-    // Trigger async loading in background (we'll need to implement this differently)
-    // For now, we'll rely on the expansion mechanism to load databases when needed
+    node.is_loaded = true;
+    node.is_expanded = true;
 }
+
+pub(crate) async fn fetch_mysql_foreign_keys(
+    pool: &MySqlPool,
+    database_name: &str,
+) -> Result<Vec<models::structs::ForeignKey>, sqlx::Error> {
+    let query = r#"
+        SELECT 
+            CONSTRAINT_NAME, 
+            TABLE_NAME, 
+            COLUMN_NAME, 
+            REFERENCED_TABLE_NAME, 
+            REFERENCED_COLUMN_NAME
+        FROM 
+            INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+        WHERE 
+            TABLE_SCHEMA = ? 
+            AND REFERENCED_TABLE_NAME IS NOT NULL
+    "#;
+
+    let rows = sqlx::query(query)
+        .bind(database_name)
+        .fetch_all(pool)
+        .await?;
+
+    log::debug!("MySQL FK Fetch: Got {} rows from information_schema", rows.len());
+
+    let mut keys = Vec::new();
+    for row in rows {
+        // Safe decoder for columns that might unexpectedly return binary (Vec<u8>)
+        fn decode(row: &sqlx::mysql::MySqlRow, idx: usize) -> String {
+            if let Ok(s) = row.try_get::<String, _>(idx) { return s; }
+            if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) { return s; }
+            if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) { return String::from_utf8_lossy(&bytes).to_string(); }
+            if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) { return String::from_utf8_lossy(&bytes).to_string(); }
+            String::new()
+        }
+        
+        let constraint_name = decode(&row, 0);
+        let table_name = decode(&row, 1);
+        let column_name = decode(&row, 2);
+        let referenced_table_name = decode(&row, 3);
+        let referenced_column_name = decode(&row, 4);
+
+        keys.push(models::structs::ForeignKey {
+            constraint_name: get_str(0),
+            table_name: get_str(1),
+            column_name: get_str(2),
+            referenced_table_name: get_str(3),
+            referenced_column_name: get_str(4),
+        });
+    }
+
+    Ok(keys)
+}
+
+pub(crate) async fn fetch_mysql_columns(
+    pool: &MySqlPool,
+    database_name: &str,
+) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+    let query = r#"
+        SELECT 
+            TABLE_NAME, 
+            COLUMN_NAME
+        FROM 
+            INFORMATION_SCHEMA.COLUMNS
+        WHERE 
+            TABLE_SCHEMA = ?
+        ORDER BY 
+            TABLE_NAME, ORDINAL_POSITION
+    "#;
+
+    let rows = sqlx::query(query)
+        .bind(database_name)
+        .fetch_all(pool)
+        .await?;
+
+    let mut columns_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+    for row in rows {
+        // Safe decoder for columns that might unexpectedly return binary (Vec<u8>)
+        fn decode(row: &sqlx::mysql::MySqlRow, idx: usize) -> String {
+            if let Ok(s) = row.try_get::<String, _>(idx) { return s; }
+            if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) { return s; }
+            if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) { return String::from_utf8_lossy(&bytes).to_string(); }
+            if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) { return String::from_utf8_lossy(&bytes).to_string(); }
+            String::new()
+        }
+
+        let table_name: String = decode(&row, 0);
+        let column_name: String = decode(&row, 1);
+
+        if !table_name.is_empty() {
+             columns_map.entry(table_name).or_insert_with(Vec::new).push(column_name);
+        }
+    }
+
+    Ok(columns_map)
+}
+
+
