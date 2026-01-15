@@ -2,7 +2,6 @@ use eframe::egui;
 use crate::models::structs::{DiagramState, DiagramNode};
 
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
-    let painter = ui.painter();
     let rect = ui.available_rect_before_wrap();
     
     // Handle Pan and Zoom
@@ -67,15 +66,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     let mut _group_rename_request: Option<(usize, String)> = None;
     let mut group_drag_delta: Option<(String, egui::Vec2)> = None;
 
-    for (group_idx, group) in state.groups.iter().enumerate() {
-        // Find nodes in this group
-        let group_nodes: Vec<&DiagramNode> = state.nodes.iter()
+    // 1. Calculate Group Bounds (requires immutable access to nodes and groups)
+    let mut group_bounds: Vec<(usize, String, egui::Rect, egui::Color32, String)> = Vec::new(); // (index, id, rect, color, title)
+    
+    for (idx, group) in state.groups.iter().enumerate() {
+         let group_nodes: Vec<&DiagramNode> = state.nodes.iter()
             .filter(|n| n.group_id.as_deref() == Some(&group.id))
+            .filter(|n| Some(n.id.clone()) != state.dragging_node) // Exclude if being dragged
             .collect();
             
         if group_nodes.is_empty() { continue; }
-        
-        // Calculate Bounds
+
         let mut min_pos = group_nodes[0].pos;
         let mut max_pos = group_nodes[0].pos + group_nodes[0].size;
         
@@ -84,78 +85,115 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             max_pos = max_pos.max(node.pos + node.size);
         }
         
-        // Add padding
+        // Padding
         let padding = 20.0;
-        min_pos -= egui::vec2(padding, padding + 30.0); // Extra top padding for title
+        min_pos -= egui::vec2(padding, padding + 30.0);
         max_pos += egui::vec2(padding, padding);
         
         let min_screen = to_screen(min_pos);
         let max_screen = to_screen(max_pos);
-        let group_rect = egui::Rect::from_min_max(min_screen, max_screen);
+        let rect = egui::Rect::from_min_max(min_screen, max_screen);
+        
+        group_bounds.push((idx, group.id.clone(), rect, group.color, group.title.clone()));
+    }
+
+    // 2. Render Groups (requires mutable access to groups for Rename, but NOT nodes)
+    // We used state.nodes in step 1, now we are done with nodes.
+    // But we need to update state.groups.
+    
+    for (idx, group_id, group_rect, color, _) in &group_bounds {
+        // Retrieve mutable reference to group
+        // We know it exists because we just got it from state.groups
+        // But we can't iterate state.groups directly while modifying?
+        // Actually we can iterate indices.
+        
+        let idx = *idx;
+        let group_rect = *group_rect;
+        let color = *color;
+        
+        // CAUTION: TextEdit needs `&mut String`.
+        // We can get `&mut state.groups[idx]`
+        
+        let group = &mut state.groups[idx];
         
         // Draw Background
-        painter.rect_filled(
+        ui.painter().rect_filled(
             group_rect, 
             8.0 * scale, 
-            group.color.linear_multiply(0.1) // Traverse transparent
+            color.linear_multiply(0.1)
         );
-        painter.rect_stroke(
+        ui.painter().rect_stroke(
             group_rect, 
             8.0 * scale, 
-            egui::Stroke::new(1.0 * scale, group.color.linear_multiply(0.5)),
+            egui::Stroke::new(1.0 * scale, color.linear_multiply(0.5)),
             egui::StrokeKind::Middle
         );
 
-        // Draw Title
+        // Header Rect
         let title_rect = egui::Rect::from_min_size(
-            min_screen, 
+            group_rect.min, 
             egui::vec2(group_rect.width(), 30.0 * scale)
         );
         
-        painter.rect_filled(
+        ui.painter().rect_filled(
             title_rect, 
-            8.0 * scale, // Uniform rounding
-            group.color.linear_multiply(0.8)
+            8.0 * scale,
+            color.linear_multiply(0.8)
         );
 
-        painter.text(
-            title_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            &group.title,
-            egui::FontId::proportional(16.0 * scale),
-            egui::Color32::WHITE
-        );
-        
-        // Context Menu for Rename AND Dragging
-        // We make the title bar draggable
-        let interact_rect = title_rect;
-        let response = ui.interact(interact_rect, ui.id().with("group_header").with(group_idx), egui::Sense::click_and_drag());
-        
-        if response.dragged() {
-            let delta = response.drag_delta() / scale; // Convert screen delta to world delta
-            group_drag_delta = Some((group.id.clone(), delta));
-        }
+        let is_renaming = state.renaming_group.as_deref() == Some(group_id);
 
-        // Store drag delta if any
-        if response.dragged() {
-             // We need to store this. Let's start collecting actions.
-             // We can't write to state.nodes yet.
-        }
-        
-        // RE-DESIGN: We can't easily mutate nodes inside this loop because of borrows.
-        // We should instead iterate groups indices, then access state.
+        if is_renaming {
+             let edit_rect = title_rect.shrink(2.0);
+             let response = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
+                 ui.add(egui::TextEdit::singleline(&mut group.title)
+                    .frame(false)
+                    .text_color(egui::Color32::WHITE)
+                    .font(egui::FontId::proportional(16.0 * scale)))
+             }).inner;
+             
+             if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                 state.renaming_group = None;
+             } else {
+                 response.request_focus();
+             }
+        } else {
+            ui.painter().text(
+                title_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &group.title,
+                egui::FontId::proportional(16.0 * scale),
+                egui::Color32::WHITE
+            );
 
-        
-        response.context_menu(|ui| {
-            if ui.button("Rename Container").clicked() {
-                ui.close();
-                // Trigger popup? Or just inline edit?
-            }
-            ui.label("Rename not fully impl yet");
-        });
+             // Interaction
+             let interact_rect = title_rect;
+             let response = ui.interact(interact_rect, ui.id().with("group_header").with(idx), egui::Sense::click_and_drag());
+             
+             if response.dragged() {
+                 let delta = response.drag_delta() / scale;
+                 group_drag_delta = Some((group_id.clone(), delta));
+             }
+
+             response.context_menu(|ui| {
+                 if ui.button("Rename Container").clicked() {
+                     ui.close();
+                     // Activate renaming logic only if NOT already renaming
+                     // We need to set state flag.
+                     // But we have a mutable borrow on `group` (part of state).
+                     // Can we assign to `state.renaming_group`?
+                     // `state` is borrowed mutably to get `group`.
+                     // Rust might complain about splitting borrow.
+                      _group_rename_request = Some((idx, group_id.clone()));
+                 }
+             });
+        }
     }
-
-    // Apply deferred group move
+    
+    // Apply rename request (workaround for borrow checker)
+    if let Some((_, gid)) = _group_rename_request {
+        state.renaming_group = Some(gid);
+    } // Apply deferred group move
     if let Some((group_id, delta)) = group_drag_delta {
         for node in &mut state.nodes {
             if node.group_id.as_deref() == Some(&group_id) {
@@ -188,7 +226,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                     egui::Color32::TRANSPARENT,
                     stroke,
                 );
-                painter.add(bezier);
+                ui.painter().add(bezier);
             }
         }
     }
@@ -219,23 +257,41 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         if node_response.dragged() {
             dragging_node_id = Some(node.id.clone());
             drag_delta = node_response.drag_delta();
+            
+            // Track globally for drop detection
+            state.dragging_node = Some(node.id.clone());
+        } else if node_response.drag_stopped() {
+             // Check drop target
+             let node_center_screen = node_rect.center();
+             let mut new_group_id = None;
+             
+             // Check against group bounds (calculated earlier)
+             for (_, gid, rect, _, _) in &group_bounds {
+                 if rect.contains(node_center_screen) {
+                     new_group_id = Some(gid.clone());
+                     break; 
+                 }
+             }
+             
+             node.group_id = new_group_id;
+             state.dragging_node = None;
         }
 
         // Draw Shadow/Border
-        painter.rect_filled(
+        ui.painter().rect_filled(
             node_rect.expand(2.0 * scale), 
             5.0 * scale, 
             egui::Color32::from_black_alpha(50)
         );
         
         let fill_color = egui::Color32::from_rgb(30, 30, 35);
-        painter.rect_filled(
+        ui.painter().rect_filled(
             node_rect, 
             4.0 * scale, 
             fill_color
         );
         // Corrected rect_stroke args
-        painter.rect_stroke(
+        ui.painter().rect_stroke(
             node_rect, 
             4.0 * scale, 
             egui::Stroke::new(1.0 * scale, egui::Color32::from_gray(60)),
@@ -250,14 +306,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         );
         
         // Simplified rounding to avoid compilation error
-        painter.rect_filled(
+        ui.painter().rect_filled(
             header_rect, 
             4.0 * scale,
             egui::Color32::from_rgb(50, 50, 60)
         );
         
         // Title
-        painter.text(
+        ui.painter().text(
             header_rect.center(),
             egui::Align2::CENTER_CENTER,
             &node.title, 
@@ -274,7 +330,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
              // Just name for now, maybe type later.
              // Truncate if too long?
              let text_pos = node_pos_screen + egui::vec2(8.0 * scale, y_offset);
-             painter.text(
+             ui.painter().text(
                 text_pos,
                 egui::Align2::LEFT_TOP,
                 col, // name is just the string

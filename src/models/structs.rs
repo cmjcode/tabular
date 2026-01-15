@@ -115,6 +115,8 @@ pub struct DiagramState {
     pub is_centered: bool,
     #[serde(skip)]
     pub save_requested: bool,
+    #[serde(skip)]
+    pub renaming_group: Option<String>,
 }
 
 impl Default for DiagramState {
@@ -130,6 +132,7 @@ impl Default for DiagramState {
             last_mouse_pos: None,
             is_centered: false,
             save_requested: false,
+            renaming_group: None,
         }
     }
 }

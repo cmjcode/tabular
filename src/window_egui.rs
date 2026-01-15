@@ -10274,14 +10274,24 @@ impl App for Tabular {
 
         // Detect Save shortcut using consume_key so it works reliably on macOS/Windows/Linux
         let mut save_shortcut = false;
-        ctx.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)
-                || i.consume_key(egui::Modifiers::CTRL, egui::Key::S)
-            {
-                save_shortcut = true;
-                println!("🔥 Save shortcut detected!");
-            }
-        });
+        
+        // Check if current tab is a diagram tab. If so, let diagram handle save.
+        let is_diagram_active = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
+            tab.diagram_state.is_some()
+        } else {
+            false
+        };
+
+        if !is_diagram_active {
+            ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)
+                    || i.consume_key(egui::Modifiers::CTRL, egui::Key::S)
+                {
+                    save_shortcut = true;
+                    println!("🔥 Save shortcut detected!");
+                }
+            });
+        }
 
         // Handle keyboard shortcuts
         ctx.input(|i| {
