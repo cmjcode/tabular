@@ -11225,7 +11225,7 @@ impl App for Tabular {
 
                     // Bottom section with add button - conditional based on active tab
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                        ui.separator();
+
 
                         match self.selected_menu.as_str() {
                             "Database" => {
