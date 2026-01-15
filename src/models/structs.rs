@@ -69,33 +69,52 @@ pub struct ForeignKey {
     pub referenced_column_name: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DiagramGroup {
+    pub id: String,
+    pub title: String,
+    #[serde(with = "serde_color")]
+    pub color: eframe::egui::Color32,
+    // nodes are linked by group_id in DiagramNode
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiagramNode {
     pub id: String, // usually table name
     pub title: String,
+    #[serde(with = "serde_pos2")]
     pub pos: eframe::egui::Pos2,
+    #[serde(with = "serde_vec2")]
     pub size: eframe::egui::Vec2,
     pub columns: Vec<String>,
     pub foreign_keys: Vec<ForeignKey>, // FKs originating from this table
+    pub group_id: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiagramEdge {
     pub source: String,
     pub target: String,
     pub label: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiagramState {
     pub nodes: Vec<DiagramNode>,
     pub edges: Vec<DiagramEdge>,
+    pub groups: Vec<DiagramGroup>,
+    #[serde(with = "serde_vec2")]
     pub pan: eframe::egui::Vec2,
     pub zoom: f32,
+    #[serde(skip)]
     pub dragging_node: Option<String>,
+    #[serde(skip)]
     pub dragging_offset: eframe::egui::Vec2,
+    #[serde(skip)]
     pub last_mouse_pos: Option<eframe::egui::Pos2>,
     pub is_centered: bool,
+    #[serde(skip)]
+    pub save_requested: bool,
 }
 
 impl Default for DiagramState {
@@ -103,12 +122,14 @@ impl Default for DiagramState {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
+            groups: Vec::new(),
             pan: eframe::egui::Vec2::ZERO,
             zoom: 1.0,
             dragging_node: None,
             dragging_offset: eframe::egui::Vec2::ZERO,
             last_mouse_pos: None,
             is_centered: false,
+            save_requested: false,
         }
     }
 }
@@ -516,6 +537,80 @@ pub type RenderTreeNodeResult = (
     Option<(i64, Option<String>, String)>,
     // New: request to generate CREATE TABLE script (connection_id, database, table_name)
     Option<(i64, Option<String>, String)>,
-    // New: request to open Database Diagram (connection_id, database_name)
     Option<(i64, String)>,
 );
+
+mod serde_color {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use eframe::egui::Color32;
+
+    pub fn serialize<S>(color: &Color32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let array = [color.r(), color.g(), color.b(), color.a()];
+        use serde::ser::SerializeTuple;
+        let mut tup = serializer.serialize_tuple(4)?;
+        tup.serialize_element(&array[0])?;
+        tup.serialize_element(&array[1])?;
+        tup.serialize_element(&array[2])?;
+        tup.serialize_element(&array[3])?;
+        tup.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Color32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: [u8; 4] = Deserialize::deserialize(deserializer)?;
+        Ok(Color32::from_rgba_premultiplied(opt[0], opt[1], opt[2], opt[3]))
+    }
+}
+
+mod serde_pos2 {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use eframe::egui::Pos2;
+
+    pub fn serialize<S>(pos: &Pos2, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeTuple;
+        let mut tup = serializer.serialize_tuple(2)?;
+        tup.serialize_element(&pos.x)?;
+        tup.serialize_element(&pos.y)?;
+        tup.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Pos2, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: [f32; 2] = Deserialize::deserialize(deserializer)?;
+        Ok(Pos2::new(opt[0], opt[1]))
+    }
+}
+
+mod serde_vec2 {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use eframe::egui::Vec2;
+
+    pub fn serialize<S>(vec: &Vec2, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeTuple;
+        let mut tup = serializer.serialize_tuple(2)?;
+        tup.serialize_element(&vec.x)?;
+        tup.serialize_element(&vec.y)?;
+        tup.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec2, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: [f32; 2] = Deserialize::deserialize(deserializer)?;
+        Ok(Vec2::new(opt[0], opt[1]))
+    }
+}

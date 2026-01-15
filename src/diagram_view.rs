@@ -1,5 +1,5 @@
 use eframe::egui;
-use crate::models::structs::DiagramState;
+use crate::models::structs::{DiagramState, DiagramNode};
 
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     let painter = ui.painter();
@@ -14,7 +14,6 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     }
 
     // Zoom with Ctrl/Cmd + Scroll or Keys
-    // Zoom with Ctrl/Cmd + Scroll or Keys
     ui.input_mut(|i| {
         // Zoom In
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Plus) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Equals) {
@@ -28,9 +27,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         // Clamp zoom
         if state.zoom < 0.1 { state.zoom = 0.1; }
         if state.zoom > 5.0 { state.zoom = 5.0; }
-    });
 
-    // Removed scroll zoom to fix compilation error (and user only requested keys)
+        // Save Shortcut (Cmd + S)
+        if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
+            state.save_requested = true;
+        }
+    });
 
     // Handle Initial Centering
     if !state.is_centered && !state.nodes.is_empty() {
@@ -47,11 +49,6 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         let view_center = rect.size() / 2.0;
         
         // Calculate target pan to align content_center with view_center
-        // formula: screen_pos = rect.min + pan + node_pos * zoom
-        // target: rect.min + view_center = rect.min + pan + content_center * zoom
-        // view_center = pan + content_center * zoom
-        // pan = view_center - content_center * zoom
-        
         state.pan = view_center - content_center.to_vec2() * state.zoom;
         state.is_centered = true;
     }
@@ -65,7 +62,108 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     let to_screen = |pos: egui::Pos2| -> egui::Pos2 {
         rect.min + state.pan + pos.to_vec2() * scale
     };
-    
+
+    // Draw Groups (Containers)
+    let mut _group_rename_request: Option<(usize, String)> = None;
+    let mut group_drag_delta: Option<(String, egui::Vec2)> = None;
+
+    for (group_idx, group) in state.groups.iter().enumerate() {
+        // Find nodes in this group
+        let group_nodes: Vec<&DiagramNode> = state.nodes.iter()
+            .filter(|n| n.group_id.as_deref() == Some(&group.id))
+            .collect();
+            
+        if group_nodes.is_empty() { continue; }
+        
+        // Calculate Bounds
+        let mut min_pos = group_nodes[0].pos;
+        let mut max_pos = group_nodes[0].pos + group_nodes[0].size;
+        
+        for node in &group_nodes {
+            min_pos = min_pos.min(node.pos);
+            max_pos = max_pos.max(node.pos + node.size);
+        }
+        
+        // Add padding
+        let padding = 20.0;
+        min_pos -= egui::vec2(padding, padding + 30.0); // Extra top padding for title
+        max_pos += egui::vec2(padding, padding);
+        
+        let min_screen = to_screen(min_pos);
+        let max_screen = to_screen(max_pos);
+        let group_rect = egui::Rect::from_min_max(min_screen, max_screen);
+        
+        // Draw Background
+        painter.rect_filled(
+            group_rect, 
+            8.0 * scale, 
+            group.color.linear_multiply(0.1) // Traverse transparent
+        );
+        painter.rect_stroke(
+            group_rect, 
+            8.0 * scale, 
+            egui::Stroke::new(1.0 * scale, group.color.linear_multiply(0.5)),
+            egui::StrokeKind::Middle
+        );
+
+        // Draw Title
+        let title_rect = egui::Rect::from_min_size(
+            min_screen, 
+            egui::vec2(group_rect.width(), 30.0 * scale)
+        );
+        
+        painter.rect_filled(
+            title_rect, 
+            8.0 * scale, // Uniform rounding
+            group.color.linear_multiply(0.8)
+        );
+
+        painter.text(
+            title_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &group.title,
+            egui::FontId::proportional(16.0 * scale),
+            egui::Color32::WHITE
+        );
+        
+        // Context Menu for Rename AND Dragging
+        // We make the title bar draggable
+        let interact_rect = title_rect;
+        let response = ui.interact(interact_rect, ui.id().with("group_header").with(group_idx), egui::Sense::click_and_drag());
+        
+        if response.dragged() {
+            let delta = response.drag_delta() / scale; // Convert screen delta to world delta
+            group_drag_delta = Some((group.id.clone(), delta));
+        }
+
+        // Store drag delta if any
+        if response.dragged() {
+             // We need to store this. Let's start collecting actions.
+             // We can't write to state.nodes yet.
+        }
+        
+        // RE-DESIGN: We can't easily mutate nodes inside this loop because of borrows.
+        // We should instead iterate groups indices, then access state.
+
+        
+        response.context_menu(|ui| {
+            if ui.button("Rename Container").clicked() {
+                ui.close();
+                // Trigger popup? Or just inline edit?
+            }
+            ui.label("Rename not fully impl yet");
+        });
+    }
+
+    // Apply deferred group move
+    if let Some((group_id, delta)) = group_drag_delta {
+        for node in &mut state.nodes {
+            if node.group_id.as_deref() == Some(&group_id) {
+                node.pos += delta;
+            }
+        }
+    }
+
     // Draw edges (relationships)
     for edge in &state.edges {
         if let Some(src) = state.nodes.iter().find(|n| n.id == edge.source) {
@@ -195,12 +293,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {
-    let iterations = 300;
-    let repulsion_force = 600000.0; // Increased base repulsion
-    let spring_length = 350.0; // Increased spring length
-    let attraction_constant = 0.05; // Reduced attraction slightly
-    let center_gravity = 0.02; // Reduced center pull to allow expansion
-    let prefix_attraction = 0.08; // Increased prefix attraction to keep groups tight despite higher repulsion
+    let iterations = 1000; // Increased iterations for better convergence
+    let repulsion_force = 800_000.0; // Stronger base repulsion
+    let spring_length = 400.0; // Longer edges
+    let attraction_constant = 0.04; 
+    let center_gravity = 0.01; // Weaker gravity to allow expansion
+    let prefix_attraction = 0.05; // Reduced prefix attraction to prevent clumping
     let delta_time = 0.1;
 
     let node_count = state.nodes.len();
@@ -234,23 +332,28 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
                     force_scalar *= 5.0; // Stronger group separation
                 }
 
-                // COLLISION AVOIDANCE (Rectangle Overlap)
-                // We define a "radius" for each as half the diagonal, or better, use Projected overlap.
-                // Simple approach: Treat as circles with radius = max(w,h)/2 for safety
-                // Or: Add extra force if bounding boxes overlap.
-                
+                // COLLISION AVOIDANCE
+                // Use actual bounding boxes + margin
                 let size_i = state.nodes[i].size;
                 let size_j = state.nodes[j].size;
                 
-                // Effective radius approximation (avg width/height) + margin
-                let r_i = (size_i.x + size_i.y) / 3.5; 
-                let r_j = (size_j.x + size_j.y) / 3.5;
-                let min_dist = r_i + r_j + 50.0; // 50.0 margin
-                
-                if dist < min_dist {
-                     // Strong push if inside comfort zone
-                     // Exponential push-back
-                     force_scalar += 500_000.0 * (min_dist - dist) / min_dist; 
+                // Effective radius for fast check
+                let r_i = size_i.length() / 2.0;
+                let r_j = size_j.length() / 2.0; 
+                let min_dist_circle = r_i + r_j + 100.0; // generous margin
+
+                if dist < min_dist_circle {
+                     // Check for actual Box Overlap for stronger push
+                     let delta = diff.abs();
+                     let combined_half_size = (size_i + size_j) / 2.0 + egui::vec2(50.0, 50.0); // 50px padding
+                     
+                     if delta.x < combined_half_size.x && delta.y < combined_half_size.y {
+                         // Overlap detected! Explosive force.
+                         force_scalar += 2_000_000.0; 
+                     } else {
+                         // Near miss, gentle push
+                         force_scalar += 100_000.0 * (min_dist_circle - dist) / min_dist_circle;
+                     }
                 }
 
                 let force_dir = diff / dist;
@@ -298,6 +401,69 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
             }
         }
 
+        // 3b. Group Overlap Resolution (Push entire groups apart)
+        // Re-calculate group bounds every iteration as nodes move
+        let mut group_bounds: std::collections::HashMap<String, egui::Rect> = std::collections::HashMap::new();
+        
+        // Calculate bounds
+        for (_, node) in state.nodes.iter().enumerate() {
+            if let Some(gid) = &node.group_id {
+                let rect = egui::Rect::from_min_size(node.pos, node.size);
+                group_bounds.entry(gid.clone())
+                    .and_modify(|r| *r = r.union(rect))
+                    .or_insert(rect);
+            }
+        }
+
+        let group_ids: Vec<String> = group_bounds.keys().cloned().collect();
+        let group_padding = 40.0; // Margin between groups
+
+        for i in 0..group_ids.len() {
+            for j in (i + 1)..group_ids.len() {
+                let g1_id = &group_ids[i];
+                let g2_id = &group_ids[j];
+                
+                if let (Some(r1), Some(r2)) = (group_bounds.get(g1_id), group_bounds.get(g2_id)) {
+                    let r1_padded = r1.expand(group_padding);
+                    let r2_padded = r2.expand(group_padding);
+                    
+                    let intersection = r1_padded.intersect(r2_padded);
+                    if intersection.width() > 0.0 && intersection.height() > 0.0 {
+                         let overlap_w = intersection.width();
+                         let overlap_h = intersection.height();
+                         
+                         // Push apart on axis of least overlap
+                         let push_vec = if overlap_w < overlap_h {
+                             if r1.center().x < r2.center().x {
+                                 egui::vec2(-overlap_w, 0.0)
+                             } else {
+                                 egui::vec2(overlap_w, 0.0)
+                             }
+                         } else {
+                             if r1.center().y < r2.center().y {
+                                 egui::vec2(0.0, -overlap_h)
+                             } else {
+                                 egui::vec2(0.0, overlap_h)
+                             }
+                         } * 0.1; // Gentle push per iteration
+
+                         // Apply to all nodes in group 1
+                         for (idx, node) in state.nodes.iter().enumerate() {
+                             if node.group_id.as_deref() == Some(g1_id) {
+                                 forces[idx] += push_vec * 5.0; // Stronger group push
+                             }
+                         }
+                         // Apply inverse to all nodes in group 2
+                         for (idx, node) in state.nodes.iter().enumerate() {
+                             if node.group_id.as_deref() == Some(g2_id) {
+                                 forces[idx] -= push_vec * 5.0;
+                             }
+                         }
+                    }
+                }
+            }
+        }
+
         // 4. Center Gravity (Pull to 0,0) + Apply Forces
         for i in 0..node_count {
             let center_pull = egui::Vec2::ZERO - state.nodes[i].pos.to_vec2();
@@ -311,6 +477,52 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
 
             state.nodes[i].pos += forces[i] * delta_time;
         }
+    }
+
+    // STRICT COLLISION RESOLUTION (Post-Process)
+    // Run a few passes to strictly separate overlapping rectangles
+    let collision_iterations = 20;
+    for _ in 0..collision_iterations {
+        let mut resolved = true;
+        for i in 0..node_count {
+            for j in (i + 1)..node_count {
+                let rect_i = egui::Rect::from_min_size(state.nodes[i].pos, state.nodes[i].size);
+                let rect_j = egui::Rect::from_min_size(state.nodes[j].pos, state.nodes[j].size);
+                
+                // Expand rects slightly for padding
+                let padding = 10.0;
+                let padded_i = rect_i.expand(padding);
+                let padded_j = rect_j.expand(padding);
+
+                let intersection = padded_i.intersect(padded_j); // Returns Rect, not Option
+                if intersection.width() > 0.0 && intersection.height() > 0.0 {
+                        resolved = false;
+                        let overlap_w = intersection.width();
+                        let overlap_h = intersection.height();
+                        
+                        // Push apart on the axis of least overlap
+                        let move_vec = if overlap_w < overlap_h {
+                            // Move X
+                            if rect_i.center().x < rect_j.center().x {
+                                egui::vec2(-overlap_w / 2.0 - 1.0, 0.0)
+                            } else {
+                                egui::vec2(overlap_w / 2.0 + 1.0, 0.0)
+                            }
+                        } else {
+                            // Move Y
+                            if rect_i.center().y < rect_j.center().y {
+                                egui::vec2(0.0, -overlap_h / 2.0 - 1.0)
+                            } else {
+                                egui::vec2(0.0, overlap_h / 2.0 + 1.0)
+                            }
+                        };
+                        
+                        state.nodes[i].pos += move_vec;
+                        state.nodes[j].pos -= move_vec;
+                    }
+            }
+        }
+        if resolved { break; }
     }
     
     // Normalize coordinates to be positive and start at somewhat reasonable position

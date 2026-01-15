@@ -2248,12 +2248,13 @@ impl Tabular {
             }
 
             // 2. Initialize Diagram State
-            let mut state = models::structs::DiagramState::default();
+            let mut state = if let Some(loaded) = self.load_diagram(conn_id, &db_name) {
+                loaded
+            } else {
+                models::structs::DiagramState::default()
+            };
+            
             // Populate nodes (tables)
-            // Ideally we should fetch actual tables. For now, we infer from FKs + maybe generic table fetch?
-            // Let's rely on cached structure if available, or just FKs nodes.
-            // If we only have FKs, we might miss isolated tables.
-            // But let's start with nodes mentioned in FKs.
             let mut table_names = std::collections::HashSet::new();
             for fk in &fks {
                 table_names.insert(fk.table_name.clone());
@@ -2268,17 +2269,7 @@ impl Tabular {
                 log::debug!("Table {} has {} columns", t_name, cols.len());
             }
 
-            // Layout nodes in a grid or circle initially
-            // let mut i = 0;
-            // let cols = (table_names.len() as f32).sqrt().ceil() as i32;
-            
-            // Clone fks for usage in nodes (since we consume fks for edges later, actually we filtered fks for edges before? No, we mapped them.)
-            // We need to keep fks available or clone them.
-            // Let's create edges FIRST so we can use fks ref, then move fks or clone for nodes.
-            // Actually fks is moved into edges map loop in original code? 
-            // Original: state.edges = fks.into_iter()...
-            // So we should clone fks or change order.
-            
+            // Sync FKs (edges) - Always refresh edges based on current Schema
             let edges: Vec<models::structs::DiagramEdge> = fks.iter().map(|fk| models::structs::DiagramEdge {
                 source: fk.table_name.clone(),
                 target: fk.referenced_table_name.clone(),
@@ -2286,44 +2277,105 @@ impl Tabular {
             }).collect();
             state.edges = edges;
 
+            // Grouping Logic (Refresh groups if empty or for new nodes?)
+            // For MVP, we regenerate groups map for new nodes usage, 
+            // but we should probably keep existing groups if possible?
+            // Let's re-calculate groups for ALL tables.
+            let mut groups_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
             
-            // Create nodes first
-            for table in table_names {
-                 // Deterministic scatter without rand crate
-                 // Use simple hash of strings to get "random" positions
+            // Helper to get prefix
+            let get_prefix = |name: &str| -> String {
+                name.split('_').next().unwrap_or(name).to_string()
+            };
+
+            for table in &table_names {
+                let prefix = get_prefix(table);
+                groups_map.entry(prefix).or_default().push(table.clone());
+            }
+
+            // Update/Create DiagramGroups 
+            let mut existing_group_ids: std::collections::HashSet<String> = state.groups.iter().map(|g| g.id.clone()).collect();
+            
+            // Simple color palette generator
+            let colors = [
+                eframe::egui::Color32::from_rgb(100, 149, 237), // Cornflower Blue
+                eframe::egui::Color32::from_rgb(60, 179, 113),  // Medium Sea Green
+                eframe::egui::Color32::from_rgb(205, 92, 92),   // Indian Red
+                eframe::egui::Color32::from_rgb(218, 165, 32),  // Goldenrod
+                eframe::egui::Color32::from_rgb(147, 112, 219), // Medium Purple
+                eframe::egui::Color32::from_rgb(70, 130, 180),  // Steel Blue
+                eframe::egui::Color32::from_rgb(255, 127, 80),  // Coral
+            ];
+            let mut color_idx = 0;
+
+            for (prefix, tables) in groups_map {
+                if tables.len() > 1 {
+                    let group_id = format!("group_{}", prefix);
+                    
+                    if !existing_group_ids.contains(&group_id) {
+                        let title = prefix[0..1].to_uppercase() + &prefix[1..]; // Capitalize
+                        let color = colors[color_idx % colors.len()];
+                        color_idx += 1;
+
+                        state.groups.push(models::structs::DiagramGroup {
+                            id: group_id.clone(),
+                            title,
+                            color,
+                        });
+                        existing_group_ids.insert(group_id.clone());
+                    }
+                }
+            }
+
+            // Sync Nodes
+            // 1. Remove nodes that no longer exist
+            state.nodes.retain(|n| table_names.contains(&n.id));
+            
+            // 2. Identify new nodes
+            let existing_node_ids: std::collections::HashSet<String> = state.nodes.iter().map(|n| n.id.clone()).collect();
+            let new_tables: Vec<String> = table_names.iter().filter(|t| !existing_node_ids.contains(*t)).cloned().collect();
+            let is_init = state.nodes.is_empty();
+
+            // apply to state (this block replaces the old logic)
+            // We need to call layout ONLY if it was empty, or only for new nodes?
+            // If we have saved state, we DON'T run full auto layout that resets everything.
+            
+            // Add new nodes
+            for table in new_tables {
                  let hash: u64 = table.bytes().fold(5381, |acc, c| acc.wrapping_shl(5).wrapping_add(acc).wrapping_add(c as u64));
                  let x = (hash % 800) as f32 + 100.0;
                  let y = ((hash / 800) % 600) as f32 + 100.0;
-
-                // Filter FKs for this table
-                let node_fks: Vec<models::structs::ForeignKey> = fks.iter()
-                    .filter(|fk| fk.table_name == table)
-                    .cloned()
-                    .collect();
-
-                let columns = columns_map.get(&table).cloned().unwrap_or_default();
-                if columns.is_empty() {
-                    log::warn!("No columns found for table '{}'. Available in map: {:?}", table, columns_map.keys().collect::<Vec<_>>());
-                }
-                
-                // Calculate dynamic height for layout (must match render logic)
-                let header_height = 24.0;
-                let item_height = 16.0;
-                let content_height = columns.len() as f32 * item_height;
-                let node_height = header_height + content_height + 8.0;
-
-                state.nodes.push(models::structs::DiagramNode {
+                 
+                  let mut node = models::structs::DiagramNode {
                     id: table.clone(),
                     title: table.clone(),
-                    pos: eframe::egui::pos2(x, y),
-                    size: eframe::egui::vec2(200.0, node_height), // Use calculated height
-                    columns,
-                    foreign_keys: node_fks,
-                });
+                     pos: eframe::egui::pos2(x, y),
+                     size: eframe::egui::vec2(150.0, 100.0), // Default, will be auto-sized
+                     columns: columns_map.get(&table).cloned().unwrap_or_default(),
+                     foreign_keys: fks.iter().filter(|fk| fk.table_name == table).cloned().collect(),
+                     group_id: None,
+                 };
+                // Assign group
+                let prefix = get_prefix(&table);
+                if existing_group_ids.contains(&format!("group_{}", prefix)) {
+                     node.group_id = Some(format!("group_{}", prefix));
+                }
+                state.nodes.push(node);
             }
             
-            // Apply Force Directed Layout
-            crate::diagram_view::perform_auto_layout(&mut state);
+             // Refresh columns for existing nodes too (in case of schema change)
+             for node in &mut state.nodes {
+                  if let Some(cols) = columns_map.get(&node.id) {
+                      node.columns = cols.clone();
+                  }
+             }
+
+            // Apply Layout ONLY if it was fresh init (no saved state used)
+            if is_init {
+                 crate::diagram_view::perform_auto_layout(&mut state);
+            }
+            
+            // 3. Create Tab
             // fks consumed? No, we used iter().
             // Original code used into_iter() for edges. I replaced it with iter above.
 
@@ -11905,11 +11957,25 @@ impl App for Tabular {
                 } else {
                     // Regular query tabs: Use consolidated rendering
                     let mut rendered_diagram = false;
+                    let mut diagram_to_save = None;
+                    
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                         if let Some(diagram_state) = &mut tab.diagram_state {
                            crate::diagram_view::render_diagram(ui, diagram_state);
                            rendered_diagram = true;
+                           
+                           if diagram_state.save_requested {
+                               diagram_state.save_requested = false;
+                               diagram_to_save = Some((tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
+                           }
                         }
+                    }
+                    
+                    if let Some((conn_id_opt, db_name_opt, state)) = diagram_to_save {
+                         if let Some(cid) = conn_id_opt {
+                             let db = db_name_opt.unwrap_or_else(|| "default".to_string());
+                             self.save_diagram(cid, &db, &state);
+                         }
                     }
                     
                     if !rendered_diagram {
@@ -12473,5 +12539,53 @@ impl Tabular {
     pub(crate) fn extend_query_icon_hold(&mut self) {
         self.query_icon_hold_until =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(900));
+    }
+    fn get_diagram_path(&self, conn_id: i64, db_name: &str) -> Option<std::path::PathBuf> {
+        if let Some(config_dir) = dirs::data_local_dir() {
+             let mut path = config_dir.join("tabular").join("diagrams");
+             let _ = std::fs::create_dir_all(&path);
+             // Sanitize filename
+             let safe_db_name: String = db_name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+             path.push(format!("conn_{}_{}.json", conn_id, safe_db_name));
+             return Some(path);
+        }
+        None
+    }
+
+    fn save_diagram(&self, conn_id: i64, db_name: &str, state: &models::structs::DiagramState) {
+        if let Some(path) = self.get_diagram_path(conn_id, db_name) {
+            match std::fs::File::create(&path) {
+                Ok(file) => {
+                    let writer = std::io::BufWriter::new(file);
+                    if let Err(e) = serde_json::to_writer_pretty(writer, state) {
+                        log::error!("Failed to serialize diagram state: {}", e);
+                    } else {
+                        log::info!("Diagram layout saved to {:?}", path);
+                    }
+                },
+                Err(e) => log::error!("Failed to create diagram file {:?}: {}", path, e),
+            }
+        }
+    }
+
+    fn load_diagram(&self, conn_id: i64, db_name: &str) -> Option<models::structs::DiagramState> {
+        if let Some(path) = self.get_diagram_path(conn_id, db_name) {
+            if path.exists() {
+                 match std::fs::File::open(&path) {
+                    Ok(file) => {
+                        let reader = std::io::BufReader::new(file);
+                        match serde_json::from_reader(reader) {
+                            Ok(state) => {
+                                log::info!("Diagram layout loaded from {:?}", path);
+                                return Some(state);
+                            },
+                            Err(e) => log::error!("Failed to deserialize diagram state: {}", e),
+                        }
+                    },
+                    Err(e) => log::error!("Failed to open diagram file {:?}: {}", path, e),
+                 }
+            }
+        }
+        None
     }
 }
