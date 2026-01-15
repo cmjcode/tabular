@@ -20,6 +20,8 @@ pub struct AppPreferences {
     pub use_server_pagination: bool,
     // RFC3339 timestamp of the last time we checked GitHub releases (persisted)
     pub last_update_check_iso: Option<String>,
+    #[serde(default)]
+    pub enable_debug_logging: bool,
 }
 
 pub struct ConfigStore {
@@ -110,6 +112,7 @@ impl ConfigStore {
                 auto_check_updates: true,
                 use_server_pagination: true, // Default to true for better performance
                 last_update_check_iso: None,
+                enable_debug_logging: false,
             };
 
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences")
@@ -133,13 +136,14 @@ impl ConfigStore {
                         "last_update_check_iso" => {
                             prefs.last_update_check_iso = if v.is_empty() { None } else { Some(v) }
                         }
+                        "enable_debug_logging" => prefs.enable_debug_logging = v == "1",
                         _ => {}
                     }
                 }
             }
 
             info!(
-                "Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}",
+                "Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
                 prefs.is_dark_mode,
                 prefs.link_editor_theme,
                 prefs.editor_theme,
@@ -147,7 +151,8 @@ impl ConfigStore {
                 prefs.word_wrap,
                 prefs.data_directory,
                 prefs.auto_check_updates,
-                prefs.use_server_pagination
+                prefs.use_server_pagination,
+                prefs.enable_debug_logging
             );
             return prefs;
         }
@@ -159,7 +164,7 @@ impl ConfigStore {
         if self.use_json_fallback {
             let _ = self.save_to_json(prefs);
             info!(
-                "Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}",
+                "Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
                 prefs.is_dark_mode,
                 prefs.link_editor_theme,
                 prefs.editor_theme,
@@ -167,14 +172,15 @@ impl ConfigStore {
                 prefs.word_wrap,
                 prefs.data_directory,
                 prefs.auto_check_updates,
-                prefs.use_server_pagination
+                prefs.use_server_pagination,
+                prefs.enable_debug_logging
             );
             return;
         }
 
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
-            let entries: [(&str, &str); 8] = [
+            let entries: [(&str, &str); 9] = [
                 ("is_dark_mode", if prefs.is_dark_mode { "1" } else { "0" }),
                 (
                     "link_editor_theme",
@@ -199,6 +205,10 @@ impl ConfigStore {
                         "0"
                     },
                 ),
+                (
+                    "enable_debug_logging",
+                    if prefs.enable_debug_logging { "1" } else { "0" },
+                ),
             ];
 
             for (k, v) in entries.iter() {
@@ -219,14 +229,15 @@ impl ConfigStore {
             }
 
             info!(
-                "Saved prefs to SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}",
+                "Saved prefs to SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, enable_debug_logging={}",
                 prefs.is_dark_mode,
                 prefs.link_editor_theme,
                 prefs.editor_theme,
                 prefs.font_size,
                 prefs.word_wrap,
                 prefs.data_directory,
-                prefs.auto_check_updates
+                prefs.auto_check_updates,
+                prefs.enable_debug_logging
             );
         }
     }

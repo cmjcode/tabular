@@ -38,26 +38,59 @@ pub mod window_egui; // re-enabled syntax highlighting helpers
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {
     dotenv::dotenv().ok();
+    config::init_data_dir();
+
+    // 1. Load preferences early to determine log level
+    // We use a temporary runtime because ConfigStore requires async and we haven't started our main runtime yet.
+    let prefs = {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create temp runtime for config load");
+        rt.block_on(async {
+            match config::ConfigStore::new().await {
+                Ok(store) => store.load().await,
+                Err(_) => config::AppPreferences::default(),
+            }
+        })
+    };
+
+    let log_level = if prefs.enable_debug_logging {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Warn
+    };
+
     let _ = env_logger::Builder::from_default_env()
         // Enable info-level logs for our crate so users can see data source messages
-        .filter_module("tabular", log::LevelFilter::Debug)
+        .filter_module("tabular", log_level)
         .is_test(false)
         .try_init();
-    config::init_data_dir();
+    
     log::info!(
         "Application starting with data directory: {}",
         config::get_data_dir().display()
     );
+    if prefs.enable_debug_logging {
+        log::info!("Debug logging enabled");
+    }
+
     let mut options = eframe::NativeOptions::default();
     options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
     options.viewport.min_inner_size = Some(egui::vec2(800.0, 600.0));
     if let Some(icon) = modules::load_icon() {
         options.viewport.icon = Some(std::sync::Arc::new(icon));
     }
+    
+    let initial_prefs = prefs.clone();
     eframe::run_native(
         "Tabular",
         options,
-        Box::new(|_cc| Ok(Box::new(window_egui::Tabular::new()))),
+        Box::new(move |_cc| {
+            let mut app = window_egui::Tabular::new();
+            app.set_initial_prefs(initial_prefs);
+            Ok(Box::new(app))
+        }),
     )
 }
 

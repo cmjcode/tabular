@@ -309,6 +309,7 @@ pub struct Tabular {
     pub update_download_started: bool,
     pub update_installed: bool,
     pub update_install_receiver: Option<std::sync::mpsc::Receiver<bool>>, // receive success flag
+    pub enable_debug_logging: bool, // New field for debug logging
     // Auto updater instance
     pub auto_updater: Option<crate::auto_updater::AutoUpdater>,
     // Preferences window active tab
@@ -409,6 +410,29 @@ impl Tabular {
         self.auto_refresh_last_run = None;
     }
 
+    /// Set initial preferences loaded from startup
+    pub fn set_initial_prefs(&mut self, prefs: crate::config::AppPreferences) {
+        self.is_dark_mode = prefs.is_dark_mode;
+        self.link_editor_theme = prefs.link_editor_theme;
+        self.advanced_editor.theme = match prefs.editor_theme.as_str() {
+            "GITHUB_LIGHT" => crate::models::structs::EditorColorTheme::GithubLight,
+            "GRUVBOX" => crate::models::structs::EditorColorTheme::Gruvbox,
+            _ => crate::models::structs::EditorColorTheme::GithubDark,
+        };
+        self.advanced_editor.font_size = prefs.font_size;
+        self.advanced_editor.word_wrap = prefs.word_wrap;
+        if let Some(dir) = prefs.data_directory.clone() {
+            self.data_directory = dir;
+        }
+        self.auto_check_updates = prefs.auto_check_updates;
+        self.use_server_pagination = prefs.use_server_pagination;
+        self.enable_debug_logging = prefs.enable_debug_logging;
+
+        // Store as last saved
+        self.last_saved_prefs = Some(prefs);
+        self.prefs_loaded = true;
+    }
+
     // Duplicate selected row for editing
 
 
@@ -474,6 +498,15 @@ impl Tabular {
                 error!("Failed to create runtime: {}", e);
                 None
             }
+        };
+
+        // Initialize ConfigStore
+        let config_store = if let Some(rt) = &runtime {
+            rt.block_on(async {
+                crate::config::ConfigStore::new().await.ok()
+            })
+        } else {
+            None
         };
 
         let mut app = Self {
@@ -656,7 +689,7 @@ impl Tabular {
             new_index_columns: String::new(),
             sql_filter_text: String::new(),
             is_table_browse_mode: false,
-            config_store: None,
+            config_store,
             last_saved_prefs: None,
             prefs_dirty: false,
             prefs_save_feedback: None,
@@ -682,6 +715,7 @@ impl Tabular {
             update_download_started: false,
             update_installed: false,
             update_install_receiver: None,
+            enable_debug_logging: false, // Default to false
             auto_updater: crate::auto_updater::AutoUpdater::new().ok(),
             settings_active_pref_tab: PrefTab::ApplicationTheme,
             show_settings_menu: false,
@@ -8584,8 +8618,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             }
         });
 
-        ui.separator();
-
         // Use search results if search is active, otherwise use normal tree
         if self.show_search_results && !self.database_search_text.trim().is_empty() {
             // Show search results
@@ -9612,6 +9644,7 @@ impl App for Tabular {
                             .last_saved_prefs
                             .as_ref()
                             .and_then(|p| p.last_update_check_iso.clone()),
+                        enable_debug_logging: app.enable_debug_logging,
                     };
                     rt.block_on(store.save(&prefs));
                     log::info!(
@@ -10469,6 +10502,20 @@ impl App for Tabular {
                                 }
                             });
                             ui.label(egui::RichText::new("Server pagination queries data in smaller chunks (e.g., 100 rows at a time) from the database.\nThis is much faster for large tables but may not work with all custom queries.").size(11.0).color(egui::Color32::from_gray(120)));
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut self.enable_debug_logging, "Enable Debug Logging").changed() {
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                    if self.enable_debug_logging {
+                                        self.prefs_save_feedback = Some("Debug logging enabled. Please restart the application for this to take effect.".to_string());
+                                    } else {
+                                        self.prefs_save_feedback = Some("Debug logging disabled. Restart the application to improve performance.".to_string());
+                                    }
+                                    self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                }
+                                ui.label(egui::RichText::new("(Requires Restart)").size(11.0).color(egui::Color32::from_gray(120)));
+                            });
+                            ui.label(egui::RichText::new("Turns on verbose logs. Disable this to improve application performance and reduce disk I/O.").size(11.0).color(egui::Color32::from_gray(120)));
                         }
                         PrefTab::DataDirectory => {
                             ui.heading("Data Directory");
@@ -11196,16 +11243,6 @@ impl App for Tabular {
                                     self.show_add_connection = true;
                                 }
                             }
-                            // "Queries" => {
-                            //     if ui.add_sized(
-                            //         [24.0, 24.0], // Small square button
-                            //         egui::Button::new("➕")
-                            //             .fill(egui::Color32::from_rgb(255, 30, 0))
-                            //     ).on_hover_text("New Query File").clicked() {
-                            //         // Create new tab instead of clearing editor
-                            //         editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
-                            //     }
-                            // },
                             _ => {
                                 // No button for History tab
                             }
