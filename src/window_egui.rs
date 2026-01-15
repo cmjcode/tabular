@@ -3791,6 +3791,8 @@ impl Tabular {
                     models::enums::NodeType::QueryFolder => "📂",
                     models::enums::NodeType::HistoryDateFolder => "📅",
                     models::enums::NodeType::MsSQLFolder => "🗳️",
+                    models::enums::NodeType::DiagramsFolder => "📂",
+                    models::enums::NodeType::Diagram => "🗺",
                 };
 
                 // Build status info for Connection nodes (used below)
@@ -3955,6 +3957,14 @@ impl Tabular {
                     // Use table_name field if available (for search results), otherwise use node.name
                     let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
                     table_click_request = Some((conn_id, actual_table_name, node.node_type.clone()));
+                }
+
+                // Handle clicks on Diagram nodes
+                if node.node_type == models::enums::NodeType::Diagram
+                    && response.clicked()
+                    && let Some(conn_id) = node.connection_id
+                {
+                    open_diagram_request = Some((conn_id, node.database_name.clone().unwrap_or_default()));
                 }
 
                 // Index items: no left-click action; use context menu for Alter Index
@@ -6494,6 +6504,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                 // Add subfolders for each database
                 let mut db_children = Vec::new();
 
+
+
                 // Tables folder
                 let mut tables_folder = models::structs::TreeNode::new(
                     "Tables".to_string(),
@@ -6551,6 +6563,8 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
 
                 // Add subfolders for each database
                 let mut db_children = Vec::new();
+
+
 
                 // Tables folder
                 let mut tables_folder = models::structs::TreeNode::new(
@@ -12551,15 +12565,20 @@ impl Tabular {
             Some(std::time::Instant::now() + std::time::Duration::from_millis(900));
     }
     fn get_diagram_path(&self, conn_id: i64, db_name: &str) -> Option<std::path::PathBuf> {
-        if let Some(config_dir) = dirs::data_local_dir() {
-             let mut path = config_dir.join("tabular").join("diagrams");
-             let _ = std::fs::create_dir_all(&path);
-             // Sanitize filename
-             let safe_db_name: String = db_name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
-             path.push(format!("conn_{}_{}.json", conn_id, safe_db_name));
-             return Some(path);
-        }
-        None
+        let mut path = if !self.data_directory.is_empty() {
+             std::path::PathBuf::from(&self.data_directory).join("diagrams")
+        } else if let Some(config_dir) = dirs::data_local_dir() {
+             config_dir.join("tabular").join("diagrams")
+        } else {
+             return None;
+        };
+
+        let _ = std::fs::create_dir_all(&path);
+        // Sanitize filename
+        let safe_db_name: String = db_name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+        path.push(format!("conn_{}_{}.json", conn_id, safe_db_name));
+        log::debug!("get_diagram_path: inputs=({}, '{}') -> path={:?}", conn_id, db_name, path);
+        Some(path)
     }
 
     fn save_diagram(&self, conn_id: i64, db_name: &str, state: &models::structs::DiagramState) {

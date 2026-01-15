@@ -23,6 +23,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             state.zoom /= 1.1;
         }
 
+        // Mouse Wheel Zoom
+        let scroll_delta = i.raw_scroll_delta.y;
+        if scroll_delta != 0.0 {
+            let zoom_factor = 1.0 + scroll_delta * 0.001;
+            state.zoom *= zoom_factor;
+        }
+
         // Clamp zoom
         if state.zoom < 0.1 { state.zoom = 0.1; }
         if state.zoom > 5.0 { state.zoom = 5.0; }
@@ -186,6 +193,50 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                      // Rust might complain about splitting borrow.
                       _group_rename_request = Some((idx, group_id.clone()));
                  }
+                 
+                 
+                 ui.horizontal(|ui| {
+                     ui.label("Color:");
+                     egui::ScrollArea::horizontal().max_width(200.0).show(ui, |ui| {
+                         ui.horizontal(|ui| {
+                             let colors = [
+                                egui::Color32::from_rgb(100, 149, 237), // Cornflower Blue
+                                egui::Color32::from_rgb(60, 179, 113),  // Medium Sea Green
+                                egui::Color32::from_rgb(205, 92, 92),   // Indian Red
+                                egui::Color32::from_rgb(218, 165, 32),  // Goldenrod
+                                egui::Color32::from_rgb(147, 112, 219), // Medium Purple
+                                egui::Color32::from_rgb(70, 130, 180),  // Steel Blue
+                                egui::Color32::from_rgb(255, 127, 80),  // Coral
+                                egui::Color32::from_rgb(255, 105, 180), // Hot Pink
+                                egui::Color32::from_rgb(0, 206, 209),   // Dark Turquoise
+                                egui::Color32::from_rgb(123, 104, 238), // Medium Slate Blue
+                                egui::Color32::from_rgb(50, 205, 50),   // Lime Green
+                                egui::Color32::from_rgb(255, 165, 0),   // Orange
+                                egui::Color32::from_rgb(106, 90, 205),  // Slate Blue
+                                egui::Color32::from_rgb(255, 99, 71),   // Tomato
+                                egui::Color32::from_rgb(64, 224, 208),  // Turquoise
+                                egui::Color32::from_rgb(238, 130, 238), // Violet
+                                egui::Color32::from_rgb(255, 215, 0),   // Gold
+                                egui::Color32::from_rgb(0, 250, 154),   // Medium Spring Green
+                                egui::Color32::from_rgb(138, 43, 226),  // Blue Violet
+                                egui::Color32::from_rgb(255, 140, 0),   // Dark Orange
+                             ];
+                             
+                             for &c in &colors {
+                                 let (response, painter) = ui.allocate_painter(egui::vec2(20.0, 20.0), egui::Sense::click());
+                                 let rect = response.rect;
+                                 painter.rect_filled(rect, 4.0, c);
+                                 if response.hovered() {
+                                     painter.rect_stroke(rect, 4.0, egui::Stroke::new(2.0, egui::Color32::WHITE), egui::StrokeKind::Middle);
+                                 }
+                                 if response.clicked() {
+                                     group.color = c;
+                                     ui.close();
+                                 }
+                             }
+                         });
+                     });
+                 });
              });
         }
     }
@@ -346,6 +397,49 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             node.pos += drag_delta;
         }
     }
+
+    // Draw Toolbar (Export/Import)
+    // Move it a bit closer to the right edge if requested, generally right_top aligned is standard.
+    // Making it transparent and red text.
+    let toolbar_width = 100.0;
+    let toolbar_height = 40.0;
+    let padding = -10.0;
+    let toolbar_pos = rect.right_top() + egui::vec2(-toolbar_width, padding);
+    let toolbar_rect = egui::Rect::from_min_size(toolbar_pos, egui::vec2(toolbar_width, toolbar_height));
+
+    ui.allocate_ui_at_rect(toolbar_rect, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(20.0);
+            // "Export" first because we are in right_to_left layout
+            if ui.add(egui::Button::new(egui::RichText::new("Export").color(egui::Color32::from_rgb(255, 100, 100))).frame(false)).clicked() {
+                 if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file() {
+                    if let Ok(file) = std::fs::File::create(path) {
+                        let writer = std::io::BufWriter::new(file);
+                        let _ = serde_json::to_writer_pretty(writer, state);
+                    }
+                 }
+            }
+
+            ui.add_space(10.0);
+
+            // "Import" second
+            if ui.add(egui::Button::new(egui::RichText::new("Import").color(egui::Color32::from_rgb(255, 100, 100))).frame(false)).clicked() {
+                if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+                    if let Ok(file) = std::fs::File::open(path) {
+                        let reader = std::io::BufReader::new(file);
+                        if let Ok(new_state) = serde_json::from_reader::<_, DiagramState>(reader) {
+                            *state = new_state;
+                            state.dragging_node = None;
+                            state.last_mouse_pos = None;
+                            state.save_requested = true;
+                        }
+                    }
+                }
+            }
+            ui.add_space(10.0);
+
+        });
+    });
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {

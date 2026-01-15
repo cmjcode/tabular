@@ -52,6 +52,8 @@ pub enum NodeType {
     PrimaryKeysFolder,
     PartitionsFolder,
     Index,
+    DiagramsFolder,
+    Diagram,
 }
 
 // Special DBA quick view context (used to apply post-processing without embedding markers in SQL)
