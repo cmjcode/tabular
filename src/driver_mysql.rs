@@ -856,11 +856,11 @@ pub(crate) async fn fetch_mysql_foreign_keys(
         let referenced_column_name = decode(&row, 4);
 
         keys.push(models::structs::ForeignKey {
-            constraint_name: get_str(0),
-            table_name: get_str(1),
-            column_name: get_str(2),
-            referenced_table_name: get_str(3),
-            referenced_column_name: get_str(4),
+            constraint_name,
+            table_name,
+            column_name,
+            referenced_table_name,
+            referenced_column_name,
         });
     }
 
