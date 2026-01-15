@@ -2269,8 +2269,8 @@ impl Tabular {
             }
 
             // Layout nodes in a grid or circle initially
-            let mut i = 0;
-            let cols = (table_names.len() as f32).sqrt().ceil() as i32;
+            // let mut i = 0;
+            // let cols = (table_names.len() as f32).sqrt().ceil() as i32;
             
             // Clone fks for usage in nodes (since we consume fks for edges later, actually we filtered fks for edges before? No, we mapped them.)
             // We need to keep fks available or clone them.
@@ -2286,10 +2286,15 @@ impl Tabular {
             }).collect();
             state.edges = edges;
 
+            
+            // Create nodes first
             for table in table_names {
-                let row = i / cols;
-                let col = i % cols;
-                
+                 // Deterministic scatter without rand crate
+                 // Use simple hash of strings to get "random" positions
+                 let hash: u64 = table.bytes().fold(5381, |acc, c| acc.wrapping_shl(5).wrapping_add(acc).wrapping_add(c as u64));
+                 let x = (hash % 800) as f32 + 100.0;
+                 let y = ((hash / 800) % 600) as f32 + 100.0;
+
                 // Filter FKs for this table
                 let node_fks: Vec<models::structs::ForeignKey> = fks.iter()
                     .filter(|fk| fk.table_name == table)
@@ -2300,17 +2305,25 @@ impl Tabular {
                 if columns.is_empty() {
                     log::warn!("No columns found for table '{}'. Available in map: {:?}", table, columns_map.keys().collect::<Vec<_>>());
                 }
+                
+                // Calculate dynamic height for layout (must match render logic)
+                let header_height = 24.0;
+                let item_height = 16.0;
+                let content_height = columns.len() as f32 * item_height;
+                let node_height = header_height + content_height + 8.0;
 
                 state.nodes.push(models::structs::DiagramNode {
                     id: table.clone(),
                     title: table.clone(),
-                    pos: eframe::egui::pos2(100.0 + (col as f32) * 250.0, 100.0 + (row as f32) * 150.0),
-                    size: eframe::egui::vec2(200.0, 100.0),
+                    pos: eframe::egui::pos2(x, y),
+                    size: eframe::egui::vec2(200.0, node_height), // Use calculated height
                     columns,
                     foreign_keys: node_fks,
                 });
-                i += 1;
             }
+            
+            // Apply Force Directed Layout
+            crate::diagram_view::perform_auto_layout(&mut state);
             // fks consumed? No, we used iter().
             // Original code used into_iter() for edges. I replaced it with iter above.
 

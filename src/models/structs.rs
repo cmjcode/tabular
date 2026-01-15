@@ -86,7 +86,7 @@ pub struct DiagramEdge {
     pub label: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DiagramState {
     pub nodes: Vec<DiagramNode>,
     pub edges: Vec<DiagramEdge>,
@@ -95,6 +95,22 @@ pub struct DiagramState {
     pub dragging_node: Option<String>,
     pub dragging_offset: eframe::egui::Vec2,
     pub last_mouse_pos: Option<eframe::egui::Pos2>,
+    pub is_centered: bool,
+}
+
+impl Default for DiagramState {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            pan: eframe::egui::Vec2::ZERO,
+            zoom: 1.0,
+            dragging_node: None,
+            dragging_offset: eframe::egui::Vec2::ZERO,
+            last_mouse_pos: None,
+            is_centered: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
