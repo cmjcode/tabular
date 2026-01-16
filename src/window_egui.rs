@@ -2456,6 +2456,14 @@ impl Tabular {
         // Handle connection clicks (create new tab with that connection)
         // We'll collect connection IDs needing eager pool creation to process after loop
         let mut pools_to_create: Vec<i64> = Vec::new();
+
+        // Check table clicks for missing pools too
+        for (connection_id, _, _) in &table_click_requests {
+             if !self.connection_pools.contains_key(connection_id) && !pools_to_create.contains(connection_id) {
+                 pools_to_create.push(*connection_id);
+             }
+        }
+
         for connection_id in connection_click_requests {
             // Find connection name for tab title
             let connection_name = self
@@ -3951,7 +3959,7 @@ impl Tabular {
                 // Handle clicks on table/view labels to load data - open in new tab
                 if (node.node_type == models::enums::NodeType::Table
                     || node.node_type == models::enums::NodeType::View)
-                    && response.clicked()
+                    && response.double_clicked()
                     && let Some(conn_id) = node.connection_id
                 {
                     // Use table_name field if available (for search results), otherwise use node.name
