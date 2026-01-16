@@ -31,8 +31,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         }
 
         // Clamp zoom
-        if state.zoom < 0.1 { state.zoom = 0.1; }
-        if state.zoom > 5.0 { state.zoom = 5.0; }
+        state.zoom = state.zoom.clamp(0.1, 5.0);
 
         // Save Shortcut (Cmd + S)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
@@ -254,37 +253,116 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     }
 
     // Draw edges (relationships)
+    let mut clicked_edge = None;
+    let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+    let pointer_down = ui.input(|i| i.pointer.primary_clicked());
+
+    // Background interaction to clear selection
+    if ui.input(|i| i.pointer.primary_clicked()) && !ui.ui_contains_pointer() {
+         // This check is tricky because ui.interact covers the whole rect.
+         // Reliance on the button click logic below is safer.
+    }
+    // Better: If we click the background rect (handled at start of function), we clear selection.
+    // However, the background interact response is at line 8. We need to check it there?
+    // Actually, we can check if any edge or node was clicked this frame. If not, and background was clicked, clear.
+    // But `response.dragged()` consumes click? No, drag is different.
+    
+    // Let's implement hit testing first.
+    
     for edge in &state.edges {
-        if let Some(src) = state.nodes.iter().find(|n| n.id == edge.source) {
-            if let Some(dst) = state.nodes.iter().find(|n| n.id == edge.target) {
+        // Resolve source and target nodes
+        let src_node = state.nodes.iter().find(|n| n.id == edge.source);
+        let dst_node = state.nodes.iter().find(|n| n.id == edge.target);
+
+        if let (Some(src), Some(dst)) = (src_node, dst_node) {
                 let src_rect_size = src.size * scale;
                 let dst_rect_size = dst.size * scale;
                 
                 let src_pos = to_screen(src.pos) + egui::vec2(src_rect_size.x, src_rect_size.y / 2.0); // right side
                 let dst_pos = to_screen(dst.pos) + egui::vec2(0.0, dst_rect_size.y / 2.0); // left side
                 
-                let color = egui::Color32::from_gray(100);
-                let stroke = egui::Stroke::new(1.0 * scale, color); // Scale stroke too
+                // Determine if selected
+                let is_selected = state.selected_edge.as_ref() == Some(&(edge.source.clone(), edge.target.clone()));
+
+                // Determine base color from source group
+                let mut base_color = egui::Color32::from_gray(100);
+                if let Some(group_id) = &src.group_id {
+                    if let Some(group) = state.groups.iter().find(|g| &g.id == group_id) {
+                        base_color = group.color.linear_multiply(0.8); // Slight transparency
+                    }
+                }
+
+                let mut color = if is_selected {
+                    egui::Color32::from_rgb(255, 215, 0) // Gold
+                } else {
+                    base_color
+                };
+                
+                let width = if is_selected { 3.0 * scale } else { 1.0 * scale };
+                let stroke = egui::Stroke::new(width, color); 
                 
                 // Cubic bezier for smooth connection
                 let control_scale = (dst_pos.x - src_pos.x).abs().max(50.0 * scale) * 0.5;
                 let control1 = src_pos + egui::vec2(control_scale, 0.0);
                 let control2 = dst_pos - egui::vec2(control_scale, 0.0);
                 
+                let points = [src_pos, control1, control2, dst_pos];
                 let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
-                    [src_pos, control1, control2, dst_pos],
+                    points,
                     false,
                     egui::Color32::TRANSPARENT,
                     stroke,
                 );
+
+                // Hit detection (Check hover first)
+                let mut is_hovered = false;
+                if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                   // Sample points to check distance
+                   let num_samples = 30; // Increased samples for smoother detection
+                   for i in 0..=num_samples {
+                       let t = i as f32 / num_samples as f32;
+                       let p = bezier.sample(t);
+                       if p.distance(pos) < 20.0 { // Increased tolerance
+                           is_hovered = true;
+                           break;
+                       }
+                   }
+                }
+
+                if is_hovered {
+                    if pointer_down {
+                        clicked_edge = Some((edge.source.clone(), edge.target.clone()));
+                    }
+                    if !is_selected {
+                        // Hover feedback
+                        let hover_stroke = egui::Stroke::new(2.0 * scale, egui::Color32::from_gray(180));
+                         ui.painter().add(egui::epaint::CubicBezierShape::from_points_stroke(
+                            points,
+                            false,
+                            egui::Color32::TRANSPARENT,
+                            hover_stroke,
+                        ));
+                    }
+                }
+                
                 ui.painter().add(bezier);
             }
         }
+
+    let edge_was_clicked = clicked_edge.is_some();
+    if let Some(edge) = clicked_edge {
+        state.selected_edge = Some(edge);
+    } else if pointer_down {
+        // If clicked but not on any edge, check if we clicked a node later. 
+        // If not node either, we clear. 
+        // Simplified: We handle clear at the start or via background response if possible.
+        // Actually, let's defer clearing to ensure we don't clear when clicking a node.
     }
 
     // Draw nodes
     let mut dragging_node_id = None;
     let mut drag_delta = egui::Vec2::ZERO;
+    let mut node_clicked = false;
 
     // For manual interaction:
     let _mouse_pos = ui.input(|i| i.pointer.hover_pos());
@@ -305,6 +383,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         let node_id = ui.id().with("node").with(&node.id);
         let node_response = ui.interact(node_rect, node_id, egui::Sense::click_and_drag());
         
+        if node_response.clicked() {
+            node_clicked = true;
+            // Selecting a node could perhaps select edges? For now, just prevent deselection.
+        }
+
         if node_response.dragged() {
             dragging_node_id = Some(node.id.clone());
             drag_delta = node_response.drag_delta();
@@ -328,12 +411,28 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
              state.dragging_node = None;
         }
 
+         // Check if this node is part of the selected relationship
+        let is_glow = if let Some((s, t)) = &state.selected_edge {
+            node.id == *s || node.id == *t
+        } else {
+            false
+        };
+
         // Draw Shadow/Border
-        ui.painter().rect_filled(
-            node_rect.expand(2.0 * scale), 
-            5.0 * scale, 
-            egui::Color32::from_black_alpha(50)
-        );
+        if is_glow {
+             // Glow effect
+             ui.painter().rect_filled(
+                node_rect.expand(6.0 * scale), 
+                12.0 * scale, 
+                egui::Color32::from_rgb(255, 215, 0).linear_multiply(0.5) // Gold with transparency
+            );
+        } else {
+            ui.painter().rect_filled(
+                node_rect.expand(2.0 * scale), 
+                5.0 * scale, 
+                egui::Color32::from_black_alpha(50)
+            );
+        }
         
         let fill_color = egui::Color32::from_rgb(30, 30, 35);
         ui.painter().rect_filled(
@@ -342,10 +441,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             fill_color
         );
         // Corrected rect_stroke args
+        let border_color = if is_glow { egui::Color32::from_rgb(255, 215, 0) } else { egui::Color32::from_gray(60) };
+        let border_width = if is_glow { 2.0 * scale } else { 1.0 * scale };
+        
         ui.painter().rect_stroke(
             node_rect, 
             4.0 * scale, 
-            egui::Stroke::new(1.0 * scale, egui::Color32::from_gray(60)),
+            egui::Stroke::new(border_width, border_color),
             egui::StrokeKind::Middle,
         );
         
@@ -390,6 +492,20 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             );
             y_offset += item_height;
         }
+    }
+    
+    // Clear selection if clicked on background (and not on an edge or node)
+    // We check `response` from the beginning of the function (passed down? no it was `ui.interact(rect...)`)
+    // We need to check if the main rect was clicked, and ensure no edge/node was clicked.
+    if ui.input(|i| i.pointer.primary_clicked()) && !node_clicked && !edge_was_clicked {
+        // But wait, `ui.interact` for background handles drag. Does it also report click?
+        // We can check if the pointer is within the clip rect and nothing else claimed it?
+        // Simpler: If the background response was clicked? 
+         // Accessing `response` from top of function might be hard unless we passed it.
+         // Let's rely on global input.
+         if ui.rect_contains_pointer(rect) {
+             state.selected_edge = None;
+         }
     }
 
     if let Some(id) = dragging_node_id {
@@ -556,7 +672,7 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
         let mut group_bounds: std::collections::HashMap<String, egui::Rect> = std::collections::HashMap::new();
         
         // Calculate bounds
-        for (_, node) in state.nodes.iter().enumerate() {
+        for node in &state.nodes {
             if let Some(gid) = &node.group_id {
                 let rect = egui::Rect::from_min_size(node.pos, node.size);
                 group_bounds.entry(gid.clone())

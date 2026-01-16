@@ -117,6 +117,8 @@ pub struct DiagramState {
     pub save_requested: bool,
     #[serde(skip)]
     pub renaming_group: Option<String>,
+    #[serde(skip)]
+    pub selected_edge: Option<(String, String)>, // (source_id, target_id)
 }
 
 impl Default for DiagramState {
@@ -133,6 +135,7 @@ impl Default for DiagramState {
             is_centered: false,
             save_requested: false,
             renaming_group: None,
+            selected_edge: None,
         }
     }
 }
