@@ -6049,7 +6049,7 @@ dependencies = [
 
 [[package]]
 name = "tabular"
-version = "0.5.32"
+version = "0.5.34"
 dependencies = [
  "anyhow",
  "async-trait",

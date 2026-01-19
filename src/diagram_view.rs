@@ -75,10 +75,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     // 1. Calculate Group Bounds (requires immutable access to nodes and groups)
     let mut group_bounds: Vec<(usize, String, egui::Rect, egui::Color32, String)> = Vec::new(); // (index, id, rect, color, title)
     
+    let shift_held = ui.input(|i| i.modifiers.shift);
     for (idx, group) in state.groups.iter().enumerate() {
          let group_nodes: Vec<&DiagramNode> = state.nodes.iter()
             .filter(|n| n.group_id.as_deref() == Some(&group.id))
-            .filter(|n| Some(n.id.clone()) != state.dragging_node) // Exclude if being dragged
+            .filter(|n| {
+                if Some(n.id.clone()) == state.dragging_node {
+                     !shift_held
+                } else {
+                     true
+                }
+            })
             .collect();
             
         if group_nodes.is_empty() { continue; }
@@ -394,19 +401,22 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             // Track globally for drop detection
             state.dragging_node = Some(node.id.clone());
         } else if node_response.drag_stopped() {
-             // Check drop target
-             let node_center_screen = node_rect.center();
-             let mut new_group_id = None;
-             
-             // Check against group bounds (calculated earlier)
-             for (_, gid, rect, _, _) in &group_bounds {
-                 if rect.contains(node_center_screen) {
-                     new_group_id = Some(gid.clone());
-                     break; 
+             let shift_held = ui.input(|i| i.modifiers.shift);
+             if shift_held {
+                 // Check drop target
+                 let node_center_screen = node_rect.center();
+                 let mut new_group_id = None;
+                 
+                 // Check against group bounds (calculated earlier)
+                 for (_, gid, rect, _, _) in &group_bounds {
+                     if rect.contains(node_center_screen) {
+                         new_group_id = Some(gid.clone());
+                         break; 
+                     }
                  }
+                 
+                 node.group_id = new_group_id;
              }
-             
-             node.group_id = new_group_id;
              state.dragging_node = None;
         }
 
