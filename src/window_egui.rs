@@ -10111,13 +10111,39 @@ impl App for Tabular {
             if ready {
                 if let Some(conn_id) = self.pool_wait_connection_id {
                     let queued = self.pool_wait_query.clone();
-                    // Execute now
-                    let result = crate::connection::execute_query_with_connection(
-                        self,
-                        conn_id,
-                        queued.clone(),
-                    );
-                    self.apply_query_result(conn_id, queued, result);
+                    
+                    // Execute asynchronously to avoid freezing if connection is still slow
+                    let job_id = self.next_query_job_id;
+                    self.next_query_job_id += 1;
+                    
+                    match crate::connection::prepare_query_job(self, conn_id, queued.clone(), job_id) {
+                        Ok(job) => {
+                            match crate::connection::spawn_query_job(self, job.clone(), self.query_result_sender.clone()) {
+                                Ok(handle) => {
+                                    self.active_query_jobs.insert(job_id, crate::connection::QueryJobStatus {
+                                        job_id,
+                                        connection_id: conn_id,
+                                        query_preview: queued.chars().take(50).collect(),
+                                        started_at: std::time::Instant::now(),
+                                        completed: false,
+                                    });
+                                    self.active_query_handles.insert(job_id, handle);
+                                    log::debug!("🚀 Asynchronously queued pool-wait query (Job {})", job_id);
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to spawn queued query: {:?}", e);
+                                    self.error_message = format!("Failed to spawn queued query: {:?}", e);
+                                    self.show_error_message = true;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                             log::error!("Failed to prepare queued query: {:?}", e);
+                             self.error_message = format!("Failed to prepare queued query: {:?}", e);
+                             self.show_error_message = true;
+                        }
+                    }
+
                 }
                 // Clear wait state
                 self.pool_wait_in_progress = false;
