@@ -2210,13 +2210,11 @@ impl Tabular {
                     fks = crate::connection::get_foreign_keys(self, conn_id, &db_name).await;
                     
                     // Fetch all columns for diagram (MySQL optimization)
-                    if let Some(pool_enum) = self.connection_pools.get(&conn_id) {
-                         if let models::enums::DatabasePool::MySQL(p) = pool_enum {
-                             if let Ok(cols) = crate::driver_mysql::fetch_mysql_columns(p, &db_name).await {
+                    if let Some(pool_enum) = self.connection_pools.get(&conn_id)
+                         && let models::enums::DatabasePool::MySQL(p) = pool_enum
+                             && let Ok(cols) = crate::driver_mysql::fetch_mysql_columns(p, &db_name).await {
                                  columns_map = cols;
                              }
-                         }
-                    }
                 });
             }
 
@@ -2248,11 +2246,7 @@ impl Tabular {
             }
 
             // 2. Initialize Diagram State
-            let mut state = if let Some(loaded) = self.load_diagram(conn_id, &db_name) {
-                loaded
-            } else {
-                models::structs::DiagramState::default()
-            };
+            let mut state = self.load_diagram(conn_id, &db_name).unwrap_or_default();
             
             // Populate nodes (tables)
             let mut table_names = std::collections::HashSet::new();
@@ -11196,11 +11190,7 @@ impl App for Tabular {
         // Disable visual indicators for active/focused elements (but keep text selection visible)
         ctx.style_mut(|style| {
             // Keep text selection visible with a subtle highlight
-            if self.is_dark_mode {
-                style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 30, 0, 60);
-            } else {
-                style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 30, 0, 60);
-            }
+            style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 30, 0, 60);
             style.visuals.selection.stroke.color = egui::Color32::BLACK;
 
             // Only disable other widget visual indicators
@@ -11991,8 +11981,8 @@ impl App for Tabular {
                     let mut rendered_diagram = false;
                     let mut diagram_to_save = None;
                     
-                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                        if let Some(diagram_state) = &mut tab.diagram_state {
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                        && let Some(diagram_state) = &mut tab.diagram_state {
                            crate::diagram_view::render_diagram(ui, diagram_state);
                            rendered_diagram = true;
                            
@@ -12001,14 +11991,12 @@ impl App for Tabular {
                                diagram_to_save = Some((tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
                            }
                         }
-                    }
                     
-                    if let Some((conn_id_opt, db_name_opt, state)) = diagram_to_save {
-                         if let Some(cid) = conn_id_opt {
+                    if let Some((conn_id_opt, db_name_opt, state)) = diagram_to_save
+                         && let Some(cid) = conn_id_opt {
                              let db = db_name_opt.unwrap_or_else(|| "default".to_string());
                              self.save_diagram(cid, &db, &state);
                          }
-                    }
                     
                     if !rendered_diagram {
                         self.render_query_editor_with_split(ui, "regular_query");
@@ -12606,8 +12594,8 @@ impl Tabular {
     }
 
     fn load_diagram(&self, conn_id: i64, db_name: &str) -> Option<models::structs::DiagramState> {
-        if let Some(path) = self.get_diagram_path(conn_id, db_name) {
-            if path.exists() {
+        if let Some(path) = self.get_diagram_path(conn_id, db_name)
+            && path.exists() {
                  match std::fs::File::open(&path) {
                     Ok(file) => {
                         let reader = std::io::BufReader::new(file);
@@ -12622,7 +12610,6 @@ impl Tabular {
                     Err(e) => log::error!("Failed to open diagram file {:?}: {}", path, e),
                  }
             }
-        }
         None
     }
 }

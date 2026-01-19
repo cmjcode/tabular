@@ -12,7 +12,7 @@ use redis::{Client, aio::ConnectionManager};
 use sqlx::Connection; // for MySqlConnection::connect
 use sqlx::mysql::MySqlConnection;
 use sqlx::{
-    Column, Row, SqlitePool, mysql::MySqlPoolOptions, postgres::PgPoolOptions,
+    Column, Executor, Row, SqlitePool, mysql::MySqlPoolOptions, postgres::PgPoolOptions,
     sqlite::SqlitePoolOptions,
 };
 use std::sync::Arc;
@@ -653,9 +653,8 @@ async fn execute_mysql_query_job(
 
         if need_switch {
             debug!("[mysql] Switching database to '{}'", default_db);
-            if let Err(e) = sqlx::query(&format!("USE `{}`", default_db))
-                .execute(&mut *conn)
-                .await
+            let use_query = format!("USE `{}`", default_db);
+            if let Err(e) = conn.execute(sqlx::raw_sql(&use_query)).await
             {
                 last_error = Some(format!("Failed to switch database to {}: {}", default_db, e));
                 // If switching fails, the connection might be bad, retry loop handles it
@@ -706,7 +705,7 @@ async fn execute_mysql_query_job(
                     .trim();
 
                 let use_stmt = format!("USE `{}`", db_name);
-                if let Err(e) = sqlx::query(&use_stmt).execute(&mut *conn).await {
+                if let Err(e) = conn.execute(sqlx::raw_sql(&use_stmt)).await {
                     last_error = Some(format!("USE failed: {}", e));
                     execution_success = false;
                     break;

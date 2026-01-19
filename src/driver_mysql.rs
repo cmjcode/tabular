@@ -904,7 +904,7 @@ pub(crate) async fn fetch_mysql_columns(
         let column_name: String = decode(&row, 1);
 
         if !table_name.is_empty() {
-             columns_map.entry(table_name).or_insert_with(Vec::new).push(column_name);
+             columns_map.entry(table_name).or_default().push(column_name);
         }
     }
 

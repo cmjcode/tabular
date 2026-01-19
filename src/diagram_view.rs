@@ -151,7 +151,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
 
         if is_renaming {
              let edit_rect = title_rect.shrink(2.0);
-             let response = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
+             let response = ui.scope_builder(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
                  ui.add(egui::TextEdit::singleline(&mut group.title)
                     .frame(false)
                     .text_color(egui::Color32::WHITE)
@@ -254,7 +254,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
 
     // Draw edges (relationships)
     let mut clicked_edge = None;
-    let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+    let _pointer_pos = ui.input(|i| i.pointer.interact_pos());
     let pointer_down = ui.input(|i| i.pointer.primary_clicked());
 
     // Background interaction to clear selection
@@ -286,13 +286,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
 
                 // Determine base color from source group
                 let mut base_color = egui::Color32::from_gray(100);
-                if let Some(group_id) = &src.group_id {
-                    if let Some(group) = state.groups.iter().find(|g| &g.id == group_id) {
+                if let Some(group_id) = &src.group_id
+                    && let Some(group) = state.groups.iter().find(|g| &g.id == group_id) {
                         base_color = group.color.linear_multiply(0.8); // Slight transparency
                     }
-                }
 
-                let mut color = if is_selected {
+                let color = if is_selected {
                     egui::Color32::from_rgb(255, 215, 0) // Gold
                 } else {
                     base_color
@@ -508,11 +507,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
          }
     }
 
-    if let Some(id) = dragging_node_id {
-        if let Some(node) = state.nodes.iter_mut().find(|n| n.id == id) {
+    if let Some(id) = dragging_node_id
+        && let Some(node) = state.nodes.iter_mut().find(|n| n.id == id) {
             node.pos += drag_delta;
         }
-    }
 
     // Draw Toolbar (Export/Import)
     // Move it a bit closer to the right edge if requested, generally right_top aligned is standard.
@@ -523,25 +521,23 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     let toolbar_pos = rect.right_top() + egui::vec2(-toolbar_width, padding);
     let toolbar_rect = egui::Rect::from_min_size(toolbar_pos, egui::vec2(toolbar_width, toolbar_height));
 
-    ui.allocate_ui_at_rect(toolbar_rect, |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar_rect), |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(20.0);
             // "Export" first because we are in right_to_left layout
-            if ui.add(egui::Button::new(egui::RichText::new("Export").color(egui::Color32::from_rgb(255, 100, 100))).frame(false)).clicked() {
-                 if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file() {
-                    if let Ok(file) = std::fs::File::create(path) {
+            if ui.add(egui::Button::new(egui::RichText::new("Export").color(egui::Color32::from_rgb(255, 100, 100))).frame(false)).clicked()
+                 && let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file()
+                    && let Ok(file) = std::fs::File::create(path) {
                         let writer = std::io::BufWriter::new(file);
                         let _ = serde_json::to_writer_pretty(writer, state);
                     }
-                 }
-            }
 
             ui.add_space(10.0);
 
             // "Import" second
-            if ui.add(egui::Button::new(egui::RichText::new("Import").color(egui::Color32::from_rgb(255, 100, 100))).frame(false)).clicked() {
-                if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
-                    if let Ok(file) = std::fs::File::open(path) {
+            if ui.add(egui::Button::new(egui::RichText::new("Import").color(egui::Color32::from_rgb(255, 100, 100))).frame(false)).clicked()
+                && let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file()
+                    && let Ok(file) = std::fs::File::open(path) {
                         let reader = std::io::BufReader::new(file);
                         if let Ok(new_state) = serde_json::from_reader::<_, DiagramState>(reader) {
                             *state = new_state;
@@ -550,8 +546,6 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                             state.save_requested = true;
                         }
                     }
-                }
-            }
             ui.add_space(10.0);
 
         });
@@ -632,8 +626,8 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
 
         // 2. Attraction (Edges / Foreign Keys)
         for edge in &state.edges {
-            if let Some(src_idx) = state.nodes.iter().position(|n| n.id == edge.source) {
-                if let Some(dst_idx) = state.nodes.iter().position(|n| n.id == edge.target) {
+            if let Some(src_idx) = state.nodes.iter().position(|n| n.id == edge.source)
+                && let Some(dst_idx) = state.nodes.iter().position(|n| n.id == edge.target) {
                     let diff = state.nodes[src_idx].pos - state.nodes[dst_idx].pos;
                     let dist = diff.length();
                     
@@ -646,7 +640,6 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
                         forces[dst_idx] += force;
                     }
                 }
-            }
         }
 
         // 3. Prefix Attraction (Group by name similarity)
@@ -705,12 +698,10 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
                              } else {
                                  egui::vec2(overlap_w, 0.0)
                              }
+                         } else if r1.center().y < r2.center().y {
+                             egui::vec2(0.0, -overlap_h)
                          } else {
-                             if r1.center().y < r2.center().y {
-                                 egui::vec2(0.0, -overlap_h)
-                             } else {
-                                 egui::vec2(0.0, overlap_h)
-                             }
+                             egui::vec2(0.0, overlap_h)
                          } * 0.1; // Gentle push per iteration
 
                          // Apply to all nodes in group 1
@@ -731,17 +722,17 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
         }
 
         // 4. Center Gravity (Pull to 0,0) + Apply Forces
-        for i in 0..node_count {
-            let center_pull = egui::Vec2::ZERO - state.nodes[i].pos.to_vec2();
-            forces[i] += center_pull * center_gravity;
+        for (node, force) in state.nodes.iter_mut().zip(forces.iter_mut()) {
+            let center_pull = egui::Vec2::ZERO - node.pos.to_vec2();
+            *force += center_pull * center_gravity;
             
             // Limit max force to prevent explosion
             let max_force = 1000.0;
-            if forces[i].length() > max_force {
-               forces[i] = forces[i].normalized() * max_force;
+            if force.length() > max_force {
+               *force = force.normalized() * max_force;
             }
 
-            state.nodes[i].pos += forces[i] * delta_time;
+            node.pos += *force * delta_time;
         }
     }
 
