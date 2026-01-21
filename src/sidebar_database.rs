@@ -1431,6 +1431,121 @@ pub(crate) fn remove_connection_from_tree(tabular: &mut window_egui::Tabular, co
         .retain(|folder| !folder.children.is_empty() || folder.name == "Default");
 }
 
+pub fn get_default_dba_views(
+    driver: &models::enums::DatabaseType,
+) -> Vec<(&'static str, models::enums::NodeType, &'static str)> {
+    use models::enums::{DatabaseType, NodeType};
+    match driver {
+        DatabaseType::MySQL => vec![
+            (
+                "Users",
+                NodeType::UsersFolder,
+                "SELECT Host, User, plugin, account_locked, password_expired, password_last_changed FROM mysql.user ORDER BY User, Host;"
+            ),
+            (
+                "Privileges",
+                NodeType::PrivilegesFolder,
+                "SELECT GRANTEE, PRIVILEGE_TYPE, IS_GRANTABLE FROM INFORMATION_SCHEMA.USER_PRIVILEGES ORDER BY GRANTEE, PRIVILEGE_TYPE;"
+            ),
+            (
+                "Processes",
+                NodeType::ProcessesFolder,
+                "SHOW FULL PROCESSLIST;"
+            ),
+            (
+                "Status",
+                NodeType::StatusFolder,
+                "SHOW GLOBAL STATUS;"
+            ),
+            (
+                "Blocked Query",
+                NodeType::BlockedQueriesFolder,
+                "SELECT * FROM information_schema.PROCESSLIST WHERE STATE LIKE '%lock%';"
+            ),
+            (
+                "Replication Status",
+                NodeType::ReplicationStatusFolder,
+                "SHOW REPLICA STATUS;"
+            ),
+            (
+                "Master Status",
+                NodeType::MasterStatusFolder,
+                "SHOW MASTER STATUS;"
+            ),
+            (
+                "User Active",
+                NodeType::MetricsUserActiveFolder,
+                "SELECT USER, COUNT(*) AS session_count FROM information_schema.PROCESSLIST GROUP BY USER ORDER BY session_count DESC;"
+            ),
+        ],
+        DatabaseType::PostgreSQL => vec![
+            (
+                "Users",
+                NodeType::UsersFolder,
+                "SELECT usename AS user, usesysid, usecreatedb, usesuper FROM pg_user ORDER BY usename;"
+            ),
+            (
+                "Privileges",
+                NodeType::PrivilegesFolder,
+                "SELECT grantee, table_catalog, table_schema, table_name, privilege_type FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_name;"
+            ),
+            (
+                "Processes",
+                NodeType::ProcessesFolder,
+                "SELECT pid, usename, application_name, client_addr, state, query_start, query FROM pg_stat_activity ORDER BY query_start DESC NULLS LAST;"
+            ),
+            (
+                "Status",
+                NodeType::StatusFolder,
+                "SELECT name, setting FROM pg_settings ORDER BY name;"
+            ),
+            (
+                "Blocked Query",
+                NodeType::BlockedQueriesFolder,
+                "SELECT\n    blocked.pid AS blocked_pid,\n    blocked.usename AS blocked_user,\n    blocked.application_name AS blocked_app,\n    blocked.client_addr AS blocked_client,\n    blocked.wait_event_type,\n    blocked.wait_event,\n    blocked.query_start AS blocked_query_start,\n    blocked.query AS blocked_query,\n    blocking.pid AS blocking_pid,\n    blocking.usename AS blocking_user,\n    blocking.application_name AS blocking_app,\n    blocking.client_addr AS blocking_client,\n    blocking.query_start AS blocking_query_start,\n    blocking.query AS blocking_query\nFROM pg_stat_activity blocked\nJOIN pg_locks blocked_locks ON blocked.pid = blocked_locks.pid AND NOT blocked_locks.granted\nJOIN pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype\n    AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database\n    AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation\n    AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page\n    AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple\n    AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid\n    AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid\n    AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid\n    AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid\n    AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid\nJOIN pg_stat_activity blocking ON blocking.pid = blocking_locks.pid\nWHERE blocked.wait_event_type IS NOT NULL\nORDER BY blocked.query_start;"
+            ),
+            (
+                "User Active",
+                NodeType::MetricsUserActiveFolder,
+                "SELECT usename AS user, COUNT(*) AS session_count FROM pg_stat_activity GROUP BY usename ORDER BY session_count DESC;"
+            ),
+        ],
+        DatabaseType::MsSQL => vec![
+            (
+                "Users",
+                NodeType::UsersFolder,
+                "SELECT name, type_desc, create_date, modify_date FROM sys.server_principals WHERE type IN ('S','U','G') AND name NOT LIKE '##MS_%' ORDER BY name;"
+            ),
+            (
+                "Privileges",
+                NodeType::PrivilegesFolder,
+                "SELECT dp.name AS principal_name, sp.permission_name, sp.state_desc FROM sys.server_permissions sp JOIN sys.server_principals dp ON sp.grantee_principal_id = dp.principal_id ORDER BY dp.name, sp.permission_name;"
+            ),
+            (
+                "Processes",
+                NodeType::ProcessesFolder,
+                "SELECT session_id, login_name, host_name, status, program_name, cpu_time, memory_usage FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;"
+            ),
+            (
+                "Status",
+                NodeType::StatusFolder,
+                "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;"
+            ),
+            (
+                "Blocked Query",
+                NodeType::BlockedQueriesFolder,
+                "SELECT\n    blocked_req.session_id AS blocked_session_id,\n    blocked.login_name AS blocked_login,\n    blocked.status AS blocked_status,\n    blocked_req.wait_time AS blocked_wait_ms,\n    blocked_req.last_wait_type AS blocked_last_wait_type,\n    DB_NAME(blocked_req.database_id) AS database_name,\n    blocked_text.text AS blocked_query,\n    blocked_req.blocking_session_id AS blocking_session_id,\n    blocking.login_name AS blocking_login,\n    blocking.status AS blocking_status,\n    blocking_text.text AS blocking_query\nFROM sys.dm_exec_requests blocked_req\nJOIN sys.dm_exec_sessions blocked ON blocked_req.session_id = blocked.session_id\nLEFT JOIN sys.dm_exec_sessions blocking ON blocked_req.blocking_session_id = blocking.session_id\nLEFT JOIN sys.dm_exec_requests blocking_req ON blocked_req.blocking_session_id = blocking_req.session_id\nOUTER APPLY sys.dm_exec_sql_text(blocked_req.sql_handle) AS blocked_text\nOUTER APPLY sys.dm_exec_sql_text(blocking_req.sql_handle) AS blocking_text\nWHERE blocked_req.blocking_session_id <> 0\nORDER BY blocked_req.wait_time DESC;"
+            ),
+            (
+                "User Active",
+                NodeType::MetricsUserActiveFolder,
+                "SELECT login_name AS [user], COUNT(*) AS session_count FROM sys.dm_exec_sessions GROUP BY login_name ORDER BY session_count DESC;"
+            ),
+        ],
+        _ => vec![],
+    }
+}
+
 pub(crate) fn create_connections_folder_structure(
     tabular: &mut window_egui::Tabular,
 ) -> Vec<models::structs::TreeNode> {

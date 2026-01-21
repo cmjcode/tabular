@@ -1315,8 +1315,8 @@ impl Tabular {
                         log::warn!("*** GLOBAL FLAG BACKSPACE TRIGGERED FOR NAME ***");
                         
                         let mut cleared_all = false;
-                        if let Some(state) = egui::TextEdit::load_state(ui.ctx(), name_id) {
-                            if let Some(range) = state.cursor.char_range() {
+                        if let Some(state) = egui::TextEdit::load_state(ui.ctx(), name_id)
+                            && let Some(range) = state.cursor.char_range() {
                                 let p1 = range.primary.index;
                                 let p2 = range.secondary.index;
                                 let sel_len = p1.max(p2) - p1.min(p2);
@@ -1326,7 +1326,6 @@ impl Tabular {
                                     cleared_all = true;
                                 }
                             }
-                        }
                         
                         if !cleared_all {
                              self.new_view_name.pop();
@@ -1363,8 +1362,8 @@ impl Tabular {
                              
                              // Check if we have a selection covering the whole text
                              let mut cleared_all = false;
-                             if let Some(state) = egui::TextEdit::load_state(ui.ctx(), query_id) {
-                                 if let Some(range) = state.cursor.char_range() {
+                             if let Some(state) = egui::TextEdit::load_state(ui.ctx(), query_id)
+                                 && let Some(range) = state.cursor.char_range() {
                                      // If selection length == text length, we are deleting everything
                                      let p1 = range.primary.index;
                                      let p2 = range.secondary.index;
@@ -1375,7 +1374,6 @@ impl Tabular {
                                          cleared_all = true;
                                      }
                                  }
-                             }
                              
                              if !cleared_all {
                                  self.new_view_query.pop();
@@ -1388,9 +1386,9 @@ impl Tabular {
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                             if !self.new_view_name.is_empty() && !self.new_view_query.is_empty() {
-                                 if let Some(conn_id) = self.new_view_connection_id {
+                        if ui.button("Save").clicked()
+                             && !self.new_view_name.is_empty() && !self.new_view_query.is_empty()
+                                 && let Some(conn_id) = self.new_view_connection_id {
                                      // Save logic
                                      if let Some(conn_idx) = self.connections.iter().position(|c| c.id == Some(conn_id)) {
                                          let mut conn = self.connections[conn_idx].clone();
@@ -1413,8 +1411,6 @@ impl Tabular {
                                          }
                                      }
                                  }
-                             }
-                        }
                         if ui.button("Cancel").clicked() {
                             self.show_add_view_dialog = false;
                         }
@@ -1506,13 +1502,12 @@ impl Tabular {
                 let mut captured_selection_text = String::new();
 
                 // Auto-execute if requested by the tab (e.g. Custom View opened)
-                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    if tab.should_run_on_open {
+                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                    && tab.should_run_on_open {
                         execute_clicked = true;
                         tab.should_run_on_open = false;
                         self.query_execution_in_progress = true;
                     }
-                }
 
                 egui::Area::new(egui::Id::new((format!("floating_execute_button_{}", context_id), self.active_tab_index)))
                     .order(egui::Order::Foreground)
@@ -2227,6 +2222,7 @@ impl Tabular {
         let mut open_diagram_requests: Vec<(i64, String)> = Vec::new();
         let mut add_view_requests: Vec<i64> = Vec::new();
         let mut custom_view_click_requests: Vec<(i64, String, String)> = Vec::new();
+        let mut delete_custom_view_requests: Vec<(i64, String)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -2239,7 +2235,7 @@ impl Tabular {
                 folder_for_removal,
                 parent_for_creation,
                 folder_removal_mapping,
-                dba_click_request,
+                _dba_click_request,
                 index_click_request,
                 create_index_request,
                 alter_table_request,
@@ -2251,6 +2247,7 @@ impl Tabular {
                 open_diagram_request,
                 request_add_view_dialog,
                 custom_view_click_request,
+                delete_custom_view_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -2297,59 +2294,30 @@ impl Tabular {
                 alter_table_requests.push((conn_id, db_name, table_name));
             }
             // Collect DBA quick view requests
-            if let Some((conn_id, node_type)) = dba_click_request {
-                // Handle immediately here since we have &mut self
-                if let Some(conn) = self
-                    .connections
-                    .iter()
-                    .find(|c| c.id == Some(conn_id))
-                    .cloned()
-                {
-                    if let Some((tab_title, query_content, special_mode)) =
-                        self.build_dba_query(&conn, &node_type)
-                    {
-                        // Create tab first so active_tab_index refers to the new tab before we set special mode
-                        editor::create_new_tab_with_connection(
-                            self,
-                            tab_title.clone(),
-                            query_content.clone(),
-                            Some(conn_id),
-                        );
-                        // Now attach special mode to that newly created active tab
-                        if let Some(mode) = special_mode
-                            && let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index)
-                        {
-                            active_tab.dba_special_mode = Some(mode);
-                        }
-                        self.current_connection_id = Some(conn_id);
-                        // Ensure (or kick off) connection pool before executing; fall back to direct exec if still pending
-                        if let Some(rt) = self.runtime.clone() {
-                            rt.block_on(async {
-                                let _ =
-                                    crate::connection::get_or_create_connection_pool(self, conn_id)
-                                        .await;
-                            });
-                        }
-                        if let Some((headers, data)) =
-                            connection::execute_query_with_connection(self, conn_id, query_content)
-                        {
-                            self.current_table_headers = headers;
-                            self.current_table_data = data.clone();
-                            self.all_table_data = data;
-                            self.current_table_name = tab_title;
-                            self.is_table_browse_mode = false;
-                            self.total_rows = self.all_table_data.len();
-                            self.current_page = 0;
-                        }
-                    } else {
-                        self.error_message =
-                            "DBA view not supported for this database type".to_string();
-                        self.show_error_message = true;
-                    }
-                }
-            }
             // Collect Custom View click requests (Run immediately like DBA Views)
             if let Some((conn_id, view_name, query)) = custom_view_click_requests.last().cloned() {
+                // Handle immediately here
+                 editor::create_new_tab_with_connection(
+                    self,
+                    view_name.clone(),
+                    query.clone(),
+                    Some(conn_id),
+                );
+
+                // Detect special mode from query (Preserve DBA special modes)
+                let trimmed_query = query.trim();
+                let special_mode = if trimmed_query.eq_ignore_ascii_case("SHOW REPLICA STATUS;") {
+                    Some(models::enums::DBASpecialMode::ReplicationStatus)
+                } else if trimmed_query.eq_ignore_ascii_case("SHOW MASTER STATUS;") {
+                    Some(models::enums::DBASpecialMode::MasterStatus)
+                } else {
+                    None
+                };
+
+                if let Some(mode) = special_mode
+                    && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        tab.dba_special_mode = Some(mode);
+                    }
                 // Handle immediately here
                  editor::create_new_tab_with_connection(
                     self,
@@ -2422,6 +2390,9 @@ impl Tabular {
                 log::warn!("!!! REQUEST ADD VIEW DIALOG for conn_id: {}", conn_id);
                 add_view_requests.push(conn_id);
             }
+            if let Some(req) = delete_custom_view_request {
+                delete_custom_view_requests.push(req);
+            }
         }
 
         // Process add view requests
@@ -2432,6 +2403,27 @@ impl Tabular {
              self.new_view_connection_id = Some(conn_id);
              self.new_view_name = String::new();
              self.new_view_query = "SELECT * FROM ...".to_string();
+        }
+
+        if let Some((conn_id, view_name)) = delete_custom_view_requests.pop() {
+             log::info!("🗑️ Deleting custom view: {} from connection {}", view_name, conn_id);
+             if let Some(conn) = self.connections.iter_mut().find(|c| c.id == Some(conn_id)) {
+                     // Remove from vector
+                     if let Some(view_idx) = conn.custom_views.iter().position(|v| v.name == view_name) {
+                         conn.custom_views.remove(view_idx);
+                         
+                         // Persist changes
+                         let config_to_save = conn.clone();
+                         if crate::sidebar_database::update_connection_in_database(self, &config_to_save) {
+                             log::info!("✅ Saved connection config after deleting view");
+                             // No need to refresh entire connections tree if we just update in-memory
+                             // But refreshing ensures consistency
+                             crate::sidebar_database::refresh_connections_tree(self);
+                         } else {
+                             log::error!("❌ Failed to save connection config");
+                         }
+                     }
+                 }
         }
 
         for (conn_id, db_name) in create_table_requests {
@@ -3896,6 +3888,7 @@ impl Tabular {
         let mut generate_ddl_request: Option<(i64, Option<String>, String)> = None;
         let mut open_diagram_request: Option<(i64, String)> = None;
         let mut custom_view_click_request: Option<(i64, String, String)> = None;
+        let mut delete_custom_view_request: Option<(i64, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -4576,6 +4569,7 @@ impl Tabular {
                             child_open_diagram_request,
                             child_request_add_view_dialog,
                             child_custom_view_click_request,
+                            _child_delete_custom_view,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -4650,6 +4644,9 @@ impl Tabular {
                         if let Some(child_req) = child_custom_view_click_request {
                             custom_view_click_request = Some(child_req);
                         }
+                        if let Some(child_req) = _child_delete_custom_view {
+                             delete_custom_view_request = Some(child_req);
+                        }
                     }
                 } else {
                     ui.indent(id, |ui| {
@@ -4676,6 +4673,7 @@ impl Tabular {
                                 child_open_diagram_request,
                                 child_request_add_view_dialog,
                                 child_custom_view_click_request,
+                                child_delete_custom_view_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -4753,6 +4751,9 @@ impl Tabular {
                             }
                             if let Some(child_req) = child_custom_view_click_request {
                                 custom_view_click_request = Some(child_req);
+                            }
+                            if let Some(child_req) = child_delete_custom_view_request {
+                                delete_custom_view_request = Some(child_req);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -4890,6 +4891,7 @@ impl Tabular {
                         }
                     }
                     // DBA quick views: emit a click request to be handled by parent (needs self)
+                    // Unified View Processing (DBA Views + Custom Views)
                     models::enums::NodeType::UsersFolder
                     | models::enums::NodeType::PrivilegesFolder
                     | models::enums::NodeType::ProcessesFolder
@@ -4897,15 +4899,11 @@ impl Tabular {
                     | models::enums::NodeType::BlockedQueriesFolder
                     | models::enums::NodeType::ReplicationStatusFolder
                     | models::enums::NodeType::MasterStatusFolder
-                    | models::enums::NodeType::MetricsUserActiveFolder => {
-                        if let Some(conn_id) = node.connection_id {
-                            dba_click_request = Some((conn_id, node.node_type.clone()));
-                        }
-                    }
-                    models::enums::NodeType::CustomView => {
-                        debug!("👁️ Custom View clicked: {}", node.name);
+                    | models::enums::NodeType::MetricsUserActiveFolder
+                    | models::enums::NodeType::CustomView => {
+                        debug!("👁️ View clicked: {}", node.name);
                         if let Some(query) = &node.query {
-                           // Use the robust DBA-style execution path
+                           // Use the robust execution path
                            if let Some(conn_id) = node.connection_id {
                                 custom_view_click_request = Some((conn_id, node.name.clone(), query.clone()));
                            }
@@ -5085,6 +5083,19 @@ impl Tabular {
                 });
             }
 
+
+            // Add context menu for Custom View items
+            if node.node_type == models::enums::NodeType::CustomView {
+                response.context_menu(|ui| {
+                     if ui.button("🗑️ Delete this dba view").clicked() {
+                         if let Some(conn_id) = node.connection_id {
+                             delete_custom_view_request = Some((conn_id, node.name.clone()));
+                         }
+                         ui.close();
+                     }
+                });
+            }
+
             // Add context menu for Index nodes (non-expandable branch)
             if node.node_type == models::enums::NodeType::Index {
                 response.context_menu(|ui| {
@@ -5125,6 +5136,7 @@ impl Tabular {
             open_diagram_request,
             request_add_view_dialog,
             custom_view_click_request,
+            delete_custom_view_request,
         )
     }
 
@@ -5147,140 +5159,6 @@ impl Tabular {
         }
     }
 
-    // Build standard DBA queries for quick views based on db type and node kind
-    fn build_dba_query(
-        &self,
-        connection: &models::structs::ConnectionConfig,
-        node_type: &models::enums::NodeType,
-    ) -> Option<(String, String, Option<models::enums::DBASpecialMode>)> {
-        use models::enums::{DatabaseType, NodeType};
-        match connection.connection_type {
-            DatabaseType::MySQL => {
-                match node_type {
-                    NodeType::UsersFolder => Some((
-                        format!("DBA: MySQL Users - {}", connection.name),
-                        "SELECT Host, User, plugin, account_locked, password_expired, password_last_changed \
-FROM mysql.user ORDER BY User, Host;".to_string(),
-                        None
-                    )),
-                    NodeType::PrivilegesFolder => Some((
-                        format!("DBA: MySQL Privileges - {}", connection.name),
-                        "SELECT GRANTEE, PRIVILEGE_TYPE, IS_GRANTABLE FROM INFORMATION_SCHEMA.USER_PRIVILEGES \
-ORDER BY GRANTEE, PRIVILEGE_TYPE;".to_string(),
-                        None
-                    )),
-                    NodeType::ProcessesFolder => Some((
-                        format!("DBA: MySQL Processlist - {}", connection.name),
-                        "SHOW FULL PROCESSLIST;".to_string(),
-                        None
-                    )),
-                    NodeType::StatusFolder => Some((
-                        format!("DBA: MySQL Global Status - {}", connection.name),
-                        "SHOW GLOBAL STATUS;".to_string(),
-                        None
-                    )),
-                    NodeType::BlockedQueriesFolder => Some((
-                        format!("DBA: MySQL Blocked Queries - {}", connection.name),
-                        "SELECT * FROM information_schema.PROCESSLIST WHERE STATE LIKE '%lock%';".to_string(),
-                        None
-                    )),
-                    NodeType::ReplicationStatusFolder => Some((
-                        format!("DBA: MySQL Replication Status - {}", connection.name),
-                        "SHOW REPLICA STATUS;".to_string(),
-                        Some(models::enums::DBASpecialMode::ReplicationStatus)
-                    )),
-                    NodeType::MasterStatusFolder => Some((
-                        format!("DBA: MySQL Master Status - {}", connection.name),
-                        "SHOW MASTER STATUS;".to_string(),
-                        Some(models::enums::DBASpecialMode::MasterStatus)
-                    )),
-                    NodeType::MetricsUserActiveFolder => Some((
-                        format!("DBA: MySQL User Active - {}", connection.name),
-                        "SELECT USER, COUNT(*) AS session_count FROM information_schema.PROCESSLIST GROUP BY USER ORDER BY session_count DESC;".to_string(),
-                        None
-                    )),
-                    _ => None,
-                }
-            }
-            DatabaseType::PostgreSQL => {
-                match node_type {
-                    NodeType::UsersFolder => Some((
-                        format!("DBA: PostgreSQL Users - {}", connection.name),
-                        "SELECT usename AS user, usesysid, usecreatedb, usesuper FROM pg_user ORDER BY usename;".to_string(),
-                        None
-                    )),
-                    NodeType::PrivilegesFolder => Some((
-                        format!("DBA: PostgreSQL Privileges - {}", connection.name),
-                        "SELECT grantee, table_catalog, table_schema, table_name, privilege_type \
-FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_name;".to_string(),
-                        None
-                    )),
-                    NodeType::ProcessesFolder => Some((
-                        format!("DBA: PostgreSQL Activity - {}", connection.name),
-                        "SELECT pid, usename, application_name, client_addr, state, query_start, query FROM pg_stat_activity ORDER BY query_start DESC NULLS LAST;".to_string(),
-                        None
-                    )),
-                    NodeType::StatusFolder => Some((
-                        format!("DBA: PostgreSQL Settings - {}", connection.name),
-                        "SELECT name, setting FROM pg_settings ORDER BY name;".to_string(),
-                        None
-                    )),
-                    NodeType::BlockedQueriesFolder => Some((
-                        format!("DBA: PostgreSQL Blocked Queries - {}", connection.name),
-                        "SELECT\n    blocked.pid AS blocked_pid,\n    blocked.usename AS blocked_user,\n    blocked.application_name AS blocked_app,\n    blocked.client_addr AS blocked_client,\n    blocked.wait_event_type,\n    blocked.wait_event,\n    blocked.query_start AS blocked_query_start,\n    blocked.query AS blocked_query,\n    blocking.pid AS blocking_pid,\n    blocking.usename AS blocking_user,\n    blocking.application_name AS blocking_app,\n    blocking.client_addr AS blocking_client,\n    blocking.query_start AS blocking_query_start,\n    blocking.query AS blocking_query\nFROM pg_stat_activity blocked\nJOIN pg_locks blocked_locks ON blocked.pid = blocked_locks.pid AND NOT blocked_locks.granted\nJOIN pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype\n    AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database\n    AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation\n    AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page\n    AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple\n    AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid\n    AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid\n    AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid\n    AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid\n    AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid\nJOIN pg_stat_activity blocking ON blocking.pid = blocking_locks.pid\nWHERE blocked.wait_event_type IS NOT NULL\nORDER BY blocked.query_start;".to_string(),
-                        None
-                    )),
-                    NodeType::MetricsUserActiveFolder => Some((
-                        format!("DBA: PostgreSQL User Active - {}", connection.name),
-                        "SELECT usename AS user, COUNT(*) AS session_count FROM pg_stat_activity GROUP BY usename ORDER BY session_count DESC;".to_string(),
-                        None
-                    )),
-                    _ => None,
-                }
-            }
-            DatabaseType::MsSQL => {
-                match node_type {
-                    NodeType::UsersFolder => Some((
-                        format!("DBA: MsSQL Principals - {}", connection.name),
-                        "SELECT name, type_desc, create_date, modify_date FROM sys.server_principals \
-WHERE type IN ('S','U','G') AND name NOT LIKE '##MS_%' ORDER BY name;".to_string(),
-                        None
-                    )),
-                    NodeType::PrivilegesFolder => Some((
-                        format!("DBA: MsSQL Server Permissions - {}", connection.name),
-                        "SELECT dp.name AS principal_name, sp.permission_name, sp.state_desc \
-FROM sys.server_permissions sp \
-JOIN sys.server_principals dp ON sp.grantee_principal_id = dp.principal_id \
-ORDER BY dp.name, sp.permission_name;".to_string(),
-                        None
-                    )),
-                    NodeType::ProcessesFolder => Some((
-                        format!("DBA: MsSQL Sessions - {}", connection.name),
-                        "SELECT session_id, login_name, host_name, status, program_name, cpu_time, memory_usage \
-FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
-                        None
-                    )),
-                    NodeType::StatusFolder => Some((
-                        format!("DBA: MsSQL Performance Counters - {}", connection.name),
-                        "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;".to_string(),
-                        None
-                    )),
-                    NodeType::BlockedQueriesFolder => Some((
-                        format!("DBA: MsSQL Blocked Queries - {}", connection.name),
-                        "SELECT\n    blocked_req.session_id AS blocked_session_id,\n    blocked.login_name AS blocked_login,\n    blocked.status AS blocked_status,\n    blocked_req.wait_time AS blocked_wait_ms,\n    blocked_req.last_wait_type AS blocked_last_wait_type,\n    DB_NAME(blocked_req.database_id) AS database_name,\n    blocked_text.text AS blocked_query,\n    blocked_req.blocking_session_id AS blocking_session_id,\n    blocking.login_name AS blocking_login,\n    blocking.status AS blocking_status,\n    blocking_text.text AS blocking_query\nFROM sys.dm_exec_requests blocked_req\nJOIN sys.dm_exec_sessions blocked ON blocked_req.session_id = blocked.session_id\nLEFT JOIN sys.dm_exec_sessions blocking ON blocked_req.blocking_session_id = blocking.session_id\nLEFT JOIN sys.dm_exec_requests blocking_req ON blocked_req.blocking_session_id = blocking_req.session_id\nOUTER APPLY sys.dm_exec_sql_text(blocked_req.sql_handle) AS blocked_text\nOUTER APPLY sys.dm_exec_sql_text(blocking_req.sql_handle) AS blocking_text\nWHERE blocked_req.blocking_session_id <> 0\nORDER BY blocked_req.wait_time DESC;".to_string(),
-                        None
-                    )),
-                    NodeType::MetricsUserActiveFolder => Some((
-                        format!("DBA: MsSQL User Active - {}", connection.name),
-                        "SELECT login_name AS [user], COUNT(*) AS session_count FROM sys.dm_exec_sessions GROUP BY login_name ORDER BY session_count DESC;".to_string(),
-                        None
-                    )),
-                    _ => None,
-                }
-            }
-            DatabaseType::SQLite | DatabaseType::Redis | DatabaseType::MongoDB => None,
-        }
-    }
 
     fn handle_alter_table_request(
         &mut self,
@@ -6349,6 +6227,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     }
 
                     // 2. DBA Views folder
+                    // 2. DBA Views folder
                     let mut dba_folder = models::structs::TreeNode::new(
                         "DBA Views".to_string(),
                         models::enums::NodeType::DBAViewsFolder,
@@ -6357,81 +6236,17 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
 
                     let mut dba_children = Vec::new();
 
-                    // Users
-                    let mut users_folder = models::structs::TreeNode::new(
-                        "Users".to_string(),
-                        models::enums::NodeType::UsersFolder,
-                    );
-                    users_folder.connection_id = Some(connection_id);
-                    users_folder.is_loaded = false;
-                    dba_children.push(users_folder);
-
-                    // Privileges
-                    let mut priv_folder = models::structs::TreeNode::new(
-                        "Privileges".to_string(),
-                        models::enums::NodeType::PrivilegesFolder,
-                    );
-                    priv_folder.connection_id = Some(connection_id);
-                    priv_folder.is_loaded = false;
-                    dba_children.push(priv_folder);
-
-                    // Processes
-                    let mut proc_folder = models::structs::TreeNode::new(
-                        "Processes".to_string(),
-                        models::enums::NodeType::ProcessesFolder,
-                    );
-                    proc_folder.connection_id = Some(connection_id);
-                    proc_folder.is_loaded = false;
-                    dba_children.push(proc_folder);
-
-                    // Status
-                    let mut status_folder = models::structs::TreeNode::new(
-                        "Status".to_string(),
-                        models::enums::NodeType::StatusFolder,
-                    );
-                    status_folder.connection_id = Some(connection_id);
-                    status_folder.is_loaded = false;
-                    dba_children.push(status_folder);
-
-                    let mut blocked_folder = models::structs::TreeNode::new(
-                        "Blocked Query".to_string(),
-                        models::enums::NodeType::BlockedQueriesFolder,
-                    );
-                    blocked_folder.connection_id = Some(connection_id);
-                    blocked_folder.is_loaded = false;
-                    dba_children.push(blocked_folder);
-
-                    // User Active
-                    let mut metrics_user_active_folder = models::structs::TreeNode::new(
-                        "User Active".to_string(),
-                        models::enums::NodeType::MetricsUserActiveFolder,
-                    );
-                    metrics_user_active_folder.connection_id = Some(connection_id);
-                    metrics_user_active_folder.is_loaded = false;
-                    dba_children.push(metrics_user_active_folder);
-
-                    // Replication Status
-                    let mut repl_status_folder = models::structs::TreeNode::new(
-                        "Replication Status".to_string(),
-                        models::enums::NodeType::ReplicationStatusFolder,
-                    );
-                    repl_status_folder.connection_id = Some(connection_id);
-                    repl_status_folder.is_loaded = false;
-                    dba_children.push(repl_status_folder);
-
-                    // Master Status
-                    // Master Status
-                    let mut master_status_folder = models::structs::TreeNode::new(
-                        "Master Status".to_string(),
-                        models::enums::NodeType::MasterStatusFolder,
-                    );
-                    master_status_folder.connection_id = Some(connection_id);
-                    master_status_folder.is_loaded = false;
-                    dba_children.push(master_status_folder);
+                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MySQL) {
+                        let mut node = models::structs::TreeNode::new(name.to_string(), node_type);
+                        node.connection_id = Some(connection_id);
+                        node.is_loaded = false;
+                        node.query = Some(query.to_string());
+                        dba_children.push(node);
+                    }
 
                     // Render Custom Views
                     log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
-                    for (_idx, view) in connection.custom_views.iter().enumerate() {
+                    for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
                             models::enums::NodeType::CustomView,
@@ -6496,57 +6311,17 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
 
                     let mut dba_children = Vec::new();
 
-                    let mut users_folder = models::structs::TreeNode::new(
-                        "Users".to_string(),
-                        models::enums::NodeType::UsersFolder,
-                    );
-                    users_folder.connection_id = Some(connection_id);
-                    users_folder.is_loaded = false;
-                    dba_children.push(users_folder);
-
-                    let mut priv_folder = models::structs::TreeNode::new(
-                        "Privileges".to_string(),
-                        models::enums::NodeType::PrivilegesFolder,
-                    );
-                    priv_folder.connection_id = Some(connection_id);
-                    priv_folder.is_loaded = false;
-                    dba_children.push(priv_folder);
-
-                    let mut proc_folder = models::structs::TreeNode::new(
-                        "Processes".to_string(),
-                        models::enums::NodeType::ProcessesFolder,
-                    );
-                    proc_folder.connection_id = Some(connection_id);
-                    proc_folder.is_loaded = false;
-                    dba_children.push(proc_folder);
-
-                    let mut status_folder = models::structs::TreeNode::new(
-                        "Status".to_string(),
-                        models::enums::NodeType::StatusFolder,
-                    );
-                    status_folder.connection_id = Some(connection_id);
-                    status_folder.is_loaded = false;
-                    dba_children.push(status_folder);
-
-                    let mut blocked_folder = models::structs::TreeNode::new(
-                        "Blocked Query".to_string(),
-                        models::enums::NodeType::BlockedQueriesFolder,
-                    );
-                    blocked_folder.connection_id = Some(connection_id);
-                    blocked_folder.is_loaded = false;
-                    dba_children.push(blocked_folder);
-
-                    let mut metrics_user_active_folder = models::structs::TreeNode::new(
-                        "User Active".to_string(),
-                        models::enums::NodeType::MetricsUserActiveFolder,
-                    );
-                    metrics_user_active_folder.connection_id = Some(connection_id);
-                    metrics_user_active_folder.is_loaded = false;
-                    dba_children.push(metrics_user_active_folder);
+                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::PostgreSQL) {
+                         let mut node = models::structs::TreeNode::new(name.to_string(), node_type);
+                         node.connection_id = Some(connection_id);
+                         node.is_loaded = false;
+                         node.query = Some(query.to_string());
+                         dba_children.push(node);
+                    }
 
                     // Render Custom Views
                     log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
-                    for (_idx, view) in connection.custom_views.iter().enumerate() {
+                    for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
                             models::enums::NodeType::CustomView,
@@ -6685,7 +6460,6 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                         databases_folder.children.push(db_node);
                     }
 
-                    // DBA Views folder similar to MySQL
                     let mut dba_folder = models::structs::TreeNode::new(
                         "DBA Views".to_string(),
                         models::enums::NodeType::DBAViewsFolder,
@@ -6693,59 +6467,18 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     dba_folder.connection_id = Some(connection_id);
 
                     let mut dba_children = Vec::new();
-                    let mut users_folder = models::structs::TreeNode::new(
-                        "Users".to_string(),
-                        models::enums::NodeType::UsersFolder,
-                    );
-                    users_folder.connection_id = Some(connection_id);
-                    users_folder.is_loaded = false;
-                    dba_children.push(users_folder);
 
-                    let mut priv_folder = models::structs::TreeNode::new(
-                        "Privileges".to_string(),
-                        models::enums::NodeType::PrivilegesFolder,
-                    );
-                    priv_folder.connection_id = Some(connection_id);
-                    priv_folder.is_loaded = false;
-                    dba_children.push(priv_folder);
-
-                    let mut proc_folder = models::structs::TreeNode::new(
-                        "Processes".to_string(),
-                        models::enums::NodeType::ProcessesFolder,
-                    );
-                    proc_folder.connection_id = Some(connection_id);
-                    proc_folder.is_loaded = false;
-                    dba_children.push(proc_folder);
-
-                    let mut status_folder = models::structs::TreeNode::new(
-                        "Status".to_string(),
-                        models::enums::NodeType::StatusFolder,
-                    );
-                    status_folder.connection_id = Some(connection_id);
-                    status_folder.is_loaded = false;
-                    dba_children.push(status_folder);
-
-                    let mut blocked_folder = models::structs::TreeNode::new(
-                        "Blocked Query".to_string(),
-                        models::enums::NodeType::BlockedQueriesFolder,
-                    );
-                    blocked_folder.connection_id = Some(connection_id);
-                    blocked_folder.is_loaded = false;
-                    dba_children.push(blocked_folder);
-
-                    // User Active
-                    // User Active
-                    let mut metrics_user_active_folder = models::structs::TreeNode::new(
-                        "User Active".to_string(),
-                        models::enums::NodeType::MetricsUserActiveFolder,
-                    );
-                    metrics_user_active_folder.connection_id = Some(connection_id);
-                    metrics_user_active_folder.is_loaded = false;
-                    dba_children.push(metrics_user_active_folder);
+                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MsSQL) {
+                        let mut node = models::structs::TreeNode::new(name.to_string(), node_type);
+                        node.connection_id = Some(connection_id);
+                        node.is_loaded = false;
+                        node.query = Some(query.to_string());
+                        dba_children.push(node);
+                   }
 
                     // Render Custom Views
                     log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
-                    for (_idx, view) in connection.custom_views.iter().enumerate() {
+                    for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
                             models::enums::NodeType::CustomView,
@@ -9207,15 +8940,12 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                      );
                      
                      // Auto-execute if it's a Custom View (implied by having a connection ID context)
-                     if context_connection_id.is_some() {
-                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                     if context_connection_id.is_some()
+                        && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                             tab.should_run_on_open = true;
                         }
-                     }
-                 } else {
-                     if let Err(err) = crate::sidebar_query::open_query_file(self, &file_path) {
-                         log::error!("Failed to open query file: {}", err);
-                     }
+                 } else if let Err(err) = crate::sidebar_query::open_query_file(self, &file_path) {
+                     log::error!("Failed to open query file: {}", err);
                  }
             }
 
@@ -10201,11 +9931,10 @@ impl App for Tabular {
                 }
                 
                 // Track Cmd+A to heuristic clear
-                if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers, .. } = event {
-                    if modifiers.command {
+                if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers, .. } = event
+                    && modifiers.command {
                          global_cmd_a = true;
                     }
-                }
             }
         });
         self.global_backspace_pressed = global_bs;
