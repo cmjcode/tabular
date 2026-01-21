@@ -13,6 +13,7 @@ pub struct TreeNode {
     pub database_name: Option<String>, // For storing database context
     pub file_path: Option<String>,     // For query files
     pub table_name: Option<String>,    // For storing table context for subfolders/items
+    pub query: Option<String>,         // For storing custom view queries
 }
 
 impl TreeNode {
@@ -27,6 +28,7 @@ impl TreeNode {
             database_name: None,
             file_path: None,
             table_name: None,
+            query: None,
         }
     }
 
@@ -42,6 +44,7 @@ impl TreeNode {
             database_name: None,
             file_path: None,
             table_name: None,
+            query: None,
         }
     }
 
@@ -56,6 +59,7 @@ impl TreeNode {
             database_name: None,
             file_path: None,
             table_name: None,
+            query: None,
         }
     }
 }
@@ -67,6 +71,12 @@ pub struct ForeignKey {
     pub column_name: String,
     pub referenced_table_name: String,
     pub referenced_column_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CustomView {
+    pub name: String,
+    pub query: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -178,6 +188,7 @@ pub struct QueryTab {
 
     // Diagram state for "Diagrams" tab
     pub diagram_state: Option<DiagramState>,
+    pub should_run_on_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,6 +267,8 @@ pub struct ConnectionConfig {
     pub ssh_private_key: String,
     pub ssh_password: String,
     pub ssh_accept_unknown_host_keys: bool,
+    #[serde(default)]
+    pub custom_views: Vec<CustomView>,
 }
 
 impl Default for ConnectionConfig {
@@ -278,6 +291,7 @@ impl Default for ConnectionConfig {
             ssh_private_key: String::new(),
             ssh_password: String::new(),
             ssh_accept_unknown_host_keys: false,
+            custom_views: Vec::new(),
         }
     }
 }
@@ -553,6 +567,10 @@ pub type RenderTreeNodeResult = (
     // New: request to generate CREATE TABLE script (connection_id, database, table_name)
     Option<(i64, Option<String>, String)>,
     Option<(i64, String)>,
+    // New: request to open "Add Custom View" dialog (connection_id)
+    Option<i64>,
+    // New: request to execute Custom View (connection_id, view_name, query)
+    Option<(i64, String, String)>,
 );
 
 mod serde_color {

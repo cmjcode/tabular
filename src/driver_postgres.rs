@@ -125,7 +125,7 @@ pub(crate) async fn fetch_postgres_data(
 
 pub(crate) fn load_postgresql_structure(
     connection_id: i64,
-    _connection: &models::structs::ConnectionConfig,
+    connection: &models::structs::ConnectionConfig,
     node: &mut models::structs::TreeNode,
 ) {
     // Create basic structure for PostgreSQL
@@ -200,6 +200,21 @@ pub(crate) fn load_postgresql_structure(
     metrics_user_active_folder.connection_id = Some(connection_id);
     metrics_user_active_folder.is_loaded = false;
     dba_children.push(metrics_user_active_folder);
+
+    // Render Custom Views
+    log::info!("Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+    for (_idx, view) in connection.custom_views.iter().enumerate() {
+        log::info!("Adding custom view node: {}", view.name);
+        let mut view_node = models::structs::TreeNode::new(
+            view.name.clone(),
+            models::enums::NodeType::CustomView,
+        );
+            view_node.connection_id = Some(connection_id);
+            // Store index in generic_id or similar if needed, or just use name for query lookup
+            view_node.query = Some(view.query.clone()); 
+            view_node.is_loaded = true;
+            dba_children.push(view_node);
+        }
 
     dba_folder.children = dba_children;
     main_children.push(dba_folder);

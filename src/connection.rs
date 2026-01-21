@@ -3734,6 +3734,7 @@ pub(crate) async fn refresh_connection_background_async(
                 ssh_private_key,
                 ssh_password,
                 ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+                custom_views: Vec::new(),
             };
 
             // Clear cache

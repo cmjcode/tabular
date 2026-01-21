@@ -45,6 +45,7 @@ pub enum NodeType {
     SQLiteFolder,     // Folder untuk koneksi SQLite
     RedisFolder,      // Folder untuk koneksi Redis
     CustomFolder,     // Folder custom yang bisa dinamai user
+    CustomView,       // User defined DBA view
     QueryFolder,      // Folder untuk mengelompokkan query files
     // New table subfolders and items
     ColumnsFolder,

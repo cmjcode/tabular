@@ -365,6 +365,14 @@ pub struct Tabular {
     pub show_message_panel: bool,
     pub message_panel_height: f32, // Height of message panel in pixels
     pub query_message_display_buffer: String, // Buffer for TextEdit to maintain selection state
+    // Custom Views state
+    pub show_add_view_dialog: bool,
+    pub new_view_name: String,
+    pub new_view_query: String,
+    pub new_view_connection_id: Option<i64>,
+    
+    // DEBUGGING INPUT
+    pub global_backspace_pressed: bool,
 }
 
 // Preference tabs enumeration
@@ -767,6 +775,11 @@ impl Tabular {
             show_message_panel: false,
             message_panel_height: 100.0,
             query_message_display_buffer: String::new(),
+            show_add_view_dialog: false,
+            new_view_name: String::new(),
+            new_view_query: String::new(),
+            new_view_connection_id: None,
+            global_backspace_pressed: false,
         };
 
         // Clear any old cached pools
@@ -1255,6 +1268,165 @@ impl Tabular {
             });
     }
 
+    // Custom View Dialog
+    fn render_add_view_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        let show_dialog = self.show_add_view_dialog;
+        
+        if show_dialog {
+            log::warn!("=== RENDERING ADD VIEW DIALOG ===");
+            
+            // Log all input at context level BEFORE window
+            ctx.input(|i| {
+                for event in &i.events {
+                    log::warn!("CTX Event: {:?}", event);
+                }
+            });
+            
+            // TRAP BACKSPACE AT CONTEXT LEVEL
+            // Check if our specific input has focus
+            let query_id = egui::Id::new("view_query_input");
+            let has_focus_memory = ctx.memory(|m| m.has_focus(query_id));
+            
+            if has_focus_memory {
+                ctx.input(|i| {
+                    for event in &i.events {
+                        if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = event {
+                            log::warn!("*** CONTEXT LEVEL TRAP: BACKSPACE PRESSED ***");
+                            self.new_view_query.pop();
+                        }
+                    }
+                });
+            }
+
+            egui::Window::new("Add Custom View")
+                .collapsible(false)
+                .resizable(true)
+                .default_size([600.0, 400.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    log::warn!("Inside Window closure");
+                    
+                    ui.label("Name:");
+                    let name_id = ui.make_persistent_id("view_name_input");
+                    let name_response = ui.add(egui::TextEdit::singleline(&mut self.new_view_name).id(name_id));
+                    
+                    if name_response.has_focus() && self.global_backspace_pressed {
+                        log::warn!("*** GLOBAL FLAG BACKSPACE TRIGGERED FOR NAME ***");
+                        
+                        let mut cleared_all = false;
+                        if let Some(state) = egui::TextEdit::load_state(ui.ctx(), name_id) {
+                            if let Some(range) = state.cursor.char_range() {
+                                let p1 = range.primary.index;
+                                let p2 = range.secondary.index;
+                                let sel_len = p1.max(p2) - p1.min(p2);
+                                if sel_len == self.new_view_name.len() && sel_len > 0 {
+                                    log::warn!("*** NAME: DELETING ALL TEXT ***");
+                                    self.new_view_name.clear();
+                                    cleared_all = true;
+                                }
+                            }
+                        }
+                        
+                        if !cleared_all {
+                             self.new_view_name.pop();
+                        }
+                        // Reset flag to avoid double deletion if focus switches rapidly or re-render happens
+                        self.global_backspace_pressed = false;
+                    }
+                    
+                    ui.add_space(8.0);
+                    ui.label("SQL Query:");
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        let query_id = ui.make_persistent_id("view_query_input");
+                        let response = ui.add(
+                            egui::TextEdit::multiline(&mut self.new_view_query)
+                                .id(query_id)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(10),
+                        );
+
+                        if response.clicked() {
+                            response.request_focus();
+                        }
+
+                        let has_focus_memory = ui.memory(|m| m.has_focus(query_id));
+                        log::warn!("Query Content Len: {}, Focus (Response): {}, Focus (Memory): {}", 
+                            self.new_view_query.len(), 
+                            response.has_focus(), 
+                            has_focus_memory
+                        );
+                        
+                        // Use GLOBAL flag from start of update loop
+                        if has_focus_memory && self.global_backspace_pressed {
+                             log::warn!("*** GLOBAL FLAG BACKSPACE TRIGGERED FOR QUERY ***");
+                             
+                             // Check if we have a selection covering the whole text
+                             let mut cleared_all = false;
+                             if let Some(state) = egui::TextEdit::load_state(ui.ctx(), query_id) {
+                                 if let Some(range) = state.cursor.char_range() {
+                                     // If selection length == text length, we are deleting everything
+                                     let p1 = range.primary.index;
+                                     let p2 = range.secondary.index;
+                                     let sel_len = p1.max(p2) - p1.min(p2);
+                                     if sel_len == self.new_view_query.len() && sel_len > 0 {
+                                         log::warn!("*** DELETING ALL TEXT (CMD+A Detected via Selection) ***");
+                                         self.new_view_query.clear();
+                                         cleared_all = true;
+                                     }
+                                 }
+                             }
+                             
+                             if !cleared_all {
+                                 self.new_view_query.pop();
+                             }
+                             
+                             // Reset strict to avoid multiple pops
+                             self.global_backspace_pressed = false;
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                             if !self.new_view_name.is_empty() && !self.new_view_query.is_empty() {
+                                 if let Some(conn_id) = self.new_view_connection_id {
+                                     // Save logic
+                                     if let Some(conn_idx) = self.connections.iter().position(|c| c.id == Some(conn_id)) {
+                                         let mut conn = self.connections[conn_idx].clone();
+                                         let new_view = models::structs::CustomView {
+                                             name: self.new_view_name.clone(),
+                                             query: self.new_view_query.clone(),
+                                         };
+                                         conn.custom_views.push(new_view);
+                                         
+                                         // Update database
+                                         if crate::sidebar_database::update_connection_in_database(self, &conn) {
+                                             // Update in-memory
+                                              self.connections[conn_idx] = conn;
+                                              // Trigger refresh
+                                              crate::sidebar_database::refresh_connections_tree(self);
+                                              self.show_add_view_dialog = false;
+                                         } else {
+                                             // Handle error (maybe show toast/log)
+                                             log::error!("Failed to save custom view to database");
+                                         }
+                                     }
+                                 }
+                             }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_add_view_dialog = false;
+                        }
+                    });
+                });
+        }
+
+        if !open {
+            self.show_add_view_dialog = false;
+        }
+    }
+
     /// Consolidated rendering of query editor with split results panel
     /// Used by both View Query mode and regular query tabs to avoid duplication
     fn render_query_editor_with_split(
@@ -1332,6 +1504,15 @@ impl Tabular {
 
                 let mut execute_clicked = false;
                 let mut captured_selection_text = String::new();
+
+                // Auto-execute if requested by the tab (e.g. Custom View opened)
+                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                    if tab.should_run_on_open {
+                        execute_clicked = true;
+                        tab.should_run_on_open = false;
+                        self.query_execution_in_progress = true;
+                    }
+                }
 
                 egui::Area::new(egui::Id::new((format!("floating_execute_button_{}", context_id), self.active_tab_index)))
                     .order(egui::Order::Foreground)
@@ -1992,7 +2173,7 @@ impl Tabular {
         ui: &mut egui::Ui,
         nodes: &mut [models::structs::TreeNode],
         is_search_mode: bool,
-    ) -> Vec<(String, String, String)> {
+    ) -> Vec<(String, String, String, Option<i64>)> {
         // Process pending auto-load requests FIRST, before rendering
         // This ensures expanded nodes are loaded from cache before first render
         let pending_loads: Vec<i64> = self.pending_auto_load.drain().collect();
@@ -2039,11 +2220,13 @@ impl Tabular {
             Vec::new();
         let mut create_index_requests: Vec<(i64, Option<String>, Option<String>)> = Vec::new();
         let mut alter_table_requests: Vec<(i64, Option<String>, String)> = Vec::new();
-        let mut query_files_to_open = Vec::new();
+        let mut query_files_to_open: Vec<(String, String, String, Option<i64>)> = Vec::new();
         let mut create_table_requests: Vec<(i64, Option<String>)> = Vec::new();
         let mut stored_procedure_click_requests: Vec<(i64, Option<String>, String)> = Vec::new();
         let mut generate_ddl_requests: Vec<(i64, Option<String>, String)> = Vec::new();
         let mut open_diagram_requests: Vec<(i64, String)> = Vec::new();
+        let mut add_view_requests: Vec<i64> = Vec::new();
+        let mut custom_view_click_requests: Vec<(i64, String, String)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -2066,6 +2249,8 @@ impl Tabular {
                 stored_procedure_click_request,
                 generate_ddl_request,
                 open_diagram_request,
+                request_add_view_dialog,
+                custom_view_click_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -2106,7 +2291,7 @@ impl Tabular {
                 connection_click_requests.push(connection_id);
             }
             if let Some((filename, content, file_path)) = query_file_to_open {
-                query_files_to_open.push((filename, content, file_path));
+                query_files_to_open.push((filename, content, file_path, node.connection_id));
             }
             if let Some((conn_id, db_name, table_name)) = alter_table_request {
                 alter_table_requests.push((conn_id, db_name, table_name));
@@ -2163,6 +2348,43 @@ impl Tabular {
                     }
                 }
             }
+            // Collect Custom View click requests (Run immediately like DBA Views)
+            if let Some((conn_id, view_name, query)) = custom_view_click_requests.last().cloned() {
+                // Handle immediately here
+                 editor::create_new_tab_with_connection(
+                    self,
+                    view_name.clone(),
+                    query.clone(),
+                    Some(conn_id),
+                );
+                
+                self.current_connection_id = Some(conn_id);
+                // Ensure (or kick off) connection pool before executing
+                if let Some(rt) = self.runtime.clone() {
+                    rt.block_on(async {
+                        let _ =
+                            crate::connection::get_or_create_connection_pool(self, conn_id)
+                                .await;
+                    });
+                }
+                
+                if let Some((headers, data)) =
+                    connection::execute_query_with_connection(self, conn_id, query.clone())
+                {
+                    self.current_table_headers = headers;
+                    self.current_table_data = data.clone();
+                    self.all_table_data = data;
+                    self.current_table_name = view_name;
+                    self.is_table_browse_mode = false;
+                    self.total_rows = self.all_table_data.len();
+                    self.current_page = 0;
+                    
+                    // Mark as executed
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                         tab.has_executed_query = true;
+                    }
+                }
+            }
             // Collect index click requests
             if let Some((conn_id, index_name, db_name, table_name)) = index_click_request {
                 index_click_requests.push((conn_id, index_name, db_name, table_name));
@@ -2193,6 +2415,23 @@ impl Tabular {
             if let Some((conn_id, db_name)) = open_diagram_request {
                 open_diagram_requests.push((conn_id, db_name));
             }
+            if let Some((conn_id, name, query)) = custom_view_click_request {
+                custom_view_click_requests.push((conn_id, name, query));
+            }
+            if let Some(conn_id) = request_add_view_dialog {
+                log::warn!("!!! REQUEST ADD VIEW DIALOG for conn_id: {}", conn_id);
+                add_view_requests.push(conn_id);
+            }
+        }
+
+        // Process add view requests
+        log::warn!("Processing {} add_view_requests", add_view_requests.len());
+        for conn_id in add_view_requests {
+             log::warn!("Setting show_add_view_dialog = true for conn: {}", conn_id);
+             self.show_add_view_dialog = true;
+             self.new_view_connection_id = Some(conn_id);
+             self.new_view_name = String::new();
+             self.new_view_query = "SELECT * FROM ...".to_string();
         }
 
         for (conn_id, db_name) in create_table_requests {
@@ -3652,9 +3891,11 @@ impl Tabular {
         let mut drop_collection_request: Option<(i64, String, String)> = None;
         let mut drop_table_request: Option<(i64, String, String, String)> = None;
         let mut create_table_request: Option<(i64, Option<String>)> = None;
+        let mut request_add_view_dialog: Option<i64> = None;
         let mut stored_procedure_click_request: Option<(i64, Option<String>, String)> = None;
         let mut generate_ddl_request: Option<(i64, Option<String>, String)> = None;
         let mut open_diagram_request: Option<(i64, String)> = None;
+        let mut custom_view_click_request: Option<(i64, String, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -3768,6 +4009,7 @@ impl Tabular {
                     models::enums::NodeType::TablesFolder => "📋",
                     models::enums::NodeType::ViewsFolder => "👁",
                     models::enums::NodeType::StoredProceduresFolder => "📦",
+                    models::enums::NodeType::CustomView => "👁️",
                     models::enums::NodeType::UserFunctionsFolder => "🔧",
                     models::enums::NodeType::TriggersFolder => "⚡",
                     models::enums::NodeType::EventsFolder => "📅",
@@ -4005,6 +4247,19 @@ impl Tabular {
                         if ui.button("🗑 Remove Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(-conn_id); // Negative ID indicates removal
+                            }
+                            ui.close();
+                        }
+                    });
+                }
+
+                // Add context menu for DBA Views folder
+                if node.node_type == models::enums::NodeType::DBAViewsFolder {
+                    response.context_menu(|ui| {
+                        if ui.button("➕ Add New View").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                // Set state to show dialog
+                                request_add_view_dialog = Some(conn_id);
                             }
                             ui.close();
                         }
@@ -4319,6 +4574,8 @@ impl Tabular {
                             _child_sp_click,
                             child_generate_ddl_request,
                             child_open_diagram_request,
+                            child_request_add_view_dialog,
+                            child_custom_view_click_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -4387,6 +4644,12 @@ impl Tabular {
                         if let Some(child_query_file) = _child_query_file {
                             query_file_to_open = Some(child_query_file);
                         }
+                        if let Some(child_req) = child_request_add_view_dialog {
+                            request_add_view_dialog = Some(child_req);
+                        }
+                        if let Some(child_req) = child_custom_view_click_request {
+                            custom_view_click_request = Some(child_req);
+                        }
                     }
                 } else {
                     ui.indent(id, |ui| {
@@ -4411,6 +4674,8 @@ impl Tabular {
                                 child_stored_procedure_click_request,
                                 child_generate_ddl_request,
                                 child_open_diagram_request,
+                                child_request_add_view_dialog,
+                                child_custom_view_click_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -4482,6 +4747,12 @@ impl Tabular {
                             }
                             if let Some(v) = child_open_diagram_request {
                                 open_diagram_request = Some(v);
+                            }
+                            if let Some(child_req) = child_request_add_view_dialog {
+                                request_add_view_dialog = Some(child_req);
+                            }
+                            if let Some(child_req) = child_custom_view_click_request {
+                                custom_view_click_request = Some(child_req);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -4587,7 +4858,7 @@ impl Tabular {
                         models::enums::NodeType::PrimaryKeysFolder => "🔑",
                         models::enums::NodeType::PartitionsFolder => "📊",
                         models::enums::NodeType::Index => "#",
-                        _ => "❓",
+                        _ => "🧾",
                     };
 
                     let label_text = format!("{} {}", icon, node.name);
@@ -4629,6 +4900,15 @@ impl Tabular {
                     | models::enums::NodeType::MetricsUserActiveFolder => {
                         if let Some(conn_id) = node.connection_id {
                             dba_click_request = Some((conn_id, node.node_type.clone()));
+                        }
+                    }
+                    models::enums::NodeType::CustomView => {
+                        debug!("👁️ Custom View clicked: {}", node.name);
+                        if let Some(query) = &node.query {
+                           // Use the robust DBA-style execution path
+                           if let Some(conn_id) = node.connection_id {
+                                custom_view_click_request = Some((conn_id, node.name.clone(), query.clone()));
+                           }
                         }
                     }
                     models::enums::NodeType::Query => {
@@ -4711,6 +4991,7 @@ impl Tabular {
                     _ => {}
                 }
             }
+
 
             // Add context menu for query nodes
             if node.node_type == models::enums::NodeType::Query {
@@ -4842,6 +5123,8 @@ impl Tabular {
             stored_procedure_click_request,
             generate_ddl_request,
             open_diagram_request,
+            request_add_view_dialog,
+            custom_view_click_request,
         )
     }
 
@@ -6137,6 +6420,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     dba_children.push(repl_status_folder);
 
                     // Master Status
+                    // Master Status
                     let mut master_status_folder = models::structs::TreeNode::new(
                         "Master Status".to_string(),
                         models::enums::NodeType::MasterStatusFolder,
@@ -6144,6 +6428,19 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     master_status_folder.connection_id = Some(connection_id);
                     master_status_folder.is_loaded = false;
                     dba_children.push(master_status_folder);
+
+                    // Render Custom Views
+                    log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    for (_idx, view) in connection.custom_views.iter().enumerate() {
+                        let mut view_node = models::structs::TreeNode::new(
+                            view.name.clone(),
+                            models::enums::NodeType::CustomView,
+                        );
+                        view_node.connection_id = Some(connection_id);
+                        view_node.query = Some(view.query.clone()); 
+                        view_node.is_loaded = true;
+                        dba_children.push(view_node);
+                    }
 
                     dba_folder.children = dba_children;
 
@@ -6246,6 +6543,19 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     metrics_user_active_folder.connection_id = Some(connection_id);
                     metrics_user_active_folder.is_loaded = false;
                     dba_children.push(metrics_user_active_folder);
+
+                    // Render Custom Views
+                    log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    for (_idx, view) in connection.custom_views.iter().enumerate() {
+                        let mut view_node = models::structs::TreeNode::new(
+                            view.name.clone(),
+                            models::enums::NodeType::CustomView,
+                        );
+                        view_node.connection_id = Some(connection_id);
+                        view_node.query = Some(view.query.clone()); 
+                        view_node.is_loaded = true;
+                        dba_children.push(view_node);
+                    }
 
                     dba_folder.children = dba_children;
                     main_children.push(dba_folder);
@@ -6424,6 +6734,7 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     dba_children.push(blocked_folder);
 
                     // User Active
+                    // User Active
                     let mut metrics_user_active_folder = models::structs::TreeNode::new(
                         "User Active".to_string(),
                         models::enums::NodeType::MetricsUserActiveFolder,
@@ -6431,6 +6742,19 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
                     metrics_user_active_folder.connection_id = Some(connection_id);
                     metrics_user_active_folder.is_loaded = false;
                     dba_children.push(metrics_user_active_folder);
+
+                    // Render Custom Views
+                    log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    for (_idx, view) in connection.custom_views.iter().enumerate() {
+                        let mut view_node = models::structs::TreeNode::new(
+                            view.name.clone(),
+                            models::enums::NodeType::CustomView,
+                        );
+                        view_node.connection_id = Some(connection_id);
+                        view_node.query = Some(view.query.clone()); 
+                        view_node.is_loaded = true;
+                        dba_children.push(view_node);
+                    }
 
                     dba_folder.children = dba_children;
 
@@ -8869,7 +9193,32 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
             // Use slice to avoid borrowing issues
             let mut items_tree = std::mem::take(&mut self.items_tree);
 
-            let _ = self.render_tree(ui, &mut items_tree, false);
+            let query_files_to_open = self.render_tree(ui, &mut items_tree, false);
+            
+            for (filename, content, file_path, context_connection_id) in query_files_to_open {
+                 if file_path.is_empty() {
+                     // Custom View or similar: Use the context connection ID if available
+                     let _ = crate::editor::create_new_tab_with_connection_and_database(
+                        self,
+                        filename,
+                        content,
+                        context_connection_id,
+                        None // Database name is usually baked into the query or will be selected
+                     );
+                     
+                     // Auto-execute if it's a Custom View (implied by having a connection ID context)
+                     if context_connection_id.is_some() {
+                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                            tab.should_run_on_open = true;
+                        }
+                     }
+                 } else {
+                     if let Err(err) = crate::sidebar_query::open_query_file(self, &file_path) {
+                         log::error!("Failed to open query file: {}", err);
+                     }
+                 }
+            }
+
 
             // Check if tree was refreshed inside render_tree
             if self.items_tree.is_empty() {
@@ -9838,8 +10187,58 @@ FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;".to_string(),
     }
 }
 
+
 impl App for Tabular {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // GLOBAL INPUT DEBUGGING
+        let mut global_bs = false;
+        let mut global_cmd_a = false;
+        ctx.input(|i| {
+            for event in &i.events {
+                if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = event {
+                    // log::warn!("!!! GLOBAL UPDATE START: BACKSPACE PRESS DETECTED !!!");
+                    global_bs = true;
+                }
+                
+                // Track Cmd+A to heuristic clear
+                if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers, .. } = event {
+                    if modifiers.command {
+                         global_cmd_a = true;
+                    }
+                }
+            }
+        });
+        self.global_backspace_pressed = global_bs;
+        
+        // If Cmd+A was pressed, set a short-lived flag or state?
+        // Actually, we need to know if "Select All" happened recently.
+        // Let's store a timestamp or frame counter? 
+        // Simpler: Just store the bool for this frame.
+        // But the user sequence is Cmd+A (frame X), Release keys, Backspace (frame Y).
+        // So checking "is Cmd+A pressed NOW" won't work for backspace.
+        
+        // Wait, if the user holds Cmd+A and presses Backspace, that's one thing.
+        // But usually they press Cmd+A, release, then Backspace.
+        // The TextEdit "selection" state persists.
+        // So we really need to know "Is the whole text selected?".
+        
+        // Since we can't easily query that from outside without `TextEdit::load_state`,
+        // let's try to load state in the dialog render function instead.
+        // So here we just track backspace.
+        
+        // Simple state machine: if Cmd+A pressed, remember it for a short time?
+        // Actually, TextEdit handles selection internally.
+        // If we want to support "Select All -> Delete", we need to know if everything is selected.
+        // But we can't easily.
+        
+        // Alternative Heuristic:
+        // If Backspace is pressed, checking if modifiers.command is also held? No, that deletes word usually.
+        // The user sequence is: Press Cmd+A (release). Press Backspace.
+        
+        // Let's rely on `TextEditState`.
+        // We can get `TextEditState` from memory using the ID.
+        // `if let Some(state) = egui::TextEdit::load_state(ctx, query_id)`
+        // `state.cursor.range()` tells us the selection!
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)
         #[cfg(feature = "query_ast")]
         if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
@@ -11363,7 +11762,7 @@ impl App for Tabular {
                                 let query_files_to_open = self.render_tree(ui, &mut queries_tree, false);
                                 self.queries_tree = queries_tree;
 
-                                for (filename, content, file_path) in query_files_to_open {
+                                for (filename, content, file_path, _) in query_files_to_open {
                                     if file_path.is_empty() {
                                         // Placeholder or unsaved query; open as new tab
                                         log::debug!("✅ Processing query click: New unsaved tab '{}'", filename);
@@ -11456,7 +11855,7 @@ impl App for Tabular {
                                     self.history_tree = history_tree;
                                 }
 
-                                for (filename, content, file_data) in query_files_to_open {
+                                for (filename, content, file_data, _) in query_files_to_open {
                                     // file_data for history contains "connection_name||query"
                                     if let Some((connection_name, _query)) = file_data.split_once("||") {
                                         // Try to find matching connection by name to preselect in the new tab
@@ -12110,6 +12509,10 @@ impl App for Tabular {
                 data_table::render_drop_index_confirmation(self, ui.ctx());
                 data_table::render_drop_column_confirmation(self, ui.ctx());
 
+                // Custom View Dialog
+                log::warn!("About to call render_add_view_dialog, show_add_view_dialog={}", self.show_add_view_dialog);
+                self.render_add_view_dialog(ui.ctx());
+
                 // Render context menu for row operations
                 if self.show_row_context_menu {
                     let mut close_menu = false;
@@ -12550,7 +12953,9 @@ impl Tabular {
                     },
                     Err(e) => log::error!("Failed to open diagram file {:?}: {}", path, e),
                  }
+                 None
+            } else {
+                None
             }
-        None
     }
 }

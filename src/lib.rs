@@ -65,6 +65,8 @@ pub fn run() -> Result<(), eframe::Error> {
     let _ = env_logger::Builder::from_default_env()
         // Enable info-level logs for our crate so users can see data source messages
         .filter_module("tabular", log_level)
+        .filter_module("winit", log::LevelFilter::Warn)
+        .filter_module("tracing", log::LevelFilter::Warn)
         .is_test(false)
         .try_init();
     

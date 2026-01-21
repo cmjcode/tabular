@@ -692,7 +692,9 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
              COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
              COALESCE(ssh_private_key, '') AS ssh_private_key, \
              COALESCE(ssh_password, '') AS ssh_password, \
-             COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+             COALESCE(ssh_password, '') AS ssh_password, \
+             COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
+             COALESCE(custom_views, '[]') AS custom_views \
          FROM connections",
         )
         .fetch_all(pool_clone.as_ref())
@@ -721,6 +723,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                     let ssh_password = row.try_get::<String, _>("ssh_password").ok()?;
                     let ssh_accept_unknown_host_keys =
                         row.try_get::<i64, _>("ssh_accept_unknown_host_keys").ok()?;
+                    let custom_views_json = row.try_get::<String, _>("custom_views").ok().unwrap_or_else(|| "[]".to_string());
 
                     Some(models::structs::ConnectionConfig {
                         id: Some(id),
@@ -749,6 +752,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                         ssh_private_key,
                         ssh_password,
                         ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+                        custom_views: serde_json::from_str(&custom_views_json).unwrap_or_default(),
                     })
                 })
                 .collect();
@@ -770,7 +774,7 @@ pub(crate) fn save_connection_to_database(
 
         let result = rt.block_on(async {
           sqlx::query(
-          "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
           )
           .bind(connection.name)
           .bind(connection.host)
@@ -786,17 +790,59 @@ pub(crate) fn save_connection_to_database(
           .bind(connection.ssh_username)
           .bind(connection.ssh_auth_method.as_db_value())
           .bind(connection.ssh_private_key)
-          .bind(connection.ssh_password)
-          .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
-          .execute(pool_clone.as_ref())
-          .await
-     });
-
-        result.is_ok()
-    } else {
-        false
-    }
-}
+            .bind(connection.ssh_password)
+            .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
+            .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
+            .execute(pool_clone.as_ref())
+            .await
+       });
+  
+          result.is_ok()
+      } else {
+          false
+      }
+  }
+  
+  pub(crate) fn update_connection_in_database(
+      tabular: &mut window_egui::Tabular,
+      connection: &models::structs::ConnectionConfig,
+  ) -> bool {
+      if let Some(ref pool) = tabular.db_pool {
+          let pool_clone = pool.clone();
+          let connection = connection.clone();
+          let rt = tokio::runtime::Runtime::new().unwrap();
+  
+          let result = rt.block_on(async {
+              sqlx::query(
+                  "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ? WHERE id = ?"
+              )
+              .bind(connection.name)
+              .bind(connection.host)
+              .bind(connection.port)
+              .bind(connection.username)
+              .bind(connection.password)
+              .bind(connection.database)
+              .bind(format!("{:?}", connection.connection_type))
+              .bind(connection.folder)
+              .bind(if connection.ssh_enabled { 1 } else { 0 })
+              .bind(connection.ssh_host)
+              .bind(connection.ssh_port)
+              .bind(connection.ssh_username)
+              .bind(connection.ssh_auth_method.as_db_value())
+              .bind(connection.ssh_private_key)
+              .bind(connection.ssh_password)
+              .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
+              .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
+              .bind(connection.id)
+              .execute(pool_clone.as_ref())
+              .await
+          });
+  
+          result.is_ok()
+      } else {
+          false
+      }
+  }
 
 pub(crate) fn start_edit_connection(tabular: &mut window_egui::Tabular, connection_id: i64) {
     // Find the connection to edit
@@ -914,7 +960,8 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                             ssh_auth_method TEXT NOT NULL DEFAULT 'key',
                             ssh_private_key TEXT NOT NULL DEFAULT '',
                             ssh_password TEXT NOT NULL DEFAULT '',
-                            ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0
+                            ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0,
+                            custom_views TEXT NOT NULL DEFAULT '[]'
                         )
                         "#
                     )
@@ -948,6 +995,12 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
                     let _ = sqlx::query(
                         "ALTER TABLE connections ADD COLUMN ssh_username TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN custom_views TEXT NOT NULL DEFAULT '[]'"
                     )
                     .execute(&pool)
                     .await;
