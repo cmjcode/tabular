@@ -5,12 +5,27 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     let rect = ui.available_rect_before_wrap();
     
     // Handle Pan and Zoom
-    let response = ui.interact(rect, ui.id().with("diagram_bg"), egui::Sense::drag());
+    let response = ui.interact(rect, ui.id().with("diagram_bg"), egui::Sense::click_and_drag());
     
     // Pan with middle mouse or drag on background
     if response.dragged() {
         state.pan += response.drag_delta();
     }
+    
+    // Context Menu for Background
+    response.context_menu(|ui| {
+        if ui.button("Add Group").clicked() {
+             ui.close();
+             // Store the click position in Diagram coordinates
+             if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                 let diagram_vec = (mouse_pos - rect.min - state.pan) / state.zoom;
+                 let diagram_pos = egui::pos2(diagram_vec.x, diagram_vec.y);
+                 state.add_group_popup = Some(diagram_pos);
+                 state.new_group_buffer.clear();
+             }
+        }
+    });
+
 
     // Zoom with Ctrl/Cmd + Scroll or Keys
     ui.input_mut(|i| {
@@ -63,9 +78,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     
     // Scale helper
     let scale = state.zoom;
+    let pan = state.pan;
     
-    let to_screen = |pos: egui::Pos2| -> egui::Pos2 {
-        rect.min + state.pan + pos.to_vec2() * scale
+    let to_screen = move |pos: egui::Pos2| -> egui::Pos2 {
+        rect.min + pan + pos.to_vec2() * scale
     };
 
     // Draw Groups (Containers)
@@ -88,7 +104,15 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             })
             .collect();
             
-        if group_nodes.is_empty() { continue; }
+        if group_nodes.is_empty() { 
+            // Handle Empty Groups with manual_pos
+            if let Some(pos) = group.manual_pos {
+                let size = egui::vec2(400.0, 300.0);
+                let rect = egui::Rect::from_min_size(to_screen(pos), size * scale);
+                group_bounds.push((idx, group.id.clone(), rect, group.color, group.title.clone()));
+            }
+            continue; 
+        }
 
         let mut min_pos = group_nodes[0].pos;
         let mut max_pos = group_nodes[0].pos + group_nodes[0].size;
@@ -252,11 +276,18 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         state.renaming_group = Some(gid);
     } // Apply deferred group move
     if let Some((group_id, delta)) = group_drag_delta {
+        // Move nodes belonging to group
         for node in &mut state.nodes {
             if node.group_id.as_deref() == Some(&group_id) {
                 node.pos += delta;
             }
         }
+        
+        // Move group manual_pos if it exists (for empty groups)
+        if let Some(group) = state.groups.iter_mut().find(|g| g.id == group_id)
+            && let Some(pos) = &mut group.manual_pos {
+                 *pos += delta;
+            }
     }
 
     // Draw edges (relationships)
@@ -404,18 +435,20 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
              let shift_held = ui.input(|i| i.modifiers.shift);
              if shift_held {
                  // Check drop target
-                 let node_center_screen = node_rect.center();
-                 let mut new_group_id = None;
-                 
-                 // Check against group bounds (calculated earlier)
-                 for (_, gid, rect, _, _) in &group_bounds {
-                     if rect.contains(node_center_screen) {
-                         new_group_id = Some(gid.clone());
-                         break; 
+                 // Use pointer position for better intuition
+                 if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                     let mut new_group_id = None;
+                     
+                     // Check against group bounds (calculated earlier)
+                     for (_, gid, rect, _, _) in &group_bounds {
+                         if rect.contains(pointer_pos) {
+                             new_group_id = Some(gid.clone());
+                             break; 
+                         }
                      }
+                     
+                     node.group_id = new_group_id;
                  }
-                 
-                 node.group_id = new_group_id;
              }
              state.dragging_node = None;
         }
@@ -560,6 +593,54 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
 
         });
     });
+
+    // Render "Add Group" Popup
+    if let Some(pos) = state.add_group_popup {
+        let mut open = true;
+        let window_pos = to_screen(pos);
+        
+        egui::Window::new("New Group")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_pos(window_pos)
+            .show(ui.ctx(), |ui| {
+                ui.label("Enter group name:");
+                let text_res = ui.text_edit_singleline(&mut state.new_group_buffer);
+                if text_res.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                     // Trigger save
+                } else {
+                    text_res.request_focus();
+                }
+
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() || (ui.input(|i| i.key_pressed(egui::Key::Enter)) && !state.new_group_buffer.is_empty()) {
+                         let timestamp = chrono::Utc::now().to_rfc3339();
+                         let digest = md5::compute(timestamp);
+                         let group_id = format!("{:x}", digest);
+                         let color = egui::Color32::from_rgb(100, 149, 237); // Default Blue
+                         
+                         let new_group = crate::models::structs::DiagramGroup {
+                             id: group_id,
+                             title: state.new_group_buffer.clone(),
+                             color,
+                             manual_pos: Some(pos),
+                         };
+                         
+                         state.groups.push(new_group);
+                         state.add_group_popup = None;
+                         state.new_group_buffer.clear();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        state.add_group_popup = None;
+                    }
+                });
+            });
+            
+        if !open {
+            state.add_group_popup = None;
+        }
+    }
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {
@@ -731,20 +812,23 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
             }
         }
 
-        // 4. Center Gravity (Pull to 0,0) + Apply Forces
-        for (node, force) in state.nodes.iter_mut().zip(forces.iter_mut()) {
-            let center_pull = egui::Vec2::ZERO - node.pos.to_vec2();
-            *force += center_pull * center_gravity;
-            
-            // Limit max force to prevent explosion
-            let max_force = 1000.0;
-            if force.length() > max_force {
-               *force = force.normalized() * max_force;
-            }
-
-            node.pos += *force * delta_time;
+    // 4. Center Gravity (Pull to 0,0) + Apply Forces
+    for (node, force) in state.nodes.iter_mut().zip(forces.iter_mut()) {
+        if state.dragging_node.as_deref() == Some(&node.id) { continue; } // Don't move dragged node
+        
+        // Weaker center pull
+        let center_pull = egui::Vec2::ZERO - node.pos.to_vec2();
+        *force += center_pull * center_gravity;
+        
+        // Limit max force to prevent explosion
+        let max_force = 1000.0;
+        if force.length() > max_force {
+           *force = force.normalized() * max_force;
         }
+
+        node.pos += *force * delta_time;
     }
+}
 
     // STRICT COLLISION RESOLUTION (Post-Process)
     // Run a few passes to strictly separate overlapping rectangles

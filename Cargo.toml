@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.5.34"
+version = "0.5.35"
 edition = "2024"
 
 [lib]
@@ -33,9 +33,9 @@ sqlx = { version = "0.8.6", features = [
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 sqlparser = { version = "0.50", optional = true }
 sqlformat = "0.5.0"
-redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.0.2", features = ["tokio-comp", "connection-manager"] }
 bson = { version = "3", features = ["uuid-1"] }
-mongodb = { version = "3.4.1", features = ["zlib-compression"] }
+mongodb = { version = "3.5.0", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = "0.32.3"
@@ -49,7 +49,7 @@ csv = "1.4"
 xlsxwriter = "0.6"
 rfd = "0.15" # For file dialog
 hex = "0.4.3"
-rust_decimal = "1.39.0"
+rust_decimal = "1.40.0"
 log = "0.4"
 env_logger = "0.11"
 dotenv = "0.15.0"
@@ -63,7 +63,7 @@ tiberius = { version = "0.12", default-features = false, features = [
        "bigdecimal",
 ] }
 futures-util = "0.3"
-tokio-util = { version = "0.7.17", features = ["compat"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
 # Self-update dependencies
 reqwest = { version = "0.12", features = [
        "json",

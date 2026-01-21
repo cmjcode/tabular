@@ -75,6 +75,9 @@ pub struct DiagramGroup {
     pub title: String,
     #[serde(with = "serde_color")]
     pub color: eframe::egui::Color32,
+    #[serde(default)]
+    #[serde(with = "serde_option_pos2")]
+    pub manual_pos: Option<eframe::egui::Pos2>, // For empty groups or manual overriding
     // nodes are linked by group_id in DiagramNode
 }
 
@@ -119,6 +122,10 @@ pub struct DiagramState {
     pub renaming_group: Option<String>,
     #[serde(skip)]
     pub selected_edge: Option<(String, String)>, // (source_id, target_id)
+    #[serde(skip)]
+    pub add_group_popup: Option<eframe::egui::Pos2>, // Popup for adding group
+    #[serde(skip)]
+    pub new_group_buffer: String,
 }
 
 impl Default for DiagramState {
@@ -136,6 +143,8 @@ impl Default for DiagramState {
             save_requested: false,
             renaming_group: None,
             selected_edge: None,
+            add_group_popup: None,
+            new_group_buffer: String::new(),
         }
     }
 }
@@ -618,5 +627,33 @@ mod serde_vec2 {
     {
         let opt: [f32; 2] = Deserialize::deserialize(deserializer)?;
         Ok(Vec2::new(opt[0], opt[1]))
+    }
+}
+
+mod serde_option_pos2 {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use eframe::egui::Pos2;
+
+    pub fn serialize<S>(pos: &Option<Pos2>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(p) = pos {
+            use serde::ser::SerializeTuple;
+            let mut tup = serializer.serialize_tuple(2)?;
+            tup.serialize_element(&p.x)?;
+            tup.serialize_element(&p.y)?;
+            tup.end()
+        } else {
+            serializer.serialize_none()
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Pos2>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<[f32; 2]> = Deserialize::deserialize(deserializer)?;
+        Ok(opt.map(|arr| Pos2::new(arr[0], arr[1])))
     }
 }

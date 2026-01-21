@@ -2315,6 +2315,7 @@ impl Tabular {
                             id: group_id.clone(),
                             title,
                             color,
+                            manual_pos: None,
                         });
                         existing_group_ids.insert(group_id.clone());
                     }
@@ -12494,93 +12495,7 @@ fn draw_format_sql_button(
 
 // Helper to finalize query result display from a raw execution result
 impl Tabular {
-    fn apply_query_result(
-        &mut self,
-        connection_id: i64,
-        query: String,
-        result: Option<(Vec<String>, Vec<Vec<String>>)>,
-    ) {
-        self.query_execution_in_progress = false;
-        self.extend_query_icon_hold();
-        // Mark active tab as executed
-        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-            tab.has_executed_query = true;
-        }
 
-        if let Some((headers, data)) = result {
-            let is_error_result = headers.first().map(|h| h == "Error").unwrap_or(false);
-            self.current_table_headers = headers;
-            data_table::update_pagination_data(self, data);
-            if self.total_rows == 0 {
-                self.current_table_name = "Query executed successfully (no results)".to_string();
-            } else {
-                self.current_table_name = format!(
-                    "Query Results ({} total rows, showing page {} of {})",
-                    self.total_rows,
-                    self.current_page + 1,
-                    data_table::get_total_pages(self)
-                );
-            }
-
-            // Set base query for pagination (simple LIMIT removal like in editor::execute_query)
-            let base_query_for_pagination = if !is_error_result && self.total_rows > 0 {
-                let mut clean_query = query.clone();
-                if let Some(limit_pos) = clean_query.to_uppercase().rfind("LIMIT") {
-                    if let Some(semicolon_pos) = clean_query[limit_pos..].find(';') {
-                        clean_query = format!(
-                            "{}{}",
-                            &clean_query[..limit_pos].trim(),
-                            &clean_query[limit_pos + semicolon_pos..]
-                        );
-                    } else {
-                        clean_query = clean_query[..limit_pos].trim().to_string();
-                    }
-                }
-                clean_query
-            } else {
-                String::new()
-            };
-            // Preserve pre-set base query for server-side pagination; otherwise use computed base
-            if !self.use_server_pagination || self.current_base_query.is_empty() {
-                self.current_base_query = base_query_for_pagination.clone();
-            }
-
-            // Save to history unless error
-            if !is_error_result {
-                crate::sidebar_history::save_query_to_history(self, &query, connection_id);
-            }
-            // Persist to active tab
-            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                tab.result_headers = self.current_table_headers.clone();
-                tab.result_rows = self.current_table_data.clone();
-                tab.result_all_rows = self.all_table_data.clone();
-                tab.result_table_name = self.current_table_name.clone();
-                tab.is_table_browse_mode = self.is_table_browse_mode;
-                tab.current_page = self.current_page;
-                tab.page_size = self.page_size;
-                tab.total_rows = self.total_rows;
-                // Preserve pre-set base query for server-side pagination; otherwise store computed base
-                if !self.use_server_pagination || self.current_base_query.is_empty() {
-                    tab.base_query = self.current_base_query.clone();
-                }
-            }
-        } else {
-            self.current_table_name = "Query execution failed".to_string();
-            self.current_table_headers.clear();
-            self.current_table_data.clear();
-            self.all_table_data.clear();
-            self.total_rows = 0;
-            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                tab.result_headers.clear();
-                tab.result_rows.clear();
-                tab.result_all_rows.clear();
-                tab.result_table_name = self.current_table_name.clone();
-                tab.total_rows = 0;
-                tab.current_page = 0;
-                tab.base_query.clear();
-            }
-        }
-    }
 
     pub(crate) fn extend_query_icon_hold(&mut self) {
         self.query_icon_hold_until =
