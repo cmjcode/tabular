@@ -277,6 +277,16 @@ pub(crate) async fn execute_query_with_client(
     run_query(client, query).await
 }
 
+/// Execute a query using the shared connection pool (deadpool_tiberius)
+pub(crate) async fn execute_query(
+    pool: deadpool_tiberius::Pool,
+    query: &str,
+) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+    // Acquire a client from the pool and delegate to the common runner
+    let mut client = pool.get().await.map_err(|e| e.to_string())?;
+    run_query(&mut client, query).await
+}
+
 async fn run_query(
     client: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
     query: &str,

@@ -1147,7 +1147,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     };
     // Pre-handle Delete/Backspace when a selection exists: remove the whole selection (not just one char)
     // This ensures expected behavior “press Delete removes all selected text”.
-    // SKIP this handling if Custom View dialog is open to avoid consuming backspace events
     if !tabular.show_add_view_dialog {
         let id = egui::Id::new("sql_editor");
         let mut do_delete_selection = false;
@@ -1385,9 +1384,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
     }
+    }
     // Special guard: Backspace on completely empty text -> consume and do nothing (avoid odd widget churn)
-    // SKIP this handling if Custom View dialog is open
-    if !tabular.show_add_view_dialog {
+    {
         let id = egui::Id::new("sql_editor");
         let bs_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
         if bs_pressed && tabular.editor.text.is_empty() {
@@ -1427,8 +1426,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
     }
     // Capture multi-cursor typing/deletion events before TextEdit consumes them
-    // SKIP this when Custom View dialog is open
-    if !tabular.show_add_view_dialog && tabular.multi_selection.len() > 1 {
+    if tabular.multi_selection.len() > 1 {
         ui.ctx().input_mut(|ri| {
             let mut kept_multi = Vec::with_capacity(ri.events.len());
             for ev in ri.events.drain(..) {

@@ -573,6 +573,8 @@ pub type RenderTreeNodeResult = (
     Option<(i64, String, String)>,
     // New: request to delete Custom View (connection_id, view_name)
     Option<(i64, String)>,
+    // New: request to edit Custom View (connection_id, view_name, query)
+    Option<(i64, String, String)>,
 );
 
 mod serde_color {

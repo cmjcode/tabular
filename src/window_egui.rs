@@ -370,6 +370,7 @@ pub struct Tabular {
     pub new_view_name: String,
     pub new_view_query: String,
     pub new_view_connection_id: Option<i64>,
+    pub edit_view_original_name: Option<String>,
     
     // DEBUGGING INPUT
     pub global_backspace_pressed: bool,
@@ -779,6 +780,7 @@ impl Tabular {
             new_view_name: String::new(),
             new_view_query: String::new(),
             new_view_connection_id: None,
+            edit_view_original_name: None,
             global_backspace_pressed: false,
         };
 
@@ -1274,115 +1276,57 @@ impl Tabular {
         let show_dialog = self.show_add_view_dialog;
         
         if show_dialog {
-            log::warn!("=== RENDERING ADD VIEW DIALOG ===");
-            
-            // Log all input at context level BEFORE window
+            // Log raw input events
             ctx.input(|i| {
-                for event in &i.events {
-                    log::warn!("CTX Event: {:?}", event);
+                if i.key_pressed(egui::Key::Backspace) {
+                    println!("🔍 [Dialog] Backspace key detected in raw input");
+                }
+                if !i.events.is_empty() {
+                    println!("🔍 [Dialog] Input events count: {}", i.events.len());
                 }
             });
-            
-            // TRAP BACKSPACE AT CONTEXT LEVEL
-            // Check if our specific input has focus
-            let query_id = egui::Id::new("view_query_input");
-            let has_focus_memory = ctx.memory(|m| m.has_focus(query_id));
-            
-            if has_focus_memory {
-                ctx.input(|i| {
-                    for event in &i.events {
-                        if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = event {
-                            log::warn!("*** CONTEXT LEVEL TRAP: BACKSPACE PRESSED ***");
-                            self.new_view_query.pop();
-                        }
-                    }
-                });
-            }
+                        
 
-            egui::Window::new("Add Custom View")
+
+            let title = if self.edit_view_original_name.is_some() { "Edit Custom View" } else { "Add Custom View" };
+            egui::Window::new(title)
                 .collapsible(false)
                 .resizable(true)
                 .default_size([600.0, 400.0])
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    log::warn!("Inside Window closure");
-                    
                     ui.label("Name:");
-                    let name_id = ui.make_persistent_id("view_name_input");
-                    let name_response = ui.add(egui::TextEdit::singleline(&mut self.new_view_name).id(name_id));
+                    let before_len = self.new_view_name.len();
+                    let name_edit = egui::TextEdit::singleline(&mut self.new_view_name)
+                        .desired_width(f32::INFINITY);
                     
-                    if name_response.has_focus() && self.global_backspace_pressed {
-                        log::warn!("*** GLOBAL FLAG BACKSPACE TRIGGERED FOR NAME ***");
-                        
-                        let mut cleared_all = false;
-                        if let Some(state) = egui::TextEdit::load_state(ui.ctx(), name_id)
-                            && let Some(range) = state.cursor.char_range() {
-                                let p1 = range.primary.index;
-                                let p2 = range.secondary.index;
-                                let sel_len = p1.max(p2) - p1.min(p2);
-                                if sel_len == self.new_view_name.len() && sel_len > 0 {
-                                    log::warn!("*** NAME: DELETING ALL TEXT ***");
-                                    self.new_view_name.clear();
-                                    cleared_all = true;
-                                }
-                            }
-                        
-                        if !cleared_all {
-                             self.new_view_name.pop();
-                        }
-                        // Reset flag to avoid double deletion if focus switches rapidly or re-render happens
-                        self.global_backspace_pressed = false;
+                    let name_response = ui.add(name_edit);
+                    let after_len = self.new_view_name.len();
+                    
+                    println!("🔍 [Name Field] Before len: {}, After len: {}", before_len, after_len);
+                    println!("🔍 [Name Field] Has focus: {}, changed: {}, lost_focus: {}", 
+                        name_response.has_focus(), name_response.changed(), name_response.lost_focus());
+                    
+                    // Request focus on the name field when dialog first opens
+                    if ui.memory(|mem| mem.focused().is_none()) {
+                        println!("🔍 [Name Field] Requesting focus (first open)");
+                        name_response.request_focus();
                     }
-                    
+
                     ui.add_space(8.0);
                     ui.label("SQL Query:");
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                        let query_id = ui.make_persistent_id("view_query_input");
-                        let response = ui.add(
-                            egui::TextEdit::multiline(&mut self.new_view_query)
-                                .id(query_id)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(10),
-                        );
-
-                        if response.clicked() {
-                            response.request_focus();
-                        }
-
-                        let has_focus_memory = ui.memory(|m| m.has_focus(query_id));
-                        log::warn!("Query Content Len: {}, Focus (Response): {}, Focus (Memory): {}", 
-                            self.new_view_query.len(), 
-                            response.has_focus(), 
-                            has_focus_memory
-                        );
-                        
-                        // Use GLOBAL flag from start of update loop
-                        if has_focus_memory && self.global_backspace_pressed {
-                             log::warn!("*** GLOBAL FLAG BACKSPACE TRIGGERED FOR QUERY ***");
-                             
-                             // Check if we have a selection covering the whole text
-                             let mut cleared_all = false;
-                             if let Some(state) = egui::TextEdit::load_state(ui.ctx(), query_id)
-                                 && let Some(range) = state.cursor.char_range() {
-                                     // If selection length == text length, we are deleting everything
-                                     let p1 = range.primary.index;
-                                     let p2 = range.secondary.index;
-                                     let sel_len = p1.max(p2) - p1.min(p2);
-                                     if sel_len == self.new_view_query.len() && sel_len > 0 {
-                                         log::warn!("*** DELETING ALL TEXT (CMD+A Detected via Selection) ***");
-                                         self.new_view_query.clear();
-                                         cleared_all = true;
-                                     }
-                                 }
-                             
-                             if !cleared_all {
-                                 self.new_view_query.pop();
-                             }
-                             
-                             // Reset strict to avoid multiple pops
-                             self.global_backspace_pressed = false;
-                        }
-                    });
+                    
+                    let before_query_len = self.new_view_query.len();
+                    let query_edit = egui::TextEdit::multiline(&mut self.new_view_query)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(10);
+                    
+                    let query_response = ui.add(query_edit);
+                    let after_query_len = self.new_view_query.len();
+                    
+                    println!("🔍 [Query Field] Before len: {}, After len: {}", before_query_len, after_query_len);
+                    println!("🔍 [Query Field] Has focus: {}, changed: {}", 
+                        query_response.has_focus(), query_response.changed());
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -1396,7 +1340,19 @@ impl Tabular {
                                              name: self.new_view_name.clone(),
                                              query: self.new_view_query.clone(),
                                          };
-                                         conn.custom_views.push(new_view);
+                                         
+                                         if let Some(original_name) = &self.edit_view_original_name {
+                                             // Edit mode: find and update
+                                             if let Some(view_idx) = conn.custom_views.iter().position(|v| v.name == *original_name) {
+                                                 conn.custom_views[view_idx] = new_view;
+                                             } else {
+                                                 // Should not happen normally, but treat as new if not found
+                                                 conn.custom_views.push(new_view);
+                                             }
+                                         } else {
+                                             // Add mode: append
+                                             conn.custom_views.push(new_view);
+                                         }
                                          
                                          // Update database
                                          if crate::sidebar_database::update_connection_in_database(self, &conn) {
@@ -2223,6 +2179,7 @@ impl Tabular {
         let mut add_view_requests: Vec<i64> = Vec::new();
         let mut custom_view_click_requests: Vec<(i64, String, String)> = Vec::new();
         let mut delete_custom_view_requests: Vec<(i64, String)> = Vec::new();
+        let mut edit_custom_view_requests: Vec<(i64, String, String)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -2248,6 +2205,7 @@ impl Tabular {
                 request_add_view_dialog,
                 custom_view_click_request,
                 delete_custom_view_request,
+                edit_custom_view_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -2393,12 +2351,13 @@ impl Tabular {
             if let Some(req) = delete_custom_view_request {
                 delete_custom_view_requests.push(req);
             }
+            if let Some(req) = edit_custom_view_request {
+                edit_custom_view_requests.push(req);
+            }
         }
 
         // Process add view requests
-        log::warn!("Processing {} add_view_requests", add_view_requests.len());
         for conn_id in add_view_requests {
-             log::warn!("Setting show_add_view_dialog = true for conn: {}", conn_id);
              self.show_add_view_dialog = true;
              self.new_view_connection_id = Some(conn_id);
              self.new_view_name = String::new();
@@ -2406,25 +2365,29 @@ impl Tabular {
         }
 
         if let Some((conn_id, view_name)) = delete_custom_view_requests.pop() {
-             log::info!("🗑️ Deleting custom view: {} from connection {}", view_name, conn_id);
-             if let Some(conn) = self.connections.iter_mut().find(|c| c.id == Some(conn_id)) {
-                     // Remove from vector
-                     if let Some(view_idx) = conn.custom_views.iter().position(|v| v.name == view_name) {
-                         conn.custom_views.remove(view_idx);
-                         
-                         // Persist changes
-                         let config_to_save = conn.clone();
-                         if crate::sidebar_database::update_connection_in_database(self, &config_to_save) {
-                             log::info!("✅ Saved connection config after deleting view");
-                             // No need to refresh entire connections tree if we just update in-memory
-                             // But refreshing ensures consistency
-                             crate::sidebar_database::refresh_connections_tree(self);
-                         } else {
-                             log::error!("❌ Failed to save connection config");
-                         }
-                     }
+            let mut conn_to_save = None;
+            // Find connection and remove view
+            if let Some(conn) = self.connections.iter_mut().find(|c| c.id == Some(conn_id)) {
+                 conn.custom_views.retain(|v| v.name != view_name);
+                 conn_to_save = Some(conn.clone());
+            }
+
+            // Save connection (outside of mutable borrow of connections)
+            if let Some(conn) = conn_to_save {
+                 if crate::sidebar_database::save_connection_to_database(self, &conn) {
+                     crate::sidebar_database::refresh_connections_tree(self);
                  }
+            }
         }
+
+        if let Some((conn_id, view_name, query)) = edit_custom_view_requests.pop() {
+            self.show_add_view_dialog = true;
+            self.new_view_connection_id = Some(conn_id);
+            self.new_view_name = view_name.clone();
+            self.new_view_query = query;
+            self.edit_view_original_name = Some(view_name);
+        }
+
 
         for (conn_id, db_name) in create_table_requests {
             self.open_create_table_wizard(conn_id, db_name);
@@ -2515,7 +2478,7 @@ impl Tabular {
 
             for table in &table_names {
                 let prefix = get_prefix(table);
-                groups_map.entry(prefix).or_default().push(table.clone());
+                groups_map.entry(prefix).or_default().push(table.to_string());
             }
 
             // Update/Create DiagramGroups 
@@ -3889,6 +3852,7 @@ impl Tabular {
         let mut open_diagram_request: Option<(i64, String)> = None;
         let mut custom_view_click_request: Option<(i64, String, String)> = None;
         let mut delete_custom_view_request: Option<(i64, String)> = None;
+        let mut edit_custom_view_request: Option<(i64, String, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -4569,7 +4533,8 @@ impl Tabular {
                             child_open_diagram_request,
                             child_request_add_view_dialog,
                             child_custom_view_click_request,
-                            _child_delete_custom_view,
+                            child_delete_custom_view,
+                            child_edit_custom_view,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -4644,8 +4609,11 @@ impl Tabular {
                         if let Some(child_req) = child_custom_view_click_request {
                             custom_view_click_request = Some(child_req);
                         }
-                        if let Some(child_req) = _child_delete_custom_view {
+                        if let Some(child_req) = child_delete_custom_view {
                              delete_custom_view_request = Some(child_req);
+                        }
+                        if let Some(child_req) = child_edit_custom_view {
+                             edit_custom_view_request = Some(child_req);
                         }
                     }
                 } else {
@@ -4674,6 +4642,7 @@ impl Tabular {
                                 child_request_add_view_dialog,
                                 child_custom_view_click_request,
                                 child_delete_custom_view_request,
+                                child_edit_custom_view_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -4754,6 +4723,9 @@ impl Tabular {
                             }
                             if let Some(child_req) = child_delete_custom_view_request {
                                 delete_custom_view_request = Some(child_req);
+                            }
+                            if let Some(child_req) = child_edit_custom_view_request {
+                                edit_custom_view_request = Some(child_req);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -5087,6 +5059,14 @@ impl Tabular {
             // Add context menu for Custom View items
             if node.node_type == models::enums::NodeType::CustomView {
                 response.context_menu(|ui| {
+                     if ui.button("✏️ Edit this view").clicked() {
+                         if let Some(conn_id) = node.connection_id {
+                             if let Some(query) = &node.query {
+                                 edit_custom_view_request = Some((conn_id, node.name.clone(), query.clone()));
+                             }
+                         }
+                         ui.close();
+                     }
                      if ui.button("🗑️ Delete this dba view").clicked() {
                          if let Some(conn_id) = node.connection_id {
                              delete_custom_view_request = Some((conn_id, node.name.clone()));
@@ -5137,6 +5117,7 @@ impl Tabular {
             request_add_view_dialog,
             custom_view_click_request,
             delete_custom_view_request,
+            edit_custom_view_request,
         )
     }
 
@@ -5160,6 +5141,51 @@ impl Tabular {
     }
 
 
+
+
+    fn handle_manual_backspace(ui: &mut egui::Ui, text: &mut String, text_id: egui::Id) {
+        // Only react when this field has focus
+        let has_focus = ui.memory(|m| m.has_focus(text_id));
+        if !has_focus {
+            return;
+        }
+
+        // Non-consuming check so egui's own handler still works; this is a fallback.
+        let backspace_pressed = ui.ctx().input(|i| i.key_pressed(egui::Key::Backspace));
+        if !backspace_pressed {
+            return;
+        }
+
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), text_id) {
+            if let Some(range) = state.cursor.char_range() {
+                let p1 = range.primary.index;
+                let p2 = range.secondary.index;
+                let min = p1.min(p2);
+                let max = p1.max(p2);
+
+                if min != max {
+                    // Delete selection
+                    let start_byte = text.char_indices().nth(min).map(|(i, _)| i).unwrap_or(text.len());
+                    let end_byte = text.char_indices().nth(max).map(|(i, _)| i).unwrap_or(text.len());
+                    if start_byte < end_byte {
+                        text.replace_range(start_byte..end_byte, "");
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(min))));
+                        state.store(ui.ctx(), text_id);
+                    }
+                } else if min > 0 {
+                    // Backspace at caret
+                    let char_to_delete_idx = min - 1;
+                    let start_byte = text.char_indices().nth(char_to_delete_idx).map(|(i, _)| i).unwrap_or(text.len());
+                    let end_byte = text.char_indices().nth(min).map(|(i, _)| i).unwrap_or(text.len());
+                    if start_byte < end_byte {
+                        text.replace_range(start_byte..end_byte, "");
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(char_to_delete_idx))));
+                        state.store(ui.ctx(), text_id);
+                    }
+                }
+            }
+        }
+    }
     fn handle_alter_table_request(
         &mut self,
         connection_id: i64,
@@ -9920,24 +9946,6 @@ impl Tabular {
 
 impl App for Tabular {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        // GLOBAL INPUT DEBUGGING
-        let mut global_bs = false;
-        let mut global_cmd_a = false;
-        ctx.input(|i| {
-            for event in &i.events {
-                if let egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } = event {
-                    // log::warn!("!!! GLOBAL UPDATE START: BACKSPACE PRESS DETECTED !!!");
-                    global_bs = true;
-                }
-                
-                // Track Cmd+A to heuristic clear
-                if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers, .. } = event
-                    && modifiers.command {
-                         global_cmd_a = true;
-                    }
-            }
-        });
-        self.global_backspace_pressed = global_bs;
         
         // If Cmd+A was pressed, set a short-lived flag or state?
         // Actually, we need to know if "Select All" happened recently.
@@ -12239,7 +12247,6 @@ impl App for Tabular {
                 data_table::render_drop_column_confirmation(self, ui.ctx());
 
                 // Custom View Dialog
-                log::warn!("About to call render_add_view_dialog, show_add_view_dialog={}", self.show_add_view_dialog);
                 self.render_add_view_dialog(ui.ctx());
 
                 // Render context menu for row operations
