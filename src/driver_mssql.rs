@@ -269,13 +269,13 @@ pub(crate) fn fetch_objects_from_mssql_connection(
     })
 }
 
-/// Execute a query using an existing client and return (headers, rows)
-pub(crate) async fn execute_query_with_client(
-    client: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
-    query: &str,
-) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
-    run_query(client, query).await
-}
+// /// Execute a query using an existing client and return (headers, rows)
+// pub(crate) async fn execute_query_with_client(
+//     client: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
+//     query: &str,
+// ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+//     run_query(client, query).await
+// }
 
 /// Execute a query using the shared connection pool (deadpool_tiberius)
 pub(crate) async fn execute_query(

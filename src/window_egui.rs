@@ -2373,11 +2373,10 @@ impl Tabular {
             }
 
             // Save connection (outside of mutable borrow of connections)
-            if let Some(conn) = conn_to_save {
-                 if crate::sidebar_database::save_connection_to_database(self, &conn) {
+            if let Some(conn) = conn_to_save
+                 && crate::sidebar_database::save_connection_to_database(self, &conn) {
                      crate::sidebar_database::refresh_connections_tree(self);
                  }
-            }
         }
 
         if let Some((conn_id, view_name, query)) = edit_custom_view_requests.pop() {
@@ -5060,11 +5059,10 @@ impl Tabular {
             if node.node_type == models::enums::NodeType::CustomView {
                 response.context_menu(|ui| {
                      if ui.button("✏️ Edit this view").clicked() {
-                         if let Some(conn_id) = node.connection_id {
-                             if let Some(query) = &node.query {
+                         if let Some(conn_id) = node.connection_id
+                             && let Some(query) = &node.query {
                                  edit_custom_view_request = Some((conn_id, node.name.clone(), query.clone()));
                              }
-                         }
                          ui.close();
                      }
                      if ui.button("🗑️ Delete this dba view").clicked() {
@@ -5142,50 +5140,7 @@ impl Tabular {
 
 
 
-
-    fn handle_manual_backspace(ui: &mut egui::Ui, text: &mut String, text_id: egui::Id) {
-        // Only react when this field has focus
-        let has_focus = ui.memory(|m| m.has_focus(text_id));
-        if !has_focus {
-            return;
-        }
-
-        // Non-consuming check so egui's own handler still works; this is a fallback.
-        let backspace_pressed = ui.ctx().input(|i| i.key_pressed(egui::Key::Backspace));
-        if !backspace_pressed {
-            return;
-        }
-
-        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), text_id) {
-            if let Some(range) = state.cursor.char_range() {
-                let p1 = range.primary.index;
-                let p2 = range.secondary.index;
-                let min = p1.min(p2);
-                let max = p1.max(p2);
-
-                if min != max {
-                    // Delete selection
-                    let start_byte = text.char_indices().nth(min).map(|(i, _)| i).unwrap_or(text.len());
-                    let end_byte = text.char_indices().nth(max).map(|(i, _)| i).unwrap_or(text.len());
-                    if start_byte < end_byte {
-                        text.replace_range(start_byte..end_byte, "");
-                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(min))));
-                        state.store(ui.ctx(), text_id);
-                    }
-                } else if min > 0 {
-                    // Backspace at caret
-                    let char_to_delete_idx = min - 1;
-                    let start_byte = text.char_indices().nth(char_to_delete_idx).map(|(i, _)| i).unwrap_or(text.len());
-                    let end_byte = text.char_indices().nth(min).map(|(i, _)| i).unwrap_or(text.len());
-                    if start_byte < end_byte {
-                        text.replace_range(start_byte..end_byte, "");
-                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(char_to_delete_idx))));
-                        state.store(ui.ctx(), text_id);
-                    }
-                }
-            }
-        }
-    }
+    
     fn handle_alter_table_request(
         &mut self,
         connection_id: i64,
