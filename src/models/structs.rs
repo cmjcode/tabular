@@ -133,6 +133,8 @@ pub struct DiagramState {
     #[serde(skip)]
     pub selected_edge: Option<(String, String)>, // (source_id, target_id)
     #[serde(skip)]
+    pub selected_column: Option<(String, String)>, // (table_name, column_name)
+    #[serde(skip)]
     pub add_group_popup: Option<eframe::egui::Pos2>, // Popup for adding group
     #[serde(skip)]
     pub new_group_buffer: String,
@@ -153,6 +155,7 @@ impl Default for DiagramState {
             save_requested: false,
             renaming_group: None,
             selected_edge: None,
+            selected_column: None,
             add_group_popup: None,
             new_group_buffer: String::new(),
         }

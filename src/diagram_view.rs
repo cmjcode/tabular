@@ -322,6 +322,21 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                 // Determine if selected
                 let is_selected = state.selected_edge.as_ref() == Some(&(edge.source.clone(), edge.target.clone()));
 
+                // Determine if highlighted by column
+                let is_highlighted_by_col = if let Some((sel_table, sel_col)) = &state.selected_column {
+                     src.foreign_keys.iter().any(|fk| 
+                        fk.referenced_table_name == edge.target &&
+                        (
+                            (fk.table_name == *sel_table && fk.column_name == *sel_col) ||
+                            (fk.referenced_table_name == *sel_table && fk.referenced_column_name == *sel_col)
+                        )
+                     )
+                } else {
+                    false
+                };
+
+                let is_active = is_selected || is_highlighted_by_col;
+
                 // Determine base color from source group
                 let mut base_color = egui::Color32::from_gray(100);
                 if let Some(group_id) = &src.group_id
@@ -329,13 +344,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                         base_color = group.color.linear_multiply(0.8); // Slight transparency
                     }
 
-                let color = if is_selected {
+                let color = if is_active {
                     egui::Color32::from_rgb(255, 215, 0) // Gold
                 } else {
                     base_color
                 };
                 
-                let width = if is_selected { 3.0 * scale } else { 1.0 * scale };
+                let width = if is_active { 3.0 * scale } else { 1.0 * scale };
                 let stroke = egui::Stroke::new(width, color); 
                 
                 // Cubic bezier for smooth connection
@@ -400,6 +415,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     let mut dragging_node_id = None;
     let mut drag_delta = egui::Vec2::ZERO;
     let mut node_clicked = false;
+    let mut column_clicked_request: Option<(String, String)> = None;
 
     // For manual interaction:
     let _mouse_pos = ui.input(|i| i.pointer.hover_pos());
@@ -521,16 +537,42 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         let mut y_offset = header_height + 4.0 * scale;
         
         for col in &node.columns {
-            let is_pk = node.foreign_keys.iter().any(|fk| fk.column_name == *col && fk.table_name == node.id);
-             // Just name for now, maybe type later.
-             // Truncate if too long?
+            let is_fk = node.foreign_keys.iter().any(|fk| fk.column_name == *col && fk.table_name == node.id);
+             
+             // Interaction Rect
+             let col_pos_screen = node_pos_screen + egui::vec2(0.0, y_offset);
+             let col_rect = egui::Rect::from_min_size(
+                 col_pos_screen,
+                 egui::vec2(node_rect.width(), item_height)
+             );
+
+             let col_id = ui.id().with("col").with(&node.id).with(col);
+             let response = ui.interact(col_rect, col_id, egui::Sense::click());
+             
+             if response.clicked() {
+                 column_clicked_request = Some((node.id.clone(), col.clone()));
+             }
+
+             // Highlight if selected
+             // We can't access state.selected_column here due to borrow of state.nodes
+             // But we can check after loop? No, visual feedback needs to be here.
+             // We can pass `selected_column` into the loop if we extract it before?
+             // But we iterate `state.nodes`. 
+             // We need to copy `selected_column` before the loop.
+             // I'll do that in the previous chunk.
+             
+             if response.hovered() {
+                 ui.painter().rect_filled(col_rect, 0.0, egui::Color32::from_white_alpha(10));
+             }
+
+             // Text
              let text_pos = node_pos_screen + egui::vec2(8.0 * scale, y_offset);
              ui.painter().text(
                 text_pos,
                 egui::Align2::LEFT_TOP,
-                col, // name is just the string
+                col, 
                 egui::FontId::monospace(12.0 * scale),
-                if is_pk { egui::Color32::from_rgb(200, 200, 100) } else { egui::Color32::LIGHT_GRAY }
+                if is_fk { egui::Color32::from_rgb(200, 200, 100) } else { egui::Color32::LIGHT_GRAY }
             );
             y_offset += item_height;
         }
@@ -539,7 +581,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     // Clear selection if clicked on background (and not on an edge or node)
     // We check `response` from the beginning of the function (passed down? no it was `ui.interact(rect...)`)
     // We need to check if the main rect was clicked, and ensure no edge/node was clicked.
-    if ui.input(|i| i.pointer.primary_clicked()) && !node_clicked && !edge_was_clicked {
+    if ui.input(|i| i.pointer.primary_clicked()) && !node_clicked && !edge_was_clicked && column_clicked_request.is_none() {
         // But wait, `ui.interact` for background handles drag. Does it also report click?
         // We can check if the pointer is within the clip rect and nothing else claimed it?
         // Simpler: If the background response was clicked? 
@@ -547,7 +589,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
          // Let's rely on global input.
          if ui.rect_contains_pointer(rect) {
              state.selected_edge = None;
+             state.selected_column = None;
          }
+    }
+    
+    if let Some(req) = column_clicked_request {
+        state.selected_column = Some(req);
     }
 
     if let Some(id) = dragging_node_id
