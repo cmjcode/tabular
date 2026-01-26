@@ -52,6 +52,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
             state.save_requested = true;
         }
+
+        // Search Shortcut (Cmd + F) 
+        if i.consume_key(egui::Modifiers::COMMAND, egui::Key::F) {
+            state.show_search = !state.show_search;
+             if state.show_search {
+                 state.search_query.clear();
+             }
+        }
     });
 
     // Handle Initial Centering
@@ -470,19 +478,36 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         }
 
          // Check if this node is part of the selected relationship
-        let is_glow = if let Some((s, t)) = &state.selected_edge {
+        let is_selected_edge_node = if let Some((s, t)) = &state.selected_edge {
             node.id == *s || node.id == *t
         } else {
             false
         };
 
+        // Check if node matches search
+        let is_search_match = if state.show_search && !state.search_query.is_empty() {
+             let query = state.search_query.to_lowercase();
+             node.title.to_lowercase().contains(&query) || 
+             node.columns.iter().any(|c| c.to_lowercase().contains(&query))
+        } else {
+            false
+        };
+
+        let is_glow = is_selected_edge_node || is_search_match;
+
         // Draw Shadow/Border
         if is_glow {
              // Glow effect
+             let glow_color = if is_search_match {
+                 egui::Color32::from_rgb(255, 0, 0) // Bright Red
+             } else {
+                 egui::Color32::from_rgb(255, 215, 0) // Gold
+             };
+
              ui.painter().rect_filled(
                 node_rect.expand(6.0 * scale), 
                 12.0 * scale, 
-                egui::Color32::from_rgb(255, 215, 0).linear_multiply(0.5) // Gold with transparency
+                glow_color.linear_multiply(0.5) 
             );
         } else {
             ui.painter().rect_filled(
@@ -499,7 +524,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             fill_color
         );
         // Corrected rect_stroke args
-        let border_color = if is_glow { egui::Color32::from_rgb(255, 215, 0) } else { egui::Color32::from_gray(60) };
+        let border_color = if is_search_match {
+            egui::Color32::from_rgb(255, 50, 50)
+        } else if is_selected_edge_node { 
+            egui::Color32::from_rgb(255, 215, 0) 
+        } else { 
+            egui::Color32::from_gray(60) 
+        };
+        
         let border_width = if is_glow { 2.0 * scale } else { 1.0 * scale };
         
         ui.painter().rect_stroke(
@@ -640,6 +672,66 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
 
         });
     });
+
+    // Render Search Box
+    if state.show_search {
+        // Reduced size for tighter fit (equal active margins)
+        let search_rect = egui::Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(270.0, 40.0));
+        
+        ui.painter().rect_filled(search_rect, 4.0, egui::Color32::from_rgb(30, 30, 35));
+        ui.painter().rect_stroke(search_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Middle);
+
+        ui.allocate_ui_at_rect(search_rect.shrink(8.0), |ui| {
+             // Use left_to_right with Align::Center for vertical centering
+             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                 ui.visuals_mut().widgets.active.bg_fill = egui::Color32::from_rgb(50, 50, 55);
+                 let response = ui.add(egui::TextEdit::singleline(&mut state.search_query)
+                    .hint_text("Search table / column...")
+                    .desired_width(220.0)
+                 );
+                 
+                 // Auto-focus if empty (just opened or cleared)
+                 if state.search_query.is_empty() && !response.has_focus() {
+                     response.request_focus();
+                 }
+                 
+                 if response.changed() {
+                     let query = state.search_query.to_lowercase();
+                     if !query.is_empty() {
+                         // Find match
+                         let mut target_pan = None;
+                         for node in &state.nodes {
+                             let node_match = node.title.to_lowercase().contains(&query);
+                             let col_match = node.columns.iter().any(|c| c.to_lowercase().contains(&query));
+                             
+                             if node_match || col_match {
+                                  // Found!                                  
+                                  let node_center = node.pos + node.size / 2.0;
+                                  let view_center = rect.size() / 2.0;
+                                  let new_pan = view_center - node_center.to_vec2() * state.zoom;
+                                  target_pan = Some(new_pan);
+                                  break; // Jump to first match
+                             }
+                         }
+                         
+                         if let Some(pan) = target_pan {
+                             state.pan = pan;
+                             state.is_centered = true; // Ensure we don't auto-center back
+                         }
+                     }
+                 }
+                 
+                 if ui.button("X").clicked() {
+                     state.show_search = false;
+                     state.search_query.clear();
+                 }
+             });
+        });
+        
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            state.show_search = false;
+        }
+    }
 
     // Render "Add Group" Popup
     if let Some(pos) = state.add_group_popup {
