@@ -614,12 +614,10 @@ pub(crate) fn render_connection_dialog(
                             ui.spinner();
                             ui.label("Testing connection...");
                         } else if ui.button("Test Connection").clicked() {
-                            tabular.test_connection_in_progress = true;
-                            tabular.test_connection_status = None;
-
                             // Test connection based on database type
+                            // Note: This is synchronous, so we don't see the spinner. 
+                            // TODO: Move to async task if spinner is needed.
                             let result = connection::test_database_connection(&connection_data);
-                            tabular.test_connection_in_progress = false;
                             tabular.test_connection_status = Some(result);
                         }
                     });

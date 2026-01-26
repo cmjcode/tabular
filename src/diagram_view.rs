@@ -681,7 +681,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         ui.painter().rect_filled(search_rect, 4.0, egui::Color32::from_rgb(30, 30, 35));
         ui.painter().rect_stroke(search_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Middle);
 
-        ui.allocate_ui_at_rect(search_rect.shrink(8.0), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect.shrink(8.0)), |ui| {
              // Use left_to_right with Align::Center for vertical centering
              ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                  ui.visuals_mut().widgets.active.bg_fill = egui::Color32::from_rgb(50, 50, 55);
