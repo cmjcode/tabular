@@ -374,6 +374,7 @@ pub struct Tabular {
     
     // DEBUGGING INPUT
     pub global_backspace_pressed: bool,
+    pub sidebar_visible: bool,
 }
 
 // Preference tabs enumeration
@@ -788,6 +789,7 @@ impl Tabular {
             new_view_connection_id: None,
             edit_view_original_name: None,
             global_backspace_pressed: false,
+            sidebar_visible: true,
         };
 
         // Clear any old cached pools
@@ -11347,7 +11349,8 @@ impl App for Tabular {
         // Final attempt (in case any change slipped through)
         try_save_prefs(self);
 
-        egui::SidePanel::left("sidebar")
+        if self.sidebar_visible {
+            egui::SidePanel::left("sidebar")
             .resizable(true)
             .default_width(250.0)
             .min_width(150.0)
@@ -11619,6 +11622,7 @@ impl App for Tabular {
                     });
                 });
             });
+        }
 
         // Central panel (main editor / data / structure)
         egui::CentralPanel::default()
@@ -11672,6 +11676,26 @@ impl App for Tabular {
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
+                        
+                        // Sidebar Toggle
+                        let toggle_icon = if self.sidebar_visible { "◀" } else { "▶" };
+                        if ui
+                            .add_sized(
+                                [20.0, 20.0],
+                                egui::Button::new(toggle_icon)
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .stroke(egui::Stroke::NONE),
+                            )
+                            .on_hover_text(if self.sidebar_visible {
+                                "Hide Sidebar"
+                            } else {
+                                "Show Sidebar"
+                            })
+                            .clicked()
+                        {
+                            self.sidebar_visible = !self.sidebar_visible;
+                        }
+                        
                         let mut to_close = None;
                         let mut to_switch = None;
                         for (i, tab) in self.query_tabs.iter().enumerate() {
