@@ -523,7 +523,7 @@ pub(crate) async fn fetch_mysql_data(
             }
 
             // Fetch columns using INFORMATION_SCHEMA
-            let cols_query = "SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+            let cols_query = "SELECT COLUMN_NAME, COLUMN_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
             debug!(
                 "📋 Fetching columns from MySQL for {}.{}",
                 db_name, table_name

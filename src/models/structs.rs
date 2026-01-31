@@ -423,6 +423,7 @@ pub struct SpreadsheetState {
     pub pending_operations: Vec<CellEditOperation>, // Unsaved changes
     pub is_dirty: bool,                       // Whether there are unsaved changes
     pub primary_key_columns: Vec<String>,     // Primary key column names for generating SQL
+    pub enum_options: Option<Vec<String>>,    // If editing an ENUM, available options
 }
 
 #[derive(Clone, Debug)]

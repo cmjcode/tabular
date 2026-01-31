@@ -629,23 +629,55 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     .cell_edit_text
                                                     .clone();
 
-                                                ui.scope_builder(
-                                                    egui::UiBuilder::new().max_rect(text_edit_rect),
-                                                    |ui| {
-                                                        let text_edit = egui::TextEdit::singleline(
-                                                            &mut edit_text,
-                                                        )
-                                                        .desired_width(text_edit_rect.width())
-                                                        .margin(egui::vec2(2.0, 2.0));
+                                                    ui.scope_builder(
+                                                        egui::UiBuilder::new().max_rect(text_edit_rect),
+                                                        |ui| {
+                                                            let valid_options = tabular.spreadsheet_state.enum_options.clone();
+                                                            if let Some(options) = valid_options {
+                                                                // Render ComboBox for ENUM types
+                                                                let mut current_val = edit_text.clone();
+                                                                let combo = egui::ComboBox::from_id_salt("enum_combo")
+                                                                    .selected_text(&current_val)
+                                                                    .height(200.0)
+                                                                    .show_ui(ui, |ui| {
+                                                                        let mut changed = false;
+                                                                        for opt in options {
+                                                                             if ui.selectable_value(&mut current_val, opt.clone(), &opt).clicked() {
+                                                                                 changed = true;
+                                                                             }
+                                                                        }
+                                                                        changed
+                                                                    });
+                                                                
+                                                                if combo.inner.unwrap_or(false) {
+                                                                    edit_text = current_val;
+                                                                    // Auto-commit on selection if desired, or just update text
+                                                                    // For now just update text, user presses Enter to commit
+                                                                    // Or we can auto-commit:
+                                                                    // tabular.spreadsheet_finish_cell_edit(true);
+                                                                    // But let's stick to consistent Enter-to-save behavior for now, 
+                                                                    // unless we want to make it super fast. 
+                                                                    // Actually, standard behavior for dropdowns in grids is often commit-on-select.
+                                                                    // Let's request focus on the combo to ensure keyboard works?
+                                                                    // ComboBox takes focus differently.
+                                                                }
+                                                            } else {
+                                                                // Render standard TextEdit
+                                                                let text_edit = egui::TextEdit::singleline(
+                                                                    &mut edit_text,
+                                                                )
+                                                                .desired_width(text_edit_rect.width())
+                                                                .margin(egui::vec2(2.0, 2.0));
 
-                                                        let response = ui.add(text_edit);
+                                                                let response = ui.add(text_edit);
 
-                                                        // Auto-focus the text edit when we start editing
-                                                        if !response.has_focus() {
-                                                            response.request_focus();
-                                                        }
-                                                    },
-                                                );
+                                                                // Auto-focus the text edit when we start editing
+                                                                if !response.has_focus() {
+                                                                    response.request_focus();
+                                                                }
+                                                            }
+                                                        },
+                                                    );
 
                                                 // Store the updated text to apply later
                                                 cell_edit_text_update = Some(edit_text);
@@ -996,6 +1028,38 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.selected_cell = Some((r, c));
                 tabular.table_recently_clicked = true;
                 tabular.spreadsheet_start_cell_edit(r, c);
+
+                // Fetch ENUM options if applicable
+                tabular.spreadsheet_state.enum_options = None;
+                if let Some(conn_id) = tabular.current_connection_id {
+                     let table_name = infer_current_table_name(tabular);
+                     // If we are browsing a table, try to get cached columns
+                     if !table_name.is_empty() {
+                         // We need the database name
+                         let db_name = tabular.query_tabs.get(tabular.active_tab_index)
+                                         .and_then(|t| t.database_name.clone())
+                                         .unwrap_or_default();
+                         
+                         // We might need to handle the case where database name is empty (sqlite?)
+                         // But usually cache needs generic db name if empty.
+                         
+                         // To avoid async/blocking call here every click, we rely on cache being populated.
+                         // But `get_columns_from_cache` is blocking (uses runtime block_on). 
+                         // Check if that's acceptable. It executes a local SQLite query. Should be fast enough.
+                         
+                         if let Some(cols) = crate::cache_data::get_columns_from_cache(tabular, conn_id, &db_name, &table_name) {
+                             if let Some(col_name) = tabular.current_table_headers.get(c) {
+                                 // Find column in cache
+                                 if let Some((_, type_str)) = cols.iter().find(|(name, _)| name == col_name) {
+                                     let lower_type = type_str.to_lowercase();
+                                     if lower_type.starts_with("enum") || lower_type.starts_with("set") {
+                                          tabular.spreadsheet_state.enum_options = parse_enum_values(type_str);
+                                     }
+                                 }
+                             }
+                         }
+                     }
+                }
             }
             // (Cell edit text updates already applied above before changing edit target)
 
@@ -2983,12 +3047,26 @@ pub(crate) fn render_structure_columns_editor(
                         ui.text_edit_singleline(&mut tabular.new_column_name);
                     });
                     // Type combobox
+                    // Type combobox / editable
                     let w_type = widths[2];
                     ui.allocate_ui_with_layout(egui::vec2(w_type,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.set_min_width(w_type-8.0);
-                        let types = ["varchar(255)", "bigint", "int", "text", "longtext", "datetime", "date", "float", "double", "boolean"];
-                        egui::ComboBox::from_id_salt("new_col_type").selected_text(&tabular.new_column_type).show_ui(ui, |ui| {
-                            for t in types { if ui.selectable_label(tabular.new_column_type==t, t).clicked() { tabular.new_column_type = t.to_string(); } }
+                        let types = ["varchar(255)", "bigint", "int", "text", "longtext", "datetime", "date", "float", "double", "boolean", "enum('a','b')"];
+                        
+                        // Use a horizontal layout for text edit + picker button
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut tabular.new_column_type).desired_width(w_type - 24.0));
+                            
+                            egui::ComboBox::from_id_salt("new_col_type_picker")
+                                .selected_text("")
+                                .width(16.0)
+                                .show_ui(ui, |ui| {
+                                    for t in types {
+                                        if ui.selectable_label(tabular.new_column_type == t, t).clicked() {
+                                            tabular.new_column_type = t.to_string();
+                                        }
+                                    }
+                                });
                         });
                     });
                     // Nullable
@@ -4040,5 +4118,85 @@ pub(crate) fn get_total_pages(tabular: &window_egui::Tabular) -> usize {
         1 // Avoid division by zero, fallback to 1 page
     } else {
         tabular.total_rows.div_ceil(tabular.page_size)
+    }
+}
+
+fn parse_enum_values(type_str: &str) -> Option<Vec<String>> {
+    let lower = type_str.to_lowercase();
+    if !lower.starts_with("enum") && !lower.starts_with("set") {
+        return None;
+    }
+
+    // Find content inside parentheses
+    if let Some(start_idx) = type_str.find('(') {
+        if let Some(end_idx) = type_str.rfind(')') {
+            if start_idx < end_idx {
+                let content = &type_str[start_idx + 1..end_idx];
+                let chars: Vec<char> = content.chars().collect();
+                let mut values = Vec::new();
+                let mut current = String::new();
+                let mut in_quote = false;
+                let mut i = 0;
+
+                while i < chars.len() {
+                    let c = chars[i];
+                    if in_quote {
+                        if c == '\'' {
+                            // Check for double quote escaping (e.g. 'O''Neil')
+                            if i + 1 < chars.len() && chars[i+1] == '\'' {
+                                current.push('\'');
+                                i += 1;
+                            } else {
+                                in_quote = false;
+                            }
+                        } else if c == '\\' {
+                             // Handle backslash escaping
+                             if i + 1 < chars.len() {
+                                 current.push(chars[i+1]);
+                                 i += 1;
+                             } else {
+                                 current.push(c);
+                             }
+                        } else {
+                            current.push(c);
+                        }
+                    } else {
+                        if c == '\'' {
+                            in_quote = true;
+                        } else if c == ',' {
+                            values.push(current.clone());
+                            current.clear();
+                        } else if !c.is_whitespace() {
+                            // Should not happen for valid ENUMs, but handle just in case
+                            // If we encounter text outside quotes (other than comma/space), push it?
+                            // Safest is to ignore or assume it's part of value if we support unquoted (we shouldn't)
+                        }
+                    }
+                    i += 1;
+                }
+                values.push(current);
+                return Some(values);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_enum_values() {
+        assert_eq!(parse_enum_values("enum('a','b')"), Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(parse_enum_values("ENUM('YES','NO')"), Some(vec!["YES".to_string(), "NO".to_string()]));
+        assert_eq!(parse_enum_values("enum('a,b','c')"), Some(vec!["a,b".to_string(), "c".to_string()]));
+        assert_eq!(parse_enum_values("enum('O''Neil','Smith')"), Some(vec!["O'Neil".to_string(), "Smith".to_string()]));
+        assert_eq!(parse_enum_values("varchar(255)"), None);
+        // Test set
+        assert_eq!(parse_enum_values("set('a','b')"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Test no quotes (rare but possible? No, MySQL enums are always quoted strings)
+        // Test spaces
+        assert_eq!(parse_enum_values("enum( 'a' , 'b' )"), Some(vec!["a".to_string(), "b".to_string()]));
     }
 }
