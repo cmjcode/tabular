@@ -904,9 +904,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut enter_pressed_pre = ui.input(|i| i.key_pressed(egui::Key::Enter));
     let mut raw_tab = false;
     // VSCode-like navigation/action flags
-    let mut word_left_pressed = false;
-    let mut word_right_pressed = false;
     let mut multi_nav_left = false;
+
     let mut multi_nav_right = false;
     let mut multi_nav_up = false;
     let mut multi_nav_down = false;
@@ -922,7 +921,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut single_nav_end = false;
     let mut single_nav_home_extend = false;
     let mut single_nav_end_extend = false;
-    let mut word_nav_shift = false;
     let mut move_line_up = false;
     let mut move_line_down = false;
     let mut dup_line_up = false;
@@ -1091,48 +1089,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     // VSCode-like word navigation & line operations (pre-TextEdit)
     // Helper: compute previous and next word boundaries using Unicode segmentation (UAX#29)
-    use unicode_segmentation::UnicodeSegmentation;
-    let prev_word_boundary = |s: &str, pos: usize| {
-        let pos = pos.min(s.len());
-        // Walk backward over word boundaries using unicode_words
-        // Strategy: iterate words with their byte ranges, pick the last word whose end < pos; if pos inside a word, jump to its start
-        let mut last_start = 0usize;
-        for w in s.unicode_word_indices() {
-            let (byte_idx, word) = w;
-            let start = byte_idx;
-            let end = start + word.len();
-            if pos > end {
-                last_start = start;
-                continue;
-            }
-            if pos > start && pos <= end {
-                // inside this word: jump to its start
-                return start;
-            }
-            if pos <= start {
-                break;
-            }
-        }
-        // If not inside any word, jump to start of previous word if any, else 0
-        last_start
-    };
-    let next_word_boundary = |s: &str, pos: usize| {
-        let pos = pos.min(s.len());
-        for w in s.unicode_word_indices() {
-            let (byte_idx, word) = w;
-            let start = byte_idx;
-            let end = start + word.len();
-            if pos < start {
-                // next word found; jump to its start
-                return start;
-            }
-            if pos >= start && pos < end {
-                // inside this word; jump to its end
-                return end;
-            }
-        }
-        s.len()
-    };
+
+
+
     // Helper: convert byte index -> char index for egui CCursor
     let to_char_index = |s: &str, byte_idx: usize| -> usize {
         let b = byte_idx.min(s.len());
@@ -1978,15 +1937,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     pressed: true,
                     modifiers,
                     ..
-                } if modifiers.alt => {
-                    word_left_pressed = true;
-                    word_nav_shift = modifiers.shift;
-                }
-                egui::Event::Key {
-                    key: egui::Key::ArrowLeft,
-                    pressed: true,
-                    modifiers,
-                    ..
                 } if tabular.multi_selection.len() > 1
                     && !modifiers.alt
                     && !modifiers.ctrl
@@ -1997,15 +1947,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     } else {
                         multi_nav_left = true;
                     }
-                }
-                egui::Event::Key {
-                    key: egui::Key::ArrowRight,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } if modifiers.alt => {
-                    word_right_pressed = true;
-                    word_nav_shift = modifiers.shift;
                 }
                 egui::Event::Key {
                     key: egui::Key::ArrowRight,
@@ -2157,51 +2098,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ri.events = kept;
     });
     // Apply word navigation immediately by updating egui TextEditState before widget is built
-    if word_left_pressed || word_right_pressed {
-        let id = egui::Id::new("sql_editor");
-        let rng = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id);
-        let (start, end, primary) = if let Some(r) = rng {
-            (r.start, r.end, r.primary)
-        } else {
-            let p = tabular.cursor_position.min(tabular.editor.text.len());
-            (p, p, p)
-        };
-        let anchor = if primary == end { start } else { end };
-        let cur = primary;
-        let new_pos = if word_left_pressed {
-            prev_word_boundary(&tabular.editor.text, cur)
-        } else {
-            next_word_boundary(&tabular.editor.text, cur)
-        };
-        if word_nav_shift {
-            // Extend selection from anchor to new_pos, with primary at new_pos
-            let start_ci = to_char_index(&tabular.editor.text, anchor.min(new_pos));
-            let end_ci = to_char_index(&tabular.editor.text, anchor.max(new_pos));
-            let primary_ci = to_char_index(&tabular.editor.text, new_pos);
-            crate::editor_state_adapter::EditorStateAdapter::set_selection(
-                ui.ctx(),
-                id,
-                start_ci,
-                end_ci,
-                primary_ci,
-            );
-            tabular.selection_start = anchor.min(new_pos);
-            tabular.selection_end = anchor.max(new_pos);
-            tabular.cursor_position = new_pos;
-        } else {
-            // Collapse to new_pos using direct set_ccursor_range equivalent
-            let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
-            let ci = to_char_index(&tabular.editor.text, new_pos);
-            state
-                .cursor
-                .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
-            state.store(ui.ctx(), id);
-            tabular.selection_start = new_pos;
-            tabular.selection_end = new_pos;
-            tabular.cursor_position = new_pos;
-        }
-        ui.memory_mut(|m| m.request_focus(id));
-    }
+
     if single_nav_home || single_nav_end || single_nav_home_extend || single_nav_end_extend {
         let id = egui::Id::new("sql_editor");
         let text = &tabular.editor.text;
