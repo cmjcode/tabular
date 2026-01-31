@@ -386,6 +386,12 @@ pub enum PrefTab {
     Update,
 }
 
+impl Default for Tabular {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tabular {
     // Multi-cursor: add a new cursor position if not existing
     pub fn add_cursor(&mut self, pos: usize) {

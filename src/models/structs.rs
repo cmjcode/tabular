@@ -138,6 +138,10 @@ pub struct DiagramState {
     pub add_group_popup: Option<eframe::egui::Pos2>, // Popup for adding group
     #[serde(skip)]
     pub new_group_buffer: String,
+    #[serde(skip)]
+    pub search_query: String,
+    #[serde(skip)]
+    pub show_search: bool,
 }
 
 impl Default for DiagramState {
@@ -158,6 +162,8 @@ impl Default for DiagramState {
             selected_column: None,
             add_group_popup: None,
             new_group_buffer: String::new(),
+            search_query: String::new(),
+            show_search: false,
         }
     }
 }
