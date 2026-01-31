@@ -21,13 +21,42 @@ fn current_prefix(text: &str, cursor: usize) -> (String, usize) {
     let mut start = cursor.min(bytes.len());
     while start > 0 {
         let c = bytes[start - 1] as char;
-        if c.is_alphanumeric() || matches!(c, '_' | ':' | '@' | '$') {
+        if c.is_alphanumeric() || matches!(c, '_' | ':' | '@' | '$' | '.') {
             start -= 1;
         } else {
             break;
         }
     }
     (text[start..cursor.min(text.len())].to_string(), start)
+}
+
+fn find_statement_bounds(text: &str, cursor: usize) -> (usize, usize) {
+    if text.is_empty() {
+        return (0, 0);
+    }
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let cursor = cursor.min(n);
+
+    // Scan backwards from cursor
+    let mut start = cursor;
+    while start > 0 {
+        if bytes[start - 1] == b';' {
+            break;
+        }
+        start -= 1;
+    }
+
+    // Scan forwards from cursor
+    let mut end = cursor;
+    while end < n {
+        if bytes[end] == b';' {
+            break;
+        }
+        end += 1;
+    }
+
+    (start, end)
 }
 fn active_connection_and_db(app: &Tabular) -> Option<(i64, String)> {
     app.query_tabs.get(app.active_tab_index).and_then(|tab| {
@@ -129,16 +158,20 @@ fn tables_near_cursor(sql: &str, cursor: usize) -> Vec<String> {
     if hits.is_empty() {
         return Vec::new();
     }
+    
+    // Constrain to current statement to avoid pollution from other queries
+    let (stmt_start, stmt_end) = find_statement_bounds(sql, cursor);
+    
     let cursor = cursor.min(sql.len());
     let mut below: Vec<_> = hits
         .iter()
-        .filter(|(pos, _)| *pos >= cursor)
+        .filter(|(pos, _)| *pos >= cursor && *pos < stmt_end)
         .cloned()
         .collect();
     below.sort_by_key(|(pos, _)| *pos);
     let mut above: Vec<_> = hits
         .iter()
-        .filter(|(pos, _)| *pos < cursor)
+        .filter(|(pos, _)| *pos < cursor && *pos >= stmt_start)
         .cloned()
         .collect();
     above.sort_by_key(|(pos, _)| cursor - *pos);
@@ -150,6 +183,40 @@ fn tables_near_cursor(sql: &str, cursor: usize) -> Vec<String> {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_statement_bounds() {
+        let sql = "SELECT * FROM t1; SELECT * FROM t2 WHERE id = 1; INSERT INTO t3 VALUES(1)";
+        //         01234567890123456 7890123456789012345678901234567 8901234567890123456789012
+        //         0                 1                  2                  3                  4
+
+        // Cursor in first statement
+        assert_eq!(find_statement_bounds(sql, 5), (0, 16));
+        
+        // Cursor in second statement
+        assert_eq!(find_statement_bounds(sql, 25), (17, 47)); // after first ; (16) to second ; (47)
+        
+        // Cursor in third statement
+        assert_eq!(find_statement_bounds(sql, 60), (48, 73));
+    }
+
+    #[test]
+    fn test_tables_near_cursor_isolation() {
+        let sql = "SELECT * FROM users; SELECT * FROM orders WHERE user_id = 1";
+        
+        // Cursor in first query (at end of 'users')
+        let tables1 = tables_near_cursor(sql, 19); 
+        assert_eq!(tables1, vec!["users"]);
+
+        // Cursor in second query (at 'orders')
+        let tables2 = tables_near_cursor(sql, 40);
+        assert_eq!(tables2, vec!["orders"]);
+    }
 }
 
 fn extract_tables(sql: &str) -> Vec<String> {
@@ -259,6 +326,69 @@ pub fn build_suggestions(
 ) -> Vec<String> {
     let mut out = Vec::new();
     let pl = prefix.to_ascii_lowercase();
+    
+    // Check for dot-based table access (e.g. "users.na")
+    // If prefix contains '.', we try to split it into table_part + col_part
+    if let Some((table_part, col_part)) = pl.split_once('.') {
+        // We have a table reference.
+        // table_part ex: "users", col_part ex: "na" (or empty)
+        
+        let conn_id = app.query_tabs.get(app.active_tab_index).and_then(|t| t.connection_id);
+        let db = active_connection_and_db(app)
+            .map(|(_, d)| d)
+            .unwrap_or_default();
+            
+        if let Some(cid) = conn_id {
+            // We search for this SPECIFIC table in the scope (or all tables if not found?)
+            // Actually, if user types "users.", "users" might be an alias or real table name.
+            // For now, assuming real table name matching.
+            
+            // Check if table_part is in valid tables (cached)
+            let scope_tables = tables_near_cursor(text, cursor);
+            // If table_part is amongst the scope tables (or we just try blindly?)
+            // Just try blindly: if we have columns for this table, return them.
+            
+            // Note: cache lookup uses case-sensitive or insensitive? 
+            // Often cache keys are as-is. `pl` is lowercase.
+            // But let's assume standard matching.
+            
+            // We need to look up columns for `table_part`.
+            // The result should include the full prefix "table_part.col_name" so replacement works?
+            // Yes, because `current_prefix` returns the implementation "users.na".
+            
+            // We can reuse get_cached_columns logic but specific to one table.
+            if let Some(cols) = get_cached_columns(app, cid, &db, vec![table_part.to_string()]) {
+                for c in cols {
+                    if c.to_ascii_lowercase().starts_with(col_part) {
+                        out.push(format!("{}.{}", table_part, c));
+                    }
+                }
+            } else {
+                // Try case-insensitive table match if table_part didn't work directly?
+                // For now, simple exact/lowercase match attempt.
+                // If the user typed "Users.", table_part="users". 
+                // If cache has "Users", we might miss it.
+                // Let's filter scope_tables for case-insensitive match.
+                let real_table_name = scope_tables.iter().find(|t| t.to_ascii_lowercase() == table_part);
+                if let Some(rt) = real_table_name {
+                     if let Some(cols) = get_cached_columns(app, cid, &db, vec![rt.clone()]) {
+                        for c in cols {
+                            if c.to_ascii_lowercase().starts_with(col_part) {
+                                // Keep the user's typed case for table part? 
+                                // Or use the real table name?
+                                // If I type "users.", replace with "Users.id"? 
+                                // Usually match user's case for the prefix part, but replacing "users.na" with "Users.Name" is fine.
+                                out.push(format!("{}.{}", rt, c));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return out;
+    }
+
     let ctx = detect_ctx(text, cursor);
     let mut tables_in_scope = tables_near_cursor(text, cursor);
     let tables_all = extract_tables(text);
@@ -396,8 +526,11 @@ pub fn update_autocomplete(app: &mut Tabular) {
         None
     };
     let triggered_by_space = matches!(pre_prefix_char, Some(ch) if ch.is_whitespace());
+    
+    // Also trigger if the prefix contains a dot (e.g. "table."), implying user wants column suggestions
+    let triggered_by_dot = pref.contains('.');
     let triggered_by_len = pref.len() >= 2;
-    if !triggered_by_space && !triggered_by_len {
+    if !triggered_by_space && !triggered_by_len && !triggered_by_dot {
         app.show_autocomplete = false;
         app.autocomplete_suggestions.clear();
         app.autocomplete_kinds.clear();
