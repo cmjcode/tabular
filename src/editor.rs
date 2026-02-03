@@ -492,7 +492,7 @@ pub(crate) fn save_current_tab_with_name(
 // 3. All cursors stay active and typing applies to all positions
 // 4. Press Escape or navigate with arrow keys to clear multi-selection
 fn handle_add_next_occurrence(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
-    let id = egui::Id::new("sql_editor");
+    let id = ui.make_persistent_id("sql_editor");
 
     // Get current selection or word under cursor
     let (sel_start, sel_end) = if tabular.selection_start != tabular.selection_end {
@@ -637,7 +637,7 @@ fn clear_multi_selection_state(tabular: &mut window_egui::Tabular, ui: &egui::Ui
     tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
     tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
 
-    let id = egui::Id::new("sql_editor");
+    let id = ui.make_persistent_id("sql_editor");
     let s = &tabular.editor.text;
     let caret_chars = s[..caret].chars().count();
     crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, caret_chars);
@@ -708,6 +708,7 @@ fn slice_on_char_boundaries(
 }
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    let editor_id = ui.make_persistent_id("sql_editor");
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
     let mut trigger_format_sql = false;
     ui.input(|i| {
@@ -1104,11 +1105,114 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             None => s.len(),
         }
     };
+    // Auto-close quotes and Overtype behavior
+    // Detect ' or " input.
+    // If Custom View dialog is open, skip to avoid interference.
+    if !tabular.show_add_view_dialog && tabular.multi_selection.len() <= 1 {
+        let handle_quote = ui.input(|i| {
+            for ev in &i.events {
+                if let egui::Event::Text(text) = ev {
+                    if text == "'" || text == "\"" {
+                        return Some(text.clone());
+                    }
+                }
+            }
+            None
+        });
+
+        if let Some(quote_char) = handle_quote {
+            let cursor = tabular.cursor_position;
+            let text_len = tabular.editor.text.len();
+            let safe_cursor = cursor.min(text_len);
+            
+            // Check character valid for auto-close (at end, or before whitespace/closer)
+            let next_char = tabular.editor.text[safe_cursor..].chars().next();
+            // Allow auto-close if next char is whitespace/empty or closing punctuation
+            let should_autoclose = match next_char {
+                None => true, // End of file
+                Some(c) => c.is_whitespace() || c == ')' || c == ']' || c == '}' || c == ',' || c == ';'
+            };
+            
+            // Special Overtype case: cursor is before matching quote
+            let is_overtype = if let Some(c) = next_char {
+                 c.to_string() == quote_char
+            } else {
+                 false
+            };
+
+            let mut handled = false;
+
+            if is_overtype {
+                // Just move cursor forward
+                tabular.cursor_position += 1;
+                tabular.selection_start = tabular.cursor_position;
+                tabular.selection_end = tabular.cursor_position;
+                handled = true;
+                log::debug!("Overtyped quote '{}'", quote_char);
+            } else if should_autoclose {
+                // Insert quote pair: quote + quote
+                let pair = format!("{}{}", quote_char, quote_char);
+                tabular.editor.apply_single_replace(safe_cursor..safe_cursor, &pair);
+                
+                // Move cursor between them
+                tabular.cursor_position += 1;
+                tabular.selection_start = tabular.cursor_position;
+                tabular.selection_end = tabular.cursor_position;
+                handled = true;
+                log::debug!("Auto-closed quote '{}'", quote_char);
+            }
+
+            if handled {
+                // Sync egui state
+                let id = editor_id;
+                
+                // FORCE UPDATE of egui TextEdit state immediately
+                // We must update the internal state so TextEdit knows the cursor moved
+                if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
+                     let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+                     state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(ci))));
+                     state.store(ui.ctx(), id);
+                } else {
+                     // Fallback if state doesn't exist yet (first frame?)
+                     let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+                     crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
+                }
+
+                // Consume the text event so TextEdit doesn't insert another quote
+                ui.ctx().input_mut(|ri| {
+                    let mut consumed = false;
+                    ri.events.retain(|e| {
+                        if !consumed {
+                             if let egui::Event::Text(t) = e {
+                                if t == &quote_char {
+                                    consumed = true;
+                                    return false;
+                                }
+                             }
+                        }
+                        true
+                    });
+                });
+                
+                // Mark modified
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                     tab.content = tabular.editor.text.clone();
+                     tab.is_modified = true;
+                } else {
+                     tabular.editor.mark_text_modified();
+                }
+
+                ui.ctx().request_repaint();
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+        }
+    }
+
     // Pre-handle Delete/Backspace when a selection exists: remove the whole selection (not just one char)
     // This ensures expected behavior “press Delete removes all selected text”.
     // SKIP this handling if Custom View dialog is open to avoid consuming backspace events
     if !tabular.show_add_view_dialog {
-        let id = egui::Id::new("sql_editor");
+        let id = editor_id;
         let mut do_delete_selection = false;
         let mut del_key_consumed = false;
         let mut has_selection = false;
@@ -1347,7 +1451,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Special guard: Backspace on completely empty text -> consume and do nothing (avoid odd widget churn)
     // SKIP this handling if Custom View dialog is open
     if !tabular.show_add_view_dialog {
-        let id = egui::Id::new("sql_editor");
+        let id = editor_id;
         let bs_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
         if bs_pressed && tabular.editor.text.is_empty() {
             // Ensure there's no selection
@@ -1535,7 +1639,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     tab.is_modified = true;
                 }
 
-                let id = egui::Id::new("sql_editor");
+                let id = editor_id;
                 if multi_mode {
                     if let Some((start, caret)) = tabular.multi_selection.primary_range() {
                         tabular.selection_start = start;
@@ -1676,7 +1780,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 tabular.cursor_position = caret;
             }
             tabular.selected_text.clear();
-            let id = egui::Id::new("sql_editor");
+            let id = editor_id;
             let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
             crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
             tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
@@ -1695,7 +1799,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Forward Delete (no selection): delete the next grapheme to the right of the caret
     // On macOS laptops, this is typically triggered via Fn+Delete and should map to egui::Key::Delete
     {
-        let id = egui::Id::new("sql_editor");
+        let id = editor_id;
         let del_pressed_no_sel = ui.input(|i| i.key_pressed(egui::Key::Delete));
         if del_pressed_no_sel {
             // Determine if there's an active selection via egui state first, otherwise via stored state
@@ -1884,7 +1988,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // This entire block has been commented out because it was confusing - backspace at start should do nothing
     /*
     {
-        let id = egui::Id::new("sql_editor");
+        let id = editor_id;
         let bs_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
         if bs_pressed {
             // Determine selection
@@ -2100,7 +2204,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Apply word navigation immediately by updating egui TextEditState before widget is built
 
     if single_nav_home || single_nav_end || single_nav_home_extend || single_nav_end_extend {
-        let id = egui::Id::new("sql_editor");
+        let id = editor_id;
         let text = &tabular.editor.text;
         let len = text.len();
         let range_opt = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id);
@@ -2175,7 +2279,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         || multi_extend_up
         || multi_extend_down
     {
-        let id = egui::Id::new("sql_editor");
+        let id = editor_id;
         if multi_nav_left {
             tabular.multi_selection.move_left(&tabular.editor.text);
         } else if multi_nav_right {
@@ -2237,7 +2341,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     // Apply move/duplicate line operations pre-TextEdit (so content shows updated this frame)
     if move_line_up || move_line_down || dup_line_up || dup_line_down {
-        let id = egui::Id::new("sql_editor");
+        let id = editor_id;
         let text = &mut tabular.editor.text;
         let len = text.len();
         let rng = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id);
@@ -2479,7 +2583,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let pre_text_for_diff = tabular.editor.text.clone();
     let pre_state_for_diff = crate::editor_state_adapter::EditorStateAdapter::get_range(
         ui.ctx(),
-        egui::Id::new("sql_editor"),
+        editor_id,
     );
     let (pre_sel_start_b, pre_sel_end_b, pre_cursor_b_for_diff) =
         if let Some(r) = pre_state_for_diff {
@@ -2535,7 +2639,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         .desired_rows(rows)
         .desired_width(f32::INFINITY)
         .cursor_at_end(false) // Allow cursor to be positioned anywhere
-        .id_source("sql_editor")
+        .id(editor_id)
         .layouter(&mut layouter);
 
     let egui::InnerResponse {
@@ -3079,7 +3183,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     let shift = token_owned.len() - cleaned.len();
                     tabular.cursor_position -= shift;
                     // Adjust egui state cursor (convert byte -> char index)
-                    let id = egui::Id::new("sql_editor");
+                    let id = editor_id;
                     let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
                     crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
                     log::debug!(
@@ -3721,7 +3825,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 /// Format the selected SQL text if a selection exists, otherwise format the entire editor content.
 /// Preserves caret and selection where possible.
 pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
-    let id = egui::Id::new("sql_editor");
+    let id = ui.make_persistent_id("sql_editor");
     // Helper: convert char idx -> byte idx
     let to_b = |s: &str, ci: usize| -> usize {
         match s.char_indices().nth(ci) {
