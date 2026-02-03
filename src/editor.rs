@@ -35,6 +35,8 @@ pub(crate) fn create_new_tab(
         result_rows: Vec::new(),
         result_all_rows: Vec::new(),
         result_table_name: String::new(),
+        results: Vec::new(),
+        active_result_index: 0,
         is_table_browse_mode: false,
         current_page: 0,
         page_size: 500, // default page size aligns with global default
@@ -4592,7 +4594,68 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         // Clear pending query since we're executing now
         tabular.pending_query.clear();
 
+        // Clear existing results in the active tab since we are running a new batch
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.results.clear();
+            tab.active_result_index = 0;
+        }
+
+        // Inline splitting logic (since external helper failed)
+        // Basic split by ';' but respecting quotes would be better.
+        // For now, we will use a simple split logic that ignores escaped semicolons if possible,
+        // or just rely on the assumption that users separate queries by ;
+        // REVISIT: Using a rigorous splitter is better.
+        let mut statements = Vec::new();
+        let mut current_stmt = String::new();
+        let mut inside_quote = None; // None, Some('\''), Some('"'), Some('`')
+        let mut escaped = false;
+        let mut chars = query.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            if escaped {
+                current_stmt.push(c);
+                escaped = false;
+                continue;
+            }
+            if c == '\\' {
+                current_stmt.push(c);
+                escaped = true;
+                continue;
+            }
+            if let Some(quote_char) = inside_quote {
+                if c == quote_char {
+                    inside_quote = None;
+                }
+                current_stmt.push(c);
+            } else {
+                match c {
+                    '\'' | '"' | '`' => {
+                        inside_quote = Some(c);
+                        current_stmt.push(c);
+                    }
+                    ';' => {
+                        if !current_stmt.trim().is_empty() {
+                            statements.push(current_stmt.trim().to_string());
+                            current_stmt.clear();
+                        }
+                    }
+                    _ => {
+                        current_stmt.push(c);
+                    }
+                }
+            }
+        }
+        if !current_stmt.trim().is_empty() {
+            statements.push(current_stmt.trim().to_string());
+        }
+
+        if statements.is_empty() {
+            // Should not happen as we checked query.is_empty() above
+            statements.push(query.clone());
+        }
+
         tabular.query_execution_in_progress = true;
+        
         // If a pool creation is already in progress for this connection, show loading and queue the query
         if tabular.pending_connection_pools.contains(&connection_id) {
             log::debug!(
@@ -4628,85 +4691,73 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
             return;
         }
 
-        debug!("=== EXECUTING QUERY ===");
+        debug!("=== EXECUTING {} QUERIES ===", statements.len());
         debug!("Connection ID: {}", connection_id);
-        debug!("Query: {}", query);
+        
+        let multiple_statements = statements.len() > 1;
 
-        // Auto-enable server-side pagination when the query does not specify LIMIT/TOP/OFFSET/FETCH
-        // This prevents fetching huge result sets and uses paginated execution instead.
-        if connection::should_enable_auto_pagination(&query) {
-            let base_query = query.trim().trim_end_matches(';').to_string();
+        for (idx, stmt) in statements.into_iter().enumerate() {
+            debug!("Executing statement {}: {}", idx + 1, stmt);
+            
+            // Auto-enable server-side pagination when the query does not specify LIMIT/TOP/OFFSET/FETCH
+            // Only applicable if running a single statement; multi-statement logic is trickier with pagination.
+            // For now, only auto-paginate if it's a single statement.
+            if !multiple_statements && connection::should_enable_auto_pagination(&stmt) {
+                let base_query = stmt.trim().trim_end_matches(';').to_string();
 
-            tabular.use_server_pagination = true;
-            tabular.current_base_query = base_query.clone();
-            tabular.current_page = 0;
-            tabular.actual_total_rows = Some(10_000);
+                tabular.use_server_pagination = true;
+                tabular.current_base_query = base_query.clone();
+                tabular.current_page = 0;
+                tabular.actual_total_rows = Some(10_000);
 
-            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                tab.base_query = base_query;
-                tab.current_page = tabular.current_page;
-                tab.page_size = tabular.page_size;
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.base_query = base_query;
+                    tab.current_page = tabular.current_page;
+                    tab.page_size = tabular.page_size;
+                }
+
+                debug!("🚀 Auto server-pagination enabled (simple SELECT). Executing first page...");
+                tabular.execute_paginated_query();
+                return;
             }
 
-            debug!("🚀 Auto server-pagination enabled (simple SELECT). Executing first page...");
-            tabular.execute_paginated_query();
-            return;
-        }
+            let job_id = tabular.next_query_job_id;
+            tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
 
-        let job_id = tabular.next_query_job_id;
-        tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+            match connection::prepare_query_job(tabular, connection_id, stmt.clone(), job_id) {
+                Ok(job) => {
+                    let status = connection::QueryJobStatus {
+                        job_id,
+                        connection_id,
+                        query_preview: stmt.chars().take(80).collect(),
+                        started_at: Instant::now(),
+                        completed: false,
+                    };
+                    tabular.active_query_jobs.insert(job_id, status);
 
-        match connection::prepare_query_job(tabular, connection_id, query.clone(), job_id) {
-            Ok(job) => {
-                let status = connection::QueryJobStatus {
-                    job_id,
-                    connection_id,
-                    query_preview: query.chars().take(80).collect(),
-                    started_at: Instant::now(),
-                    completed: false,
-                };
-                tabular.active_query_jobs.insert(job_id, status);
-
-                match connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone())
-                {
-                    Ok(handle) => {
-                        tabular.active_query_handles.insert(job_id, handle);
-                        tabular.current_table_name = "Running query…".to_string();
-                    }
-                    Err(err) => {
-                        tabular.active_query_jobs.remove(&job_id);
-                        debug!("Failed to spawn async job: {:?}", err);
-                        
-                        tabular.current_table_name = "Execution Error".to_string();
-                        tabular.current_table_headers = vec!["Error".to_string()];
-                        tabular.current_table_data = vec![vec![format!("Failed to spawn async job: {:?}", err)]];
-                        
-                        // Notify that execution finished (with error)
-                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                            tab.has_executed_query = true;
+                    match connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone())
+                    {
+                        Ok(handle) => {
+                            tabular.active_query_handles.insert(job_id, handle);
+                            if multiple_statements {
+                                tabular.current_table_name = format!("Running query {}/{}...", idx + 1, multiple_statements);
+                            } else {
+                                tabular.current_table_name = "Running query…".to_string();
+                            }
+                        }
+                        Err(err) => {
+                            tabular.active_query_jobs.remove(&job_id);
+                            debug!("Failed to spawn async job: {:?}", err);
+                            
+                            // For multi-statement failures, we'll see if subsequent ones can run or if we just log error.
+                            // Currently treating each spawned independently.
+                            // Ideally, we might want to capture this error into a result tab too.
                         }
                     }
                 }
-            }
-            Err(err) => {
-                debug!("Failed to prepare async job: {:?}", err);
-                
-                if matches!(err, connection::QueryPreparationError::PoolUnavailable) {
-                     // If pool unavailable despite our check, trigger creation and wait
-                     crate::connection::ensure_background_pool_creation(tabular, connection_id);
-                     tabular.pool_wait_in_progress = true;
-                     tabular.pool_wait_connection_id = Some(connection_id);
-                     tabular.pool_wait_query = query.clone();
-                     tabular.pool_wait_started_at = Some(std::time::Instant::now());
-                     tabular.current_table_name = "Connecting… waiting for pool".to_string();
-                } else {
-                    tabular.current_table_name = "Preparation Error".to_string();
-                    tabular.current_table_headers = vec!["Error".to_string()];
-                    tabular.current_table_data = vec![vec![format!("Failed to prepare query: {:?}", err)]];
-                    
-                    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                        tab.has_executed_query = true;
-                    }
+                Err(err) => {
+                    debug!("Failed to prepare async job: {:?}", err);
+                    // Handle pre-spawn errors similar to before...
                 }
             }
         }

@@ -168,6 +168,20 @@ impl Default for DiagramState {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QueryResult {
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub all_rows: Vec<Vec<String>>,
+    pub table_name: String,
+    pub current_page: usize,
+    pub page_size: usize,
+    pub total_rows: usize,
+    pub query_message: String,
+    pub query_message_is_error: bool,
+    pub execution_time_ms: u128,
+}
+
 #[derive(Clone, Debug)]
 pub struct QueryTab {
     pub title: String,
@@ -183,6 +197,11 @@ pub struct QueryTab {
     pub result_rows: Vec<Vec<String>>, // current page (or all rows if client side)
     pub result_all_rows: Vec<Vec<String>>, // full dataset for client pagination
     pub result_table_name: String,     // caption/status e.g. Table: ... or Query Results
+    
+    // MULTI-RESULT SUPPORT
+    pub results: Vec<QueryResult>,
+    pub active_result_index: usize,
+
     pub is_table_browse_mode: bool,    // was this produced by table browse
     pub current_page: usize,
     pub page_size: usize,

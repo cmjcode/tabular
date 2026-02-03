@@ -968,29 +968,57 @@ impl Tabular {
             self.apply_paginated_query_result(&message);
             return;
         }
-        // For errors, fall through to regular handler to reuse error display logic.
 
-        let result_tuple = Some((message.headers.clone(), message.rows.clone()));
-        editor::process_query_result(self, &message.query, message.connection_id, result_tuple);
-    }
+        // Store result in multi-tab result list
+        let mut result_obj = models::structs::QueryResult {
+            headers: message.headers.clone(),
+            rows: message.rows.clone(),
+            all_rows: message.rows.clone(),
+            table_name: if message.success {
+                format!("Result {}", self.next_query_job_id) // Placeholder, updated below
+            } else {
+                "Error".to_string()
+            },
+            current_page: 0,
+            page_size: 500, // Default for now
+            total_rows: message.rows.len(),
+            query_message: self.query_message.clone(),
+            query_message_is_error: self.query_message_is_error,
+            execution_time_ms: message.duration.as_millis(),
+        };
 
-    fn apply_paginated_query_result(&mut self, message: &connection::QueryResultMessage) {
-        self.current_table_headers = message.headers.clone();
-        self.current_table_data = message.rows.clone();
-        self.all_table_data = self.current_table_data.clone();
-        self.total_rows = self.current_table_data.len();
+        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            // Determine index
+            let new_index = active_tab.results.len();
+            result_obj.table_name = format!("Result {}", new_index + 1);
+            
+            // If it's an error and we have results, maybe keep the error in a separate Result tab?
+            // For now, simple append.
+            active_tab.results.push(result_obj.clone());
 
-        if self.total_rows == 0 {
-            self.current_table_name = format!(
-                "Query Results (page {} empty)",
-                self.current_page.saturating_add(1)
-            );
+            // Logic to auto-switch logic:
+            // If this is the FIRST result, or if we are actively viewing the "latest" result (potentially),
+            // update the viewport.
+            // For simplicity: If this is the first result (index 0), switch to it.
+            // Or if the user hasn't manually switched to another result yet.
+            if new_index == 0 {
+                active_tab.active_result_index = 0;
+                editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())));
+            } else {
+                 // Notification or just let it be there.
+                 // We DON'T call process_query_result which overwrites global view immediately if we are viewing result 1
+                 // BUT we actually want to see progress?
+                 // Let's decide: If 1 result -> show it. If > 1 -> users can click tabs.
+                 // We don't auto-switch if they are already viewing a valid result?
+                 // Actually, process_query_result updates `self.current_table_headers` etc.
+                 // We should only do that if we switch to this tab.
+                 // BUT current impl of process_query_result handles "messages" state logic too.
+                 // Let's refrain from calling process_query_result for background results
+                 // ensuring we sync the viewport if we decide to show this result.
+            }
         } else {
-            self.current_table_name = format!(
-                "Query Results (page {} showing {} rows)",
-                self.current_page.saturating_add(1),
-                self.current_table_data.len()
-            );
+             // Fallback for no active tab? Should not happen.
+             editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())));
         }
 
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
@@ -1585,6 +1613,61 @@ impl Tabular {
                 ui.memory_mut(|m| m.request_focus(handle_id));
             }
             ui.add_space(2.0);
+            
+            // RESULT TAB BAR
+            // Only show if we have more than one result in the active tab
+            let mut result_tabs_info: Option<(usize, usize)> = None; // (count, active_index)
+            if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
+                if tab.results.len() > 1 {
+                    result_tabs_info = Some((tab.results.len(), tab.active_result_index));
+                }
+            }
+
+            if let Some((count, active_idx)) = result_tabs_info {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for i in 0..count {
+                        let label = format!("Result {}", i + 1);
+                        let is_active = i == active_idx;
+                        let btn = if is_active {
+                             egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::WHITE))
+                                .fill(egui::Color32::from_rgb(0, 120, 215)) // Active blue
+                        } else {
+                             egui::Button::new(label)
+                        };
+                        
+                        if ui.add(btn).clicked() {
+                            // Switch result tab!
+                             if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                tab.active_result_index = i;
+                                if let Some(res) = tab.results.get(i) {
+                                    // Sync to viewport fields
+                                    self.current_table_headers = res.headers.clone();
+                                    self.current_table_data = res.rows.clone();
+                                    self.all_table_data = res.all_rows.clone();
+                                    self.current_table_name = res.table_name.clone();
+                                    self.total_rows = res.total_rows;
+                                    self.current_page = res.current_page;
+                                    self.page_size = res.page_size;
+                                    self.query_message = res.query_message.clone();
+                                    self.query_message_is_error = res.query_message_is_error;
+                                    self.show_message_panel = true; // Always show message panel context
+                                     // Also update Viewport fields in Tab
+                                    tab.result_headers = res.headers.clone();
+                                    tab.result_rows = res.rows.clone();
+                                    tab.result_all_rows = res.all_rows.clone();
+                                    tab.result_table_name = res.table_name.clone();
+                                    tab.query_message = res.query_message.clone();
+                                    tab.query_message_is_error = res.query_message_is_error;
+                                    tab.total_rows = res.total_rows;
+                                    tab.current_page = res.current_page;
+                                }
+                             }
+                        }
+                    }
+                });
+                ui.separator();
+            }
 
             // Render bottom panel based on view mode
             match self.table_bottom_view {
@@ -1595,6 +1678,33 @@ impl Tabular {
                     data_table::render_table_data(self, ui);
                 }
             }
+        }
+    }
+
+    fn apply_paginated_query_result(&mut self, message: &connection::QueryResultMessage) {
+        self.current_table_headers = message.headers.clone();
+        self.current_table_data = message.rows.clone();
+        self.all_table_data = self.current_table_data.clone();
+        self.total_rows = self.current_table_data.len();
+
+        if self.total_rows == 0 {
+            self.current_table_name = format!(
+                "Query Results (page {} empty)",
+                self.current_page.saturating_add(1)
+            );
+        } else {
+            self.current_table_name = format!(
+                "Query Results (page {} showing {} rows)",
+                self.current_page.saturating_add(1),
+                self.current_table_data.len()
+            );
+        }
+
+        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            active_tab.result_headers = self.current_table_headers.clone();
+            active_tab.result_rows = self.current_table_data.clone();
+            active_tab.result_all_rows = self.current_table_data.clone();
+            active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
         }
     }
 
