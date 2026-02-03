@@ -1510,17 +1510,7 @@ pub fn highlight_line(line: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
 }
 
 fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut LayoutJob) {
-    if matches!(lang, LanguageKind::Sql) && line.trim_start().starts_with("--") {
-        job.append(
-            line,
-            0.0,
-            TextFormat {
-                color: comment_color(dark),
-                ..Default::default()
-            },
-        );
-        return;
-    }
+
     let mut chars = line.char_indices().peekable();
     while let Some((start_idx, ch)) = chars.next() {
         if ch == '\'' {
@@ -1579,6 +1569,20 @@ fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut L
                 },
             );
         } else {
+            // Check for SQL comment start "--"
+            if matches!(lang, LanguageKind::Sql) && ch == '-' {
+                if let Some(&(_, '-')) = chars.peek() {
+                    job.append(
+                        &line[start_idx..],
+                        0.0,
+                        TextFormat {
+                            color: comment_color(dark),
+                            ..Default::default()
+                        },
+                    );
+                    break;
+                }
+            }
             job.append(
                 &ch.to_string(),
                 0.0,
