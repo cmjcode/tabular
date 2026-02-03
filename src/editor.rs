@@ -1112,14 +1112,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // If Custom View dialog is open, skip to avoid interference.
     if !tabular.show_add_view_dialog && tabular.multi_selection.len() <= 1 {
         let handle_quote = ui.input(|i| {
-            for ev in &i.events {
-                if let egui::Event::Text(text) = ev {
-                    if text == "'" || text == "\"" {
-                        return Some(text.clone());
-                    }
-                }
-            }
-            None
+            i.events.iter().find_map(|ev| match ev {
+                egui::Event::Text(text) if text == "'" || text == "\"" => Some(text.clone()),
+                _ => None,
+            })
         });
 
         if let Some(quote_char) = handle_quote {
@@ -1185,11 +1181,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     let mut consumed = false;
                     ri.events.retain(|e| {
                         if !consumed {
-                             if let egui::Event::Text(t) = e {
-                                if t == &quote_char {
+                             match e {
+                                egui::Event::Text(t) if t == &quote_char => {
                                     consumed = true;
                                     return false;
                                 }
+                                _ => {}
                              }
                         }
                         true
@@ -4609,9 +4606,9 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         let mut current_stmt = String::new();
         let mut inside_quote = None; // None, Some('\''), Some('"'), Some('`')
         let mut escaped = false;
-        let mut chars = query.chars().peekable();
+        let chars = query.chars();
 
-        while let Some(c) = chars.next() {
+        for c in chars {
             if escaped {
                 current_stmt.push(c);
                 escaped = false;

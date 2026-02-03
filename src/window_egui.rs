@@ -1617,10 +1617,8 @@ impl Tabular {
             // RESULT TAB BAR
             // Only show if we have more than one result in the active tab
             let mut result_tabs_info: Option<(usize, usize)> = None; // (count, active_index)
-            if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-                if tab.results.len() > 1 {
+            if let Some(tab) = self.query_tabs.get(self.active_tab_index).filter(|t| t.results.len() > 1) {
                     result_tabs_info = Some((tab.results.len(), tab.active_result_index));
-                }
             }
 
             if let Some((count, active_idx)) = result_tabs_info {

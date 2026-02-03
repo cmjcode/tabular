@@ -370,18 +370,18 @@ pub fn build_suggestions(
                 // If cache has "Users", we might miss it.
                 // Let's filter scope_tables for case-insensitive match.
                 let real_table_name = scope_tables.iter().find(|t| t.to_ascii_lowercase() == table_part);
-                if let Some(rt) = real_table_name {
-                     if let Some(cols) = get_cached_columns(app, cid, &db, vec![rt.clone()]) {
+                if let Some(cols) = real_table_name.and_then(|rt| get_cached_columns(app, cid, &db, vec![rt.clone()])) {
                         for c in cols {
                             if c.to_ascii_lowercase().starts_with(col_part) {
                                 // Keep the user's typed case for table part? 
                                 // Or use the real table name?
                                 // If I type "users.", replace with "Users.id"? 
                                 // Usually match user's case for the prefix part, but replacing "users.na" with "Users.Name" is fine.
-                                out.push(format!("{}.{}", rt, c));
+                                if let Some(rt) = real_table_name {
+                                    out.push(format!("{}.{}", rt, c));
+                                }
                             }
                         }
-                    }
                 }
             }
         }

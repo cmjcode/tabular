@@ -1570,8 +1570,7 @@ fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut L
             );
         } else {
             // Check for SQL comment start "--"
-            if matches!(lang, LanguageKind::Sql) && ch == '-' {
-                if let Some(&(_, '-')) = chars.peek() {
+            if matches!(lang, LanguageKind::Sql) && ch == '-' && matches!(chars.peek(), Some(&(_, '-'))) {
                     job.append(
                         &line[start_idx..],
                         0.0,
@@ -1581,7 +1580,6 @@ fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut L
                         },
                     );
                     break;
-                }
             }
             job.append(
                 &ch.to_string(),

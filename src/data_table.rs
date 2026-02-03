@@ -1047,8 +1047,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                          // But `get_columns_from_cache` is blocking (uses runtime block_on). 
                          // Check if that's acceptable. It executes a local SQLite query. Should be fast enough.
                          
-                         if let Some(cols) = crate::cache_data::get_columns_from_cache(tabular, conn_id, &db_name, &table_name) {
-                             if let Some(col_name) = tabular.current_table_headers.get(c) {
+                         if let (Some(cols), Some(col_name)) = (crate::cache_data::get_columns_from_cache(tabular, conn_id, &db_name, &table_name), tabular.current_table_headers.get(c)) {
                                  // Find column in cache
                                  if let Some((_, type_str)) = cols.iter().find(|(name, _)| name == col_name) {
                                      let lower_type = type_str.to_lowercase();
@@ -1056,7 +1055,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                           tabular.spreadsheet_state.enum_options = parse_enum_values(type_str);
                                      }
                                  }
-                             }
                          }
                      }
                 }
@@ -4128,9 +4126,9 @@ fn parse_enum_values(type_str: &str) -> Option<Vec<String>> {
     }
 
     // Find content inside parentheses
-    if let Some(start_idx) = type_str.find('(') {
-        if let Some(end_idx) = type_str.rfind(')') {
-            if start_idx < end_idx {
+    if let Some((start_idx, end_idx)) = type_str.find('(').and_then(|start| 
+        type_str.rfind(')').filter(|&end| start < end).map(|end| (start, end))
+    ) {
                 let content = &type_str[start_idx + 1..end_idx];
                 let chars: Vec<char> = content.chars().collect();
                 let mut values = Vec::new();
@@ -4160,10 +4158,9 @@ fn parse_enum_values(type_str: &str) -> Option<Vec<String>> {
                         } else {
                             current.push(c);
                         }
-                    } else {
-                        if c == '\'' {
-                            in_quote = true;
-                        } else if c == ',' {
+                    } else if c == '\'' {
+                        in_quote = true;
+                    } else if c == ',' {
                             values.push(current.clone());
                             current.clear();
                         } else if !c.is_whitespace() {
@@ -4171,14 +4168,12 @@ fn parse_enum_values(type_str: &str) -> Option<Vec<String>> {
                             // If we encounter text outside quotes (other than comma/space), push it?
                             // Safest is to ignore or assume it's part of value if we support unquoted (we shouldn't)
                         }
-                    }
+
                     i += 1;
                 }
                 values.push(current);
                 return Some(values);
             }
-        }
-    }
     None
 }
 
