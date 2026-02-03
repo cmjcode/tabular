@@ -2173,7 +2173,7 @@ impl Tabular {
         let mut expansion_requests = Vec::new();
         let mut tables_to_expand = Vec::new();
         let mut context_menu_requests = Vec::new();
-        let mut table_click_requests: Vec<(i64, String, models::enums::NodeType)> = Vec::new();
+        let mut table_click_requests: Vec<(i64, String, models::enums::NodeType, Option<String>)> = Vec::new();
         let mut connection_click_requests = Vec::new();
         let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> =
             Vec::new();
@@ -2247,8 +2247,8 @@ impl Tabular {
             if let Some(context_id) = context_menu_request {
                 context_menu_requests.push(context_id);
             }
-            if let Some((connection_id, table_name, node_type)) = table_click_request {
-                table_click_requests.push((connection_id, table_name, node_type));
+            if let Some((connection_id, table_name, node_type, db_name)) = table_click_request {
+                table_click_requests.push((connection_id, table_name, node_type, db_name));
             }
             if let Some(connection_id) = connection_click_request {
                 connection_click_requests.push(connection_id);
@@ -2654,7 +2654,7 @@ impl Tabular {
         let mut pools_to_create: Vec<i64> = Vec::new();
 
         // Check table clicks for missing pools too
-        for (connection_id, _, _) in &table_click_requests {
+        for (connection_id, _, _, _) in &table_click_requests {
              if !self.connection_pools.contains_key(connection_id) && !pools_to_create.contains(connection_id) {
                  pools_to_create.push(*connection_id);
              }
@@ -2694,175 +2694,13 @@ impl Tabular {
         }
 
         // Now create pools (after mutable/immutable borrows ended)
+        // Now create pools (after mutable/immutable borrows ended)
         if !pools_to_create.is_empty() {
-            // We'll create a temporary runtime once (not per connection) to run async pool creations.
-            if let Ok(temp_rt) = tokio::runtime::Runtime::new() {
-                // Collect needed connection configs first to avoid borrowing self mutably inside block_on closure repeatedly.
-                let mut configs: Vec<(i64, models::structs::ConnectionConfig)> = Vec::new();
-                for cid in &pools_to_create {
-                    if let Some(cfg) = self
-                        .connections
-                        .iter()
-                        .find(|c| c.id == Some(*cid))
-                        .cloned()
-                    {
-                        configs.push((*cid, cfg));
-                    }
-                }
-                for (cid, cfg) in configs.into_iter() {
-                    if self.connection_pools.contains_key(&cid) {
-                        continue;
-                    }
-                    let result_pool = temp_rt.block_on(async {
-                        match cfg.connection_type {
-                            models::enums::DatabaseType::MySQL => {
-                                let encoded_username = crate::modules::url_encode(&cfg.username);
-                                let encoded_password = crate::modules::url_encode(&cfg.password);
-                                let conn_str = format!(
-                                    "mysql://{}:{}@{}:{}/{}",
-                                    encoded_username,
-                                    encoded_password,
-                                    cfg.host,
-                                    cfg.port,
-                                    cfg.database
-                                );
-                                match sqlx::mysql::MySqlPoolOptions::new()
-                                    .max_connections(5)
-                                    .min_connections(1)
-                                    .acquire_timeout(std::time::Duration::from_secs(15))
-                                    .test_before_acquire(true)
-                                    .connect(&conn_str)
-                                    .await
-                                {
-                                    Ok(pool) => Some(models::enums::DatabasePool::MySQL(
-                                        std::sync::Arc::new(pool),
-                                    )),
-                                    Err(e) => {
-                                        debug!("MySQL eager connect failed ({}): {}", cid, e);
-                                        None
-                                    }
-                                }
-                            }
-                            models::enums::DatabaseType::PostgreSQL => {
-                                let conn_str = format!(
-                                    "postgresql://{}:{}@{}:{}/{}",
-                                    cfg.username, cfg.password, cfg.host, cfg.port, cfg.database
-                                );
-                                match sqlx::postgres::PgPoolOptions::new()
-                                    .max_connections(5)
-                                    .min_connections(1)
-                                    .acquire_timeout(std::time::Duration::from_secs(15))
-                                    .connect(&conn_str)
-                                    .await
-                                {
-                                    Ok(pool) => Some(models::enums::DatabasePool::PostgreSQL(
-                                        std::sync::Arc::new(pool),
-                                    )),
-                                    Err(e) => {
-                                        debug!("PostgreSQL eager connect failed ({}): {}", cid, e);
-                                        None
-                                    }
-                                }
-                            }
-                            models::enums::DatabaseType::SQLite => {
-                                let conn_str = format!("sqlite:{}", cfg.host);
-                                match sqlx::sqlite::SqlitePoolOptions::new()
-                                    .max_connections(3)
-                                    .min_connections(1)
-                                    .acquire_timeout(std::time::Duration::from_secs(15))
-                                    .connect(&conn_str)
-                                    .await
-                                {
-                                    Ok(pool) => Some(models::enums::DatabasePool::SQLite(
-                                        std::sync::Arc::new(pool),
-                                    )),
-                                    Err(e) => {
-                                        debug!("SQLite eager connect failed ({}): {}", cid, e);
-                                        None
-                                    }
-                                }
-                            }
-                            models::enums::DatabaseType::Redis => {
-                                let conn_str = if cfg.password.is_empty() {
-                                    format!("redis://{}:{}", cfg.host, cfg.port)
-                                } else {
-                                    format!(
-                                        "redis://{}:{}@{}:{}",
-                                        cfg.username, cfg.password, cfg.host, cfg.port
-                                    )
-                                };
-                                match redis::Client::open(conn_str) {
-                                    Ok(client) => match redis::aio::ConnectionManager::new(client)
-                                        .await
-                                    {
-                                        Ok(m) => Some(models::enums::DatabasePool::Redis(
-                                            std::sync::Arc::new(m),
-                                        )),
-                                        Err(e) => {
-                                            debug!("Redis eager connect failed ({}): {}", cid, e);
-                                            None
-                                        }
-                                    },
-                                    Err(e) => {
-                                        debug!("Redis client build failed ({}): {}", cid, e);
-                                        None
-                                    }
-                                }
-                            }
-                            models::enums::DatabaseType::MongoDB => {
-                                let uri = if cfg.username.is_empty() {
-                                    format!("mongodb://{}:{}", cfg.host, cfg.port)
-                                } else if cfg.password.is_empty() {
-                                    format!("mongodb://{}@{}:{}", cfg.username, cfg.host, cfg.port)
-                                } else {
-                                    let enc_user = crate::modules::url_encode(&cfg.username);
-                                    let enc_pass = crate::modules::url_encode(&cfg.password);
-                                    format!(
-                                        "mongodb://{}:{}@{}:{}",
-                                        enc_user, enc_pass, cfg.host, cfg.port
-                                    )
-                                };
-                                match mongodb::Client::with_uri_str(uri).await {
-                                    Ok(client) => Some(models::enums::DatabasePool::MongoDB(
-                                        std::sync::Arc::new(client),
-                                    )),
-                                    Err(e) => {
-                                        debug!("MongoDB eager connect failed ({}): {}", cid, e);
-                                        None
-                                    }
-                                }
-                            }
-                            models::enums::DatabaseType::MsSQL => {
-                                // Create deadpool for MsSQL eager connection
-                                let mut mgr = deadpool_tiberius::Manager::new()
-                                     .host(cfg.host.clone())
-                                     .port(cfg.port.parse::<u16>().unwrap_or(1433))
-                                     .basic_authentication(cfg.username.clone(), cfg.password.clone())
-                                     .trust_cert();
-                                if !cfg.database.is_empty() {
-                                    mgr = mgr.database(cfg.database.clone());
-                                }
-                                match deadpool_tiberius::Pool::builder(mgr)
-                                    .max_size(20)
-                                    .build()
-                                {
-                                    Ok(pool) => Some(models::enums::DatabasePool::MsSQL(pool)),
-                                    Err(e) => {
-                                        debug!("MsSQL pool creation failed: {}", e);
-                                        None
-                                    }
-                                }
-                            }
-                        }
-                    });
-                    if let Some(pool) = result_pool {
-                        self.connection_pools.insert(cid, pool);
-                        debug!("🔌 Eager pool created for connection {}", cid);
-                    } else {
-                        debug!("⚠️ Eager pool creation failed for connection {}", cid);
-                    }
-                }
-            }
+             for cid in pools_to_create {
+                 if !self.connection_pools.contains_key(&cid) {
+                    crate::connection::start_background_pool_creation(self, cid);
+                 }
+             }
         }
 
         // Handle expansions after rendering
@@ -3043,7 +2881,7 @@ impl Tabular {
         }
 
         // Handle table click requests - create new tab for each table
-        for (connection_id, table_name, node_type) in table_click_requests {
+        for (connection_id, table_name, node_type, predefined_db_name) in table_click_requests {
             // Find the connection to determine the database type and database name
             let connection = self
                 .connections
@@ -3054,13 +2892,17 @@ impl Tabular {
             if let Some(conn) = connection {
                 let is_view = node_type == models::enums::NodeType::View;
                 // Find the database name from the tree structure
-                let mut database_name: Option<String> = None;
-                for node in nodes.iter() {
-                    if let Some(db_name) =
-                        Tabular::find_database_name_for_table(node, connection_id, &table_name)
-                    {
-                        database_name = Some(db_name);
-                        break;
+                let mut database_name: Option<String> = predefined_db_name;
+
+                // Optimization: Only search if not provided (should be provided for most table clicks)
+                if database_name.is_none() {
+                    for node in nodes.iter() {
+                        if let Some(db_name) =
+                            Tabular::find_database_name_for_table(node, connection_id, &table_name)
+                        {
+                            database_name = Some(db_name);
+                            break;
+                        }
                     }
                 }
 
@@ -3840,7 +3682,7 @@ impl Tabular {
         let mut expansion_request = None;
         let mut table_expansion = None;
         let mut context_menu_request = None;
-        let mut table_click_request: Option<(i64, String, models::enums::NodeType)> = None;
+        let mut table_click_request: Option<(i64, String, models::enums::NodeType, Option<String>)> = None;
         let mut folder_removal_mapping: Option<(i64, String)> = None;
         let mut connection_click_request = None;
         let mut query_file_to_open = None;
@@ -4165,7 +4007,7 @@ impl Tabular {
                 {
                     // Use table_name field if available (for search results), otherwise use node.name
                     let actual_table_name = node.table_name.as_ref().unwrap_or(&node.name).clone();
-                    table_click_request = Some((conn_id, actual_table_name, node.node_type.clone()));
+                    table_click_request = Some((conn_id, actual_table_name, node.node_type.clone(), node.database_name.clone()));
                 }
 
                 // Handle clicks on Diagram nodes
@@ -4344,7 +4186,7 @@ impl Tabular {
                             if let Some(conn_id) = node.connection_id {
                                 let actual_table_name =
                                     node.table_name.as_ref().unwrap_or(&node.name).clone();
-                                table_click_request = Some((conn_id, actual_table_name, models::enums::NodeType::Table));
+                                table_click_request = Some((conn_id, actual_table_name, models::enums::NodeType::Table, node.database_name.clone()));
                             }
                             ui.close();
                         }
@@ -4451,7 +4293,7 @@ impl Tabular {
                             if let Some(conn_id) = node.connection_id {
                                 let actual_table_name =
                                     node.table_name.as_ref().unwrap_or(&node.name).clone();
-                                table_click_request = Some((conn_id, actual_table_name, models::enums::NodeType::View));
+                                table_click_request = Some((conn_id, actual_table_name, models::enums::NodeType::View, node.database_name.clone()));
                             }
                             ui.close();
                         }
@@ -4570,8 +4412,8 @@ impl Tabular {
                                 table_expansion = Some((child_index, child_conn_id, table_name));
                             }
                         }
-                        if let Some((conn_id, table_name, node_type)) = child_table_click {
-                            table_click_request = Some((conn_id, table_name, node_type));
+                        if let Some((conn_id, table_name, node_type, db_name)) = child_table_click {
+                            table_click_request = Some((conn_id, table_name, node_type, db_name));
                         }
                         if let Some(v) = _child_drop_collection_request {
                             drop_collection_request = Some(v);
@@ -4686,8 +4528,8 @@ impl Tabular {
                             }
 
                             // Handle child table clicks - propagate to parent
-                            if let Some((conn_id, table_name, node_type)) = child_table_click {
-                                table_click_request = Some((conn_id, table_name, node_type));
+                            if let Some((conn_id, table_name, node_type, db_name)) = child_table_click {
+                                table_click_request = Some((conn_id, table_name, node_type, db_name));
                             }
                             // Propagate drop collection request to parent
                             if let Some(v) = _child_drop_collection_request {
@@ -4866,7 +4708,7 @@ impl Tabular {
                             let actual_table_name =
                                 node.table_name.as_ref().unwrap_or(&node.name).clone();
                             table_click_request =
-                                Some((conn_id, actual_table_name, node.node_type.clone()));
+                                Some((conn_id, actual_table_name, node.node_type.clone(), node.database_name.clone()));
                         }
                     }
                     // DBA quick views: emit a click request to be handled by parent (needs self)

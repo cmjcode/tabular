@@ -3096,7 +3096,7 @@ async fn try_quick_pool_creation(
 }
 
 // Start background pool creation without blocking
-fn start_background_pool_creation(tabular: &mut Tabular, connection_id: i64) {
+pub(crate) fn start_background_pool_creation(tabular: &mut Tabular, connection_id: i64) {
     let connection = match tabular
         .connections
         .iter()

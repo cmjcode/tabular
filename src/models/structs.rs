@@ -555,7 +555,7 @@ pub type RenderTreeNodeResult = (
     Option<models::structs::ExpansionRequest>,
     Option<(usize, i64, String)>,
     Option<i64>,
-    Option<(i64, String, models::enums::NodeType)>,
+    Option<(i64, String, models::enums::NodeType, Option<String>)>,
     Option<i64>,
     Option<(String, String, String)>,
     Option<String>,
