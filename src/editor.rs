@@ -2677,29 +2677,155 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // We purposely do NOT collapse selection on double-click frame (handled via did_double_click checks above),
     // to avoid wiping the freshly formed selection.
 
-    // VSCode-like: subtle current line highlight
+    // VSCode-like: highlight logic
     if response.has_focus() {
-        let cur = tabular.cursor_position.min(tabular.editor.text.len());
-        
-        let char_idx = {
-            let s = &tabular.editor.text;
-            let clamp = cur.min(s.len());
-            s[..clamp].chars().count()
-        };
-        let cursor = CCursor::new(char_idx);
-        let layout = galley.layout_from_cursor(cursor);
+        let text = &tabular.editor.text;
+        let text_len = text.len();
+        let cur = tabular.cursor_position.min(text_len);
 
-        if layout.row < galley.rows.len() {
-            let placed_row = &galley.rows[layout.row];
-            let row_min_y = galley_pos.y + placed_row.min_y();
-            let row_max_y = galley_pos.y + placed_row.max_y();
+        // Check if cursor is on an empty line
+        let line_start = text[..cur].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = text[cur..].find('\n').map(|i| cur + i).unwrap_or(text_len);
+        let is_empty_line = text[line_start..line_end].trim().is_empty();
+
+        if is_empty_line {
+            // Single line highlight for empty areas
+            let char_idx = text[..cur].chars().count();
+            let cursor = CCursor::new(char_idx);
+            let layout = galley.layout_from_cursor(cursor);
+
+            if layout.row < galley.rows.len() {
+                let placed_row = &galley.rows[layout.row];
+                let row_min_y = galley_pos.y + placed_row.min_y();
+                let row_max_y = galley_pos.y + placed_row.max_y();
+                
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(response.rect.left(), row_min_y),
+                    egui::pos2(response.rect.right(), row_max_y),
+                );
+                let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
+                ui.painter().rect_filled(rect, 0.0, col);
+            }
+        } else {
+            // Block highlight for statements
+            // Quick parse to find statement boundaries with robust comment handling
+            // Only run if text is reasonably sized to avoid lags on huge files every frame
+            let (start_byte, end_byte) = {
+               let mut stmt_start = 0;
+               let mut found_range = (0, text_len);
+               
+               let mut chars = text.char_indices().peekable();
+               let mut in_quote = None; // None, Some('\''), Some('"'), Some('`')
+               let mut in_line_comment = false;
+               let mut in_block_comment = false;
+               let mut found = false;
+               
+               while let Some((i, c)) = chars.next() {
+                   // 1. Handle String Literals
+                   if let Some(q) = in_quote {
+                       if c == '\\' {
+                           // Skip next char (escape)
+                           let _ = chars.next();
+                       } else if c == q {
+                           in_quote = None;
+                       }
+                       continue;
+                   }
+
+                   // 2. Handle Block Comments
+                   if in_block_comment {
+                       if c == '*' {
+                           if let Some(&(_, '/')) = chars.peek() {
+                               chars.next(); // consume '/'
+                               in_block_comment = false;
+                           }
+                       }
+                       continue;
+                   }
+
+                   // 3. Handle Line Comments
+                   if in_line_comment {
+                       if c == '\n' || c == '\r' {
+                           in_line_comment = false;
+                       }
+                       continue;
+                   }
+
+                   // 4. Normal Mode
+                   match c {
+                       '\'' | '"' | '`' => in_quote = Some(c),
+                       '-' => {
+                           if let Some(&(_, '-')) = chars.peek() {
+                               chars.next(); // consume second '-'
+                               in_line_comment = true;
+                           }
+                       }
+                       '#' => in_line_comment = true,
+                       '/' => {
+                           if let Some(&(_, '*')) = chars.peek() {
+                               chars.next(); // consume '*'
+                               in_block_comment = true;
+                           }
+                       }
+                       ';' => {
+                           // Statement ends here
+                           let stmt_end = i + 1; 
+                           if cur >= stmt_start && cur <= stmt_end {
+                               found_range = (stmt_start, stmt_end);
+                               found = true;
+                               break;
+                           }
+                           stmt_start = stmt_end;
+                       }
+                       _ => {}
+                   }
+               }
+               // Handle last statement if cursor is past the last semicolon
+               if !found && cur >= stmt_start {
+                   found_range = (stmt_start, text_len);
+               }
+               found_range
+            };
             
-            let rect = egui::Rect::from_min_max(
-                egui::pos2(response.rect.left(), row_min_y),
-                egui::pos2(response.rect.right(), row_max_y),
-            );
-            let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
-            ui.painter().rect_filled(rect, 0.0, col);
+            let (raw_start, raw_end) = (start_byte, end_byte);
+            // Trim leading whitespace so highlight starts at text
+            let start_byte = text[raw_start..raw_end]
+                .char_indices()
+                .find(|(_, c)| !c.is_whitespace())
+                .map(|(i, _)| raw_start + i)
+                .unwrap_or(raw_start);
+            let end_byte = raw_end;
+
+            // Convert byte range to char indices for the galley
+            let start_char_idx = text[..start_byte].chars().count();
+            let end_char_idx = text[..end_byte].chars().count();
+
+            let start_cursor = CCursor::new(start_char_idx);
+            let end_cursor = CCursor::new(end_char_idx);
+            
+            let start_layout = galley.layout_from_cursor(start_cursor);
+            let end_layout = galley.layout_from_cursor(end_cursor);
+            
+            // Paint the block from start row to end row
+            // We use min/max to be safe, though start should be <= end
+            let first_row_idx = start_layout.row.min(galley.rows.len().saturating_sub(1));
+            let last_row_idx = end_layout.row.min(galley.rows.len().saturating_sub(1));
+
+            if first_row_idx < galley.rows.len() && last_row_idx < galley.rows.len() {
+                 let first_row = &galley.rows[first_row_idx];
+                 let last_row = &galley.rows[last_row_idx];
+                 
+                 let block_top = galley_pos.y + first_row.min_y();
+                 let block_bottom = galley_pos.y + last_row.max_y();
+
+                 let rect = egui::Rect::from_min_max(
+                     egui::pos2(response.rect.left(), block_top),
+                     egui::pos2(response.rect.right(), block_bottom),
+                 );
+                 
+                 let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
+                 ui.painter().rect_filled(rect, 0.0, col);
+            }
         }
     }
     // Apply deferred autocomplete acceptance after TextEdit borrow is released
