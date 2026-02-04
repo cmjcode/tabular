@@ -65,6 +65,7 @@ pub struct Tabular {
     pub current_table_data: Vec<Vec<String>>,
     pub current_table_headers: Vec<String>,
     pub current_table_name: String,
+    pub current_column_metadata: Option<Vec<models::structs::ColumnMetadata>>, // Metadata for current table columns
     pub current_object_ddl: Option<String>,
     pub current_connection_id: Option<i64>,
     // Pagination
@@ -550,6 +551,7 @@ impl Tabular {
             current_table_data: Vec::new(),
             current_table_headers: Vec::new(),
             current_table_name: String::new(),
+            current_column_metadata: None,
             current_object_ddl: None,
             current_connection_id: None,
             current_page: 0,
@@ -985,6 +987,7 @@ impl Tabular {
             query_message: self.query_message.clone(),
             query_message_is_error: self.query_message_is_error,
             execution_time_ms: message.duration.as_millis(),
+            column_metadata: message.column_metadata.clone(),
         };
 
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
@@ -1003,7 +1006,7 @@ impl Tabular {
             // Or if the user hasn't manually switched to another result yet.
             if new_index == 0 {
                 active_tab.active_result_index = 0;
-                editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())));
+                editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())), message.column_metadata.clone());
             } else {
                  // Notification or just let it be there.
                  // We DON'T call process_query_result which overwrites global view immediately if we are viewing result 1
@@ -1018,7 +1021,7 @@ impl Tabular {
             }
         } else {
              // Fallback for no active tab? Should not happen.
-             editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())));
+             editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())), message.column_metadata.clone());
         }
 
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {

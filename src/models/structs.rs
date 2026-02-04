@@ -169,11 +169,21 @@ impl Default for DiagramState {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ColumnMetadata {
+    pub name: String,
+    pub type_name: String,
+    pub table_name: Option<String>, // Source table name if available
+    pub original_name: Option<String>, // Original column name if aliased
+    pub is_primary_key: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QueryResult {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub all_rows: Vec<Vec<String>>,
     pub table_name: String,
+    pub column_metadata: Option<Vec<ColumnMetadata>>, // Metadata for columns (table source, etc.)
     pub current_page: usize,
     pub page_size: usize,
     pub total_rows: usize,
@@ -197,6 +207,7 @@ pub struct QueryTab {
     pub result_rows: Vec<Vec<String>>, // current page (or all rows if client side)
     pub result_all_rows: Vec<Vec<String>>, // full dataset for client pagination
     pub result_table_name: String,     // caption/status e.g. Table: ... or Query Results
+    pub result_column_metadata: Option<Vec<ColumnMetadata>>, // Metadata for result columns
     
     // MULTI-RESULT SUPPORT
     pub results: Vec<QueryResult>,

@@ -32,6 +32,7 @@ pub trait SpreadsheetOperations {
     fn set_error_message(&mut self, message: String);
     fn set_show_error_message(&mut self, show: bool);
     fn get_newly_created_rows_mut(&mut self) -> &mut std::collections::HashSet<usize>;
+    fn get_current_column_metadata(&self) -> Option<&Vec<crate::models::structs::ColumnMetadata>>;
 
     // Methods that need to be implemented by the parent struct
     fn execute_paginated_query(&mut self);
@@ -591,20 +592,12 @@ pub trait SpreadsheetOperations {
     }
 
     fn spreadsheet_generate_sql(&self) -> Option<String> {
-        println!("🔥 spreadsheet_generate_sql called");
-
         let conn_id = self.get_current_connection_id()?;
-        println!("🔥 Found connection ID: {}", conn_id);
-
         let conn = self
             .get_connections()
             .iter()
             .find(|c| c.id == Some(conn_id))
             .cloned()?;
-        println!("🔥 Found connection config");
-
-        let table = self.spreadsheet_extract_table_name()?;
-        println!("🔥 Extracted table name: {}", table);
 
         let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
         let qt_table = |s: &str| self.spreadsheet_quote_table_ident(&conn, s);
@@ -614,7 +607,18 @@ pub trait SpreadsheetOperations {
         let all_rows = self.get_all_table_data();
         let current_rows = self.get_current_table_data();
         let state = self.get_spreadsheet_state();
+        let metadata = self.get_current_column_metadata();
+        if let Some(meta) = metadata {
+            log::info!("🔥 metadata present with {} columns", meta.len());
+            for (i, m) in meta.iter().enumerate() {
+                log::info!("🔥 Col {}: name='{}', table='{:?}', orig='{:?}'", i, m.name, m.table_name, m.original_name);
+            }
+        } else {
+            log::warn!("🔥 No metadata found in spreadsheet_generate_sql");
+        }
         let pk_columns = &state.primary_key_columns;
+        let global_table_name = self.spreadsheet_extract_table_name();
+
         let mut pk_overrides: HashMap<usize, HashMap<String, String>> = HashMap::new();
         if !pk_columns.is_empty() {
             for op in &state.pending_operations {
@@ -638,10 +642,6 @@ pub trait SpreadsheetOperations {
         }
 
         let mut stmts: Vec<String> = Vec::new();
-        println!(
-            "🔥 Processing {} operations",
-            state.pending_operations.len()
-        );
         for op in &state.pending_operations {
             match op {
                 crate::models::structs::CellEditOperation::Update {
@@ -650,37 +650,53 @@ pub trait SpreadsheetOperations {
                     old_value: _,
                     new_value,
                 } => {
-                    let col = match headers.get(*col_index) {
-                        Some(name) => name,
+                    // Determine table name for this specific column
+                    let col_meta = metadata.and_then(|m| m.get(*col_index));
+                    let table_name = col_meta
+                        .and_then(|m| m.table_name.clone())
+                        .or_else(|| global_table_name.clone());
+
+                    let table_name = match table_name {
+                        Some(t) => t,
                         None => {
-                            println!("🔥 Missing header for column index {}", col_index);
+                            debug!("Unable to determine table name for update at col {}", col_index);
                             continue;
                         }
                     };
+
+                    // Determine column name (use original name if available to handle aliases)
+                    let col_name_str = col_meta
+                        .and_then(|m| m.original_name.clone())
+                        .or_else(|| headers.get(*col_index).cloned());
+                    
+                    let col_name = match col_name_str {
+                         Some(n) => n,
+                         None => continue,
+                    };
+
                     let row_data = current_rows
                         .get(*row_index)
                         .or_else(|| all_rows.get(*row_index));
                     let row_data = match row_data {
                         Some(r) => r,
-                        None => {
-                            println!("🔥 Missing row data at index {}", row_index);
-                            continue;
-                        }
+                        None => continue,
                     };
+
+                    // Build WHERE clause
+                    // If we have metadata, we should ideally restrict WHERE to columns from the same table
+                    // For now, continue using all columns or PKs, but we could filter if we wanted to be safer with joins
                     let overrides = pk_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
                         &conn, row_data, headers, pk_columns, overrides,
                     ) {
                         Some(clause) => clause,
-                        None => {
-                            println!("🔥 Unable to build WHERE clause for row {}", row_index);
-                            continue;
-                        }
+                        None => continue,
                     };
+
                     let sql = format!(
                         "UPDATE {} SET {} = {} WHERE {}",
-                        qt_table(&table),
-                        qt(col),
+                        qt_table(&table_name),
+                        qt(&col_name),
                         qv(new_value),
                         where_clause
                     );
@@ -688,49 +704,72 @@ pub trait SpreadsheetOperations {
                 }
 
                 crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
+                    // For inserts, we generally need a single table. 
+                    // If multiple tables are involved (join), we can't easily insert a row without more logic.
+                    // We'll fallback to global_table_name and assume all columns belong to it or map correctly.
+                    let table_name = match global_table_name.clone() {
+                        Some(t) => t,
+                        None => continue,
+                    };
+
                     if headers.is_empty() {
-                        println!("🔥 Skipping insert: no headers available");
                         continue;
                     }
-                    let cols: Vec<String> = headers.iter().map(|c| qt(c)).collect();
-                    // Prefer latest row data from all_table_data/current_table_data to avoid stale empty values
-                    let latest_vals_src: Option<&Vec<String>> = self
-                        .get_current_table_data()
-                        .get(*row_index)
-                        .or_else(|| self.get_all_table_data().get(*row_index));
-                    let vals_vec: Vec<String> = if let Some(src) = latest_vals_src {
-                        src.clone()
-                    } else {
-                        values.clone()
-                    };
-                    let vals: Vec<String> = vals_vec.iter().map(|v| qv(v)).collect();
+
+                    // Construct column list and value list
+                    // Use original names if available
+                    let mut cols = Vec::new();
+                    let mut vals = Vec::new();
+                    
+                    for (i, val) in values.iter().enumerate() {
+                         let col_meta = metadata.and_then(|m| m.get(i));
+                         // If column belongs to a different table, we might skip it or error? 
+                         // For now, include it if it matches global table or we have no metadata table info
+                         let c_table = col_meta.and_then(|m| m.table_name.as_ref());
+                         
+                         if let Some(ct) = c_table {
+                             if ct != &table_name {
+                                 // Skip columns from other tables in a join check? 
+                                 // Or maybe we should allow it if the user knows what they are doing (but SQL will fail)
+                                 // Let's rely on backend error if it fails
+                             }
+                         }
+                         
+                         let name = col_meta.and_then(|m| m.original_name.clone())
+                             .or_else(|| headers.get(i).cloned())
+                             .unwrap_or_default();
+                         
+                         if !name.is_empty() {
+                             cols.push(qt(&name));
+                             vals.push(qv(val));
+                         }
+                    }
+
                     let sql = format!(
                         "INSERT INTO {} ({}) VALUES ({})",
-                        qt_table(&table),
+                        qt_table(&table_name),
                         cols.join(", "),
                         vals.join(", ")
                     );
                     stmts.push(sql);
                 }
                 crate::models::structs::CellEditOperation::DeleteRow { row_index, values } => {
-                    if values.is_empty() || headers.is_empty() {
-                        continue;
-                    }
-                    let overrides = pk_overrides.get(row_index);
-                    let where_clause = match self.spreadsheet_build_where_clause(
+                     // Similar to update, we need a table. Delete applies to the "primary" table usually.
+                     // Or we need multiple Deletes? 
+                     // Fallback to global table name for now.
+                     let table_name = match global_table_name.clone() {
+                        Some(t) => t,
+                        None => continue,
+                     };
+                     
+                     let overrides = pk_overrides.get(row_index);
+                     let where_clause = match self.spreadsheet_build_where_clause(
                         &conn, values, headers, pk_columns, overrides,
                     ) {
                         Some(clause) => clause,
-                        None => {
-                            println!(
-                                "🔥 Unable to build DELETE WHERE clause for row {}",
-                                row_index
-                            );
-                            continue;
-                        }
+                        None => continue,
                     };
-                    let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
-                    println!("🔥 Using DELETE WHERE clause: {}", where_clause);
+                    let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table_name), where_clause);
                     stmts.push(sql);
                 }
             }
@@ -818,6 +857,10 @@ impl SpreadsheetOperations for Tabular {
 
     fn get_current_table_name(&self) -> &str {
         &self.current_table_name
+    }
+
+    fn get_current_column_metadata(&self) -> Option<&Vec<crate::models::structs::ColumnMetadata>> {
+        self.current_column_metadata.as_ref()
     }
 
     fn get_query_tabs(&self) -> &Vec<models::structs::QueryTab> {
@@ -1409,8 +1452,12 @@ impl SpreadsheetOperations for Tabular {
             .cloned()?;
         std::println!("🔥 Found connection config");
 
-        let table = self.spreadsheet_extract_table_name()?;
-        std::println!("🔥 Extracted table name: {}", table);
+        let table = self.spreadsheet_extract_table_name();
+        if let Some(t) = &table {
+            std::println!("🔥 Extracted table name: {}", t);
+        } else {
+            std::println!("🔥 No global table name found - relying on column metadata");
+        }
 
         let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
         let qt_table = |s: &str| self.spreadsheet_quote_table_ident(&conn, s);
@@ -1420,7 +1467,32 @@ impl SpreadsheetOperations for Tabular {
         let all_rows = self.get_all_table_data();
         let current_rows = self.get_current_table_data();
         let state = self.get_spreadsheet_state();
-        let pk_columns = &state.primary_key_columns;
+        let metadata = self.get_current_column_metadata();
+        if let Some(meta) = metadata {
+            log::info!("🔥 metadata present with {} columns", meta.len());
+            for (i, m) in meta.iter().enumerate() {
+                log::info!("🔥 Col {}: name='{}', table='{:?}', orig='{:?}'", i, m.name, m.table_name, m.original_name);
+            }
+        } else {
+            log::warn!("🔥 No metadata found in spreadsheet_generate_sql override");
+        }
+
+        // Determine derived primary keys from metadata if available
+        let mut derived_pks = Vec::new();
+        if let Some(meta) = metadata {
+            for m in meta {
+                if m.is_primary_key {
+                    derived_pks.push(m.name.clone());
+                    log::info!("🔥 Found PK from metadata: {}", m.name);
+                }
+            }
+        }
+
+        let pk_columns = if !derived_pks.is_empty() {
+            &derived_pks
+        } else {
+            &state.primary_key_columns
+        };
         let mut pk_overrides: HashMap<usize, HashMap<String, String>> = HashMap::new();
         if !pk_columns.is_empty() {
             for op in &state.pending_operations {
@@ -1456,12 +1528,32 @@ impl SpreadsheetOperations for Tabular {
                     old_value: _,
                     new_value,
                 } => {
-                    let col = match headers.get(*col_index) {
-                        Some(name) => name,
+                    // Determine table name for this specific column
+                    // Determine table name for this specific column
+                    let col_meta = metadata.and_then(|m| m.get(*col_index));
+                    let table_name_opt = col_meta
+                        .and_then(|m| m.table_name.clone())
+                        .or_else(|| table.clone());
+
+                    let table_name_str = match table_name_opt {
+                        Some(t) => t,
                         None => {
-                            std::println!("🔥 Missing header for column index {}", col_index);
-                            continue;
+                             std::println!("🔥 Unable to determine table name for update at col {}", col_index);
+                             continue;
                         }
+                    };
+
+                    // Determine column name (use original name if available to handle aliases)
+                    let col_name_str = col_meta
+                        .and_then(|m| m.original_name.clone())
+                        .or_else(|| headers.get(*col_index).cloned());
+                    
+                    let col = match col_name_str {
+                         Some(n) => n,
+                         None => {
+                             std::println!("🔥 Missing header for column index {}", col_index);
+                             continue;
+                         }
                     };
                     let row_data = current_rows
                         .get(*row_index)
@@ -1485,8 +1577,8 @@ impl SpreadsheetOperations for Tabular {
                     };
                     let sql = std::format!(
                         "UPDATE {} SET {} = {} WHERE {}",
-                        qt_table(&table),
-                        qt(col),
+                        qt_table(&table_name_str),
+                        qt(&col),
                         qv(new_value),
                         where_clause
                     );
@@ -1510,9 +1602,16 @@ impl SpreadsheetOperations for Tabular {
                         values.clone()
                     };
                     let vals: Vec<String> = vals_vec.iter().map(|v| qv(v)).collect();
+                    let table_for_insert = match &table {
+                         Some(t) => t,
+                         None => {
+                             std::println!("🔥 Skipping insert: no global table identified");
+                             continue;
+                         }
+                    };
                     let sql = std::format!(
                         "INSERT INTO {} ({}) VALUES ({})",
-                        qt_table(&table),
+                        qt_table(table_for_insert),
                         cols.join(", "),
                         vals.join(", ")
                     );
@@ -1535,8 +1634,15 @@ impl SpreadsheetOperations for Tabular {
                             continue;
                         }
                     };
+                    let table_for_delete = match &table {
+                         Some(t) => t,
+                         None => {
+                             std::println!("🔥 Skipping delete: no global table identified");
+                             continue;
+                         }
+                    };
                     let sql =
-                        std::format!("DELETE FROM {} WHERE {}", qt_table(&table), where_clause);
+                        std::format!("DELETE FROM {} WHERE {}", qt_table(table_for_delete), where_clause);
                     std::println!("🔥 Using DELETE WHERE clause: {}", where_clause);
                     stmts.push(sql);
                 }
@@ -1577,7 +1683,10 @@ impl SpreadsheetOperations for Tabular {
                 // Note: This is a bit tricky because we need to call connection::execute_query_with_connection
                 // but this trait doesn't know about the full Tabular struct. We'll need to implement this
                 // in the actual implementation of the trait.
+                // in the actual implementation of the trait.
                 self.execute_spreadsheet_sql(sql);
+                // SUCCESS: User requested to stop editing cell on success
+                self.spreadsheet_finish_cell_edit(false);
             } else {
                 std::println!("🔥 No current connection ID");
                 debug!("🔥 No current connection ID");

@@ -35,6 +35,7 @@ pub(crate) fn create_new_tab(
         result_rows: Vec::new(),
         result_all_rows: Vec::new(),
         result_table_name: String::new(),
+        result_column_metadata: None,
         results: Vec::new(),
         active_result_index: 0,
         is_table_browse_mode: false,
@@ -1209,8 +1210,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Pre-handle Delete/Backspace when a selection exists: remove the whole selection (not just one char)
     // This ensures expected behavior “press Delete removes all selected text”.
-    // SKIP this handling if Custom View dialog is open to avoid consuming backspace events
-    if !tabular.show_add_view_dialog {
+    // SKIP this handling if Custom View dialog is open OR if a cell is being edited to avoid consuming backspace events
+    if !tabular.show_add_view_dialog && tabular.spreadsheet_state.editing_cell.is_none() {
         let id = editor_id;
         let mut do_delete_selection = false;
         let mut del_key_consumed = false;
@@ -4890,6 +4891,7 @@ pub(crate) fn process_query_result(
     query: &str,
     connection_id: i64,
     result: Option<(Vec<String>, Vec<Vec<String>>)>,
+    column_metadata: Option<Vec<models::structs::ColumnMetadata>>,
 ) {
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         tab.has_executed_query = true;
@@ -4905,6 +4907,7 @@ pub(crate) fn process_query_result(
         }
 
         tabular.current_table_headers = headers;
+        tabular.current_column_metadata = column_metadata;
 
         // Use pagination for query results
         data_table::update_pagination_data(tabular, data);

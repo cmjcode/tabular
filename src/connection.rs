@@ -12,7 +12,7 @@ use redis::{Client, aio::ConnectionManager};
 use sqlx::Connection; // for MySqlConnection::connect
 use sqlx::mysql::MySqlConnection;
 use sqlx::{
-    Column, Row, SqlitePool, mysql::MySqlPoolOptions, postgres::PgPoolOptions,
+    Column, Row, SqlitePool, TypeInfo, mysql::MySqlPoolOptions, postgres::PgPoolOptions,
     sqlite::SqlitePoolOptions,
 };
 use std::sync::Arc;
@@ -29,6 +29,7 @@ fn keyword_in_sql(upper_sql: &str, keyword: &str) -> bool {
         if let Some(rel_pos) = upper_sql[search_from..].find(keyword) {
             let start = search_from + rel_pos;
             let end = start + key_bytes.len();
+
             let prev_is_ident = if start == 0 {
                 false
             } else {
@@ -331,6 +332,7 @@ pub struct QueryResultMessage {
     pub ast_debug_sql: Option<String>,
     pub ast_headers: Option<Vec<String>>,
     pub affected_rows: Option<usize>, // Number of affected rows for INSERT/UPDATE/DELETE
+    pub column_metadata: Option<Vec<models::structs::ColumnMetadata>>,
 }
 
 #[derive(Debug, Clone)]
@@ -339,6 +341,7 @@ pub struct QueryJobOutput {
     pub rows: Vec<Vec<String>>,
     pub ast_debug_sql: Option<String>,
     pub ast_headers: Option<Vec<String>>,
+    pub column_metadata: Option<Vec<models::structs::ColumnMetadata>>,
 }
 
 #[derive(Debug)]
@@ -476,6 +479,7 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
             ast_debug_sql: output.ast_debug_sql,
             ast_headers: output.ast_headers,
             affected_rows: Some(output.rows.len()), // For now, use rows.len() as affected rows
+            column_metadata: output.column_metadata,
         },
         Err(err) => {
             let message = describe_execution_error(err);
@@ -492,6 +496,7 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
                 ast_debug_sql: None,
                 ast_headers: None,
                 affected_rows: None,
+                column_metadata: None,
             }
         }
     }
@@ -656,6 +661,7 @@ async fn execute_mysql_query_job(
 
         let mut final_headers: Vec<String> = Vec::new();
         let mut final_data: Vec<Vec<String>> = Vec::new();
+        let mut final_column_metadata: Option<Vec<models::structs::ColumnMetadata>> = None;
         let mut execution_success = true;
 
         for (idx, statement) in statements_ref.iter().enumerate() {
@@ -740,13 +746,57 @@ async fn execute_mysql_query_job(
 
             match query_result {
                 Ok(Ok(rows)) => {
-                    if idx == statements_ref.len() - 1 {
+                            if idx == statements_ref.len() - 1 {
                         if !rows.is_empty() {
                             final_headers = rows[0]
                                 .columns()
                                 .iter()
                                 .map(|c| c.name().to_string())
                                 .collect();
+
+                            let mut meta_vec = Vec::new();
+                            // Infer table name from query using sqlparser
+                            let mut inferred_table_name = None;
+                            if let Ok(ast) = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::MySqlDialect {}, trimmed) 
+                                && let Some(sqlparser::ast::Statement::Query(q)) = ast.first()
+                                && let sqlparser::ast::SetExpr::Select(select) = &*q.body
+                                && let Some(table_with_joins) = select.from.first()
+                                && let sqlparser::ast::TableFactor::Table { name, .. } = &table_with_joins.relation 
+                            {
+                                inferred_table_name = Some(name.to_string());
+                                log::info!("🔥 Inferred table name: {}", name);
+                            } else {
+                                log::warn!("🔥 Failed to infer table name from query: {}", trimmed);
+                            }
+
+                            // Fetch Primary Keys if table name is known
+                            let mut primary_keys = std::collections::HashSet::new();
+                            if let Some(table) = &inferred_table_name {
+                                let pk_query = format!("SHOW KEYS FROM {} WHERE Key_name = 'PRIMARY'", table);
+                                if let Ok(pk_rows) = sqlx::query(&pk_query).fetch_all(&mut conn).await {
+                                    for row in pk_rows {
+                                        if let Ok(col_name) = row.try_get::<String, _>("Column_name") {
+                                            primary_keys.insert(col_name);
+                                        }
+                                    }
+                                    log::info!("🔥 Found PKs for table '{}': {:?}", table, primary_keys);
+                                } else {
+                                    log::warn!("🔥 Failed to fetch properties for table: {}", table);
+                                }
+                            }
+
+                            for col in rows[0].columns() {
+                                let type_info = col.type_info();
+                                meta_vec.push(models::structs::ColumnMetadata {
+                                    name: col.name().to_string(),
+                                    type_name: type_info.name().to_string(),
+                                    table_name: inferred_table_name.clone(), // Fallback to inferred table
+                                    original_name: Some(col.name().to_string()), // Fallback to name() since original_name() is missing
+                                    is_primary_key: primary_keys.contains(col.name()),
+                                });
+                            }
+                            final_column_metadata = Some(meta_vec);
+
                             final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
 
                             if replication_status_mode || master_status_mode {
@@ -953,6 +1003,7 @@ async fn execute_mysql_query_job(
                 rows: final_data,
                 ast_debug_sql,
                 ast_headers,
+                column_metadata: final_column_metadata,
             });
         }
     }
@@ -1120,6 +1171,7 @@ async fn execute_postgres_query_job(
         rows: final_data,
         ast_debug_sql,
         ast_headers,
+        column_metadata: None,
     })
 }
 
@@ -1275,6 +1327,7 @@ async fn execute_sqlite_query_job(
         rows: final_data,
         ast_debug_sql,
         ast_headers,
+        column_metadata: None,
     })
 }
 
@@ -1350,12 +1403,14 @@ async fn execute_redis_query_job(
                     rows: vec![vec![parts[1].to_string(), value]],
                     ast_debug_sql: None,
                     ast_headers: None,
+                    column_metadata: None,
                 }),
                 Ok(Ok(None)) => Ok(QueryJobOutput {
                     headers: vec!["Key".to_string(), "Value".to_string()],
                     rows: vec![vec![parts[1].to_string(), "NULL".to_string()]],
                     ast_debug_sql: None,
                     ast_headers: None,
+                    column_metadata: None,
                 }),
                 _ => Err(QueryExecutionError::Message(
                     "Redis GET timed out or failed".to_string(),
@@ -1381,6 +1436,7 @@ async fn execute_redis_query_job(
                         rows: table_data,
                         ast_debug_sql: None,
                         ast_headers: None,
+                        column_metadata: None,
                     })
                 }
                 _ => Err(QueryExecutionError::Message(
@@ -1486,6 +1542,7 @@ async fn execute_redis_query_job(
                         rows: table_data,
                         ast_debug_sql: None,
                         ast_headers: None,
+                        column_metadata: None,
                     })
                 }
                 _ => Err(QueryExecutionError::Message(
@@ -1518,6 +1575,7 @@ async fn execute_redis_query_job(
                         rows: table_data,
                         ast_debug_sql: None,
                         ast_headers: None,
+                        column_metadata: None,
                     })
                 }
                 _ => Err(QueryExecutionError::Message(
@@ -1557,6 +1615,7 @@ async fn execute_redis_query_job(
                         rows: table_data,
                         ast_debug_sql: None,
                         ast_headers: None,
+                        column_metadata: None,
                     })
                 }
                 _ => Err(QueryExecutionError::Message(
@@ -1601,6 +1660,7 @@ async fn execute_mssql_query_job(
             rows,
             ast_debug_sql: None,
             ast_headers: None,
+            column_metadata: None,
         }),
         Err(e) => Err(QueryExecutionError::Message(format!("Query error: {}", e))),
     }
@@ -1619,6 +1679,7 @@ async fn execute_mongodb_query_job(
             ]],
             ast_debug_sql: None,
             ast_headers: None,
+            column_metadata: None,
         }),
         _ => Err(QueryExecutionError::Message(
             "Invalid pool type for MongoDB".to_string(),

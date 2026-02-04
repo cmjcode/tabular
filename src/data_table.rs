@@ -563,7 +563,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 rect.size(),
                                                 egui::Sense::click_and_drag(),
                                             );
-                                            if tabular.is_table_browse_mode
+                                            if (tabular.is_table_browse_mode || tabular.current_column_metadata.is_some())
                                                 && cell_response.double_clicked()
                                             {
                                                 // queue edit start to avoid mutable borrow inside iteration
@@ -3483,6 +3483,18 @@ pub(crate) fn start_inline_add_index(tabular: &mut window_egui::Tabular) {
 }
 
 pub(crate) fn infer_current_table_name(tabular: &mut window_egui::Tabular) -> String {
+    // Priority 0: Check metadata
+    if let Some(meta) = &tabular.current_column_metadata {
+        // Try to find a valid table name from any column
+        for col in meta {
+            if let Some(t) = &col.table_name {
+                if !t.is_empty() {
+                    return t.clone();
+                }
+            }
+        }
+    }
+
     // Priority 1: if current_table_name starts with "Table:" extract
     if tabular.current_table_name.starts_with("Table:")
         || tabular.current_table_name.starts_with("View:")

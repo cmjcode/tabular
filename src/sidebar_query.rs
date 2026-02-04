@@ -349,6 +349,7 @@ pub(crate) fn open_query_file(
         result_rows: Vec::new(),
         result_all_rows: Vec::new(),
         result_table_name: String::new(),
+        result_column_metadata: None,
         results: Vec::new(),
         active_result_index: 0,
         is_table_browse_mode: false,
