@@ -2694,14 +2694,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let row_min_y = galley_pos.y + placed_row.min_y();
             let row_max_y = galley_pos.y + placed_row.max_y();
             
-            let gutter_w = if tabular.advanced_editor.show_line_numbers {
-                gutter_width
-            } else {
-                0.0
-            };
-            
             let rect = egui::Rect::from_min_max(
-                egui::pos2(response.rect.left() + gutter_w, row_min_y),
+                egui::pos2(response.rect.left(), row_min_y),
                 egui::pos2(response.rect.right(), row_max_y),
             );
             let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
