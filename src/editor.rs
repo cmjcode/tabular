@@ -2680,29 +2680,33 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // VSCode-like: subtle current line highlight
     if response.has_focus() {
         let cur = tabular.cursor_position.min(tabular.editor.text.len());
-        let bytes = tabular.editor.text.as_bytes();
-        let mut line_no = 0usize;
-        let mut i = 0usize;
-        while i < cur {
-            if bytes[i] == b'\n' {
-                line_no += 1;
-            }
-            i += 1;
-        }
-        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
-        // Align with TextEdit internal top padding (approx. 6px)
-        let y_top = response.rect.top() + 6.0 + (line_no as f32) * line_height;
-        let gutter_w = if tabular.advanced_editor.show_line_numbers {
-            gutter_width
-        } else {
-            0.0
+        
+        let char_idx = {
+            let s = &tabular.editor.text;
+            let clamp = cur.min(s.len());
+            s[..clamp].chars().count()
         };
-        let rect = egui::Rect::from_min_max(
-            egui::pos2(response.rect.left() + gutter_w, y_top),
-            egui::pos2(response.rect.right(), y_top + line_height),
-        );
-        let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
-        ui.painter().rect_filled(rect, 0.0, col);
+        let cursor = CCursor::new(char_idx);
+        let layout = galley.layout_from_cursor(cursor);
+
+        if layout.row < galley.rows.len() {
+            let placed_row = &galley.rows[layout.row];
+            let row_min_y = galley_pos.y + placed_row.min_y();
+            let row_max_y = galley_pos.y + placed_row.max_y();
+            
+            let gutter_w = if tabular.advanced_editor.show_line_numbers {
+                gutter_width
+            } else {
+                0.0
+            };
+            
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(response.rect.left() + gutter_w, row_min_y),
+                egui::pos2(response.rect.right(), row_max_y),
+            );
+            let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
+            ui.painter().rect_filled(rect, 0.0, col);
+        }
     }
     // Apply deferred autocomplete acceptance after TextEdit borrow is released
     if defer_accept_autocomplete {
