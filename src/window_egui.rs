@@ -1629,7 +1629,7 @@ impl Tabular {
                         let is_active = i == active_idx;
                         let btn = if is_active {
                              egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::WHITE))
-                                .fill(egui::Color32::from_rgb(0, 120, 215)) // Active blue
+                                .fill(egui::Color32::from_rgb(255, 30, 0)) // default red 
                         } else {
                              egui::Button::new(label)
                         };
