@@ -21,6 +21,97 @@ use std::time::Instant;
 // Limit concurrent prefetch tasks to avoid overwhelming servers and local machine
 const PREFETCH_CONCURRENCY: usize = 6;
 
+// Helper to infer column origins from SQL AST
+fn infer_column_origins(query: &str) -> (Option<Vec<Option<String>>>, Vec<String>) {
+    let dialect = sqlparser::dialect::MySqlDialect {};
+    let ast = match sqlparser::parser::Parser::parse_sql(&dialect, query) {
+        Ok(a) => a,
+        Err(_) => return (None, Vec::new()),
+    };
+    
+    let query_body = if let Some(sqlparser::ast::Statement::Query(q)) = ast.first() {
+        &q.body
+    } else {
+        return (None, Vec::new());
+    };
+
+    if let sqlparser::ast::SetExpr::Select(select) = &**query_body {
+        // 1. Build map of alias/table -> real_table_name
+        let mut table_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut primary_table: Option<String> = None;
+        let mut all_tables = Vec::new();
+
+        for (i, table_with_join) in select.from.iter().enumerate() {
+            let relation = &table_with_join.relation;
+            match relation {
+                sqlparser::ast::TableFactor::Table { name, alias, .. } => {
+                    let real_name = name.to_string();
+                    if i == 0 { primary_table = Some(real_name.clone()); }
+                    table_map.insert(real_name.clone(), real_name.clone());
+                    if !all_tables.contains(&real_name) { all_tables.push(real_name.clone()); }
+                    
+                    if let Some(a) = alias {
+                        table_map.insert(a.name.value.clone(), real_name);
+                    }
+                }
+                _ => {} // Derived tables etc not supported yet
+            }
+            for join in &table_with_join.joins {
+                match &join.relation {
+                     sqlparser::ast::TableFactor::Table { name, alias, .. } => {
+                         let real_name = name.to_string();
+                         table_map.insert(real_name.clone(), real_name.clone());
+                         if !all_tables.contains(&real_name) { all_tables.push(real_name.clone()); }
+                         
+                         if let Some(a) = alias {
+                             table_map.insert(a.name.value.clone(), real_name);
+                         }
+                     }
+                     _ => {}
+                }
+            }
+        }
+
+        // 2. Map projection items to tables
+        let mut origins = Vec::new();
+        for item in &select.projection {
+            match item {
+                sqlparser::ast::SelectItem::UnnamedExpr(expr) | sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } => {
+                    match expr {
+                        sqlparser::ast::Expr::Identifier(_) => {
+                            // Column without prefix. If only 1 table, assign it. Else ambiguous (None)
+                            if table_map.len() == 1 {
+                                origins.push(primary_table.clone());
+                            } else {
+                                origins.push(None); 
+                            }
+                        }
+                        sqlparser::ast::Expr::CompoundIdentifier(idents) => {
+                            // t.col -> idents[0] is alias/table
+                            if idents.len() >= 2 {
+                                let prefix = idents[0].value.clone();
+                                origins.push(table_map.get(&prefix).cloned());
+                            } else {
+                                origins.push(None);
+                            }
+                        }
+                        _ => origins.push(None), // Functions, literals etc
+                    }
+                }
+                sqlparser::ast::SelectItem::Wildcard(_opts) => {
+                    origins.push(None); 
+                }
+                sqlparser::ast::SelectItem::QualifiedWildcard(obj, _) => {
+                    origins.push(table_map.get(&obj.to_string()).cloned());
+                }
+            }
+        }
+        (Some(origins), all_tables)
+    } else {
+        (None, Vec::new())
+    }
+}
+
 fn keyword_in_sql(upper_sql: &str, keyword: &str) -> bool {
     let bytes = upper_sql.as_bytes();
     let key_bytes = keyword.as_bytes();
@@ -769,30 +860,207 @@ async fn execute_mysql_query_job(
                                 log::warn!("🔥 Failed to infer table name from query: {}", trimmed);
                             }
 
-                            // Fetch Primary Keys if table name is known
-                            let mut primary_keys = std::collections::HashSet::new();
-                            if let Some(table) = &inferred_table_name {
-                                let pk_query = format!("SHOW KEYS FROM {} WHERE Key_name = 'PRIMARY'", table);
-                                if let Ok(pk_rows) = sqlx::query(&pk_query).fetch_all(&mut conn).await {
-                                    for row in pk_rows {
-                                        if let Ok(col_name) = row.try_get::<String, _>("Column_name") {
-                                            primary_keys.insert(col_name);
+                            // Collect all unique table names from columns
+                            let mut unique_tables = std::collections::HashSet::new();
+                            // use sqlx::Column; // Import trait to enable table_name method
+                            for _col in rows[0].columns() {
+                                // let t_name = col.table_name();
+                                let t_name = "";
+                                if !t_name.is_empty() {
+                                    unique_tables.insert(t_name.to_string());
+                                }
+                            }
+                            // Also include inferred table if exists
+                            if let Some(t) = &inferred_table_name {
+                                unique_tables.insert(t.clone());
+                            }
+
+                            // 4. Fetch Primary Keys from local SQLite cache for all involved tables
+    // The user explicitly requested to use the SQLite cache for PKs to ensure consistency.
+    let mut table_pks: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    
+    // We need to look up the data directory to find connections.db
+    let data_dir = crate::directory::get_data_dir();
+    let db_path = data_dir.join("connections.db");
+    
+    // Attempt to connect to local cache
+    // Use read-only mode to avoid locking
+    let cache_conn_str = format!("sqlite://{}?mode=ro", db_path.to_string_lossy());
+    
+    match sqlx::sqlite::SqlitePool::connect(&cache_conn_str).await {
+        Ok(cache_pool) => {
+            for table_full_name in &unique_tables {
+                // Parse schema.table from the table name found in query
+                // If no schema present, assume current database
+                let parts: Vec<&str> = table_full_name.split('.').collect();
+                let (target_db, target_table) = if parts.len() >= 2 {
+                    (parts[0], parts[1])
+                } else {
+                    (default_db.as_str(), table_full_name.as_str())
+                };
+                
+                // Query index_cache for PRIMARY key
+                // We use LIKE for table_name to handle case-insensitivity (e.g. user typed "User_Data" but cache has "user_data")
+                // connections.db schema: 
+                // index_cache (connection_id, database_name, table_name, index_name, columns_json, ...)
+                let query = "SELECT columns_json FROM index_cache 
+                             WHERE connection_id = ? 
+                             AND database_name = ? 
+                             AND table_name LIKE ? 
+                             AND index_name = 'PRIMARY'";
+                             
+                // log::debug!("🔥 Looking up PK for {} (db={}, tbl={}) in cache", table_full_name, target_db, target_table);
+
+                let result: Result<Option<(String,)>, _> = sqlx::query_as(query)
+                    .bind(options.connection.id.unwrap_or(0))
+                    .bind(target_db)
+                    .bind(target_table)
+                    .fetch_optional(&cache_pool)
+                    .await;
+
+                match result {
+                    Ok(Some((json_str,))) => {
+                         if let Ok(cols) = serde_json::from_str::<Vec<String>>(&json_str) {
+                             if !cols.is_empty() {
+                                 let pks: std::collections::HashSet<String> = cols.into_iter().map(|s| s.to_lowercase()).collect();
+                                 std::println!("🔥 Found cached PKs for '{}': {:?}", table_full_name, pks);
+                                 table_pks.insert(table_full_name.to_lowercase(), pks);
+                             }
+                         }
+                    },
+                    Ok(None) => {
+                        std::println!("🔥 No cached PK found for '{}' (db={}, tbl={})", table_full_name, target_db, target_table);
+                    },
+                    Err(e) => {
+                         std::println!("🔥 Error fetching PK from cache for '{}': {}", table_full_name, e);
+                    }
+                }
+            }
+        },
+        Err(e) => {
+             std::println!("🔥 Failed to connect to local cache at {}: {}", db_path.display(), e);
+             // Fallback or leave empty? User demanded cache use, so empty might be safer than guessing.
+        }
+    }       
+
+                            // Try finer-grained inference
+                            let (inferred_origins, involved_tables) = infer_column_origins(trimmed);
+                            
+                            // "Ordinal Schema Mapping" for SELECT * expansions
+                            // We build a flat list of ALL expected columns in order: [TableA_cols..., TableB_cols...]
+                            // Then we map result columns 1-to-1 to this list.
+                            let mut expanded_schema: Vec<(String, String)> = Vec::new(); // (col_name, table_name)
+                            
+                            let exact_match_possible = if let Some(origins) = &inferred_origins {
+                                origins.len() == rows[0].columns().len() && origins.iter().all(|o| o.is_some())
+                            } else {
+                                false
+                            };
+
+                            if !exact_match_possible && !involved_tables.is_empty() {
+                                log::info!("🔥 Fetching ordered schema for involved tables: {:?}", involved_tables);
+                                for table in &involved_tables {
+                                    let col_query = format!("SHOW COLUMNS FROM {}", table);
+                                    if let Ok(col_rows) = sqlx::query(&col_query).fetch_all(&mut conn).await {
+                                        for row in col_rows {
+                                            if let Ok(col_name) = row.try_get::<String, _>("Field") {
+                                                expanded_schema.push((col_name, table.clone()));
+                                            }
                                         }
                                     }
-                                    log::info!("🔥 Found PKs for table '{}': {:?}", table, primary_keys);
-                                } else {
-                                    log::warn!("🔥 Failed to fetch properties for table: {}", table);
                                 }
                             }
 
-                            for col in rows[0].columns() {
+                            let use_fine_grained = if let Some(origins) = &inferred_origins {
+                                origins.len() == rows[0].columns().len()
+                            } else {
+                                false
+                            };
+                            
+                            if use_fine_grained {
+                                log::info!("🔥 Using fine-grained column table inference");
+                            }
+
+                            for (i, col) in rows[0].columns().iter().enumerate() {
                                 let type_info = col.type_info();
+                                // let t_name = col.table_name();
+                                let t_name = "";
+                                
+                                // Determine table name with priority:
+                                // 1. sqlx metadata (if working)
+                                // 2. fine-grained inference (if matches)
+                                // 3. expanded ordinal schema (if lengths match and logic holds)
+                                // 4. global inference (fallback)
+                                
+                                let table_name = if !t_name.is_empty() {
+                                    Some(t_name.to_string())
+                                } else if use_fine_grained {
+                                    inferred_origins.as_ref().and_then(|o| o.get(i).cloned().flatten())
+                                } else if expanded_schema.len() == rows[0].columns().len() {
+                                     // Safe assumption: Result columns match expansion order
+                                     // Verify name match to be sure?
+                                     let (exp_col, exp_table) = &expanded_schema[i];
+                                     if exp_col.eq_ignore_ascii_case(col.name()) {
+                                         Some(exp_table.clone())
+                                     } else {
+                                         // Name mismatch! Schema drift or partial select?
+                                         // Fallback to name search in schema?
+                                         // If names don't match, ordinal mapping is risky.
+                                         // But with SELECT *, names SHOULD match.
+                                         // If they don't, maybe we have aliases? But we are in !use_fine_grained path.
+                                         // Let's fallback to global inference if mismatch.
+                                         inferred_table_name.clone()
+                                     }
+                                } else {
+                                    // Length mismatch (e.g. SELECT A.*, B.col1)
+                                    // Try strict name matching from expanded schema if unique?
+                                    // This logic is complex.
+                                    // Let's assume if unique name in expanded_schema -> use it.
+                                    // If ambiguous -> None.
+                                    let matches: Vec<&String> = expanded_schema.iter()
+                                        .filter(|(c, _)| c.eq_ignore_ascii_case(col.name()))
+                                        .map(|(_, t)| t)
+                                        .collect();
+                                    
+                                    if matches.len() == 1 {
+                                        Some(matches[0].clone())
+                                    } else {
+                                        // 0 or >1 matches (ambiguous)
+                                        inferred_table_name.clone()
+                                    }
+                                };
+                                
+                                let is_pk = if let Some(t) = &table_name {
+                                    let key = t.to_lowercase();
+                                    // 1. Exact match
+                                    if let Some(pks) = table_pks.get(&key) {
+                                        pks.contains(&col.name().to_lowercase())
+                                    } 
+                                    // 2. Try simple table name (if key was 'schema.table', try 'table')
+                                    else if let Some(simple_name) = key.split('.').last() 
+                                        && let Some(pks) = table_pks.get(simple_name) 
+                                    {
+                                        pks.contains(&col.name().to_lowercase())
+                                    }
+                                    // 3. Reverse: if key was 'table', try finding 'schema.table' in map
+                                    else if let Some((_k, pks)) = table_pks.iter().find(|(k, _)| k.ends_with(&format!(".{}", key))) {
+                                         pks.contains(&col.name().to_lowercase())
+                                    }
+                                    else {
+                                        // Silent failure to avoid log spam, relying on fallback logic in spreadsheet.rs.
+                                        // debug!("🔥 PK Lookup FAILED for table '{}' (key='{}')", t, key);
+                                        false
+                                    }
+                                } else {
+                                    false
+                                };
+
                                 meta_vec.push(models::structs::ColumnMetadata {
                                     name: col.name().to_string(),
                                     type_name: type_info.name().to_string(),
-                                    table_name: inferred_table_name.clone(), // Fallback to inferred table
-                                    original_name: Some(col.name().to_string()), // Fallback to name() since original_name() is missing
-                                    is_primary_key: primary_keys.contains(col.name()),
+                                    table_name: table_name, 
+                                    original_name: Some(col.name().to_string()),
+                                    is_primary_key: is_pk,
                                 });
                             }
                             final_column_metadata = Some(meta_vec);

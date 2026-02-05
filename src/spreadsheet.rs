@@ -56,6 +56,24 @@ pub trait SpreadsheetOperations {
     }
 
     // Begin: Spreadsheet helpers
+    fn spreadsheet_build_where_clause(
+        &self,
+        conn: &crate::models::structs::ConnectionConfig,
+        row_data: &[String],
+        headers: &[String],
+        primary_keys: &[String],
+        overrides: Option<&std::collections::HashMap<String, String>>,
+        target_table_for_update: Option<&str>,
+    ) -> Option<String>;
+    
+    fn spreadsheet_generate_sql(&self) -> Option<String>;
+
+    fn spreadsheet_row_where_all_columns(
+        &self,
+        conn: &crate::models::structs::ConnectionConfig,
+        row_index: usize,
+    ) -> Option<String>;
+
     fn spreadsheet_start_cell_edit(&mut self, row: usize, col: usize) {
         if let Some(val) = self
             .get_current_table_data()
@@ -372,114 +390,7 @@ pub trait SpreadsheetOperations {
         None
     }
 
-    fn spreadsheet_build_where_clause(
-        &self,
-        conn: &crate::models::structs::ConnectionConfig,
-        values: &[String],
-        headers: &[String],
-        primary_keys: &[String],
-        pk_overrides: Option<&HashMap<String, String>>,
-    ) -> Option<String> {
-        if headers.is_empty() || values.is_empty() {
-            return None;
-        }
 
-        if !primary_keys.is_empty() {
-            let mut clauses = Vec::new();
-            for pk in primary_keys {
-                if let Some((idx, header_name)) = headers
-                    .iter()
-                    .enumerate()
-                    .find(|(_, h)| h.as_str() == pk.as_str() || h.eq_ignore_ascii_case(pk))
-                {
-                    if idx >= values.len() {
-                        continue;
-                    }
-                    let key_lower = header_name.to_lowercase();
-                    let raw_value = pk_overrides
-                        .and_then(|m| m.get(&key_lower))
-                        .map(|s| s.as_str())
-                        .unwrap_or_else(|| values[idx].as_str());
-                    let clause = if raw_value.is_empty() || raw_value.eq_ignore_ascii_case("null") {
-                        format!(
-                            "{} IS NULL",
-                            self.spreadsheet_quote_ident(conn, header_name)
-                        )
-                    } else {
-                        format!(
-                            "{} = {}",
-                            self.spreadsheet_quote_ident(conn, header_name),
-                            self.spreadsheet_quote_value(conn, raw_value)
-                        )
-                    };
-                    clauses.push(clause);
-                }
-            }
-            if !clauses.is_empty() {
-                return Some(clauses.join(" AND "));
-            }
-        }
-
-        if primary_keys.is_empty()
-            && let (Some(first_header), Some(first_value)) = (headers.first(), values.first())
-        {
-            let lower = first_header.to_lowercase();
-            if lower.contains("id") || lower.contains("recid") || lower == "pk" {
-                let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
-                    format!(
-                        "{} IS NULL",
-                        self.spreadsheet_quote_ident(conn, first_header)
-                    )
-                } else {
-                    format!(
-                        "{} = {}",
-                        self.spreadsheet_quote_ident(conn, first_header),
-                        self.spreadsheet_quote_value(conn, first_value)
-                    )
-                };
-                return Some(clause);
-            }
-        }
-
-        if headers.len() == values.len() {
-            let parts: Vec<String> = headers
-                .iter()
-                .zip(values.iter())
-                .map(|(col, v)| {
-                    if v.is_empty() || v.eq_ignore_ascii_case("null") {
-                        format!("{} IS NULL", self.spreadsheet_quote_ident(conn, col))
-                    } else {
-                        format!(
-                            "{} = {}",
-                            self.spreadsheet_quote_ident(conn, col),
-                            self.spreadsheet_quote_value(conn, v)
-                        )
-                    }
-                })
-                .collect();
-            if !parts.is_empty() {
-                return Some(parts.join(" AND "));
-            }
-        }
-
-        if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
-            let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
-                format!(
-                    "{} IS NULL",
-                    self.spreadsheet_quote_ident(conn, first_header)
-                )
-            } else {
-                format!(
-                    "{} = {}",
-                    self.spreadsheet_quote_ident(conn, first_header),
-                    self.spreadsheet_quote_value(conn, first_value)
-                )
-            };
-            return Some(clause);
-        }
-
-        None
-    }
 
     fn spreadsheet_quote_ident(
         &self,
@@ -577,248 +488,11 @@ pub trait SpreadsheetOperations {
         }
     }
 
-    fn spreadsheet_row_where_all_columns(
-        &self,
-        conn: &crate::models::structs::ConnectionConfig,
-        row_index: usize,
-    ) -> Option<String> {
-        let row = self
-            .get_current_table_data()
-            .get(row_index)
-            .or_else(|| self.get_all_table_data().get(row_index))?;
-        let headers = self.get_current_table_headers();
-        let pk_columns = &self.get_spreadsheet_state().primary_key_columns;
-        self.spreadsheet_build_where_clause(conn, row, headers, pk_columns, None)
-    }
 
-    fn spreadsheet_generate_sql(&self) -> Option<String> {
-        let conn_id = self.get_current_connection_id()?;
-        let conn = self
-            .get_connections()
-            .iter()
-            .find(|c| c.id == Some(conn_id))
-            .cloned()?;
 
-        let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
-        let qt_table = |s: &str| self.spreadsheet_quote_table_ident(&conn, s);
-        let qv = |s: &str| self.spreadsheet_quote_value(&conn, s);
 
-        let headers = self.get_current_table_headers();
-        let all_rows = self.get_all_table_data();
-        let current_rows = self.get_current_table_data();
-        let state = self.get_spreadsheet_state();
-        let metadata = self.get_current_column_metadata();
-        if let Some(meta) = metadata {
-            log::info!("🔥 metadata present with {} columns", meta.len());
-            for (i, m) in meta.iter().enumerate() {
-                log::info!("🔥 Col {}: name='{}', table='{:?}', orig='{:?}'", i, m.name, m.table_name, m.original_name);
-            }
-        } else {
-            log::warn!("🔥 No metadata found in spreadsheet_generate_sql");
-        }
-        let pk_columns = &state.primary_key_columns;
-        let global_table_name = self.spreadsheet_extract_table_name();
 
-        let mut pk_overrides: HashMap<usize, HashMap<String, String>> = HashMap::new();
-        if !pk_columns.is_empty() {
-            for op in &state.pending_operations {
-                if let crate::models::structs::CellEditOperation::Update {
-                    row_index,
-                    col_index,
-                    old_value,
-                    ..
-                } = op
-                    && let Some(col_name) = headers.get(*col_index)
-                    && pk_columns
-                        .iter()
-                        .any(|pk| pk.eq_ignore_ascii_case(col_name))
-                {
-                    pk_overrides
-                        .entry(*row_index)
-                        .or_default()
-                        .insert(col_name.to_lowercase(), old_value.clone());
-                }
-            }
-        }
-
-        let mut stmts: Vec<String> = Vec::new();
-        for op in &state.pending_operations {
-            match op {
-                crate::models::structs::CellEditOperation::Update {
-                    row_index,
-                    col_index,
-                    old_value: _,
-                    new_value,
-                } => {
-                    // Determine table name for this specific column
-                    let col_meta = metadata.and_then(|m| m.get(*col_index));
-                    let table_name = col_meta
-                        .and_then(|m| m.table_name.clone())
-                        .or_else(|| global_table_name.clone());
-
-                    let table_name = match table_name {
-                        Some(t) => t,
-                        None => {
-                            debug!("Unable to determine table name for update at col {}", col_index);
-                            continue;
-                        }
-                    };
-
-                    // Determine column name (use original name if available to handle aliases)
-                    let col_name_str = col_meta
-                        .and_then(|m| m.original_name.clone())
-                        .or_else(|| headers.get(*col_index).cloned());
-                    
-                    let col_name = match col_name_str {
-                         Some(n) => n,
-                         None => continue,
-                    };
-
-                    let row_data = current_rows
-                        .get(*row_index)
-                        .or_else(|| all_rows.get(*row_index));
-                    let row_data = match row_data {
-                        Some(r) => r,
-                        None => continue,
-                    };
-
-                    // Build WHERE clause
-                    // If we have metadata, we should ideally restrict WHERE to columns from the same table
-                    // For now, continue using all columns or PKs, but we could filter if we wanted to be safer with joins
-                    let overrides = pk_overrides.get(row_index);
-                    let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn, row_data, headers, pk_columns, overrides,
-                    ) {
-                        Some(clause) => clause,
-                        None => continue,
-                    };
-
-                    let sql = format!(
-                        "UPDATE {} SET {} = {} WHERE {}",
-                        qt_table(&table_name),
-                        qt(&col_name),
-                        qv(new_value),
-                        where_clause
-                    );
-                    stmts.push(sql);
-                }
-
-                crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
-                    // For inserts, we generally need a single table. 
-                    // If multiple tables are involved (join), we can't easily insert a row without more logic.
-                    // We'll fallback to global_table_name and assume all columns belong to it or map correctly.
-                    let table_name = match global_table_name.clone() {
-                        Some(t) => t,
-                        None => continue,
-                    };
-
-                    if headers.is_empty() {
-                        continue;
-                    }
-
-                    // Construct column list and value list
-                    // Use original names if available
-                    let mut cols = Vec::new();
-                    let mut vals = Vec::new();
-                    
-                    for (i, val) in values.iter().enumerate() {
-                         let col_meta = metadata.and_then(|m| m.get(i));
-                         // If column belongs to a different table, we might skip it or error? 
-                         // For now, include it if it matches global table or we have no metadata table info
-                         let c_table = col_meta.and_then(|m| m.table_name.as_ref());
-                         
-                         if let Some(ct) = c_table {
-                             if ct != &table_name {
-                                 // Skip columns from other tables in a join check? 
-                                 // Or maybe we should allow it if the user knows what they are doing (but SQL will fail)
-                                 // Let's rely on backend error if it fails
-                             }
-                         }
-                         
-                         let name = col_meta.and_then(|m| m.original_name.clone())
-                             .or_else(|| headers.get(i).cloned())
-                             .unwrap_or_default();
-                         
-                         if !name.is_empty() {
-                             cols.push(qt(&name));
-                             vals.push(qv(val));
-                         }
-                    }
-
-                    let sql = format!(
-                        "INSERT INTO {} ({}) VALUES ({})",
-                        qt_table(&table_name),
-                        cols.join(", "),
-                        vals.join(", ")
-                    );
-                    stmts.push(sql);
-                }
-                crate::models::structs::CellEditOperation::DeleteRow { row_index, values } => {
-                     // Similar to update, we need a table. Delete applies to the "primary" table usually.
-                     // Or we need multiple Deletes? 
-                     // Fallback to global table name for now.
-                     let table_name = match global_table_name.clone() {
-                        Some(t) => t,
-                        None => continue,
-                     };
-                     
-                     let overrides = pk_overrides.get(row_index);
-                     let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn, values, headers, pk_columns, overrides,
-                    ) {
-                        Some(clause) => clause,
-                        None => continue,
-                    };
-                    let sql = format!("DELETE FROM {} WHERE {}", qt_table(&table_name), where_clause);
-                    stmts.push(sql);
-                }
-            }
-        }
-        if stmts.is_empty() {
-            None
-        } else {
-            Some(stmts.join(";\n"))
-        }
-    }
-
-    fn spreadsheet_save_changes(&mut self) {
-        println!(
-            "🔥 spreadsheet_save_changes called with {} pending operations",
-            self.get_spreadsheet_state().pending_operations.len()
-        );
-        debug!(
-            "🔥 spreadsheet_save_changes called with {} pending operations",
-            self.get_spreadsheet_state().pending_operations.len()
-        );
-
-        if self.get_spreadsheet_state().pending_operations.is_empty() {
-            println!("🔥 No pending operations to save");
-            debug!("🔥 No pending operations to save");
-            return;
-        }
-        if let Some(sql) = self.spreadsheet_generate_sql() {
-            println!("🔥 Generated SQL: {}", sql);
-            debug!("🔥 Generated SQL: {}", sql);
-            if let Some(conn_id) = self.get_current_connection_id() {
-                println!("🔥 Executing SQL with connection {}", conn_id);
-                debug!("🔥 Executing SQL with connection {}", conn_id);
-
-                // Execute without transaction wrapper to avoid MySQL prepared statement issues
-                println!("🔥 Executing SQL: {}", sql);
-
-                // Note: This is a bit tricky because we need to call connection::execute_query_with_connection
-                // but this trait doesn't know about the full Tabular struct. We'll need to implement this
-                // in the actual implementation of the trait.
-                self.execute_spreadsheet_sql(sql);
-            } else {
-                println!("🔥 No current connection ID");
-                debug!("🔥 No current connection ID");
-            }
-        } else {
-            println!("🔥 Failed to generate SQL");
-            debug!("🔥 Failed to generate SQL");
-        }
-    }
+    fn spreadsheet_save_changes(&mut self);
 
     // This method needs to be implemented by the struct that implements this trait
     // It should execute the SQL and handle the response appropriately
@@ -1241,110 +915,117 @@ impl SpreadsheetOperations for Tabular {
     fn spreadsheet_build_where_clause(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
-        values: &[String],
+        row_data: &[String],
         headers: &[String],
         primary_keys: &[String],
-        pk_overrides: Option<&HashMap<String, String>>,
+        overrides: Option<&HashMap<String, String>>,
+        target_table_for_update: Option<&str>,
     ) -> Option<String> {
-        if headers.is_empty() || values.is_empty() {
-            return None;
+        let qt = |s: &str| self.spreadsheet_quote_ident(conn, s);
+        let qv = |s: &str| self.spreadsheet_quote_value(conn, s);
+        let metadata = self.get_current_column_metadata();
+
+        let mut where_parts = Vec::new();
+        // If we have a target table, we ONLY want to scope the WHERE clause to PKs of that table.
+        let use_metadata_filtering = target_table_for_update.is_some() && metadata.is_some();
+
+        if use_metadata_filtering {
+             let target_table = target_table_for_update.unwrap();
+             let meta = metadata.as_ref().unwrap();
+             std::println!("🔥 spreadsheet_build_where_clause: filtering for target_table='{}'", target_table);
+             
+             for (i, col_meta) in meta.iter().enumerate() {
+                 let belongs_to_table = col_meta.table_name.as_deref().unwrap_or("") == target_table;
+                 
+                 if belongs_to_table && col_meta.is_primary_key {
+                     if let Some(col_name) = headers.get(i) {
+                         std::println!("🔥 Found matching PK: '{}' at index {}", col_name, i);
+                         let id_name = col_meta.original_name.clone().unwrap_or(col_name.clone());
+                         let mut val = row_data.get(i).cloned().unwrap_or_default();
+                         if let Some(ov) = overrides {
+                             if let Some(v) = ov.get(&col_name.to_lowercase()) {
+                                 val = v.clone();
+                             }
+                         }
+                         
+                         let clause = if val.to_uppercase() == "NULL" {
+                             format!("{} IS NULL", qt(&id_name))
+                         } else {
+                             format!("{} = {}", qt(&id_name), qv(&val))
+                         };
+                         where_parts.push(clause);
+                     }
+                 } else if belongs_to_table {
+                     // Debug why non-PK was skipped
+                     // std::println!("🔥 Skipping column '{}' (is_pk={}) for table match", col_meta.name, col_meta.is_primary_key);
+                 }
+             }
+        } else {
+             std::println!("🔥 spreadsheet_build_where_clause: NO metadata filtering (target={:?}, meta={})", target_table_for_update, metadata.is_some());
         }
 
-        if !primary_keys.is_empty() {
-            let mut clauses = Vec::new();
-            for pk in primary_keys {
-                if let Some((idx, header_name)) = headers
-                    .iter()
-                    .enumerate()
-                    .find(|(_, h)| h.as_str() == pk.as_str() || h.eq_ignore_ascii_case(pk))
-                {
-                    if idx >= values.len() {
-                        continue;
+        if where_parts.is_empty() {
+             std::println!("🔥 spreadsheet_build_where_clause: where_parts was empty, using FALLBACK logic");
+             for (i, header) in headers.iter().enumerate() {
+                // NEW: Security check - if we have metadata, ensure this column belongs to target table
+                // This prevents adding columns from joined tables (e.g. date_time) to the WHERE clause
+                // when updating a specific table (e.g. user_data).
+                if let Some(target) = target_table_for_update {
+                    if let Some(meta) = metadata.as_ref() {
+                        if let Some(col_meta) = meta.get(i) {
+                             let tbl = col_meta.table_name.as_deref().unwrap_or("");
+                             // Only skip if table name is explicitly known and differs from target.
+                             // Use case-insensitive check to be safe.
+                             if !tbl.is_empty() && !tbl.eq_ignore_ascii_case(target) {
+                                 std::println!("🔥 Fallback skipping column '{}' because it belongs to table '{}' (target='{}')", header, tbl, target);
+                                 continue;
+                             }
+                        }
                     }
-                    let key_lower = header_name.to_lowercase();
-                    let raw_value = pk_overrides
-                        .and_then(|m| m.get(&key_lower))
-                        .map(|s| s.as_str())
-                        .unwrap_or_else(|| values[idx].as_str());
-                    let clause = if raw_value.is_empty() || raw_value.eq_ignore_ascii_case("null") {
-                        std::format!(
-                            "{} IS NULL",
-                            self.spreadsheet_quote_ident(conn, header_name)
-                        )
-                    } else {
-                        std::format!(
-                            "{} = {}",
-                            self.spreadsheet_quote_ident(conn, header_name),
-                            self.spreadsheet_quote_value(conn, raw_value)
-                        )
-                    };
-                    clauses.push(clause);
+                }
+
+                if primary_keys.is_empty()
+                    || primary_keys
+                        .iter()
+                        .any(|pk| pk.eq_ignore_ascii_case(header))
+                {
+                    if let Some(val_ref) = row_data.get(i) {
+                         let mut val = val_ref.clone();
+                         if let Some(ov) = overrides {
+                             if let Some(v) = ov.get(&header.to_lowercase()) {
+                                 val = v.clone();
+                             }
+                         }
+                        let clause = if val.to_uppercase() == "NULL" {
+                            format!("{} IS NULL", qt(header))
+                        } else {
+                            format!("{} = {}", qt(header), qv(&val))
+                        };
+                        where_parts.push(clause);
+                    }
                 }
             }
-            if !clauses.is_empty() {
-                return Some(clauses.join(" AND "));
+        }
+
+        if where_parts.is_empty() {
+             // Second fallback logic (implicit ID detection from old code)
+             if primary_keys.is_empty()
+                && let (Some(first_header), Some(first_value)) = (headers.first(), row_data.first())
+            {
+                let lower = first_header.to_lowercase();
+                if lower.contains("id") || lower.contains("recid") || lower == "pk" {
+                     let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
+                         format!("{} IS NULL", qt(first_header))
+                     } else {
+                         format!("{} = {}", qt(first_header), qv(first_value))
+                     };
+                     return Some(clause);
+                }
             }
+             None
+        } else {
+            Some(where_parts.join(" AND "))
         }
-
-        if primary_keys.is_empty()
-            && let (Some(first_header), Some(first_value)) = (headers.first(), values.first())
-        {
-            let lower = first_header.to_lowercase();
-            if lower.contains("id") || lower.contains("recid") || lower == "pk" {
-                let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
-                    std::format!(
-                        "{} IS NULL",
-                        self.spreadsheet_quote_ident(conn, first_header)
-                    )
-                } else {
-                    std::format!(
-                        "{} = {}",
-                        self.spreadsheet_quote_ident(conn, first_header),
-                        self.spreadsheet_quote_value(conn, first_value)
-                    )
-                };
-                return Some(clause);
-            }
-        }
-
-        if headers.len() == values.len() {
-            let parts: Vec<String> = headers
-                .iter()
-                .zip(values.iter())
-                .map(|(col, v)| {
-                    if v.is_empty() || v.eq_ignore_ascii_case("null") {
-                        std::format!("{} IS NULL", self.spreadsheet_quote_ident(conn, col))
-                    } else {
-                        std::format!(
-                            "{} = {}",
-                            self.spreadsheet_quote_ident(conn, col),
-                            self.spreadsheet_quote_value(conn, v)
-                        )
-                    }
-                })
-                .collect();
-            if !parts.is_empty() {
-                return Some(parts.join(" AND "));
-            }
-        }
-
-        if let (Some(first_header), Some(first_value)) = (headers.first(), values.first()) {
-            let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
-                std::format!(
-                    "{} IS NULL",
-                    self.spreadsheet_quote_ident(conn, first_header)
-                )
-            } else {
-                std::format!(
-                    "{} = {}",
-                    self.spreadsheet_quote_ident(conn, first_header),
-                    self.spreadsheet_quote_value(conn, first_value)
-                )
-            };
-            return Some(clause);
-        }
-
-        None
     }
 
     fn spreadsheet_quote_ident(
@@ -1418,6 +1099,8 @@ impl SpreadsheetOperations for Tabular {
             _ => ident.to_string(),
         }
     }
+
+
 
     fn spreadsheet_quote_value(
         &self,
@@ -1567,7 +1250,7 @@ impl SpreadsheetOperations for Tabular {
                     };
                     let overrides = pk_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn, row_data, headers, pk_columns, overrides,
+                        &conn, row_data, headers, pk_columns, overrides, Some(&table_name_str),
                     ) {
                         Some(clause) => clause,
                         None => {
@@ -1623,7 +1306,7 @@ impl SpreadsheetOperations for Tabular {
                     }
                     let overrides = pk_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn, values, headers, pk_columns, overrides,
+                        &conn, values, headers, pk_columns, overrides, None,
                     ) {
                         Some(clause) => clause,
                         None => {
@@ -1709,6 +1392,6 @@ impl SpreadsheetOperations for Tabular {
             .or_else(|| self.get_all_table_data().get(row_index))?;
         let headers = self.get_current_table_headers();
         let pk_columns = &self.get_spreadsheet_state().primary_key_columns;
-        self.spreadsheet_build_where_clause(conn, row, headers, pk_columns, None)
+        self.spreadsheet_build_where_clause(conn, row, headers, pk_columns, None, None)
     }
 }
