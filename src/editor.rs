@@ -711,6 +711,7 @@ fn slice_on_char_boundaries(
 }
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    let mut request_scroll_to_cursor = false;
     let editor_id = ui.make_persistent_id("sql_editor");
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
     let mut trigger_format_sql = false;
@@ -738,6 +739,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             });
         });
         reformat_current_sql(tabular, ui);
+        request_scroll_to_cursor = true;
         // Early repaint for snappy UX
         ui.ctx().request_repaint();
     }
@@ -767,6 +769,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             });
         });
         toggle_line_comment(tabular);
+        request_scroll_to_cursor = true;
         // Early repaint for snappy UX
         ui.ctx().request_repaint();
     }
@@ -849,6 +852,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 tabular.selection_start = line_start;
                 tabular.selection_end = line_start + indented.len();
                 tabular.cursor_position = tabular.selection_end;
+                request_scroll_to_cursor = true;
             } else {
                 let mut outdented = String::with_capacity(block.len());
                 let mut changed = false;
@@ -881,6 +885,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     tabular.selection_start = line_start;
                     tabular.selection_end = line_start + outdented.len();
                     tabular.cursor_position = tabular.selection_end;
+                    request_scroll_to_cursor = true;
                 }
             }
             // consume Tab key event so TextEdit tidak menambah tab baru
@@ -1147,6 +1152,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 tabular.selection_start = tabular.cursor_position;
                 tabular.selection_end = tabular.cursor_position;
                 handled = true;
+                request_scroll_to_cursor = true;
                 log::debug!("Overtyped quote '{}'", quote_char);
             } else if should_autoclose {
                 // Insert quote pair: quote + quote
@@ -1351,6 +1357,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
                 ui.memory_mut(|m| m.request_focus(id));
                 tabular.editor_focus_boost_frames = 10;
+                request_scroll_to_cursor = true;
                 if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
                     let new_owned = tabular.editor.text.clone();
                     tabular.editor.set_text(new_owned.clone());
@@ -1406,6 +1413,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
                     // CRITICAL: Ensure editor maintains focus and cursor stays active for immediate typing
                     ui.memory_mut(|m| m.request_focus(id));
+                    request_scroll_to_cursor = true;
 
                     // Set focus boost to keep editor focused for several frames
                     tabular.editor_focus_boost_frames = 10;
@@ -2265,6 +2273,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.memory_mut(|m| m.request_focus(id));
         ui.ctx().request_repaint();
         tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
+        request_scroll_to_cursor = true;
     }
     if multi_nav_left
         || multi_nav_right
@@ -2338,6 +2347,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
         ui.memory_mut(|m| m.request_focus(id));
         ui.ctx().request_repaint();
+        request_scroll_to_cursor = true;
     }
     // Apply move/duplicate line operations pre-TextEdit (so content shows updated this frame)
     if move_line_up || move_line_down || dup_line_up || dup_line_down {
@@ -2500,6 +2510,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             }
         }
         ui.memory_mut(|m| m.request_focus(id));
+        request_scroll_to_cursor = true;
         if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
             tab.content = tabular.editor.text.clone();
             tab.is_modified = true;
@@ -2846,6 +2857,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         state.store(ui.ctx(), id);
         tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(12);
         ui.ctx().request_repaint();
+        request_scroll_to_cursor = true;
     }
     // Multi-cursor: key handling (Cmd+D / Ctrl+D for next occurrence) and Esc to clear
     let input_snapshot = ui.input(|i| i.clone());
@@ -3162,6 +3174,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     egui::Color32::BLACK
                 };
                 painter.rect_filled(caret_shape, 0.0, color);
+                if request_scroll_to_cursor {
+                    ui.scroll_to_rect(caret_shape, None);
+                }
             } else {
                 let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
                 let caret_rect = egui::Rect::from_min_max(
@@ -3716,6 +3731,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if is_insertion && !just_inserted_newline {
                 log::debug!("🔍 AUTOCOMPLETE DEBUG: Updating autocomplete after text insertion");
                 editor_autocomplete::update_autocomplete(tabular);
+                request_scroll_to_cursor = true;
             } else {
                 log::debug!(
                     "🔍 AUTOCOMPLETE DEBUG: Skipping autocomplete update (newline or deletion)"
@@ -3789,6 +3805,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
             state.store(ui.ctx(), id);
             ui.memory_mut(|m| m.request_focus(id));
+            request_scroll_to_cursor = true;
         } else if cur >= 4 && &tabular.editor.text[cur - 4..cur] == "    " {
             // Remove inserted 4 spaces via rope edit
             let start = cur - 4;
@@ -3806,6 +3823,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
             state.store(ui.ctx(), id);
             ui.memory_mut(|m| m.request_focus(id));
+            request_scroll_to_cursor = true;
         }
     }
     if tabular.show_autocomplete {
@@ -3893,6 +3911,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             // Re-focus editor so Tab doesn't move focus away
             ui.memory_mut(|m| m.request_focus(id));
             ui.ctx().request_repaint();
+            request_scroll_to_cursor = true;
         }
         if input.key_pressed(egui::Key::Escape) {
             tabular.show_autocomplete = false;
