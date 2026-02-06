@@ -864,7 +864,7 @@ async fn execute_mysql_query_job(
                             let mut unique_tables = std::collections::HashSet::new();
                             // use sqlx::Column; // Import trait to enable table_name method
                             for _col in rows[0].columns() {
-                                // let t_name = col.table_name();
+                                // let t_name = col.original_table_name().unwrap_or_default();
                                 let t_name = "";
                                 if !t_name.is_empty() {
                                     unique_tables.insert(t_name.to_string());
@@ -983,7 +983,7 @@ async fn execute_mysql_query_job(
 
                             for (i, col) in rows[0].columns().iter().enumerate() {
                                 let type_info = col.type_info();
-                                // let t_name = col.table_name();
+                                // let t_name = col.original_table_name().unwrap_or_default();
                                 let t_name = "";
                                 
                                 // Determine table name with priority:
@@ -992,43 +992,31 @@ async fn execute_mysql_query_job(
                                 // 3. expanded ordinal schema (if lengths match and logic holds)
                                 // 4. global inference (fallback)
                                 
+                                log::info!("🔥 [debug] inferring table for col '{}': t_name='{}', use_fine_grained={}, involved_tables={:?}, expanded_len={}", 
+                                    col.name(), t_name, use_fine_grained, involved_tables, expanded_schema.len());
+
                                 let table_name = if !t_name.is_empty() {
                                     Some(t_name.to_string())
-                                } else if use_fine_grained {
-                                    inferred_origins.as_ref().and_then(|o| o.get(i).cloned().flatten())
-                                } else if expanded_schema.len() == rows[0].columns().len() {
-                                     // Safe assumption: Result columns match expansion order
-                                     // Verify name match to be sure?
-                                     let (exp_col, exp_table) = &expanded_schema[i];
-                                     if exp_col.eq_ignore_ascii_case(col.name()) {
-                                         Some(exp_table.clone())
-                                     } else {
-                                         // Name mismatch! Schema drift or partial select?
-                                         // Fallback to name search in schema?
-                                         // If names don't match, ordinal mapping is risky.
-                                         // But with SELECT *, names SHOULD match.
-                                         // If they don't, maybe we have aliases? But we are in !use_fine_grained path.
-                                         // Let's fallback to global inference if mismatch.
-                                         inferred_table_name.clone()
-                                     }
                                 } else {
-                                    // Length mismatch (e.g. SELECT A.*, B.col1)
-                                    // Try strict name matching from expanded schema if unique?
-                                    // This logic is complex.
-                                    // Let's assume if unique name in expanded_schema -> use it.
-                                    // If ambiguous -> None.
-                                    let matches: Vec<&String> = expanded_schema.iter()
-                                        .filter(|(c, _)| c.eq_ignore_ascii_case(col.name()))
-                                        .map(|(_, t)| t)
-                                        .collect();
-                                    
-                                    if matches.len() == 1 {
-                                        Some(matches[0].clone())
+                                    // Try fine-grained AST
+                                    let ast_name = if use_fine_grained {
+                                        inferred_origins.as_ref().and_then(|o| o.get(i).cloned().flatten())
                                     } else {
-                                        // 0 or >1 matches (ambiguous)
-                                        inferred_table_name.clone()
+                                        None
+                                    };
+
+                                    if ast_name.is_some() {
+                                        ast_name
+                                    } else if involved_tables.len() == 1 {
+                                        // Implicit single table fallback
+                                        Some(involved_tables[0].clone())
+                                    } else if expanded_schema.len() == rows[0].columns().len() {
+                                         Some(expanded_schema[i].1.clone())
+                                    } else {
+                                         None
                                     }
                                 };
+
                                 
                                 let is_pk = if let Some(t) = &table_name {
                                     let key = t.to_lowercase();
@@ -1054,6 +1042,12 @@ async fn execute_mysql_query_job(
                                 } else {
                                     false
                                 };
+
+                                if let Some(final_t) = &table_name {
+                                    log::info!("🔥 [debug] -> Resolved table: {}", final_t);
+                                } else {
+                                    log::info!("🔥 [debug] -> Resolved table: NONE");
+                                }
 
                                 meta_vec.push(models::structs::ColumnMetadata {
                                     name: col.name().to_string(),

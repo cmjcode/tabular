@@ -712,6 +712,7 @@ fn slice_on_char_boundaries(
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     let mut request_scroll_to_cursor = false;
+    let mut inserted_newline_this_frame = false;
     let editor_id = ui.make_persistent_id("sql_editor");
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
     let mut trigger_format_sql = false;
@@ -3551,6 +3552,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             ui.memory_mut(|m| m.request_focus(id));
             ui.ctx().request_repaint();
         }
+
+        // Just inserted a newline? Force scroll to the new cursor position to prevent "jumpy" behavior.
+        if just_inserted_newline {
+             inserted_newline_this_frame = true;
+             request_scroll_to_cursor = true;
+        }
         let (bs_pressed, del_pressed, left_pressed, right_pressed) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Backspace),
@@ -3751,25 +3758,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tab.is_modified = true;
         }
 
-        // Ensure the caret line is visible immediately after inserting a newline
-        if inserted_dbg == "\\n" && deleted_dbg.is_empty() {
-            let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
-            let caret_ci = to_char_index(&tabular.editor.text, caret_b);
-            let caret_cursor = CCursor::new(caret_ci);
-            let layout = galley.layout_from_cursor(caret_cursor);
-            if layout.row < galley.rows.len() {
-                let placed_row = &galley.rows[layout.row];
-                let row_rect = egui::Rect::from_min_max(
-                    egui::pos2(galley_pos.x, galley_pos.y + placed_row.min_y()),
-                    egui::pos2(
-                        galley_pos.x + response.rect.width(),
-                        galley_pos.y + placed_row.max_y(),
-                    ),
-                );
-                ui.scroll_to_rect(row_rect, Some(egui::Align::BOTTOM));
-            }
-        }
-
         // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
         ui.ctx().request_repaint();
         // Keep caret visible for a few frames after typing/Enter
@@ -3962,6 +3950,44 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.memory_mut(|m| m.request_focus(response.id));
         tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(8);
         ui.ctx().request_repaint();
+    }
+
+    // FINAL SCROLL LOGIC: Check if we need to scroll to cursor at the end of the frame
+    // This is the most reliable place as all logic (key presses, changes, etc.) has finished.
+    // We also compensate for stale galley layout if a newline was just inserted.
+    if request_scroll_to_cursor {
+        let caret_b = tabular.cursor_position.min(tabular.editor.text.len());
+        let caret_char_idx = {
+            let s = &tabular.editor.text;
+            let clamp = caret_b.min(s.len());
+            s[..clamp].chars().count()
+        };
+        let caret_cursor = CCursor::new(caret_char_idx);
+        let caret_line_rect = galley
+            .pos_from_cursor(caret_cursor)
+            .translate(galley_pos.to_vec2());
+
+        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        let mut caret_rect = egui::Rect::from_min_max(
+            egui::pos2(caret_line_rect.left(), caret_line_rect.top()),
+            egui::pos2(
+                caret_line_rect.left() + 2.0,
+                caret_line_rect.top() + line_height,
+            ),
+        );
+
+        // Compensation: If we just inserted a newline, the galley we have is STALE (doesn't have the new line).
+        // The caret position has already advanced to the next line in the text buffer,
+        // but the galley visual layout thinks it's still on the old line or somewhere else.
+        // We heuristically shift the target rect DOWN by one line height to ensure the scroll view accommodates the new line.
+        if inserted_newline_this_frame {
+             caret_rect = caret_rect.translate(egui::vec2(0.0, line_height));
+             log::debug!("↵ Enter pressed: Shifting scroll target down by {}px to compensate for layout lag", line_height);
+        }
+
+        // Using Align::Center usually gives better context than Bottom/Top which might auto-shrink weirdly
+        ui.scroll_to_rect(caret_rect, None);
+        log::debug!("📜 Requesting scroll to {:?} (newline={})", caret_rect, inserted_newline_this_frame);
     }
 }
 

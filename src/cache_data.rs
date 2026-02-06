@@ -390,7 +390,7 @@ pub(crate) fn save_columns_to_cache(
 }
 
 pub(crate) fn get_columns_from_cache(
-    tabular: &mut window_egui::Tabular,
+    tabular: &window_egui::Tabular,
     connection_id: i64,
     database_name: &str,
     table_name: &str,

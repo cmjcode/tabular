@@ -563,12 +563,29 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 rect.size(),
                                                 egui::Sense::click_and_drag(),
                                             );
-                                            if (tabular.is_table_browse_mode || tabular.current_column_metadata.is_some())
-                                                && cell_response.double_clicked()
-                                            {
+                                            
+                                            // Log once per frame (approx) - using a simple counter or just log.
+                                            // log::info!("Rendering cell"); // Too spammy
+                                            
+                                            // DETACHED double click check
+                                            if cell_response.double_clicked() {
+                                                log::info!("🔥 Double click detected on row {}, col {}", row_index, col_index);
+                                                log::info!("🔥 is_table_browse_mode: {}", tabular.is_table_browse_mode);
+                                                log::info!("🔥 current_column_metadata.is_some(): {}", tabular.current_column_metadata.is_some());
+                                            }
+
+                                            // ALLOW EDITING ALWAYS (for custom queries too)
+                                            if cell_response.double_clicked() {
                                                 // queue edit start to avoid mutable borrow inside iteration
+                                                log::info!("🔥 Setting start_edit_request");
                                                 start_edit_request = Some((row_index, col_index));
                                             } else if cell_response.clicked() {
+                                                // log::info!("🔥 Single click detected on row {}, col {}", row_index, col_index);
+                                                log::info!("🔥 Flags check: browse_mode={}, metadata_some={}", 
+                                                    tabular.is_table_browse_mode, 
+                                                    tabular.current_column_metadata.is_some()
+                                                );
+
                                                 let shift = ui.input(|i| i.modifiers.shift);
                                                 if shift {
                                                     if tabular.table_sel_anchor.is_none() {
@@ -1027,34 +1044,60 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.selected_row = Some(r);
                 tabular.selected_cell = Some((r, c));
                 tabular.table_recently_clicked = true;
+                
+                log::info!("🔥 Processing start_edit_request for row {}, col {}", r, c);
                 tabular.spreadsheet_start_cell_edit(r, c);
+                log::info!("🔥 spreadsheet_start_cell_edit called. editing_cell is now: {:?}", tabular.spreadsheet_state.editing_cell);
 
                 // Fetch ENUM options if applicable
                 tabular.spreadsheet_state.enum_options = None;
                 if let Some(conn_id) = tabular.current_connection_id {
-                     let table_name = infer_current_table_name(tabular);
+                     // Check if we have precise metadata for this column (from query result)
+                     // This allows ENUM lookup even for complex queries or when table name isn't in the tab title
+                     let table_name = if let Some(meta) = &tabular.current_column_metadata
+                        && let Some(col_meta) = meta.get(c)
+                        && let Some(t_name) = &col_meta.table_name
+                        && !t_name.is_empty()
+                     {
+                         // log::info!("🔥 Using table name from metadata for ENUM lookup: {}", t_name);
+                         t_name.clone()
+                     } else {
+                         infer_current_table_name(tabular)
+                     };
+                     
+                     log::info!("🔥 [debug] start_edit: table_name='{}' (is_some={})", table_name, !table_name.is_empty());
+
                      // If we are browsing a table, try to get cached columns
                      if !table_name.is_empty() {
+                         // Clean table name (remove backticks/quotes)
+                         let clean_table = table_name.trim_matches(|c| c == '`' || c == '"' || c == '\'');
+                         
                          // We need the database name
                          let db_name = tabular.query_tabs.get(tabular.active_tab_index)
                                          .and_then(|t| t.database_name.clone())
                                          .unwrap_or_default();
                          
-                         // We might need to handle the case where database name is empty (sqlite?)
-                         // But usually cache needs generic db name if empty.
-                         
-                         // To avoid async/blocking call here every click, we rely on cache being populated.
-                         // But `get_columns_from_cache` is blocking (uses runtime block_on). 
-                         // Check if that's acceptable. It executes a local SQLite query. Should be fast enough.
-                         
-                         if let (Some(cols), Some(col_name)) = (crate::cache_data::get_columns_from_cache(tabular, conn_id, &db_name, &table_name), tabular.current_table_headers.get(c)) {
-                                 // Find column in cache
-                                 if let Some((_, type_str)) = cols.iter().find(|(name, _)| name == col_name) {
-                                     let lower_type = type_str.to_lowercase();
-                                     if lower_type.starts_with("enum") || lower_type.starts_with("set") {
-                                          tabular.spreadsheet_state.enum_options = parse_enum_values(type_str);
+                         println!("🔥 [debug] lookup clean_table='{}' (orig='{}'), db='{}'", clean_table, table_name, db_name);
+
+                         if let (Some(cols), Some(col_name)) = (crate::cache_data::get_columns_from_cache(tabular, conn_id, &db_name, clean_table), tabular.current_table_headers.get(c)) {
+                                 println!("🔥 [debug] Found {} cached columns", cols.len());
+                                 if cols.is_empty() {
+                                     // CACHE MISS / EMPTY CACHE DETECTED -> Trigger Popup
+                                     println!("🔥 [debug] Cache empty! Requesting load...");
+                                     tabular.cache_miss_request = Some((conn_id, db_name.clone(), clean_table.to_string()));
+                                 } else {
+                                     // Proceed with normal generic enum check
+                                     if let Some((_, type_str)) = cols.iter().find(|(name, _)| name == col_name) {
+                                         let lower_type = type_str.to_lowercase();
+                                         if lower_type.starts_with("enum") || lower_type.starts_with("set") {
+                                              tabular.spreadsheet_state.enum_options = parse_enum_values(type_str);
+                                         }
                                      }
                                  }
+                         } else {
+                             // Cache lookup mismatch or initial miss
+                             println!("🔥 [debug] Cache lookup returned None. Requesting load...");
+                             tabular.cache_miss_request = Some((conn_id, db_name.clone(), clean_table.to_string()));
                          }
                      }
                 }
