@@ -4,6 +4,8 @@ use log::{debug, info};
 use crate::{
     connection, driver_mssql, export, models, spreadsheet::SpreadsheetOperations, window_egui,
 };
+use chrono::{Datelike, Timelike}; // for date parsing/manipulation logic
+
 
 pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     if !tabular.current_table_headers.is_empty() || !tabular.current_table_name.is_empty() {
@@ -697,6 +699,20 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         egui::UiBuilder::new().max_rect(text_edit_rect),
                                                         |ui| {
                                                             let valid_options = tabular.spreadsheet_state.enum_options.clone();
+                                                            // Determine if column is Date/DateTime
+                                                            let mut is_date_type = false;
+                                                            let mut is_datetime_type = false;
+                                                            if let Some(meta) = &tabular.current_column_metadata {
+                                                                if let Some(col_meta) = meta.get(col_index) {
+                                                                    let t = col_meta.type_name.to_uppercase();
+                                                                    if t.contains("DATE") && !t.contains("TIME") {
+                                                                        is_date_type = true;
+                                                                    } else if t.contains("DATETIME") || t.contains("TIMESTAMP") {
+                                                                        is_datetime_type = true;
+                                                                    }
+                                                                }
+                                                            }
+
                                                             if let Some(options) = valid_options {
                                                                 // Render ComboBox for ENUM types
                                                                 let mut current_val = edit_text.clone();
@@ -715,16 +731,59 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                 
                                                                 if combo.inner.unwrap_or(false) {
                                                                     edit_text = current_val;
-                                                                    // Auto-commit on selection if desired, or just update text
-                                                                    // For now just update text, user presses Enter to commit
-                                                                    // Or we can auto-commit:
-                                                                    // tabular.spreadsheet_finish_cell_edit(true);
-                                                                    // But let's stick to consistent Enter-to-save behavior for now, 
-                                                                    // unless we want to make it super fast. 
-                                                                    // Actually, standard behavior for dropdowns in grids is often commit-on-select.
-                                                                    // Let's request focus on the combo to ensure keyboard works?
-                                                                    // ComboBox takes focus differently.
                                                                 }
+                                                            } else if is_date_type {
+                                                                // DATE Picker
+                                                                ui.horizontal(|ui| {
+                                                                    let mut date_val = chrono::NaiveDate::parse_from_str(&edit_text, "%Y-%m-%d")
+                                                                        .unwrap_or_else(|_| chrono::Local::now().naive_local().date());
+                                                                    
+                                                                    let changed = ui.add(
+                                                                        egui_extras::DatePickerButton::new(&mut date_val)
+                                                                            .id_salt("date_picker")
+                                                                    ).changed();
+
+                                                                    if changed {
+                                                                        edit_text = date_val.format("%Y-%m-%d").to_string();
+                                                                    }
+                                                                });
+                                                            } else if is_datetime_type {
+                                                                // DATETIME Picker
+                                                                ui.horizontal(|ui| {
+                                                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                                                    // Parse as NaiveDateTime
+                                                                    let mut dt_val = chrono::NaiveDateTime::parse_from_str(&edit_text, "%Y-%m-%d %H:%M:%S")
+                                                                        .or_else(|_| chrono::NaiveDateTime::parse_from_str(&edit_text, "%Y-%m-%d %H:%M:%S%.f"))
+                                                                        .unwrap_or_else(|_| chrono::Local::now().naive_local());
+                                                                    
+                                                                    let mut date_part = dt_val.date();
+                                                                    // Date Picker
+                                                                    if ui.add(
+                                                                        egui_extras::DatePickerButton::new(&mut date_part)
+                                                                            .id_salt("datetime_date_picker")
+                                                                    ).changed() 
+                                                                    {
+                                                                        dt_val = chrono::NaiveDateTime::new(date_part, dt_val.time());
+                                                                        edit_text = dt_val.format("%Y-%m-%d %H:%M:%S").to_string();
+                                                                    }
+
+                                                                    // Time Inputs (H/M/S)
+                                                                    let mut h = dt_val.hour();
+                                                                    let mut m = dt_val.minute();
+                                                                    let mut s = dt_val.second();
+                                                                    
+                                                                    let dh = ui.add(egui::DragValue::new(&mut h).range(0..=23).suffix("h"));
+                                                                    let dm = ui.add(egui::DragValue::new(&mut m).range(0..=59).suffix("m"));
+                                                                    let ds = ui.add(egui::DragValue::new(&mut s).range(0..=59).suffix("s"));
+
+                                                                    if dh.changed() || dm.changed() || ds.changed() {
+                                                                        if let Some(new_time) = chrono::NaiveTime::from_hms_opt(h, m, s) {
+                                                                            dt_val = chrono::NaiveDateTime::new(date_part, new_time);
+                                                                            edit_text = dt_val.format("%Y-%m-%d %H:%M:%S").to_string();
+                                                                        }
+                                                                    }
+                                                                });
+
                                                             } else {
                                                                 // Render standard TextEdit
                                                                 let text_edit = egui::TextEdit::singleline(

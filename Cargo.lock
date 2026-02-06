@@ -1877,6 +1877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dddbceddf39805fc6c62b1f7f9c05e23590b40844dc9ed89c6dc6dbc886e3e3b"
 dependencies = [
  "ahash 0.8.12",
+ "chrono",
  "egui",
  "enum-map",
  "log",
