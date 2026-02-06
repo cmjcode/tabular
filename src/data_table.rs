@@ -222,7 +222,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             thin_stroke,
                                         );
                                         ui.horizontal(|ui| {
-                                            let sort_button_width = 25.0;
+                                            let sort_button_width = 45.0;
                                             let text_area_width =
                                                 ui.available_width() - sort_button_width;
                                             ui.allocate_ui_with_layout(
@@ -243,35 +243,82 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     ));
                                                 },
                                             );
-                                            let (sort_icon, is_active) =
+                                            // Custom professional sort icon implementation
+                                            let (is_sorted_column, is_asc) =
                                                 if current_sort_column == Some(col_index) {
-                                                    if current_sort_ascending {
-                                                        ("^", true)
-                                                    } else {
-                                                        ("v", true)
-                                                    }
+                                                    (true, current_sort_ascending)
                                                 } else {
-                                                    ("-", false)
+                                                    (false, false)
                                                 };
-                                            let sort_button = ui.add(
-                                                egui::Button::new(
-                                                    egui::RichText::new(sort_icon)
-                                                        .size(12.0)
-                                                        .color(if is_active {
-                                                            egui::Color32::from_rgb(100, 150, 255)
-                                                        } else {
-                                                            egui::Color32::GRAY
-                                                        }),
-                                                )
-                                                .small()
-                                                .fill(if is_active {
-                                                    egui::Color32::from_rgba_unmultiplied(
-                                                        100, 150, 255, 50,
-                                                    )
-                                                } else {
-                                                    egui::Color32::TRANSPARENT
-                                                }),
+
+                                            let icon_size = ui.available_height().min(sort_button_width) * 0.6; // Scale icon relative to space
+                                            let (response, painter) = ui.allocate_painter(
+                                                egui::vec2(sort_button_width, ui.available_height()),
+                                                egui::Sense::click()
                                             );
+                                            
+                                            // Visualize interaction
+                                            if response.hovered() {
+                                                painter.rect_filled(
+                                                    response.rect.shrink(2.0),
+                                                    4.0,
+                                                    if ui.visuals().dark_mode {
+                                                        egui::Color32::from_white_alpha(10)
+                                                    } else {
+                                                        egui::Color32::from_black_alpha(10)
+                                                    }
+                                                );
+                                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                            }
+
+                                            // Determine colors
+                                            let icon_color = if is_sorted_column {
+                                                egui::Color32::from_rgb(255, 30, 0) // Active Red
+                                            } else if response.hovered() {
+                                                ui.visuals().text_color() // Darker/Lighter on hover
+                                            } else {
+                                                ui.visuals().text_color().gamma_multiply(0.3) // Faint when inactive
+                                            };
+
+                                            let center = response.rect.center();
+                                            let half_sz = icon_size * 0.35;
+
+                                            // Draw shapes
+                                            if is_sorted_column {
+                                                if is_asc {
+                                                    // Up Triangle
+                                                    painter.add(egui::Shape::convex_polygon(
+                                                        vec![
+                                                            center + egui::vec2(0.0, -half_sz),
+                                                            center + egui::vec2(-half_sz, half_sz),
+                                                            center + egui::vec2(half_sz, half_sz),
+                                                        ],
+                                                        icon_color,
+                                                        egui::Stroke::NONE,
+                                                    ));
+                                                } else {
+                                                    // Down Triangle
+                                                    painter.add(egui::Shape::convex_polygon(
+                                                        vec![
+                                                            center + egui::vec2(0.0, half_sz),
+                                                            center + egui::vec2(-half_sz, -half_sz),
+                                                            center + egui::vec2(half_sz, -half_sz),
+                                                        ],
+                                                        icon_color,
+                                                        egui::Stroke::NONE,
+                                                    ));
+                                                }
+                                            } else {
+                                                // Normal / Unsorted: A nice rounded dash
+                                                let dash_rect = egui::Rect::from_center_size(
+                                                    center,
+                                                    egui::vec2(icon_size * 0.6, icon_size * 0.15)
+                                                );
+                                                painter.rect_filled(dash_rect, 1.0, icon_color);
+                                            }
+
+                                            // Handle clicks using the custom response
+                                            let sort_button = response; // Alias for compatibility with existing click logic
                                             if sort_button.clicked() {
                                                 let new_ascending =
                                                     if current_sort_column == Some(col_index) {
