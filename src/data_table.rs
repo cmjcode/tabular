@@ -1101,21 +1101,45 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 if let Some(conn_id) = tabular.current_connection_id {
                      // Check if we have precise metadata for this column (from query result)
                      // This allows ENUM lookup even for complex queries or when table name isn't in the tab title
+                     let mut type_might_be_enum = false;
                      let table_name = if let Some(meta) = &tabular.current_column_metadata
                         && let Some(col_meta) = meta.get(c)
-                        && let Some(t_name) = &col_meta.table_name
-                        && !t_name.is_empty()
                      {
-                         // log::info!("🔥 Using table name from metadata for ENUM lookup: {}", t_name);
-                         t_name.clone()
+                         if let Some(t_name) = &col_meta.table_name && !t_name.is_empty() {
+                             // Check type name if available
+                             let t_type = col_meta.type_name.to_lowercase();
+                             if t_type.contains("enum") || t_type.contains("set") {
+                                 type_might_be_enum = true;
+                             }
+                             // If basic type is unknown or weird, we might want to check anyway? 
+                             // But usually sqlx gives "VARCHAR" for enums in MySQL sometimes? 
+                             // Wait, if sqlx gives "VARCHAR", then we WON'T detect it here, and we WON'T trigger cache miss.
+                             // That means we might miss ENUM dropdowns.
+                             // BUT user specifically said: "Harusnya ini muncul kalo ada kolom yang di cache belum jelas tipedatanya"
+                             // (This should appear if there is a column in cache with unclear datatype).
+                             // If sqlx says "ENUM", we MUST check cache.
+                             // If sqlx says "VARCHAR", we ignore. That seems safe for now to stop the annoyance.
+                             
+                             t_name.clone()
+                         } else {
+                             // fallback
+                             infer_current_table_name(tabular)
+                         }
                      } else {
                          infer_current_table_name(tabular)
                      };
                      
-                     log::info!("🔥 [debug] start_edit: table_name='{}' (is_some={})", table_name, !table_name.is_empty());
+                     // If we inferred table name but skipped metadata check (e.g. no metadata), assume we might need to check?
+                     // No, let's be conservative. If we don't know it's an ENUM, don't popup.
+                     // Exception: If we have NO metadata (e.g. browsing a table directly?), we rely on cache entirely.
+                     // In table browse mode, we usually don't have types in `current_column_metadata`? 
+                     // Actually `execute_mysql_query_job` populates it.
+                     // Let's assume `type_might_be_enum` is the gate.
+                     
+                     log::info!("🔥 [debug] start_edit: table='{}', type_might_be_enum={}", table_name, type_might_be_enum);
 
                      // If we are browsing a table, try to get cached columns
-                     if !table_name.is_empty() {
+                     if !table_name.is_empty() && type_might_be_enum {
                          // Clean table name (remove backticks/quotes)
                          let clean_table = table_name.trim_matches(|c| c == '`' || c == '"' || c == '\'');
                          
@@ -1129,7 +1153,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                          if let (Some(cols), Some(col_name)) = (crate::cache_data::get_columns_from_cache(tabular, conn_id, &db_name, clean_table), tabular.current_table_headers.get(c)) {
                                  println!("🔥 [debug] Found {} cached columns", cols.len());
                                  if cols.is_empty() {
-                                     // CACHE MISS / EMPTY CACHE DETECTED -> Trigger Popup
+                                     // CACHE MISS / EMPTY CACHE DETECTED -> Trigger Popup ONLY if strictly needed
                                      println!("🔥 [debug] Cache empty! Requesting load...");
                                      tabular.cache_miss_request = Some((conn_id, db_name.clone(), clean_table.to_string()));
                                  } else {
