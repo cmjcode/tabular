@@ -10,6 +10,7 @@ use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
     sidebar_history, sidebar_query, window_egui,
 };
+use crate::spreadsheet::SpreadsheetOperations;
 use std::borrow::Cow;
 use std::time::Instant;
 
@@ -714,6 +715,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut request_scroll_to_cursor = false;
     let mut inserted_newline_this_frame = false;
     let editor_id = ui.make_persistent_id("sql_editor");
+
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
     let mut trigger_format_sql = false;
     ui.input(|i| {
@@ -2667,6 +2669,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         cursor_range,
         ..
     } = text_output;
+
+    // Fix: Check response immediately after widget interaction
+    if response.gained_focus() && tabular.spreadsheet_state.editing_cell.is_some() {
+        log::debug!("⎋ Editor gained focus (click) while cell editing -> Cancelling cell edit");
+        tabular.spreadsheet_finish_cell_edit(false);
+    }
+
     let cursor_range_after = cursor_range;
 
     #[cfg(feature = "tree_sitter_sequel")]
