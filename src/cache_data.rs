@@ -169,7 +169,9 @@ pub(crate) fn fetch_and_cache_connection_data(
     };
 
     // Fetch databases from server
-    let databases_result = connection::fetch_databases_from_connection(tabular, connection_id);
+    #[allow(deprecated)]
+    #[allow(deprecated)]
+    let databases_result = connection::fetch_databases_from_connection_blocking(tabular, connection_id);
 
     if let Some(databases) = databases_result {
         // Save databases to cache

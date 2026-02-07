@@ -76,6 +76,10 @@ pub enum BackgroundTask {
     },
     // Ask UI thread to open SQLite file/folder picker for new connection
     PickSqlitePath,
+    // Fetch databases in background
+    FetchDatabases {
+        connection_id: i64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +101,11 @@ pub enum BackgroundResult {
     },
     // Result from SQLite folder/file picker for new connection dialog
     SqlitePathPicked { path: String },
+    // Result from background database fetch
+    DatabasesFetched {
+        connection_id: i64,
+        databases: Vec<String>,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]

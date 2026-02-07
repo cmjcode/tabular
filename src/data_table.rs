@@ -4,7 +4,7 @@ use log::{debug, info};
 use crate::{
     connection, driver_mssql, export, models, spreadsheet::SpreadsheetOperations, window_egui,
 };
-use chrono::{Datelike, Timelike}; // for date parsing/manipulation logic
+use chrono::Timelike; // for date parsing/manipulation logic
 
 
 pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {

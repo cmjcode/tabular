@@ -375,9 +375,11 @@ pub struct Tabular {
     pub new_view_connection_id: Option<i64>,
     pub edit_view_original_name: Option<String>,
     
-    // DEBUGGING INPUT
     pub global_backspace_pressed: bool,
     pub sidebar_visible: bool,
+    
+    // Background fetch tracking
+    pub fetching_databases: std::collections::HashSet<i64>,
 }
 
 // Preference tabs enumeration
@@ -579,6 +581,7 @@ impl Tabular {
             pending_paginated_jobs: std::collections::HashSet::new(),
             next_query_job_id: 1,
             refreshing_connections: std::collections::HashSet::new(),
+            fetching_databases: std::collections::HashSet::new(),
             pending_expansion_restore: std::collections::HashMap::new(),
             pending_auto_load: std::collections::HashSet::new(),
             query_tabs: Vec::new(),
@@ -847,9 +850,29 @@ impl Tabular {
         // Spawn a background thread to process queued tasks
         // Clone cache DB pool for use inside the worker
         let cache_pool = self.db_pool.clone();
+        let shared_pools = self.shared_connection_pools.clone();
+        
         std::thread::spawn(move || {
             while let Ok(task) = task_receiver.recv() {
                 match task {
+                    models::enums::BackgroundTask::FetchDatabases { connection_id } => {
+                        if let Some(pool) = &cache_pool {
+                             if let Ok(rt) = tokio::runtime::Runtime::new() {
+                                 let dbs_opt = rt.block_on(connection::fetch_databases_background_task(
+                                     connection_id, 
+                                     pool, 
+                                     &shared_pools
+                                 ));
+                                 
+                                 if let Some(dbs) = dbs_opt {
+                                     let _ = result_sender.send(models::enums::BackgroundResult::DatabasesFetched {
+                                         connection_id,
+                                         databases: dbs,
+                                     });
+                                 }
+                             }
+                        }
+                    }
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
                         // Perform actual refresh and cache preload on a lightweight runtime
                         let success = if let Some(cache_pool_arc) = &cache_pool {
@@ -5998,7 +6021,12 @@ impl Tabular {
         }
 
         // First check if we have cached data
-        if let Some(databases) = cache_data::get_databases_from_cache(self, connection_id) {
+            // Use cached data if available, otherwise return None (will be fetched in background)
+            // The get_databases_cached function already triggers background fetch if empty
+            if let Some(databases) = {
+                let dbs = self.get_databases_cached(connection_id);
+                if !dbs.is_empty() { Some(dbs) } else { None }
+            } {
             debug!(
                 "Found cached databases for connection {}: {:?}",
                 connection_id, databases
@@ -6550,14 +6578,15 @@ impl Tabular {
         }
 
         // Try to fetch real databases from the connection
-        if let Some(real_databases) =
-            connection::fetch_databases_from_connection(self, connection_id)
-        {
+        if let Some(databases) = {
+             let dbs = self.get_databases_cached(connection_id);
+             if !dbs.is_empty() { Some(dbs) } else { None }
+        } {
             // Save to cache for future use
-            cache_data::save_databases_to_cache(self, connection_id, &real_databases);
+            cache_data::save_databases_to_cache(self, connection_id, &databases);
 
             // Create tree nodes from fetched data
-            for db_name in real_databases {
+            for db_name in databases {
                 let mut db_node = models::structs::TreeNode::new(
                     db_name.clone(),
                     models::enums::NodeType::Database,
@@ -7013,28 +7042,30 @@ impl Tabular {
 
     // Cached database fetcher for better performance
     fn get_databases_cached(&mut self, connection_id: i64) -> Vec<String> {
-        const CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(300); // 5 minutes cache
-
-        // Check if we have cached data and it's still valid
-        if let Some(cache_time) = self.database_cache_time.get(&connection_id)
-            && cache_time.elapsed() < CACHE_DURATION
-            && let Some(cached_databases) = self.database_cache.get(&connection_id)
-        {
-            return cached_databases.clone();
+        // Try to get from cache first
+        if let Some(databases) = cache_data::get_databases_from_cache(self, connection_id) {
+            if !databases.is_empty() {
+                return databases;
+            }
+        }
+        
+        // If not in cache or empty, trigger background fetch
+        // Check if we are already fetching for this connection to avoid spamming
+        let is_fetching = self.fetching_databases.contains(&connection_id);
+        
+        if !is_fetching {
+             // Dispatch background task
+             if let Some(sender) = &self.background_sender {
+                 // Mark as fetching
+                 self.fetching_databases.insert(connection_id);
+                 let _ = sender.send(models::enums::BackgroundTask::FetchDatabases {
+                     connection_id,
+                 });
+             }
         }
 
-        // Cache is invalid or doesn't exist, fetch fresh data
-        // But do this in background to avoid blocking UI
-        if let Some(databases) = connection::fetch_databases_from_connection(self, connection_id) {
-            // Update cache
-            self.database_cache.insert(connection_id, databases.clone());
-            self.database_cache_time
-                .insert(connection_id, std::time::Instant::now());
-            databases
-        } else {
-            // Return empty list if fetch failed, but don't cache the failure
-            Vec::new()
-        }
+        // Return empty for now; UI will update when background task completes
+        Vec::new()
     }
 
     fn load_folder_content(
@@ -10972,8 +11003,14 @@ impl App for Tabular {
         }
 
         // Check for background task results
+        let mut results = Vec::new();
         if let Some(receiver) = &self.background_receiver {
             while let Ok(result) = receiver.try_recv() {
+                results.push(result);
+            }
+        }
+        
+        for result in results {
                 match result {
                     models::enums::BackgroundResult::RefreshComplete {
                         connection_id,
@@ -11084,6 +11121,36 @@ impl App for Tabular {
                         self.temp_sqlite_path = Some(path);
                         ctx.request_repaint();
                     }
+                    models::enums::BackgroundResult::DatabasesFetched {
+                        connection_id,
+                        databases,
+                    } => {
+                        info!("✅ Received background databases fetch result: {} databases", databases.len());
+                        // Update cache
+                        self.database_cache.insert(connection_id, databases.clone());
+                        self.database_cache_time
+                            .insert(connection_id, std::time::Instant::now());
+                        
+                        // Also save to SQLite cache
+                        cache_data::save_databases_to_cache(self, connection_id, &databases);
+                        
+                        // Update UI tree if connection node exists
+                        for node in &mut self.items_tree {
+                            if node.node_type == models::enums::NodeType::Connection
+                                && node.connection_id == Some(connection_id)
+                            {
+                                // Force reload of children
+                                node.is_loaded = false; 
+                                break;
+                            }
+                        }
+                        
+                         // Also remove from fetching set
+                        self.fetching_databases.remove(&connection_id);
+
+                        // Refresh UI
+                        ctx.request_repaint();
+                    }
                     models::enums::BackgroundResult::UpdateCheckComplete { result } => {
                         // Finish check state first
                         self.update_check_in_progress = false;
@@ -11117,7 +11184,7 @@ impl App for Tabular {
                     }
                 }
             }
-        }
+
 
         while let Ok(message) = self.query_result_receiver.try_recv() {
             self.handle_query_result_message(message);
