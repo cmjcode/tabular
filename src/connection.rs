@@ -4011,6 +4011,7 @@ pub(crate) async fn refresh_connection_background_async(
                 ssh_password,
                 ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
                 custom_views: Vec::new(),
+                replication_master_id: None,
             };
 
             // Clear cache
@@ -4853,6 +4854,7 @@ pub async fn fetch_databases_background_task(
                 ssh_password,
                 ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
                 custom_views: Vec::new(),
+                replication_master_id: None,
             }
         },
         _ => {

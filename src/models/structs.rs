@@ -308,6 +308,8 @@ pub struct ConnectionConfig {
     pub ssh_accept_unknown_host_keys: bool,
     #[serde(default)]
     pub custom_views: Vec<CustomView>,
+    #[serde(default)]
+    pub replication_master_id: Option<i64>,
 }
 
 impl Default for ConnectionConfig {
@@ -331,6 +333,7 @@ impl Default for ConnectionConfig {
             ssh_password: String::new(),
             ssh_accept_unknown_host_keys: false,
             custom_views: Vec::new(),
+            replication_master_id: None,
         }
     }
 }
@@ -580,6 +583,30 @@ impl CreateTableWizardState {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ReplicationDialogState {
+    pub target_connection_id: i64,
+    pub source_connection_id: Option<i64>,
+    pub error: Option<String>,
+    pub is_executing: bool,
+    // Manual credentials override
+    pub replication_user: String,
+    pub replication_password: String,
+}
+
+impl ReplicationDialogState {
+    pub fn new(target_connection_id: i64) -> Self {
+        Self {
+            target_connection_id,
+            source_connection_id: None,
+            error: None,
+            is_executing: false,
+            replication_user: String::new(),
+            replication_password: String::new(),
+        }
+    }
+}
+
 /// Type alias for the complex tuple returned by render_tree_node_with_table_expansion
 pub type RenderTreeNodeResult = (
     Option<models::structs::ExpansionRequest>,
@@ -596,6 +623,8 @@ pub type RenderTreeNodeResult = (
     Option<(i64, Option<String>, Option<String>)>,
     // New: request to open Structure view for Alter Table (connection_id, database, table_name)
     Option<(i64, Option<String>, String)>,
+    // Request to open Add Replication dialog (connection_id)
+    Option<i64>,
     // New: request to drop a MongoDB collection (connection_id, database_name, collection_name)
     Option<(i64, String, String)>,
     // New: request to drop a table (connection_id, database_name, table_name, stmt)

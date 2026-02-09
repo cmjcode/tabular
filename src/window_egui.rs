@@ -378,6 +378,11 @@ pub struct Tabular {
     pub global_backspace_pressed: bool,
     pub sidebar_visible: bool,
     
+    // Replication dialog state
+    pub show_add_replication_dialog: bool,
+    pub replication_dialog: Option<crate::models::structs::ReplicationDialogState>,
+    pub replication_setup_receiver: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+
     // Background fetch tracking
     pub fetching_databases: std::collections::HashSet<i64>,
 }
@@ -798,6 +803,9 @@ impl Tabular {
             edit_view_original_name: None,
             global_backspace_pressed: false,
             sidebar_visible: true,
+            show_add_replication_dialog: false,
+            replication_dialog: None,
+            replication_setup_receiver: None,
         };
 
         // Clear any old cached pools
@@ -1223,6 +1231,201 @@ impl Tabular {
                         self.show_lint_panel = false;
                         self.lint_panel_shown_at = None;
                     }
+                }
+            }
+        }
+    }
+
+    fn render_replication_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_add_replication_dialog {
+            return;
+        }
+
+        let mut open = true;
+        let mut close_dialog = false;
+        let mut start_replication = false;
+        let mut source_id_to_start = None;
+        let mut target_id_for_start = 0;
+        let mut repl_user_to_start = String::new();
+        let mut repl_pass_to_start = String::new();
+
+        let mut source_candidates = Vec::new();
+
+        // Extract candidates to avoid borrowing self inside closure
+        // Only include connections that have an active pool
+        if let Some(state) = &self.replication_dialog {
+            log::info!("[REPLICATION] Building source candidates for target_id: {}", state.target_connection_id);
+            log::info!("[REPLICATION] Total connections: {}", self.connections.len());
+            log::info!("[REPLICATION] Active pools: {}", self.connection_pools.len());
+            
+            for conn in &self.connections {
+                if let Some(conn_id) = conn.id {
+                    let is_target = conn_id == state.target_connection_id;
+                    let is_mysql = conn.connection_type == models::enums::DatabaseType::MySQL;
+                    let has_pool = self.connection_pools.contains_key(&conn_id);
+                    
+                    log::info!(
+                        "[REPLICATION] Conn '{}' (id={}): is_target={}, is_mysql={}, has_pool={}",
+                        conn.name, conn_id, is_target, is_mysql, has_pool
+                    );
+                    
+                    if !is_target && is_mysql && has_pool {
+                        source_candidates.push((Some(conn_id), conn.name.clone()));
+                        log::info!("[REPLICATION] ✓ Added '{}' to candidates", conn.name);
+                    }
+                }
+            }
+            
+            log::info!("[REPLICATION] Total source candidates: {}", source_candidates.len());
+        }
+
+        egui::Window::new("Setup Replication")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                if let Some(state) = &mut self.replication_dialog {
+                    ui.heading("Configure Replication");
+                    ui.add_space(8.0);
+                    ui.label("Select the Master connection to replicate from:");
+                    
+                    let current_source = state.source_connection_id;
+                    let current_name = source_candidates.iter()
+                        .find(|(id, _)| *id == current_source)
+                        .map(|(_, name)| name.as_str())
+                        .unwrap_or("Select Master...");
+
+                    egui::ComboBox::from_id_salt("repl_master_combo")
+                        .selected_text(current_name)
+                        .show_ui(ui, |ui| {
+                            for (id, name) in &source_candidates {
+                                let is_selected = current_source == *id;
+                                if ui.selectable_label(is_selected, name).clicked() {
+                                    state.source_connection_id = *id;
+                                    state.error = None;
+                                }
+                            }
+                        });
+                        
+                    ui.add_space(8.0);
+                    ui.label("Replication User (Optional - leave empty to use connection default):");
+                    ui.text_edit_singleline(&mut state.replication_user);
+                    
+                    ui.add_space(8.0);
+                    ui.label("Replication Password (Optional):");
+                    ui.add(egui::TextEdit::singleline(&mut state.replication_password).password(true));
+
+                    ui.add_space(8.0);
+                    
+                    if let Some(err) = &state.error {
+                         ui.label(egui::RichText::new(err).color(egui::Color32::RED));
+                         ui.add_space(8.0);
+                    }
+                    
+                    ui.separator();
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close_dialog = true;
+                        }
+                        
+                        let can_start = state.source_connection_id.is_some() && !state.is_executing;
+                        if ui.add_enabled(can_start, egui::Button::new("Init & Start Replication")).clicked() {
+                            if let Some(sid) = state.source_connection_id {
+                                log::info!("[REPLICATION] Button clicked! Setting state: is_executing=true, start_replication=true");
+                                log::info!("[REPLICATION] source_id (sid) = {:?}, target_id = {}", sid, state.target_connection_id);
+                                state.is_executing = true;
+                                start_replication = true;
+                                source_id_to_start = Some(sid);
+                                target_id_for_start = state.target_connection_id;
+                                repl_user_to_start = state.replication_user.clone();
+                                repl_pass_to_start = state.replication_password.clone();
+                            } else {
+                                log::error!("[REPLICATION] Button clicked but source_connection_id is None!");
+                            }
+                        }
+                    });
+                    
+                    if state.is_executing {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Setting up replication... please wait.");
+                        });
+                    }
+                }
+            });
+
+        if !open || close_dialog {
+            self.show_add_replication_dialog = false;
+            self.replication_dialog = None;
+        }
+        
+        if start_replication {
+            log::info!("[REPLICATION] start_replication=true, source_id_to_start={:?}", source_id_to_start);
+            if let Some(source_id) = source_id_to_start {
+                let target_id = target_id_for_start;
+                
+                log::info!("[REPLICATION] Starting replication setup task for source_id={}, target_id={}", source_id, target_id);
+                
+                let runtime = self.get_runtime();
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.replication_setup_receiver = Some(rx);
+                
+                // Clone necessary data for async task
+                // (No need to clone self, we have cloned configs)
+                
+                let source_config_opt = self.connections.iter().find(|c| c.id == Some(source_id)).cloned();
+                let target_config_opt = self.connections.iter().find(|c| c.id == Some(target_id)).cloned();
+                
+                if let (Some(source_config), Some(target_config)) = (source_config_opt, target_config_opt) {
+                    runtime.spawn(async move {
+                        log::info!("[REPLICATION] Async task started");
+                        
+                        // Helper to create pool manually since we can't easily use app-wide helpers here
+                        async fn create_mysql_pool(config: &models::structs::ConnectionConfig) -> Result<sqlx::MySqlPool, String> {
+                            let encoded_username = crate::modules::url_encode(&config.username);
+                            let encoded_password = crate::modules::url_encode(&config.password);
+                            let dsn = format!(
+                                "mysql://{}:{}@{}:{}/{}",
+                                encoded_username, encoded_password, config.host, config.port, config.database
+                            );
+                            
+                            sqlx::mysql::MySqlPoolOptions::new()
+                                .max_connections(5)
+                                .acquire_timeout(std::time::Duration::from_secs(5))
+                                .connect(&dsn)
+                                .await
+                                .map_err(|e| e.to_string())
+                        }
+
+                        // Create pools on demand
+                        let source_pool_res = create_mysql_pool(&source_config).await;
+                        let target_pool_res = create_mysql_pool(&target_config).await;
+                        
+                        match (source_pool_res, target_pool_res) {
+                            (Ok(source_pool), Ok(target_pool)) => {
+                                log::info!("[REPLICATION] Pools created successfully, running setup...");
+                                let res = crate::driver_mysql::setup_replication(
+                                    &source_pool, 
+                                    &target_pool, 
+                                    &source_config,
+                                    repl_user_to_start,
+                                    repl_pass_to_start
+                                ).await;
+                                let _ = tx.send(res);
+                            },
+                             (Err(e), _) => {
+                                 let _ = tx.send(Err(format!("Failed to connect to Master: {}", e)));
+                             },
+                             (_, Err(e)) => {
+                                 let _ = tx.send(Err(format!("Failed to connect to Replica: {}", e)));
+                             }
+                        }
+                    });
+                } else {
+                    log::error!("[REPLICATION] Could not find config for source or target");
                 }
             }
         }
@@ -2341,6 +2544,7 @@ impl Tabular {
                 index_click_request,
                 create_index_request,
                 alter_table_request,
+                request_add_replication_dialog,
                 drop_collection_request,
                 drop_table_request,
                 create_table_request,
@@ -2398,63 +2602,8 @@ impl Tabular {
             }
             // Collect DBA quick view requests
             // Collect Custom View click requests (Run immediately like DBA Views)
-            if let Some((conn_id, view_name, query)) = custom_view_click_requests.last().cloned() {
-                // Handle immediately here
-                 editor::create_new_tab_with_connection(
-                    self,
-                    view_name.clone(),
-                    query.clone(),
-                    Some(conn_id),
-                );
-
-                // Detect special mode from query (Preserve DBA special modes)
-                let trimmed_query = query.trim();
-                let special_mode = if trimmed_query.eq_ignore_ascii_case("SHOW REPLICA STATUS;") {
-                    Some(models::enums::DBASpecialMode::ReplicationStatus)
-                } else if trimmed_query.eq_ignore_ascii_case("SHOW MASTER STATUS;") {
-                    Some(models::enums::DBASpecialMode::MasterStatus)
-                } else {
-                    None
-                };
-
-                if let Some(mode) = special_mode
-                    && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                        tab.dba_special_mode = Some(mode);
-                    }
-                // Handle immediately here
-                 editor::create_new_tab_with_connection(
-                    self,
-                    view_name.clone(),
-                    query.clone(),
-                    Some(conn_id),
-                );
-                
-                self.current_connection_id = Some(conn_id);
-                // Ensure (or kick off) connection pool before executing
-                if let Some(rt) = self.runtime.clone() {
-                    rt.block_on(async {
-                        let _ =
-                            crate::connection::get_or_create_connection_pool(self, conn_id)
-                                .await;
-                    });
-                }
-                
-                if let Some((headers, data)) =
-                    connection::execute_query_with_connection(self, conn_id, query.clone())
-                {
-                    self.current_table_headers = headers;
-                    self.current_table_data = data.clone();
-                    self.all_table_data = data;
-                    self.current_table_name = view_name;
-                    self.is_table_browse_mode = false;
-                    self.total_rows = self.all_table_data.len();
-                    self.current_page = 0;
-                    
-                    // Mark as executed
-                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                         tab.has_executed_query = true;
-                    }
-                }
+            if let Some(req) = custom_view_click_request {
+                custom_view_click_requests.push(req);
             }
             // Collect index click requests
             if let Some((conn_id, index_name, db_name, table_name)) = index_click_request {
@@ -2486,12 +2635,14 @@ impl Tabular {
             if let Some((conn_id, db_name)) = open_diagram_request {
                 open_diagram_requests.push((conn_id, db_name));
             }
-            if let Some((conn_id, name, query)) = custom_view_click_request {
-                custom_view_click_requests.push((conn_id, name, query));
-            }
+
             if let Some(conn_id) = request_add_view_dialog {
                 log::warn!("!!! REQUEST ADD VIEW DIALOG for conn_id: {}", conn_id);
                 add_view_requests.push(conn_id);
+            }
+            if let Some(conn_id) = request_add_replication_dialog {
+                self.show_add_replication_dialog = true;
+                self.replication_dialog = Some(models::structs::ReplicationDialogState::new(conn_id));
             }
             if let Some(req) = delete_custom_view_request {
                 delete_custom_view_requests.push(req);
@@ -2499,6 +2650,60 @@ impl Tabular {
             if let Some(req) = edit_custom_view_request {
                 edit_custom_view_requests.push(req);
             }
+        }
+
+        // Process collected Custom View requests OUTSIDE the loop
+        for (conn_id, view_name, query) in custom_view_click_requests {
+             editor::create_new_tab_with_connection(
+                self,
+                view_name.clone(),
+                query.clone(),
+                Some(conn_id),
+            );
+
+            // Detect special mode from query (Preserve DBA special modes)
+            let trimmed_query = query.trim();
+            let special_mode = if trimmed_query.eq_ignore_ascii_case("SHOW REPLICA STATUS;") {
+                Some(models::enums::DBASpecialMode::ReplicationStatus)
+            } else if trimmed_query.eq_ignore_ascii_case("SHOW MASTER STATUS;") {
+                Some(models::enums::DBASpecialMode::MasterStatus)
+            } else {
+                None
+            };
+            
+            if let Some(mode) = special_mode {
+                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                     tab.dba_special_mode = Some(mode);
+                 }
+            }
+            
+            self.current_connection_id = Some(conn_id);
+             // Ensure (or kick off) connection pool before executing
+            if let Some(rt) = self.runtime.clone() {
+                rt.block_on(async {
+                    let _ =
+                        crate::connection::get_or_create_connection_pool(self, conn_id)
+                            .await;
+                });
+            }
+            
+            // Auto run query
+             if let Some((headers, data)) =
+                    connection::execute_query_with_connection(self, conn_id, query.clone())
+                {
+                    self.current_table_headers = headers;
+                    self.current_table_data = data.clone();
+                    self.all_table_data = data;
+                    self.current_table_name = view_name;
+                    self.is_table_browse_mode = false;
+                    self.total_rows = self.all_table_data.len();
+                    self.current_page = 0;
+                    
+                    // Mark as executed
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                         tab.has_executed_query = true;
+                    }
+                }
         }
 
         // Process add view requests
@@ -3692,7 +3897,70 @@ impl Tabular {
         for context_id in context_menu_requests {
             debug!("🔍 Processing context_id: {}", context_id);
 
-            if context_id >= 50000 {
+            if context_id >= 62000 {
+                // Restart Replication
+                let conn_id = context_id - 62000;
+                let replica_pool_opt = self.connection_pools.get(&conn_id).cloned();
+                let mut master_id_opt = None;
+                if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
+                    master_id_opt = conn.replication_master_id;
+                }
+                
+                if let (Some(models::enums::DatabasePool::MySQL(replica_pool)), Some(master_id)) = (replica_pool_opt, master_id_opt) {
+                     if let Some(models::enums::DatabasePool::MySQL(master_pool)) = self.connection_pools.get(&master_id).cloned() {
+                         let rt = self.get_runtime();
+                         let (tx, rx) = std::sync::mpsc::channel();
+                         self.replication_setup_receiver = Some(rx);
+                         
+                         rt.spawn(async move {
+                             let res = crate::driver_mysql::restart_replication(&master_pool, &replica_pool).await;
+                             let _ = tx.send(res);
+                         });
+                         
+                         self.query_message = "Restarting replication...".to_string();
+                         self.show_message_panel = true;
+                         self.query_message_is_error = false;
+                     } else {
+                         self.query_message = "Master connection is not active. Please connect to Master first.".to_string();
+                         self.show_message_panel = true;
+                         self.query_message_is_error = true;
+                     }
+                } else {
+                     self.query_message = "Could not identify Master connection or pools not active.".to_string();
+                     self.show_message_panel = true;
+                     self.query_message_is_error = true;
+                }
+            } else if context_id >= 61000 {
+                // Stop Replication
+                let conn_id = context_id - 61000;
+                if let Some(models::enums::DatabasePool::MySQL(pool)) = self.connection_pools.get(&conn_id).cloned() {
+                     let rt = self.get_runtime();
+                     let (tx, rx) = std::sync::mpsc::channel();
+                     self.replication_setup_receiver = Some(rx);
+                     rt.spawn(async move {
+                         let res = crate::driver_mysql::stop_replication(&pool).await;
+                         let _ = tx.send(res);
+                     });
+                     self.query_message = "Stopping replication...".to_string();
+                     self.show_message_panel = true;
+                     self.query_message_is_error = false;
+                }
+            } else if context_id >= 60000 {
+                // Start Replication
+                let conn_id = context_id - 60000;
+                if let Some(models::enums::DatabasePool::MySQL(pool)) = self.connection_pools.get(&conn_id).cloned() {
+                     let rt = self.get_runtime();
+                     let (tx, rx) = std::sync::mpsc::channel();
+                     self.replication_setup_receiver = Some(rx);
+                     rt.spawn(async move {
+                         let res = crate::driver_mysql::start_replication(&pool).await;
+                         let _ = tx.send(res);
+                     });
+                     self.query_message = "Starting replication...".to_string();
+                     self.show_message_panel = true;
+                     self.query_message_is_error = false;
+                }
+            } else if context_id >= 50000 {
                 // ID >= 50000 means create folder in folder operation
                 let hash = context_id - 50000;
                 debug!("📁 Create folder operation with hash: {}", hash);
@@ -3839,6 +4107,7 @@ impl Tabular {
         let mut custom_view_click_request: Option<(i64, String, String)> = None;
         let mut delete_custom_view_request: Option<(i64, String)> = None;
         let mut edit_custom_view_request: Option<(i64, String, String)> = None;
+        let mut request_add_replication_dialog: Option<i64> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -4187,9 +4456,42 @@ impl Tabular {
                             }
                             ui.close();
                         }
+                        // Add Replication option for MySQL
+                        if let Some(conn_id) = node.connection_id {
+                             if let Some(models::enums::DatabaseType::MySQL) = params.connection_types.get(&conn_id) {
+                                 if ui.button("🔗 Add Replication").clicked() {
+                                     request_add_replication_dialog = Some(conn_id);
+                                     ui.close();
+                                 }
+                             }
+                        }
                         if ui.button("🗑 Remove Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(-conn_id); // Negative ID indicates removal
+                            }
+                            ui.close();
+                        }
+                    });
+                }
+
+                // Add context menu for Replication Status Folder
+                if node.node_type == models::enums::NodeType::ReplicationStatusFolder {
+                    response.context_menu(|ui| {
+                        if ui.button("▶️ Start Replication").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                context_menu_request = Some(conn_id + 60000);
+                            }
+                            ui.close();
+                        }
+                        if ui.button("⏹️ Stop Replication").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                context_menu_request = Some(conn_id + 61000);
+                            }
+                            ui.close();
+                        }
+                        if ui.button("🔄 Restart Replication").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                context_menu_request = Some(conn_id + 62000);
                             }
                             ui.close();
                         }
@@ -4511,6 +4813,7 @@ impl Tabular {
                             child_index_click,
                             child_create_index_request,
                             child_alter_table_request,
+                            child_request_add_replication_dialog,
                             _child_drop_collection_request,
                             _child_drop_table_request,
                             _child_create_table_request,
@@ -4619,6 +4922,7 @@ impl Tabular {
                                 child_index_click,
                                 child_create_index_request,
                                 child_alter_table_request,
+                                child_request_add_replication_dialog,
                                 _child_drop_collection_request,
                                 child_drop_table_request,
                                 child_create_table_request,
@@ -4712,6 +5016,9 @@ impl Tabular {
                             }
                             if let Some(child_req) = child_edit_custom_view_request {
                                 edit_custom_view_request = Some(child_req);
+                            }
+                            if let Some(child_req) = child_request_add_replication_dialog {
+                                request_add_replication_dialog = Some(child_req);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -5093,6 +5400,7 @@ impl Tabular {
             index_click_request,
             create_index_request,
             alter_table_request,
+            request_add_replication_dialog,
             drop_collection_request,
             drop_table_request,
             create_table_request,
@@ -6032,7 +6340,7 @@ impl Tabular {
                 connection_id, databases
             );
             if !databases.is_empty() {
-                self.build_connection_structure_from_cache(connection_id, node, &databases);
+                self.build_connection_structure_from_cache(connection_id, node, &databases, false); // Default to false if fully cached, or check config
                 node.is_loaded = true;
                 return;
             }
@@ -6045,10 +6353,23 @@ impl Tabular {
 
         // Try to fetch from actual database server
         // Use async variant with shared runtime to avoid creating a new runtime per call
-        let fresh_databases_opt = {
+        let (fresh_databases_opt, is_replica) = {
             let rt = self.get_runtime();
             rt.block_on(async {
-                crate::connection::fetch_databases_from_connection_async(self, connection_id).await
+                let dbs = crate::connection::fetch_databases_from_connection_async(self, connection_id).await;
+                
+                // Check replication status for MySQL
+                let mut is_replica = false;
+                if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
+                    if conn.connection_type == models::enums::DatabaseType::MySQL {
+                         if let Some(pool) = crate::connection::get_or_create_connection_pool(self, connection_id).await {
+                             if let models::enums::DatabasePool::MySQL(mysql_pool) = pool {
+                                 is_replica = driver_mysql::check_replication_status(&mysql_pool).await;
+                             }
+                         }
+                    }
+                }
+                (dbs, is_replica)
             })
         };
         if let Some(fresh_databases) = fresh_databases_opt {
@@ -6059,7 +6380,7 @@ impl Tabular {
             // Save to cache for future use
             cache_data::save_databases_to_cache(self, connection_id, &fresh_databases);
             // Build structure from fresh data
-            self.build_connection_structure_from_cache(connection_id, node, &fresh_databases);
+            self.build_connection_structure_from_cache(connection_id, node, &fresh_databases, is_replica);
             node.is_loaded = true;
             return;
         } else {
@@ -6077,7 +6398,7 @@ impl Tabular {
             // Create the main structure based on database type
             match connection.connection_type {
                 models::enums::DatabaseType::MySQL => {
-                    driver_mysql::load_mysql_structure(connection_id, &connection, node);
+                    driver_mysql::load_mysql_structure(connection_id, &connection, node, is_replica);
                 }
                 models::enums::DatabaseType::PostgreSQL => {
                     driver_postgres::load_postgresql_structure(connection_id, &connection, node);
@@ -6104,6 +6425,7 @@ impl Tabular {
         connection_id: i64,
         node: &mut models::structs::TreeNode,
         databases: &[String],
+        is_replica: bool,
     ) {
         // Find the connection to get its type
         if let Some(connection) = self
@@ -6199,8 +6521,7 @@ impl Tabular {
                         }
                     }
 
-                    // 2. DBA Views folder
-                    // 2. DBA Views folder
+
                     let mut dba_folder = models::structs::TreeNode::new(
                         "DBA Views".to_string(),
                         models::enums::NodeType::DBAViewsFolder,
@@ -6234,6 +6555,27 @@ impl Tabular {
 
                     main_children.push(databases_folder);
                     main_children.push(dba_folder);
+
+                    if is_replica {
+                        let mut replication_folder = models::structs::TreeNode::new(
+                            "Replication".to_string(),
+                            models::enums::NodeType::ReplicationStatusFolder,
+                        );
+                        replication_folder.connection_id = Some(connection_id);
+                        replication_folder.is_loaded = true;
+                        
+                        let mut status_node = models::structs::TreeNode::new(
+                            "Status".to_string(),
+                            models::enums::NodeType::ReplicationStatusFolder,
+                        );
+                        status_node.connection_id = Some(connection_id);
+                        status_node.is_loaded = false;
+                        
+                        main_children.push(replication_folder);
+                    }
+                    
+                    node.children = main_children;
+                    return;
                 }
                 models::enums::DatabaseType::PostgreSQL => {
                     // Similar structure for PostgreSQL
@@ -11359,6 +11701,48 @@ impl App for Tabular {
 
         sidebar_database::render_add_connection_dialog(self, ctx);
         sidebar_database::render_edit_connection_dialog(self, ctx);
+        if let Some(rx) = &self.replication_setup_receiver {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(msg) => {
+                         // Extract IDs before mutable borrows
+                         let (target_id_opt, source_id_opt) = if let Some(dialog_state) = &self.replication_dialog {
+                             (Some(dialog_state.target_connection_id), dialog_state.source_connection_id)
+                         } else {
+                             (None, None)
+                         };
+                         
+                         // Save replication_master_id to the target connection
+                         if let (Some(target_id), Some(source_id)) = (target_id_opt, source_id_opt) {
+                             // Update the connection in memory
+                             if let Some(conn) = self.connections.iter_mut().find(|c| c.id == Some(target_id)) {
+                                 conn.replication_master_id = Some(source_id);
+                             }
+                             // Save to database (clone to avoid borrow issues)
+                             if let Some(conn) = self.connections.iter().find(|c| c.id == Some(target_id)).cloned() {
+                                 sidebar_database::update_connection_in_database(self, &conn);
+                             }
+                         }
+                         
+                         self.show_add_replication_dialog = false;
+                         self.replication_dialog = None;
+                         self.replication_setup_receiver = None;
+                         self.query_message = msg;
+                         self.show_message_panel = true;
+                         self.query_message_is_error = false;
+                         self.request_structure_refresh = true;
+                    }
+                    Err(err_msg) => {
+                         if let Some(state) = &mut self.replication_dialog {
+                             state.is_executing = false;
+                             state.error = Some(err_msg);
+                         }
+                    }
+                }
+            }
+        }
+        
+        self.render_replication_dialog(ctx);
         dialog::render_save_dialog(self, ctx);
         connection::render_connection_selector(self, ctx);
         dialog::render_error_dialog(self, ctx);

@@ -692,7 +692,8 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
              COALESCE(ssh_password, '') AS ssh_password, \
              COALESCE(ssh_password, '') AS ssh_password, \
              COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
-             COALESCE(custom_views, '[]') AS custom_views \
+             COALESCE(custom_views, '[]') AS custom_views, \
+             replication_master_id \
          FROM connections",
         )
         .fetch_all(pool_clone.as_ref())
@@ -722,6 +723,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                     let ssh_accept_unknown_host_keys =
                         row.try_get::<i64, _>("ssh_accept_unknown_host_keys").ok()?;
                     let custom_views_json = row.try_get::<String, _>("custom_views").ok().unwrap_or_else(|| "[]".to_string());
+                    let replication_master_id = row.try_get::<Option<i64>, _>("replication_master_id").ok().flatten();
 
                     Some(models::structs::ConnectionConfig {
                         id: Some(id),
@@ -751,6 +753,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                         ssh_password,
                         ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
                         custom_views: serde_json::from_str(&custom_views_json).unwrap_or_default(),
+                        replication_master_id,
                     })
                 })
                 .collect();
@@ -772,7 +775,7 @@ pub(crate) fn save_connection_to_database(
 
         let result = rt.block_on(async {
           sqlx::query(
-          "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views, replication_master_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
           )
           .bind(connection.name)
           .bind(connection.host)
@@ -791,6 +794,7 @@ pub(crate) fn save_connection_to_database(
             .bind(connection.ssh_password)
             .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
             .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
+            .bind(connection.replication_master_id)
             .execute(pool_clone.as_ref())
             .await
        });
@@ -812,7 +816,7 @@ pub(crate) fn save_connection_to_database(
   
           let result = rt.block_on(async {
               sqlx::query(
-                  "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ? WHERE id = ?"
+                  "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ? WHERE id = ?"
               )
               .bind(connection.name)
               .bind(connection.host)
@@ -831,6 +835,7 @@ pub(crate) fn save_connection_to_database(
               .bind(connection.ssh_password)
               .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
               .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
+              .bind(connection.replication_master_id)
               .bind(connection.id)
               .execute(pool_clone.as_ref())
               .await
@@ -1023,6 +1028,12 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
                     let _ = sqlx::query(
                         "ALTER TABLE connections ADD COLUMN ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN replication_master_id INTEGER DEFAULT NULL"
                     )
                     .execute(&pool)
                     .await;
