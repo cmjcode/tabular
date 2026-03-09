@@ -864,21 +864,23 @@ impl Tabular {
             while let Ok(task) = task_receiver.recv() {
                 match task {
                     models::enums::BackgroundTask::FetchDatabases { connection_id } => {
-                        if let Some(pool) = &cache_pool {
-                             if let Ok(rt) = tokio::runtime::Runtime::new() {
-                                 let dbs_opt = rt.block_on(connection::fetch_databases_background_task(
-                                     connection_id, 
-                                     pool, 
-                                     &shared_pools
-                                 ));
-                                 
-                                 if let Some(dbs) = dbs_opt {
-                                     let _ = result_sender.send(models::enums::BackgroundResult::DatabasesFetched {
-                                         connection_id,
-                                         databases: dbs,
-                                     });
-                                 }
-                             }
+                        if let Some(pool) = &cache_pool
+                            && let Ok(rt) = tokio::runtime::Runtime::new()
+                        {
+                            let dbs_opt = rt.block_on(connection::fetch_databases_background_task(
+                                connection_id,
+                                pool,
+                                &shared_pools,
+                            ));
+
+                            if let Some(dbs) = dbs_opt {
+                                let _ = result_sender.send(
+                                    models::enums::BackgroundResult::DatabasesFetched {
+                                        connection_id,
+                                        databases: dbs,
+                                    },
+                                );
+                            }
                         }
                     }
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
@@ -2671,10 +2673,10 @@ impl Tabular {
                 None
             };
             
-            if let Some(mode) = special_mode {
-                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                     tab.dba_special_mode = Some(mode);
-                 }
+            if let Some(mode) = special_mode
+                && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+            {
+                tab.dba_special_mode = Some(mode);
             }
             
             self.current_connection_id = Some(conn_id);
@@ -4457,13 +4459,13 @@ impl Tabular {
                             ui.close();
                         }
                         // Add Replication option for MySQL
-                        if let Some(conn_id) = node.connection_id {
-                             if let Some(models::enums::DatabaseType::MySQL) = params.connection_types.get(&conn_id) {
-                                 if ui.button("🔗 Add Replication").clicked() {
-                                     request_add_replication_dialog = Some(conn_id);
-                                     ui.close();
-                                 }
-                             }
+                        if let Some(conn_id) = node.connection_id
+                            && let Some(models::enums::DatabaseType::MySQL) =
+                                params.connection_types.get(&conn_id)
+                            && ui.button("🔗 Add Replication").clicked()
+                        {
+                            request_add_replication_dialog = Some(conn_id);
+                            ui.close();
                         }
                         if ui.button("🗑 Remove Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
@@ -4813,7 +4815,7 @@ impl Tabular {
                             child_index_click,
                             child_create_index_request,
                             child_alter_table_request,
-                            child_request_add_replication_dialog,
+                            _child_request_add_replication_dialog,
                             _child_drop_collection_request,
                             _child_drop_table_request,
                             _child_create_table_request,
@@ -6360,14 +6362,15 @@ impl Tabular {
                 
                 // Check replication status for MySQL
                 let mut is_replica = false;
-                if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
-                    if conn.connection_type == models::enums::DatabaseType::MySQL {
-                         if let Some(pool) = crate::connection::get_or_create_connection_pool(self, connection_id).await {
-                             if let models::enums::DatabasePool::MySQL(mysql_pool) = pool {
-                                 is_replica = driver_mysql::check_replication_status(&mysql_pool).await;
-                             }
-                         }
-                    }
+                if let Some(conn) = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(connection_id))
+                    && conn.connection_type == models::enums::DatabaseType::MySQL
+                    && let Some(models::enums::DatabasePool::MySQL(mysql_pool)) =
+                        crate::connection::get_or_create_connection_pool(self, connection_id).await
+                {
+                    is_replica = driver_mysql::check_replication_status(&mysql_pool).await;
                 }
                 (dbs, is_replica)
             })
@@ -7385,10 +7388,10 @@ impl Tabular {
     // Cached database fetcher for better performance
     fn get_databases_cached(&mut self, connection_id: i64) -> Vec<String> {
         // Try to get from cache first
-        if let Some(databases) = cache_data::get_databases_from_cache(self, connection_id) {
-            if !databases.is_empty() {
-                return databases;
-            }
+        if let Some(databases) = cache_data::get_databases_from_cache(self, connection_id)
+            && !databases.is_empty()
+        {
+            return databases;
         }
         
         // If not in cache or empty, trigger background fetch
@@ -11701,10 +11704,11 @@ impl App for Tabular {
 
         sidebar_database::render_add_connection_dialog(self, ctx);
         sidebar_database::render_edit_connection_dialog(self, ctx);
-        if let Some(rx) = &self.replication_setup_receiver {
-            if let Ok(result) = rx.try_recv() {
-                match result {
-                    Ok(msg) => {
+        if let Some(rx) = &self.replication_setup_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(msg) => {
                          // Extract IDs before mutable borrows
                          let (target_id_opt, source_id_opt) = if let Some(dialog_state) = &self.replication_dialog {
                              (Some(dialog_state.target_connection_id), dialog_state.source_connection_id)
@@ -11731,12 +11735,11 @@ impl App for Tabular {
                          self.show_message_panel = true;
                          self.query_message_is_error = false;
                          self.request_structure_refresh = true;
-                    }
-                    Err(err_msg) => {
-                         if let Some(state) = &mut self.replication_dialog {
-                             state.is_executing = false;
-                             state.error = Some(err_msg);
-                         }
+                }
+                Err(err_msg) => {
+                    if let Some(state) = &mut self.replication_dialog {
+                        state.is_executing = false;
+                        state.error = Some(err_msg);
                     }
                 }
             }
@@ -13091,41 +13094,58 @@ impl Tabular {
                  // avoiding async generic hell by doing it in the background thread if possible, 
                  // or just spawning a tokio task here since we have runtime.
                  // or just spawning a tokio task here since we have runtime.
-                 if let Some(rt) = self.runtime.clone() {
-                     
-                     if let Some(conn_config) = self.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
-                         let pool_clone = self.db_pool.clone();
-                         rt.spawn(async move {
-                             // Fetch columns
-                             if let Some(cols) = crate::connection::fetch_columns_from_database(conn_id, &db, &table, &conn_config) {
-                                  // This requires a mutable Tabular reference to save to cache, which we don't have easily in async.
-                                  // But `save_columns_to_cache` mainly needs db_pool.
-                                  // Let's manually call sqlx logic or refactor save_columns_to_cache to not need Tabular.
-                                  // Attempting direct sqlx insert matching cache_data logic:
-                                  if let Some(pool) = pool_clone {
-                                      // Copy-paste save logic or make it cleaner later. 
-                                      // For now, let's just use the existing function if we can refactor it.
-                                      // Refactoring `save_columns_to_cache` to take `&SqlitePool` is best.
-                                      // But I cannot refactor it right now easily without breaking other calls.
-                                      // So I will implement a raw SQL insert here for the fix.
-                                      
-                                      println!("🔥 Loading columns for {}...", table);
-                                      // CLEAR
-                                      let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
-                                        .bind(conn_id).bind(&db).bind(&table)
-                                        .execute(pool.as_ref()).await;
-                                        
-                                      // INSERT
-                                      for (i, (cname, ctype)) in cols.iter().enumerate() {
-                                          let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
-                                             .bind(conn_id).bind(&db).bind(&table).bind(cname).bind(ctype).bind(i as i64)
-                                             .execute(pool.as_ref()).await;
-                                      }
-                                      println!("🔥 Columns loaded for {}", table);
-                                  }
+                 if let Some(rt) = self.runtime.clone()
+                     && let Some(conn_config) = self
+                         .connections
+                         .iter()
+                         .find(|c| c.id == Some(conn_id))
+                         .cloned()
+                 {
+                     let pool_clone = self.db_pool.clone();
+                     rt.spawn(async move {
+                         // Fetch columns
+                         if let Some(cols) = crate::connection::fetch_columns_from_database(
+                             conn_id,
+                             &db,
+                             &table,
+                             &conn_config,
+                         ) {
+                             // This requires a mutable Tabular reference to save to cache, which we don't have easily in async.
+                             // But `save_columns_to_cache` mainly needs db_pool.
+                             // Let's manually call sqlx logic or refactor save_columns_to_cache to not need Tabular.
+                             // Attempting direct sqlx insert matching cache_data logic:
+                             if let Some(pool) = pool_clone {
+                                 // Copy-paste save logic or make it cleaner later. 
+                                 // For now, let's just use the existing function if we can refactor it.
+                                 // Refactoring `save_columns_to_cache` to take `&SqlitePool` is best.
+                                 // But I cannot refactor it right now easily without breaking other calls.
+                                 // So I will implement a raw SQL insert here for the fix.
+
+                                 println!("🔥 Loading columns for {}...", table);
+                                 // CLEAR
+                                 let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                                     .bind(conn_id)
+                                     .bind(&db)
+                                     .bind(&table)
+                                     .execute(pool.as_ref())
+                                     .await;
+
+                                 // INSERT
+                                 for (i, (cname, ctype)) in cols.iter().enumerate() {
+                                     let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
+                                         .bind(conn_id)
+                                         .bind(&db)
+                                         .bind(&table)
+                                         .bind(cname)
+                                         .bind(ctype)
+                                         .bind(i as i64)
+                                         .execute(pool.as_ref())
+                                         .await;
+                                 }
+                                 println!("🔥 Columns loaded for {}", table);
                              }
-                         });
-                     }
+                         }
+                     });
                  }
 
                  self.cache_miss_request = None;

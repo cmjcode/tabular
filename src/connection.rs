@@ -43,31 +43,33 @@ fn infer_column_origins(query: &str) -> (Option<Vec<Option<String>>>, Vec<String
 
         for (i, table_with_join) in select.from.iter().enumerate() {
             let relation = &table_with_join.relation;
-            match relation {
-                sqlparser::ast::TableFactor::Table { name, alias, .. } => {
+            if let sqlparser::ast::TableFactor::Table { name, alias, .. } = relation {
+                let real_name = name.to_string();
+                if i == 0 {
+                    primary_table = Some(real_name.clone());
+                }
+                table_map.insert(real_name.clone(), real_name.clone());
+                if !all_tables.contains(&real_name) {
+                    all_tables.push(real_name.clone());
+                }
+
+                if let Some(a) = alias {
+                    table_map.insert(a.name.value.clone(), real_name);
+                }
+            } else {
+                // Derived tables etc not supported yet
+            }
+            for join in &table_with_join.joins {
+                if let sqlparser::ast::TableFactor::Table { name, alias, .. } = &join.relation {
                     let real_name = name.to_string();
-                    if i == 0 { primary_table = Some(real_name.clone()); }
                     table_map.insert(real_name.clone(), real_name.clone());
-                    if !all_tables.contains(&real_name) { all_tables.push(real_name.clone()); }
-                    
+                    if !all_tables.contains(&real_name) {
+                        all_tables.push(real_name.clone());
+                    }
+
                     if let Some(a) = alias {
                         table_map.insert(a.name.value.clone(), real_name);
                     }
-                }
-                _ => {} // Derived tables etc not supported yet
-            }
-            for join in &table_with_join.joins {
-                match &join.relation {
-                     sqlparser::ast::TableFactor::Table { name, alias, .. } => {
-                         let real_name = name.to_string();
-                         table_map.insert(real_name.clone(), real_name.clone());
-                         if !all_tables.contains(&real_name) { all_tables.push(real_name.clone()); }
-                         
-                         if let Some(a) = alias {
-                             table_map.insert(a.name.value.clone(), real_name);
-                         }
-                     }
-                     _ => {}
                 }
             }
         }
@@ -865,9 +867,9 @@ async fn execute_mysql_query_job(
                             // use sqlx::Column; // Import trait to enable table_name method
                             for _col in rows[0].columns() {
                                 // let t_name = col.original_table_name().unwrap_or_default();
-                                let t_name = "";
+                                let t_name = String::new();
                                 if !t_name.is_empty() {
-                                    unique_tables.insert(t_name.to_string());
+                                    unique_tables.insert(t_name.clone());
                                 }
                             }
                             // Also include inferred table if exists
@@ -920,14 +922,15 @@ async fn execute_mysql_query_job(
 
                 match result {
                     Ok(Some((json_str,))) => {
-                         if let Ok(cols) = serde_json::from_str::<Vec<String>>(&json_str) {
-                             if !cols.is_empty() {
-                                 let pks: std::collections::HashSet<String> = cols.into_iter().map(|s| s.to_lowercase()).collect();
-                                 std::println!("🔥 Found cached PKs for '{}': {:?}", table_full_name, pks);
-                                 table_pks.insert(table_full_name.to_lowercase(), pks);
-                             }
-                         }
-                    },
+                        if let Ok(cols) = serde_json::from_str::<Vec<String>>(&json_str)
+                            && !cols.is_empty()
+                        {
+                            let pks: std::collections::HashSet<String> =
+                                cols.into_iter().map(|s| s.to_lowercase()).collect();
+                            std::println!("🔥 Found cached PKs for '{}': {:?}", table_full_name, pks);
+                            table_pks.insert(table_full_name.to_lowercase(), pks);
+                        }
+                    }
                     Ok(None) => {
                         std::println!("🔥 No cached PK found for '{}' (db={}, tbl={})", table_full_name, target_db, target_table);
                     },
@@ -984,7 +987,7 @@ async fn execute_mysql_query_job(
                             for (i, col) in rows[0].columns().iter().enumerate() {
                                 let type_info = col.type_info();
                                 // let t_name = col.original_table_name().unwrap_or_default();
-                                let t_name = "";
+                                let t_name = String::new();
                                 
                                 // Determine table name with priority:
                                 // 1. sqlx metadata (if working)
@@ -996,7 +999,7 @@ async fn execute_mysql_query_job(
                                     col.name(), t_name, use_fine_grained, involved_tables, expanded_schema.len());
 
                                 let table_name = if !t_name.is_empty() {
-                                    Some(t_name.to_string())
+                                    Some(t_name.clone())
                                 } else {
                                     // Try fine-grained AST
                                     let ast_name = if use_fine_grained {
@@ -1025,7 +1028,7 @@ async fn execute_mysql_query_job(
                                         pks.contains(&col.name().to_lowercase())
                                     } 
                                     // 2. Try simple table name (if key was 'schema.table', try 'table')
-                                    else if let Some(simple_name) = key.split('.').last() 
+                                    else if let Some(simple_name) = key.split('.').next_back()
                                         && let Some(pks) = table_pks.get(simple_name) 
                                     {
                                         pks.contains(&col.name().to_lowercase())
@@ -1052,7 +1055,7 @@ async fn execute_mysql_query_job(
                                 meta_vec.push(models::structs::ColumnMetadata {
                                     name: col.name().to_string(),
                                     type_name: type_info.name().to_string(),
-                                    table_name: table_name, 
+                                    table_name,
                                     original_name: Some(col.name().to_string()),
                                     is_primary_key: is_pk,
                                 });
@@ -4866,10 +4869,10 @@ pub async fn fetch_databases_background_task(
     // 2. Get or create pool (check shared first)
     let pool = {
         let mut pool_opt = None;
-        if let Ok(shared) = shared_pools.lock() {
-            if let Some(p) = shared.get(&connection_id) {
-                pool_opt = Some(p.clone());
-            }
+        if let Ok(shared) = shared_pools.lock()
+            && let Some(p) = shared.get(&connection_id)
+        {
+            pool_opt = Some(p.clone());
         }
         
         if let Some(p) = pool_opt {

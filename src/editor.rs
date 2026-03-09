@@ -2736,13 +2736,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                    }
 
                    // 2. Handle Block Comments
-                   if in_block_comment {
-                       if c == '*' {
-                           if let Some(&(_, '/')) = chars.peek() {
-                               chars.next(); // consume '/'
-                               in_block_comment = false;
-                           }
-                       }
+                   if in_block_comment && c == '*' {
+                        if let Some(&(_, '/')) = chars.peek() {
+                            chars.next(); // consume '/'
+                            in_block_comment = false;
+                        }
                        continue;
                    }
 

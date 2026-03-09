@@ -942,10 +942,10 @@ impl SpreadsheetOperations for Tabular {
                          std::println!("🔥 Found matching PK: '{}' at index {}", col_name, i);
                          let id_name = col_meta.original_name.clone().unwrap_or(col_name.clone());
                          let mut val = row_data.get(i).cloned().unwrap_or_default();
-                         if let Some(ov) = overrides {
-                             if let Some(v) = ov.get(&col_name.to_lowercase()) {
-                                 val = v.clone();
-                             }
+                         if let Some(ov) = overrides
+                             && let Some(v) = ov.get(&col_name.to_lowercase())
+                         {
+                             val = v.clone();
                          }
                          
                          let clause = if val.to_uppercase() == "NULL" {
@@ -970,39 +970,37 @@ impl SpreadsheetOperations for Tabular {
                 // NEW: Security check - if we have metadata, ensure this column belongs to target table
                 // This prevents adding columns from joined tables (e.g. date_time) to the WHERE clause
                 // when updating a specific table (e.g. user_data).
-                if let Some(target) = target_table_for_update {
-                    if let Some(meta) = metadata.as_ref() {
-                        if let Some(col_meta) = meta.get(i) {
-                             let tbl = col_meta.table_name.as_deref().unwrap_or("");
-                             // Only skip if table name is explicitly known and differs from target.
-                             // Use case-insensitive check to be safe.
-                             if !tbl.is_empty() && !tbl.eq_ignore_ascii_case(target) {
-                                 std::println!("🔥 Fallback skipping column '{}' because it belongs to table '{}' (target='{}')", header, tbl, target);
-                                 continue;
-                             }
-                        }
+                if let Some(target) = target_table_for_update
+                    && let Some(meta) = metadata.as_ref()
+                    && let Some(col_meta) = meta.get(i)
+                {
+                    let tbl = col_meta.table_name.as_deref().unwrap_or("");
+                    // Only skip if table name is explicitly known and differs from target.
+                    // Use case-insensitive check to be safe.
+                    if !tbl.is_empty() && !tbl.eq_ignore_ascii_case(target) {
+                        std::println!("🔥 Fallback skipping column '{}' because it belongs to table '{}' (target='{}')", header, tbl, target);
+                        continue;
                     }
                 }
 
-                if primary_keys.is_empty()
+                if (primary_keys.is_empty()
                     || primary_keys
                         .iter()
-                        .any(|pk| pk.eq_ignore_ascii_case(header))
+                        .any(|pk| pk.eq_ignore_ascii_case(header)))
+                    && let Some(val_ref) = row_data.get(i)
                 {
-                    if let Some(val_ref) = row_data.get(i) {
-                         let mut val = val_ref.clone();
-                         if let Some(ov) = overrides {
-                             if let Some(v) = ov.get(&header.to_lowercase()) {
-                                 val = v.clone();
-                             }
-                         }
-                        let clause = if val.to_uppercase() == "NULL" {
-                            format!("{} IS NULL", qt(header))
-                        } else {
-                            format!("{} = {}", qt(header), qv(&val))
-                        };
-                        where_parts.push(clause);
+                    let mut val = val_ref.clone();
+                    if let Some(ov) = overrides
+                        && let Some(v) = ov.get(&header.to_lowercase())
+                    {
+                        val = v.clone();
                     }
+                    let clause = if val.to_uppercase() == "NULL" {
+                        format!("{} IS NULL", qt(header))
+                    } else {
+                        format!("{} = {}", qt(header), qv(&val))
+                    };
+                    where_parts.push(clause);
                 }
             }
         }

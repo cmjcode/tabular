@@ -702,14 +702,14 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                             // Determine if column is Date/DateTime
                                                             let mut is_date_type = false;
                                                             let mut is_datetime_type = false;
-                                                            if let Some(meta) = &tabular.current_column_metadata {
-                                                                if let Some(col_meta) = meta.get(col_index) {
-                                                                    let t = col_meta.type_name.to_uppercase();
-                                                                    if t.contains("DATE") && !t.contains("TIME") {
-                                                                        is_date_type = true;
-                                                                    } else if t.contains("DATETIME") || t.contains("TIMESTAMP") {
-                                                                        is_datetime_type = true;
-                                                                    }
+                                                            if let Some(meta) = &tabular.current_column_metadata
+                                                                && let Some(col_meta) = meta.get(col_index)
+                                                            {
+                                                                let t = col_meta.type_name.to_uppercase();
+                                                                if t.contains("DATE") && !t.contains("TIME") {
+                                                                    is_date_type = true;
+                                                                } else if t.contains("DATETIME") || t.contains("TIMESTAMP") {
+                                                                    is_datetime_type = true;
                                                                 }
                                                             }
 
@@ -776,11 +776,14 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                     let dm = ui.add(egui::DragValue::new(&mut m).range(0..=59).suffix("m"));
                                                                     let ds = ui.add(egui::DragValue::new(&mut s).range(0..=59).suffix("s"));
 
-                                                                    if dh.changed() || dm.changed() || ds.changed() {
-                                                                        if let Some(new_time) = chrono::NaiveTime::from_hms_opt(h, m, s) {
-                                                                            dt_val = chrono::NaiveDateTime::new(date_part, new_time);
-                                                                            edit_text = dt_val.format("%Y-%m-%d %H:%M:%S").to_string();
-                                                                        }
+                                                                    if (dh.changed() || dm.changed() || ds.changed())
+                                                                        && let Some(new_time) =
+                                                                            chrono::NaiveTime::from_hms_opt(h, m, s)
+                                                                    {
+                                                                        dt_val = chrono::NaiveDateTime::new(date_part, new_time);
+                                                                        edit_text = dt_val
+                                                                            .format("%Y-%m-%d %H:%M:%S")
+                                                                            .to_string();
                                                                     }
                                                                 });
 
@@ -3660,10 +3663,10 @@ pub(crate) fn infer_current_table_name(tabular: &mut window_egui::Tabular) -> St
     if let Some(meta) = &tabular.current_column_metadata {
         // Try to find a valid table name from any column
         for col in meta {
-            if let Some(t) = &col.table_name {
-                if !t.is_empty() {
-                    return t.clone();
-                }
+            if let Some(t) = &col.table_name
+                && !t.is_empty()
+            {
+                return t.clone();
             }
         }
     }
