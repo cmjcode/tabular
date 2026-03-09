@@ -1457,7 +1457,9 @@ fn is_sql_keyword(token: &str) -> bool {
 
 // ---------------- Legacy heuristic highlighter (ported from syntax.rs) ----------------
 
-/// Cached highlighting with hash-based lookup
+/// Cached highlighting with hash-based lookup.
+/// Keeps only the most recent 2 entries to bound memory while still serving
+/// cache hits during idle/re-render without re-computing the same text twice.
 pub fn highlight_text_cached(
     text: &str,
     lang: LanguageKind,
@@ -1472,10 +1474,11 @@ pub fn highlight_text_cached(
     if let Some(cached_job) = cache.get(&hash) {
         return cached_job.clone();
     }
-    let job = highlight_text(text, lang, dark);
-    if cache.len() > 100 {
+    // Evict stale entries early (keep at most 2) to avoid unbounded memory growth during typing
+    if cache.len() >= 2 {
         cache.clear();
     }
+    let job = highlight_text(text, lang, dark);
     cache.insert(hash, job.clone());
     job
 }
