@@ -11107,7 +11107,7 @@ impl App for Tabular {
                     // Tab bar
                     ui.horizontal(|ui| {
                         // Accent color (red) can adapt for light/dark if needed
-                        let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 0, 0) } else { egui::Color32::from_rgb(180,30,30) };
+                        let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 0, 0) } else { egui::Color32::from_rgb(255, 0, 0) };
                         let inactive_fg = ui.visuals().text_color();
                         let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
                             let selected = *current == me;
@@ -12014,10 +12014,15 @@ impl App for Tabular {
 
                         match self.selected_menu.as_str() {
                             "Database" => {
+                                let plus_text_color = if ui.visuals().dark_mode {
+                                    egui::Color32::from_rgb(30, 30, 30)
+                                } else {
+                                    egui::Color32::WHITE
+                                };
                                 if ui
                                     .add_sized(
                                         [24.0, 24.0], // Small square button
-                                        egui::Button::new("➕").fill(egui::Color32::from_rgb(255, 0, 0)),
+                                        egui::Button::new(egui::RichText::new("➕").color(plus_text_color)).fill(egui::Color32::from_rgb(255, 0, 0)),
                                     )
                                     .on_hover_text("Add New Database Connection")
                                     .clicked()
