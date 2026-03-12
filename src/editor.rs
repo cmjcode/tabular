@@ -2634,6 +2634,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         .desired_rows(rows)
         .desired_width(f32::INFINITY)
         .cursor_at_end(false) // Allow cursor to be positioned anywhere
+        .frame(false)
         .id(editor_id)
         .layouter(&mut layouter);
 

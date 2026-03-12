@@ -1608,45 +1608,49 @@ fn word_color(word: &str, lang: LanguageKind, dark: bool) -> Color32 {
 
 fn keyword_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(255, 179, 0) // rgba(255, 179, 0, 1)
+        Color32::from_rgb(255, 210, 0) // neon amber
     } else {
-        Color32::from_rgb(160, 60, 0) // #A03C00
+        Color32::from_rgb(130, 40, 0) // deep burnt orange
     }
 }
 
 fn number_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(120, 160, 255) // #78A0FF
+        Color32::from_rgb(80, 200, 255) // neon cyan-blue
     } else {
-        Color32::from_rgb(0, 90, 200) // #005AC8
+        Color32::from_rgb(0, 60, 180) // deep blue
     }
 }
 
-fn string_color(_: bool) -> Color32 {
-    Color32::from_rgb(21, 255, 0) // rgba(21, 255, 0, 1)
+fn string_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(0, 255, 120) // neon green
+    } else {
+        Color32::from_rgb(0, 110, 30) // deep forest green
+    }
 }
 
 fn comment_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(120, 120, 120) // #787878
+        Color32::from_rgb(160, 160, 160) // bright gray
     } else {
-        Color32::from_rgb(100, 110, 120) // #646E78
+        Color32::from_rgb(60, 70, 80) // dark slate
     }
 }
 
 fn punctuation_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(180, 180, 180) // #B4B4B4
+        Color32::from_rgb(220, 220, 220) // near-white
     } else {
-        Color32::from_rgb(80, 80, 80) // #505050
+        Color32::from_rgb(50, 50, 60) // very dark
     }
 }
 
 fn normal_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(210, 210, 210) // #D2D2D2
+        Color32::from_rgb(230, 230, 230) // bright off-white
     } else {
-        Color32::from_rgb(30, 30, 30) // #1E1E1E
+        Color32::from_rgb(15, 15, 20) // near-black
     }
 }
 

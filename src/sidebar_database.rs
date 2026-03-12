@@ -628,13 +628,13 @@ pub(crate) fn render_connection_dialog(
                     ui.separator();
                     if *success {
                         ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::GREEN, "✓");
-                            ui.colored_label(egui::Color32::GREEN, message);
+                            ui.colored_label(egui::Color32::from_rgb(50,205,50), "✓");
+                            ui.colored_label(egui::Color32::from_rgb(50,205,50), message);
                         });
                     } else {
                         ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::from_rgb(255, 30, 0), "✗");
-                            ui.colored_label(egui::Color32::from_rgb(255, 30, 0), message);
+                            ui.colored_label(egui::Color32::from_rgb(255, 0, 0), "✗");
+                            ui.colored_label(egui::Color32::from_rgb(255, 0, 0), message);
                         });
                     }
                 }

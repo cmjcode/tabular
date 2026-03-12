@@ -240,7 +240,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                              let colors = [
                                 egui::Color32::from_rgb(100, 149, 237), // Cornflower Blue
                                 egui::Color32::from_rgb(60, 179, 113),  // Medium Sea Green
-                                egui::Color32::from_rgb(205, 92, 92),   // Indian Red
+                                egui::Color32::from_rgb(255, 0, 0),   // Indian Red
                                 egui::Color32::from_rgb(218, 165, 32),  // Goldenrod
                                 egui::Color32::from_rgb(147, 112, 219), // Medium Purple
                                 egui::Color32::from_rgb(70, 130, 180),  // Steel Blue
@@ -251,7 +251,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                                 egui::Color32::from_rgb(50, 205, 50),   // Lime Green
                                 egui::Color32::from_rgb(255, 165, 0),   // Orange
                                 egui::Color32::from_rgb(106, 90, 205),  // Slate Blue
-                                egui::Color32::from_rgb(255, 99, 71),   // Tomato
+                                egui::Color32::from_rgb(255, 0, 0),   // Tomato
                                 egui::Color32::from_rgb(64, 224, 208),  // Turquoise
                                 egui::Color32::from_rgb(238, 130, 238), // Violet
                                 egui::Color32::from_rgb(255, 215, 0),   // Gold
@@ -525,7 +525,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         );
         // Corrected rect_stroke args
         let border_color = if is_search_match {
-            egui::Color32::from_rgb(255, 50, 50)
+            egui::Color32::from_rgb(255, 0, 0)
         } else if is_selected_edge_node { 
             egui::Color32::from_rgb(255, 215, 0) 
         } else { 

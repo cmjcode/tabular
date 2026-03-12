@@ -1144,7 +1144,7 @@ impl Tabular {
 
         let inner = egui::Frame::group(ui.style())
             .fill(panel_fill)
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 30, 0)))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("Lint ({})", count)).strong());
@@ -1191,7 +1191,7 @@ impl Tabular {
                             ("⚠", egui::Color32::from_rgb(255, 183, 0))
                         }
                         query_tools::LintSeverity::Error => {
-                            ("⛔", egui::Color32::from_rgb(255, 80, 80))
+                            ("⛔", egui::Color32::from_rgb(255, 0, 0))
                         }
                     };
 
@@ -1719,7 +1719,7 @@ impl Tabular {
                 let (play_icon, play_color, play_border, tooltip_text) = if is_loading {
                     ("⏳", egui::Color32::WHITE, egui::Color32::TRANSPARENT, "Executing query…")
                 } else {
-                    ("▶", egui::Color32::GREEN, egui::Color32::TRANSPARENT, "CMD+Enter to execute")
+                    ("▶", egui::Color32::from_rgb(50,205,50), egui::Color32::TRANSPARENT, "CMD+Enter to execute")
                 };
                 let play_text = egui::RichText::new(play_icon).color(play_color).size(18.0);
                 let button_corner = (button_size.y / 2.0).round().clamp(2.0, u8::MAX as f32) as u8;
@@ -1863,7 +1863,7 @@ impl Tabular {
                         let is_active = i == active_idx;
                         let btn = if is_active {
                              egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::WHITE))
-                                .fill(egui::Color32::from_rgb(255, 30, 0)) // default red 
+                                .fill(egui::Color32::from_rgb(255, 0, 0)) // default red 
                         } else {
                              egui::Button::new(label)
                         };
@@ -2345,7 +2345,7 @@ impl Tabular {
                             ui.label(
                                 egui::RichText::new(title.clone())
                                     .strong()
-                                    .color(egui::Color32::from_rgb(255, 60, 0)), // rgba(255, 60, 0, 1)
+                                    .color(egui::Color32::from_rgb(255, 0, 0)), // rgba(255, 60, 0, 1)
                             );
                         });
 
@@ -2398,7 +2398,7 @@ impl Tabular {
                                         egui::Button::new(
                                             egui::RichText::new("Cancel")
                                                 .size(11.0)
-                                                .color(egui::Color32::from_rgb(230, 80, 60)),
+                                                .color(egui::Color32::from_rgb(255, 0, 0)),
                                         )
                                         .min_size(egui::vec2(64.0, 22.0)),
                                     );
@@ -2839,7 +2839,7 @@ impl Tabular {
             let colors = [
                 eframe::egui::Color32::from_rgb(100, 149, 237), // Cornflower Blue
                 eframe::egui::Color32::from_rgb(60, 179, 113),  // Medium Sea Green
-                eframe::egui::Color32::from_rgb(205, 92, 92),   // Indian Red
+                eframe::egui::Color32::from_rgb(255, 0, 0),   // Indian Red
                 eframe::egui::Color32::from_rgb(218, 165, 32),  // Goldenrod
                 eframe::egui::Color32::from_rgb(147, 112, 219), // Medium Purple
                 eframe::egui::Color32::from_rgb(70, 130, 180),  // Steel Blue
@@ -4265,12 +4265,12 @@ impl Tabular {
                         if params.connection_pools.contains_key(&conn_id) || has_shared {
                             (egui::Color32::from_rgb(46, 204, 113), "Connected") // green
                         } else if params.pending_connection_pools.contains(&conn_id) {
-                            (egui::Color32::from_rgb(241, 196, 15), "Connecting") // yellow
+                            (egui::Color32::from_rgb(255, 0, 0), "Connecting") // red
                         } else {
-                            (egui::Color32::from_rgb(255, 30, 0), "Disconnected") // red
+                            (egui::Color32::from_rgb(255, 0, 0), "Disconnected") // red
                         }
                     } else {
-                        (egui::Color32::from_rgb(255, 30, 0), "Disconnected")
+                        (egui::Color32::from_rgb(255, 0, 0), "Disconnected")
                     }
                 } else { (ui.visuals().text_color(), "") };
 
@@ -9847,10 +9847,10 @@ impl Tabular {
         };
 
         let keyword_color = egui::Color32::from_rgb(86, 156, 214); // Blue - SQL keywords
-        let string_color = egui::Color32::from_rgb(255, 30, 0); // Orange - strings
+        let string_color = egui::Color32::from_rgb(255, 0, 0); // Orange - strings
         let comment_color = egui::Color32::from_rgb(106, 153, 85); // Green - comments
         let number_color = egui::Color32::from_rgb(181, 206, 168); // Light green - numbers
-        let function_color = egui::Color32::from_rgb(255, 206, 84); // Yellow - functions
+        let function_color = egui::Color32::from_rgb(255, 0, 0); // Red - functions
         let operator_color = egui::Color32::from_rgb(212, 212, 212); // Light gray - operators
 
         // Process line by line to handle comments properly
@@ -10084,7 +10084,7 @@ impl Tabular {
                     });
                 } else if let Some(error) = &self.update_check_error {
                     ui.colored_label(
-                        egui::Color32::from_rgb(255, 30, 0),
+                        egui::Color32::from_rgb(255, 0, 0),
                         format!("Error: {}", error),
                     );
                     ui.separator();
@@ -10132,7 +10132,7 @@ impl Tabular {
                             } else {
                                 // No download URL available - show manual download option
                                 ui.colored_label(
-                                    egui::Color32::YELLOW,
+                                    egui::Color32::from_rgb(255, 0, 0),
                                     "Auto-update not available for this platform",
                                 );
                             }
@@ -11107,7 +11107,7 @@ impl App for Tabular {
                     // Tab bar
                     ui.horizontal(|ui| {
                         // Accent color (red) can adapt for light/dark if needed
-                        let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 30, 0) } else { egui::Color32::from_rgb(180,30,30) };
+                        let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 0, 0) } else { egui::Color32::from_rgb(180,30,30) };
                         let inactive_fg = ui.visuals().text_color();
                         let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
                             let selected = *current == me;
@@ -11795,7 +11795,7 @@ impl App for Tabular {
                                     .color(egui::Color32::WHITE)
                                     .text_style(egui::TextStyle::Body),
                             )
-                            .fill(egui::Color32::from_rgb(255, 30, 0))
+                            .fill(egui::Color32::from_rgb(255, 0, 0))
                         } else {
                             egui::Button::new("Database").fill(egui::Color32::TRANSPARENT)
                         };
@@ -11813,7 +11813,7 @@ impl App for Tabular {
                                     .color(egui::Color32::WHITE)
                                     .text_style(egui::TextStyle::Body),
                             )
-                            .fill(egui::Color32::from_rgb(255, 30, 0)) // Orange fill for active
+                            .fill(egui::Color32::from_rgb(255, 0, 0)) // Orange fill for active
                         } else {
                             egui::Button::new("Queries").fill(egui::Color32::TRANSPARENT)
                         };
@@ -11831,7 +11831,7 @@ impl App for Tabular {
                                     .color(egui::Color32::WHITE)
                                     .text_style(egui::TextStyle::Body),
                             )
-                            .fill(egui::Color32::from_rgb(255, 30, 0)) // Orange fill for active
+                            .fill(egui::Color32::from_rgb(255, 0, 0)) // Orange fill for active
                         } else {
                             egui::Button::new("History").fill(egui::Color32::TRANSPARENT)
                         };
@@ -11896,7 +11896,7 @@ impl App for Tabular {
                                     egui::Frame::new()
                                         .stroke(egui::Stroke::new(
                                             1.0,
-                                            egui::Color32::from_rgb(255, 30, 0),
+                                            egui::Color32::from_rgb(255, 0, 0),
                                         ))
                                         .corner_radius(3.0)
                                         .inner_margin(egui::Margin::symmetric(4, 4))
@@ -11924,7 +11924,7 @@ impl App for Tabular {
                                                         egui::RichText::new("⏹ STOP")
                                                             .color(egui::Color32::WHITE),
                                                     )
-                                                    .fill(egui::Color32::from_rgb(255, 30, 0));
+                                                    .fill(egui::Color32::from_rgb(255, 0, 0));
                                                     if ui.add(stop_button).clicked() {
                                                         self.stop_auto_refresh();
                                                     }
@@ -12017,7 +12017,7 @@ impl App for Tabular {
                                 if ui
                                     .add_sized(
                                         [24.0, 24.0], // Small square button
-                                        egui::Button::new("➕").fill(egui::Color32::from_rgb(255, 30, 0)),
+                                        egui::Button::new("➕").fill(egui::Color32::from_rgb(255, 0, 0)),
                                     )
                                     .on_hover_text("Add New Database Connection")
                                     .clicked()
@@ -12114,7 +12114,7 @@ impl App for Tabular {
                         for (i, tab) in self.query_tabs.iter().enumerate() {
                             let active = i == self.active_tab_index;
                             let color = if active {
-                                egui::Color32::from_rgb(255, 30, 0)
+                                egui::Color32::from_rgb(255, 0, 0)
                             } else {
                                 ui.visuals().text_color()
                             };
@@ -12366,8 +12366,8 @@ impl App for Tabular {
                         ui.scope(|ui| {
                             // Provide consistent active styling for the toggle buttons.
                             let mut style = ui.style().as_ref().clone();
-                            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 30, 0);
-                            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 30, 0);
+                            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
+                            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 0, 0);
                             ui.set_style(style);
 
                             ui.horizontal(|ui| {
@@ -12592,7 +12592,7 @@ impl App for Tabular {
                                     
                                     let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
                                     let data_bg = if is_data {
-                                        egui::Color32::from_rgb(255, 30, 0)
+                                        egui::Color32::from_rgb(255, 0, 0)
                                     } else if ui.visuals().dark_mode {
                                         egui::Color32::from_rgb(50, 50, 50)
                                     } else {
@@ -12616,7 +12616,7 @@ impl App for Tabular {
                                     if !self.query_message.is_empty() {
                                         let is_messages = self.table_bottom_view == models::structs::TableBottomView::Messages;
                                         let messages_bg = if is_messages {
-                                            egui::Color32::from_rgb(255, 30, 0)
+                                            egui::Color32::from_rgb(255, 0, 0)
                                         } else if ui.visuals().dark_mode {
                                             egui::Color32::from_rgb(50, 50, 50)
                                         } else {
@@ -12715,7 +12715,7 @@ impl App for Tabular {
                                     self.pending_drop_collection = None;
                                 }
                                 if ui
-                                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)))
+                                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                     .clicked()
                                 {
                                     // Execute drop via Mongo driver
@@ -12765,7 +12765,7 @@ impl App for Tabular {
                                     self.pending_drop_table = None;
                                 }
                                 if ui
-                                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 30, 0)))
+                                    .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                     .clicked()
                                 {
                                     use log::{info, error};

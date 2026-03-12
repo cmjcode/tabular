@@ -667,7 +667,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                 ui.add(
                     egui::ProgressBar::new(progress_fraction)
                         .desired_width(ui.available_width())
-                        .fill(egui::Color32::from_rgb(255, 21, 0)), // rgba(255, 21, 0, 1)
+                        .fill(egui::Color32::from_rgb(255, 0, 0)), // rgba(255, 21, 0, 1)
                 );
             });
 
@@ -1139,7 +1139,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                 ui.add_space(10.0);
                 egui::Frame::group(ui.style())
                     .fill(egui::Color32::from_rgb(255, 235, 238))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(214, 48, 49)))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)))
                     .corner_radius(egui::CornerRadius::same(8))
                     .inner_margin(egui::Vec2::new(10.0, 8.0))
                     .show(ui, |ui| {
