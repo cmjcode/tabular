@@ -153,9 +153,9 @@ pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
                 models::enums::NodeType::QueryHistItem,
             );
             hist_node.connection_id = Some(item.connection_id);
-            // Store original query and connection info in file_path field (we'll use this to identify the actual query)
-            // Format: "connection_name||original_query" for easy parsing
-            hist_node.file_path = Some(format!("{}||{}", item.connection_name, item.query));
+            // Store connection info, timestamp, and original query in file_path field
+            // Format: "connection_name||executed_at||original_query"
+            hist_node.file_path = Some(format!("{}||{}||{}", item.connection_name, item.executed_at, item.query));
             date_node.children.push(hist_node);
         }
 

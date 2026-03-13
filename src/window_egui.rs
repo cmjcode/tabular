@@ -5212,17 +5212,27 @@ impl Tabular {
                         debug!("🖱️ QueryHistItem clicked: {}", node.name);
                         // For history items, create a new tab with the original query
                         if let Some(data) = &node.file_path {
-                            // Parse connection name and query from the stored data
-                            if let Some((_connection_name, original_query)) = data.split_once("||")
-                            {
-                                // Create a descriptive tab title based on the query type
-                                let tab_title = if original_query.len() > 50 {
-                                    format!(
-                                        "History: {}...",
-                                        &original_query[0..50].replace("\n", " ").trim()
-                                    )
-                                } else {
-                                    format!("History: {}", original_query.replace("\n", " ").trim())
+                            // Parse connection name, timestamp, and query from the stored data
+                            // Format: "connection_name||executed_at||original_query"
+                            if let Some((_connection_name, rest)) = data.split_once("||") {
+                                let (executed_at, original_query) = rest
+                                    .split_once("||")
+                                    .unwrap_or(("", rest));
+                                // Build compact tab title: Hist-YYMMDD HH:MM:SS
+                                let tab_title = {
+                                    // executed_at is e.g. "2026-03-11 11:45:56" or "2026-03-11T11:45:56"
+                                    let ts = executed_at.trim();
+                                    let yy = ts.get(2..4).unwrap_or("");
+                                    let mm = ts.get(5..7).unwrap_or("");
+                                    let dd = ts.get(8..10).unwrap_or("");
+                                    let time_part = ts.get(11..19)
+                                        .or_else(|| ts.get(11..))
+                                        .unwrap_or("");
+                                    if !yy.is_empty() && !time_part.is_empty() {
+                                        format!("Hist-{}{}{} {}", yy, mm, dd, time_part)
+                                    } else {
+                                        "Hist".to_string()
+                                    }
                                 };
                                 // Collect to be handled by parent (render_tree) -> will create a NEW TAB
                                 debug!(
@@ -5230,14 +5240,14 @@ impl Tabular {
                                     tab_title,
                                     original_query.len()
                                 );
-                                // Pass the original data (connection_name||query) in the 3rd field so caller can bind connection
+                                // Pass the original data in the 3rd field so caller can bind connection
                                 query_file_to_open =
                                     Some((tab_title, original_query.to_string(), data.clone()));
                             } else {
                                 debug!("📝 Using fallback format for old history item");
                                 // Fallback for old format without connection name
                                 query_file_to_open = Some((
-                                    "History Query".to_string(),
+                                    "Hist".to_string(),
                                     data.clone(),
                                     String::new(),
                                 ));
@@ -9221,15 +9231,39 @@ impl Tabular {
     }
 
     fn render_tree_for_database_section(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(-2.0);
         // Add responsive search box
         ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let search_bg = if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(40, 40, 40)
+            } else {
+                egui::Color32::from_rgb(210, 210, 210)
+            };
             // Make search box responsive to sidebar width
             let available_width = ui.available_width() - 5.0; // Leave space for clear button and padding
             let search_response = ui.add_sized(
                 [available_width, 20.0],
                 egui::TextEdit::singleline(&mut self.database_search_text)
-                    .hint_text("Search databases, tables, keys..."),
+                    .hint_text("Search Databases, Table, etc...")
+                    .background_color(search_bg),
             );
+            if search_response.has_focus() {
+                ui.painter().rect_stroke(
+                    search_response.rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)),
+                    egui::StrokeKind::Outside,
+                );
+            }
+
+            // // Make search box responsive to sidebar width
+            // let available_width = ui.available_width() - 5.0; // Leave space for clear button and padding
+            // let search_response = ui.add_sized(
+            //     [available_width, 20.0],
+            //     egui::TextEdit::singleline(&mut self.database_search_text)
+            //         .hint_text("Search databases, tables, keys..."),
+            // );
 
             if search_response.changed() {
                 self.update_search_results();
@@ -11786,7 +11820,7 @@ impl App for Tabular {
                         let available_width = ui.available_width();
                         let button_spacing = ui.spacing().item_spacing.x;
                         let button_width = (available_width - (button_spacing * 2.0)) / 3.0; // Add extra width to account for padding and make buttons more clickable
-                        let button_height = 27.0;
+                        let button_height = 28.0;
 
                         // Database tab
                         let database_button = if self.selected_menu == "Database" {
@@ -11853,10 +11887,12 @@ impl App for Tabular {
                         egui::Sense::hover(),
                     );
 
+                    // ===============================================================
+                    // Draw line across entire width of sidebar (ignoring padding)
                     let full_x = ui.clip_rect().x_range();
                     ui.painter().hline(
                         full_x, // Align with button padding
-                        line_rect.top() - 0.3, // Position line flush under buttons
+                        line_rect.top() - 3.5, // Position line flush under buttons
                         egui::Stroke::new(
                             1.0,
                             if ui.visuals().dark_mode {
@@ -11964,21 +12000,35 @@ impl App for Tabular {
                                         });
                                 }
 
-                                ui.add_space(-2.5);
+                                ui.add_space(-2.0);
+
                                 // Search box for history
                                 ui.horizontal(|ui| {
+                                    ui.add_space(4.0);
                                     let search_bg = if ui.visuals().dark_mode {
                                         egui::Color32::from_rgb(40, 40, 40)
                                     } else {
                                         egui::Color32::from_rgb(210, 210, 210)
                                     };
-                                    let search_response = ui.add(
+                                    // Make search box responsive to sidebar width
+                                    let available_width = ui.available_width() - 5.0; // Leave space for clear button and padding
+                                    let search_response = ui.add_sized(
+                                        [available_width, 20.0],
                                         egui::TextEdit::singleline(&mut self.history_search_text)
                                             .desired_width(f32::INFINITY)
                                             .hint_text("Search history...")
                                             .background_color(search_bg)
-
                                     );
+
+                                    if search_response.has_focus() {
+                                        ui.painter().rect_stroke(
+                                            search_response.rect,
+                                            0.0,
+                                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)),
+                                            egui::StrokeKind::Outside,
+                                        );
+                                    }
+
                                     if search_response.changed() {
                                         // Refilter history when search text changes
                                         sidebar_history::filter_history_tree(self);
@@ -12174,7 +12224,7 @@ impl App for Tabular {
                             }
                             // Render tab as one unified rect: [  label  ×  ]
                             let close_size = 16.0;
-                            let tab_width = 120.0; // total width including close button
+                            let tab_width = 150.0; // total width including close button
                             let tab_height = 26.0;
                             let (tab_rect, tab_resp) = ui.allocate_exact_size(
                                 egui::vec2(tab_width, tab_height),
@@ -12196,13 +12246,15 @@ impl App for Tabular {
                                 egui::vec2(close_size, close_size),
                             );
                             // Label centered in the area left of the close button
-                            let label_area_center = egui::pos2(
-                                tab_rect.left() + (tab_rect.width() - close_size - 4.0) / 2.0,
-                                tab_rect.center().y,
+                            let label_max_width = tab_rect.width() - close_size - 8.0;
+                            let label_area = egui::Rect::from_min_size(
+                                egui::pos2(tab_rect.left() + 2.0, tab_rect.top()),
+                                egui::vec2(label_max_width, tab_rect.height()),
                             );
-                            ui.painter().text(
+                            let label_area_center = label_area.left_center();
+                            ui.painter().with_clip_rect(label_area).text(
                                 label_area_center,
-                                egui::Align2::CENTER_CENTER,
+                                egui::Align2::LEFT_CENTER,
                                 &title,
                                 egui::FontId::proportional(12.0),
                                 text_color,
