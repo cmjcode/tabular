@@ -3029,7 +3029,10 @@ impl Tabular {
             // For API-HTTP connections, set up the HTTP client state on the new tab
             if is_api_http {
                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    tab.http_client_state = Some(models::structs::HttpClientState::default());
+                    // Load previously saved state if available, else use defaults
+                    let state = crate::http_client::load_http_state(connection_id)
+                        .unwrap_or_default();
+                    tab.http_client_state = Some(state);
                 }
             }
 

@@ -5,6 +5,27 @@ use crate::models::structs::{
     HttpMethod, HttpBodyType, HttpAuthType, HttpRequestTab, HttpResponseTab,
 };
 
+// ─── Persistence ─────────────────────────────────────────────────────────────
+
+pub fn save_http_state(connection_id: i64, state: &HttpClientState) {
+    let dir = crate::directory::get_app_data_dir().join("http_state");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("{}.json", connection_id));
+    if let Ok(json) = serde_json::to_string_pretty(state) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+pub fn load_http_state(connection_id: i64) -> Option<HttpClientState> {
+    let path = crate::directory::get_app_data_dir()
+        .join("http_state")
+        .join(format!("{}.json", connection_id));
+    let json = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
 // ─── Public entry-point called from window_egui ─────────────────────────────
 
 pub fn render_http_client(ui: &mut egui::Ui, state: &mut HttpClientState) {

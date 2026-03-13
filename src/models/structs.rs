@@ -5,7 +5,7 @@ use crate::models::{self, enums::NodeType};
 
 // ─── HTTP Client types ──────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub enum HttpMethod {
     #[default]
     GET,
@@ -31,7 +31,7 @@ impl HttpMethod {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum HttpBodyType {
     // Form Data
     UrlEncoded,
@@ -50,7 +50,7 @@ impl Default for HttpBodyType {
     fn default() -> Self { HttpBodyType::NoBody }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum HttpAuthType {
     ApiKey,
     AwsSignature,
@@ -68,7 +68,7 @@ impl Default for HttpAuthType {
     fn default() -> Self { HttpAuthType::NoAuth }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum HttpRequestTab {
     Body,
     Params,
@@ -80,7 +80,7 @@ impl Default for HttpRequestTab {
     fn default() -> Self { HttpRequestTab::Body }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum HttpResponseTab {
     Body,
     Headers,
@@ -101,7 +101,7 @@ pub struct HttpClientResponse {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HttpClientState {
     pub url: String,
     pub method: HttpMethod,
@@ -141,6 +141,8 @@ pub struct HttpClientState {
     pub is_loading: bool,
 
     /// Channel receiver from background HTTP thread (Arc so Clone works).
+    /// Skipped during serialization — recreated at runtime.
+    #[serde(skip)]
     pub response_receiver: Option<Arc<Mutex<mpsc::Receiver<HttpClientResponse>>>>,
 }
 
