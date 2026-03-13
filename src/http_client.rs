@@ -537,21 +537,89 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
     ui.separator();
 
-    egui::ScrollArea::both()
-        .id_salt("http_response_scroll")
-        .auto_shrink([false; 2])
-        .show(ui, |ui| {
-            match state.response_tab {
-                HttpResponseTab::Body => {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut state.response_body)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(20)
-                            .font(egui::TextStyle::Monospace)
-                            .interactive(true),
-                    );
+    match state.response_tab {
+        HttpResponseTab::Body => {
+            // ── Detect content-type from response headers ─────────────
+            let content_type = state
+                .response_headers
+                .iter()
+                .find(|(k, _)| k.to_lowercase() == "content-type")
+                .map(|(_, v)| v.to_lowercase())
+                .unwrap_or_default();
+            let is_json = content_type.contains("json");
+            let is_xml  = content_type.contains("xml") || content_type.contains("html");
+
+            // ── Toolbar: Beautify + Copy ───────────────────────────────
+            ui.horizontal(|ui| {
+                if is_json || is_xml {
+                    if ui.button("⚡ Beautify").on_hover_text("Format response body").clicked() {
+                        if is_json {
+                            if let Some(pretty) = beautify_json(&state.response_body) {
+                                state.response_body = pretty;
+                            }
+                        } else {
+                            let pretty = beautify_xml(&state.response_body);
+                            if !pretty.is_empty() {
+                                state.response_body = pretty;
+                            }
+                        }
+                    }
                 }
-                HttpResponseTab::Headers => {
+                if ui.button("⎘ Copy").on_hover_text("Copy response body to clipboard").clicked() {
+                    ui.ctx().copy_text(state.response_body.clone());
+                }
+            });
+            ui.add_space(2.0);
+
+            // ── Syntax-highlighted editor, fills remaining height ──────
+            let dark = ui.visuals().dark_mode;
+            let mut layouter = move |ui: &egui::Ui,
+                                     buf: &dyn egui::TextBuffer,
+                                     wrap_width: f32| {
+                let s = buf.as_str();
+                let font_id =
+                    ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                let mut job = if is_json {
+                    highlight_body_json(s, dark, font_id)
+                } else if is_xml {
+                    highlight_body_xml(s, dark, font_id)
+                } else {
+                    let col = if dark {
+                        egui::Color32::from_rgb(220, 220, 220)
+                    } else {
+                        egui::Color32::from_rgb(30, 30, 30)
+                    };
+                    let mut j = egui::text::LayoutJob::default();
+                    j.append(
+                        s,
+                        0.0,
+                        egui::TextFormat {
+                            font_id,
+                            color: col,
+                            ..Default::default()
+                        },
+                    );
+                    j
+                };
+                job.wrap.max_width = wrap_width;
+                ui.fonts(|f| f.layout_job(job))
+            };
+
+            let h = ui.available_height().max(80.0);
+            let w = ui.available_width();
+            ui.add_sized(
+                [w, h],
+                egui::TextEdit::multiline(&mut state.response_body)
+                    .desired_width(f32::INFINITY)
+                    .interactive(true)
+                    .layouter(&mut layouter),
+            );
+        }
+        HttpResponseTab::Headers => {
+            egui::ScrollArea::both()
+                .id_salt("http_response_headers_scroll")
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
                     if state.response_headers.is_empty() {
                         ui.colored_label(
                             ui.style().visuals.weak_text_color(),
@@ -570,9 +638,9 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                                 }
                             });
                     }
-                }
-            }
-        });
+                });
+        }
+    }
 }
 
 // ─── HTTP execution ──────────────────────────────────────────────────────────
