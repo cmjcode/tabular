@@ -1,6 +1,182 @@
+use std::sync::{Arc, Mutex, mpsc};
 use serde::{Deserialize, Serialize};
 
 use crate::models::{self, enums::NodeType};
+
+// ─── HTTP Client types ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum HttpMethod {
+    #[default]
+    GET,
+    POST,
+    PUT,
+    DELETE,
+    PATCH,
+    HEAD,
+    OPTIONS,
+}
+
+impl HttpMethod {
+    pub fn label(&self) -> &'static str {
+        match self {
+            HttpMethod::GET => "GET",
+            HttpMethod::POST => "POST",
+            HttpMethod::PUT => "PUT",
+            HttpMethod::DELETE => "DELETE",
+            HttpMethod::PATCH => "PATCH",
+            HttpMethod::HEAD => "HEAD",
+            HttpMethod::OPTIONS => "OPTIONS",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum HttpBodyType {
+    // Form Data
+    UrlEncoded,
+    MultiPart,
+    // Text Content
+    GraphQL,
+    Json,
+    Xml,
+    OtherText,
+    // Other
+    BinaryFile,
+    NoBody,
+}
+
+impl Default for HttpBodyType {
+    fn default() -> Self { HttpBodyType::NoBody }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum HttpAuthType {
+    ApiKey,
+    AwsSignature,
+    BasicAuth,
+    BearerToken,
+    JwtBearer,
+    OAuth1,
+    OAuth2,
+    NtlmAuth,
+    InheritParent,
+    NoAuth,
+}
+
+impl Default for HttpAuthType {
+    fn default() -> Self { HttpAuthType::NoAuth }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum HttpRequestTab {
+    Body,
+    Params,
+    Headers,
+    Auth,
+}
+
+impl Default for HttpRequestTab {
+    fn default() -> Self { HttpRequestTab::Body }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum HttpResponseTab {
+    Body,
+    Headers,
+}
+
+impl Default for HttpResponseTab {
+    fn default() -> Self { HttpResponseTab::Body }
+}
+
+/// Sent from the background thread back to the UI thread.
+pub struct HttpClientResponse {
+    pub status: u16,
+    pub status_text: String,
+    pub body: String,
+    pub headers: Vec<(String, String)>,
+    pub time_ms: u128,
+    pub size_bytes: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct HttpClientState {
+    pub url: String,
+    pub method: HttpMethod,
+
+    // Request config tabs
+    pub active_tab: HttpRequestTab,
+
+    // Body
+    pub body_type: HttpBodyType,
+    pub body_text: String,
+    pub form_data: Vec<(String, String, bool)>, // (key, value, enabled)
+
+    // Params
+    pub params: Vec<(String, String, bool)>,
+
+    // Headers
+    pub headers: Vec<(String, String, bool)>,
+
+    // Auth
+    pub auth_type: HttpAuthType,
+    pub bearer_token: String,
+    pub basic_user: String,
+    pub basic_pass: String,
+    pub api_key_name: String,
+    pub api_key_value: String,
+    pub api_key_in_header: bool, // true = Header, false = Query Param
+
+    // Response
+    pub response_status: Option<u16>,
+    pub response_status_text: String,
+    pub response_body: String,
+    pub response_headers: Vec<(String, String)>,
+    pub response_time_ms: Option<u128>,
+    pub response_size_bytes: Option<usize>,
+    pub response_error: Option<String>,
+    pub response_tab: HttpResponseTab,
+    pub is_loading: bool,
+
+    /// Channel receiver from background HTTP thread (Arc so Clone works).
+    pub response_receiver: Option<Arc<Mutex<mpsc::Receiver<HttpClientResponse>>>>,
+}
+
+impl Default for HttpClientState {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            method: HttpMethod::GET,
+            active_tab: HttpRequestTab::Body,
+            body_type: HttpBodyType::NoBody,
+            body_text: String::new(),
+            form_data: vec![("".to_string(), "".to_string(), true)],
+            params: vec![("".to_string(), "".to_string(), true)],
+            headers: vec![
+                ("Accept".to_string(), "*/*".to_string(), true),
+            ],
+            auth_type: HttpAuthType::NoAuth,
+            bearer_token: String::new(),
+            basic_user: String::new(),
+            basic_pass: String::new(),
+            api_key_name: String::new(),
+            api_key_value: String::new(),
+            api_key_in_header: true,
+            response_status: None,
+            response_status_text: String::new(),
+            response_body: String::new(),
+            response_headers: Vec::new(),
+            response_time_ms: None,
+            response_size_bytes: None,
+            response_error: None,
+            response_tab: HttpResponseTab::Body,
+            is_loading: false,
+            response_receiver: None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct TreeNode {
@@ -228,6 +404,9 @@ pub struct QueryTab {
     // Diagram state for "Diagrams" tab
     pub diagram_state: Option<DiagramState>,
     pub should_run_on_open: bool,
+
+    // HTTP client state (Some(_) means this tab is an HTTP client)
+    pub http_client_state: Option<HttpClientState>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

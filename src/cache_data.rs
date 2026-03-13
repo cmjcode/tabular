@@ -191,6 +191,7 @@ pub(crate) fn fetch_and_cache_connection_data(
                     vec!["table", "view", "procedure", "function", "trigger"]
                 }
                 models::enums::DatabaseType::MongoDB => vec!["collection"],
+                models::enums::DatabaseType::ApiHttp => vec![],
             };
 
             let mut all_tables = Vec::new();
@@ -258,6 +259,7 @@ pub(crate) fn fetch_and_cache_connection_data(
                             None
                         }
                     }
+                    models::enums::DatabaseType::ApiHttp => None,
                 };
 
                 if let Some(tables) = tables_result {

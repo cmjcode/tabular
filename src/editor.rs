@@ -50,6 +50,7 @@ pub(crate) fn create_new_tab(
         query_message_is_error: false,
         diagram_state: None,
         should_run_on_open: false,
+        http_client_state: None,
     };
 
     tabular.query_tabs.push(new_tab);

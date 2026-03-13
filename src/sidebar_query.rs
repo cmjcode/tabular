@@ -363,6 +363,7 @@ pub(crate) fn open_query_file(
         query_message_is_error: false,
         diagram_state: None,
         should_run_on_open: false,
+        http_client_state: None,
     };
 
     tabular.query_tabs.push(new_tab);

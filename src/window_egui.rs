@@ -2131,7 +2131,7 @@ impl Tabular {
                 }
                 self.quote_identifier(state.table_name.trim(), &state.db_type)
             }
-            DatabaseType::Redis | DatabaseType::MongoDB => {
+            DatabaseType::Redis | DatabaseType::MongoDB | DatabaseType::ApiHttp => {
                 return Err("Create table is not available for this database type.".to_string());
             }
         };
@@ -3457,8 +3457,9 @@ impl Tabular {
                                 | models::enums::DatabaseType::Redis => {
                                     format!("SELECT * FROM `{}` LIMIT 100;", table_name)
                                 }
-                                models::enums::DatabaseType::MongoDB => {
-                                    // Unreachable here; MongoDB handled above with sampling
+                                models::enums::DatabaseType::MongoDB
+                                | models::enums::DatabaseType::ApiHttp => {
+                                    // Unreachable here; MongoDB/ApiHttp handled above with sampling
                                     String::new()
                                 }
                             }
@@ -3582,8 +3583,9 @@ impl Tabular {
                                     | models::enums::DatabaseType::Redis => {
                                         format!("SELECT * FROM `{}`", table_name)
                                     }
-                                    models::enums::DatabaseType::MongoDB => {
-                                        // MongoDB handled separately above
+                                    models::enums::DatabaseType::MongoDB
+                                    | models::enums::DatabaseType::ApiHttp => {
+                                        // MongoDB/ApiHttp handled separately above
                                         String::new()
                                     }
                                 }
@@ -6428,6 +6430,7 @@ impl Tabular {
                 models::enums::DatabaseType::MongoDB => {
                     crate::driver_mongodb::load_mongodb_structure(connection_id, &connection, node);
                 }
+                models::enums::DatabaseType::ApiHttp => {}
             }
             node.is_loaded = true;
         }
@@ -6822,6 +6825,7 @@ impl Tabular {
                     main_children.push(databases_folder);
                     main_children.push(dba_folder);
                 }
+                models::enums::DatabaseType::ApiHttp => {}
             }
 
             node.children = main_children;
@@ -7066,6 +7070,7 @@ impl Tabular {
                 models::enums::DatabaseType::MongoDB => {
                     vec!["admin".to_string(), "local".to_string()]
                 }
+                models::enums::DatabaseType::ApiHttp => vec![],
             };
 
             // Clear loading message
@@ -7528,6 +7533,7 @@ impl Tabular {
                         )];
                     }
                 }
+                models::enums::DatabaseType::ApiHttp => {}
             }
 
             node.is_loaded = true;
@@ -8739,6 +8745,7 @@ impl Tabular {
                     }
                 })
             }
+            models::enums::DatabaseType::ApiHttp => Vec::new(),
         }
     }
 
@@ -8856,6 +8863,7 @@ impl Tabular {
             }
             models::enums::DatabaseType::Redis => Vec::new(),
             models::enums::DatabaseType::MongoDB => vec!["_id".to_string()],
+            models::enums::DatabaseType::ApiHttp => vec![],
         }
     }
 
@@ -9426,6 +9434,7 @@ impl Tabular {
                     // Reuse SQL table cache search; collections are stored in table_cache with table_type='collection'
                     self.search_sql_tables(connection_id, search_text, &conn_type);
                 }
+                models::enums::DatabaseType::ApiHttp => {}
             }
         }
     }
@@ -12680,7 +12689,18 @@ impl App for Tabular {
                 } else {
                     // Regular query tabs: Use consolidated rendering
                     let mut rendered_diagram = false;
+                    let mut rendered_http = false;
                     let mut diagram_to_save = None;
+
+                    // Check for HTTP client tab
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                        && tab.http_client_state.is_some()
+                    {
+                        if let Some(state) = &mut tab.http_client_state {
+                            crate::http_client::render_http_client(ui, state);
+                        }
+                        rendered_http = true;
+                    }
                     
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                         && let Some(diagram_state) = &mut tab.diagram_state {
@@ -12699,14 +12719,14 @@ impl App for Tabular {
                              self.save_diagram(cid, &db, &state);
                          }
                     
-                    if !rendered_diagram {
+                    if !rendered_diagram && !rendered_http {
                         self.render_query_editor_with_split(ui, "regular_query");
                     }
                     
-                    // Floating tab buttons at bottom-right corner (only show if executed or has message)
+                    // Floating tab buttons at bottom-right corner (only show if executed or has message, and not HTTP tab)
                     let executed = self.query_tabs.get(self.active_tab_index).map(|t| t.has_executed_query).unwrap_or(false);
                     let has_headers = !self.current_table_headers.is_empty();
-                    if executed || has_headers || !self.query_message.is_empty() {
+                    if !rendered_http && (executed || has_headers || !self.query_message.is_empty()) {
                         let margin = 6.0;
                         let button_height = 18.0; // Match Clear selection button height
                         let button_spacing = 4.0;

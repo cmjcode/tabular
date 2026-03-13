@@ -15,6 +15,7 @@ fn database_type_order(db_type: &models::enums::DatabaseType) -> u8 {
         models::enums::DatabaseType::Redis => 3,
         models::enums::DatabaseType::MsSQL => 4,
         models::enums::DatabaseType::MongoDB => 5,
+        models::enums::DatabaseType::ApiHttp => 6,
     }
 }
 
@@ -154,6 +155,7 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
             models::enums::DatabaseType::MsSQL => "1433".into(),
             models::enums::DatabaseType::SQLite => String::new(),
             models::enums::DatabaseType::MongoDB => "27017".into(),
+            models::enums::DatabaseType::ApiHttp => String::new(),
         };
     }
 
@@ -208,11 +210,7 @@ pub(crate) fn render_connection_dialog(
                     .num_columns(2)
                     .spacing([10.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label("Connection Name:");
-                        ui.text_edit_singleline(&mut connection_data.name);
-                        ui.end_row();
-
-                        ui.label("Database Type:");
+                        ui.label("Connection Type:");
                         egui::ComboBox::from_label("")
                             .selected_text(match connection_data.connection_type {
                                 models::enums::DatabaseType::MySQL => "MySQL",
@@ -221,6 +219,7 @@ pub(crate) fn render_connection_dialog(
                                 models::enums::DatabaseType::Redis => "Redis",
                                 models::enums::DatabaseType::MsSQL => "MsSQL",
                                 models::enums::DatabaseType::MongoDB => "MongoDB",
+                                models::enums::DatabaseType::ApiHttp => "API - HTTP",
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
@@ -253,7 +252,17 @@ pub(crate) fn render_connection_dialog(
                                     models::enums::DatabaseType::MongoDB,
                                     "MongoDB",
                                 );
+                                ui.selectable_value(
+                                    &mut connection_data.connection_type,
+                                    models::enums::DatabaseType::ApiHttp,
+                                    "🌐 API - HTTP",
+                                );
                             });
+                        ui.end_row();
+
+                        
+                        ui.label("Connection Name:");
+                        ui.text_edit_singleline(&mut connection_data.name);
                         ui.end_row();
 
                         if connection_data.connection_type == models::enums::DatabaseType::SQLite {
@@ -266,6 +275,9 @@ pub(crate) fn render_connection_dialog(
                                 ui.label("Database File:");
                                 ui.text_edit_singleline(&mut connection_data.database);
                                 ui.end_row();
+                            }
+                            models::enums::DatabaseType::ApiHttp => {
+                                // API-HTTP: only Connection Name + Folder needed
                             }
                             _ => {
                                 ui.label("Host:");
@@ -300,7 +312,6 @@ pub(crate) fn render_connection_dialog(
                             .as_ref()
                             .unwrap_or(&String::new())
                             .clone();
-
                         if connection_data.connection_type == models::enums::DatabaseType::SQLite {
                             ui.horizontal(|ui| {
                                 ui.text_edit_singleline(&mut folder_text);
@@ -328,7 +339,8 @@ pub(crate) fn render_connection_dialog(
                         };
                         ui.end_row();
 
-                        // Build and edit Connection URL inline to keep alignment with other fields
+                        // Build and edit Connection URL inline (not shown for API-HTTP)
+                        if connection_data.connection_type != models::enums::DatabaseType::ApiHttp {
                         let full_url = {
                             let host = connection_data.host.trim();
                             let port = connection_data.port.trim();
@@ -425,6 +437,7 @@ pub(crate) fn render_connection_dialog(
                                     };
                                     format!("mssql://{}{}:{}{}", auth, host, port, path)
                                 }
+                                models::enums::DatabaseType::ApiHttp => String::new(),
                             }
                         };
 
@@ -442,10 +455,15 @@ pub(crate) fn render_connection_dialog(
                             connection_data.database = parsed.database;
                         }
                         ui.end_row();
+                        } // end if != ApiHttp (Connection URL section)
 
                         let ssh_supported = connection_data.connection_type
-                            != models::enums::DatabaseType::SQLite;
+                            != models::enums::DatabaseType::SQLite
+                            && connection_data.connection_type
+                                != models::enums::DatabaseType::ApiHttp;
 
+                        // SSH Tunnel section: not applicable for API-HTTP connections
+                        if connection_data.connection_type != models::enums::DatabaseType::ApiHttp {
                         ui.label("SSH Tunnel:");
                         let mut ssh_checkbox_value = connection_data.ssh_enabled;
                         let ssh_checkbox = ui.add_enabled(
@@ -530,6 +548,7 @@ pub(crate) fn render_connection_dialog(
                             );
                             ui.end_row();
                         }
+                        } // end if != ApiHttp (SSH section)
                     });
 
                 ui.separator();
@@ -566,6 +585,11 @@ pub(crate) fn render_connection_dialog(
                         } else {
                             // Add new connection
                             let mut connection_to_add = connection_data.clone();
+                            let is_api_http = connection_to_add.connection_type
+                                == models::enums::DatabaseType::ApiHttp;
+
+                            let mut new_conn_id: Option<i64> = None;
+                            let mut new_conn_name = connection_to_add.name.clone();
 
                             // Try to save to database first
                             if save_connection_to_database(tabular, &connection_to_add) {
@@ -583,6 +607,8 @@ pub(crate) fn render_connection_dialog(
                                     .cloned();
 
                                 if let Some(conn) = added_conn {
+                                    new_conn_id = conn.id;
+                                    new_conn_name = conn.name.clone();
                                     add_connection_to_tree(tabular, &conn);
                                 }
                             } else {
@@ -595,6 +621,7 @@ pub(crate) fn render_connection_dialog(
                                     .unwrap_or(0)
                                     + 1;
                                 connection_to_add.id = Some(new_id);
+                                new_conn_id = Some(new_id);
                                 tabular.connections.push(connection_to_add.clone());
                                 // Add to tree incrementally
                                 add_connection_to_tree(tabular, &connection_to_add);
@@ -604,21 +631,39 @@ pub(crate) fn render_connection_dialog(
                             tabular.test_connection_status = None;
                             tabular.test_connection_in_progress = false;
                             tabular.show_add_connection = false;
+
+                            // Open HTTP client tab for API-HTTP connections
+                            if is_api_http {
+                                crate::editor::create_new_tab_with_connection(
+                                    tabular,
+                                    new_conn_name,
+                                    String::new(),
+                                    new_conn_id,
+                                );
+                                if let Some(tab) =
+                                    tabular.query_tabs.get_mut(tabular.active_tab_index)
+                                {
+                                    tab.http_client_state =
+                                        Some(models::structs::HttpClientState::default());
+                                }
+                            }
                         }
                     }
 
                     // Push Test Connection button ke kanan
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Test Connection button (untuk kedua mode add dan edit)
-                        if tabular.test_connection_in_progress {
-                            ui.spinner();
-                            ui.label("Testing connection...");
-                        } else if ui.button("Test Connection").clicked() {
-                            // Test connection based on database type
-                            // Note: This is synchronous, so we don't see the spinner. 
-                            // TODO: Move to async task if spinner is needed.
-                            let result = connection::test_database_connection(&connection_data);
-                            tabular.test_connection_status = Some(result);
+                        // Test Connection button (tidak tersedia untuk API-HTTP)
+                        if connection_data.connection_type != models::enums::DatabaseType::ApiHttp {
+                            if tabular.test_connection_in_progress {
+                                ui.spinner();
+                                ui.label("Testing connection...");
+                            } else if ui.button("Test Connection").clicked() {
+                                // Test connection based on database type
+                                // Note: This is synchronous, so we don't see the spinner.
+                                // TODO: Move to async task if spinner is needed.
+                                let result = connection::test_database_connection(&connection_data);
+                                tabular.test_connection_status = Some(result);
+                            }
                         }
                     });
                 });
@@ -739,6 +784,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                             "Redis" => models::enums::DatabaseType::Redis,
                             "MsSQL" => models::enums::DatabaseType::MsSQL,
                             "MongoDB" => models::enums::DatabaseType::MongoDB,
+                            "ApiHttp" => models::enums::DatabaseType::ApiHttp,
                             _ => models::enums::DatabaseType::SQLite,
                         },
                         folder,

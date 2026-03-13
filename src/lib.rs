@@ -21,6 +21,7 @@ pub mod editor_buffer;
 pub mod editor_selection;
 pub mod editor_state_adapter;
 pub mod export;
+pub mod http_client;
 pub mod models;
 pub mod modules;
 pub mod query_tools;

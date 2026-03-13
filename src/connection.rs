@@ -556,6 +556,11 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
         models::enums::DatabaseType::MongoDB => {
             execute_mongodb_query_job(&job.options, job.connection_pool.clone()).await
         }
+        models::enums::DatabaseType::ApiHttp => {
+            Err(QueryExecutionError::Message(
+                "API-HTTP connections do not support SQL queries".to_string(),
+            ))
+        }
     };
 
     match outcome {
@@ -3792,6 +3797,10 @@ async fn create_connection_pool_for_config(
                 }
             }
         }
+        models::enums::DatabaseType::ApiHttp => {
+            // API-HTTP connections do not use a database pool
+            None
+        }
     }
 }
 
@@ -4234,6 +4243,7 @@ pub(crate) async fn create_database_pool(
                 _ => None,
             }
         }
+        models::enums::DatabaseType::ApiHttp => None,
     }
 }
 
@@ -4289,6 +4299,7 @@ async fn fetch_and_cache_all_data(
                 false
             }
         }
+        models::enums::DatabaseType::ApiHttp => false,
     }
 }
 
@@ -5330,6 +5341,7 @@ pub(crate) fn fetch_columns_from_database(
                     }
                 }
             }
+            models::enums::DatabaseType::ApiHttp => None,
             // MongoDB has been handled above; no additional branch here.
         }
     })
@@ -5674,7 +5686,7 @@ pub(crate) fn fetch_view_definition(
                     }
                 }
             }
-            models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB => None,
+            models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB | models::enums::DatabaseType::ApiHttp => None,
         }
     })
 }
@@ -6255,6 +6267,9 @@ pub(crate) fn test_database_connection(
                     Ok(_) => (true, "MsSQL connection successful!".to_string()),
                     Err(e) => (false, format!("MsSQL connection failed: {}", e)),
                 }
+            }
+            models::enums::DatabaseType::ApiHttp => {
+                (false, "API-HTTP connections do not support database testing".to_string())
             }
         }
     })

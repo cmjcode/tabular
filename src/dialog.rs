@@ -353,6 +353,10 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                             // Show a small hint instead of an algorithm picker.
                             ui.label("Use Columns as 'field1:1, field2:-1'");
                         }
+                        crate::models::enums::DatabaseType::ApiHttp => {
+                            ui.label(egui::RichText::new("N/A").italics().color(egui::Color32::GRAY));
+                            working.method = None;
+                        }
                     }
                     ui.end_row();
                 });
@@ -533,6 +537,10 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                                     drop_cmd,
                                     create_cmd
                                 )
+                            }
+                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::ApiHttp)
+                            | (crate::models::structs::IndexDialogMode::Edit, DatabaseType::ApiHttp) => {
+                                "-- Not applicable for API-HTTP connections".to_string()
                             }
                         }
                     } else {
@@ -757,7 +765,8 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                             "Database (optional)"
                                         }
                                         models::enums::DatabaseType::Redis
-                                        | models::enums::DatabaseType::MongoDB => "Database",
+                                        | models::enums::DatabaseType::MongoDB
+                                        | models::enums::DatabaseType::ApiHttp => "Database",
                                     };
                                     ui.label(target_label);
                                     match state.db_type {

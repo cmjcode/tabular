@@ -259,5 +259,6 @@ pub fn get_dialect(db_type: &DatabaseType) -> Box<dyn SqlDialect> {
         DatabaseType::MsSQL => Box::new(MssqlDialect),
         DatabaseType::MongoDB => Box::new(MongoDialect),
         DatabaseType::Redis => Box::new(RedisDialect),
+        DatabaseType::ApiHttp => Box::new(RedisDialect),
     }
 }

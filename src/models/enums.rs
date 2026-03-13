@@ -116,6 +116,7 @@ pub enum DatabaseType {
     Redis,
     MsSQL,
     MongoDB,
+    ApiHttp,
 }
 
 impl DatabaseType {
@@ -128,6 +129,7 @@ impl DatabaseType {
             DatabaseType::Redis => "🔴",
             DatabaseType::MsSQL => "💠",
             DatabaseType::MongoDB => "🍃",
+            DatabaseType::ApiHttp => "🌐",
         }
     }
 }
