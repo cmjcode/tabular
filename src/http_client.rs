@@ -143,18 +143,30 @@ fn render_request_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
     ui.separator();
 
-    egui::ScrollArea::vertical()
-        .id_salt("http_request_scroll")
-        .show(ui, |ui| {
-            match &state.active_tab {
-                HttpRequestTab::Body => render_body_panel(ui, state),
-                HttpRequestTab::Params => render_kv_table(ui, &mut state.params, "http_params"),
-                HttpRequestTab::Headers => {
-                    render_kv_table(ui, &mut state.headers, "http_headers")
+    // Text-body editors fill the remaining height without a scroll area wrapper
+    // (the TextEdit widget itself handles internal scrolling)
+    let is_text_body = matches!(state.active_tab, HttpRequestTab::Body)
+        && matches!(
+            state.body_type,
+            HttpBodyType::Json | HttpBodyType::Xml | HttpBodyType::GraphQL | HttpBodyType::OtherText
+        );
+
+    if is_text_body {
+        render_body_panel(ui, state);
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt("http_request_scroll")
+            .show(ui, |ui| {
+                match state.active_tab.clone() {
+                    HttpRequestTab::Body => render_body_panel(ui, state),
+                    HttpRequestTab::Params => render_kv_table(ui, &mut state.params, "http_params"),
+                    HttpRequestTab::Headers => {
+                        render_kv_table(ui, &mut state.headers, "http_headers")
+                    }
+                    HttpRequestTab::Auth => render_auth_panel(ui, state),
                 }
-                HttpRequestTab::Auth => render_auth_panel(ui, state),
-            }
-        });
+            });
+    }
 }
 
 // ─── Body panel ─────────────────────────────────────────────────────────────
@@ -215,13 +227,85 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 HttpBodyType::Xml => "application/xml",
                 _ => "text/plain",
             };
-            ui.add(
+
+            // ── Beautify toolbar ────────────────────────────────────────
+            let can_beautify = matches!(
+                state.body_type,
+                HttpBodyType::Json | HttpBodyType::GraphQL | HttpBodyType::Xml
+            );
+            if can_beautify {
+                ui.horizontal(|ui| {
+                    let btn = ui.button("⚡ Beautify");
+                    if btn.clicked() {
+                        match state.body_type {
+                            HttpBodyType::Json | HttpBodyType::GraphQL => {
+                                if let Some(pretty) = beautify_json(&state.body_text) {
+                                    state.body_text = pretty;
+                                }
+                            }
+                            HttpBodyType::Xml => {
+                                let pretty = beautify_xml(&state.body_text);
+                                if !pretty.is_empty() {
+                                    state.body_text = pretty;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    btn.on_hover_text("Format / pretty-print the body content");
+                });
+                ui.add_space(2.0);
+            }
+
+            // ── Editor filling remaining space ──────────────────────────
+            // Reserve ~22 px for the Content-Type label below the editor
+            let label_h = 22.0;
+            let editor_h = (ui.available_height() - label_h - 4.0).max(80.0);
+            let editor_w = ui.available_width();
+
+            let dark = ui.visuals().dark_mode;
+            let body_type_cap = state.body_type.clone();
+            let mut layouter = move |ui: &egui::Ui,
+                                     buf: &dyn egui::TextBuffer,
+                                     wrap_width: f32| {
+                let s = buf.as_str();
+                let font_id =
+                    ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                let mut job = match &body_type_cap {
+                    HttpBodyType::Json => highlight_body_json(s, dark, font_id),
+                    HttpBodyType::GraphQL => highlight_body_graphql(s, dark, font_id),
+                    HttpBodyType::Xml => highlight_body_xml(s, dark, font_id),
+                    _ => {
+                        let col = if dark {
+                            egui::Color32::from_rgb(220, 220, 220)
+                        } else {
+                            egui::Color32::from_rgb(30, 30, 30)
+                        };
+                        let mut j = egui::text::LayoutJob::default();
+                        j.append(
+                            s,
+                            0.0,
+                            egui::TextFormat {
+                                font_id,
+                                color: col,
+                                ..Default::default()
+                            },
+                        );
+                        j
+                    }
+                };
+                job.wrap.max_width = wrap_width;
+                ui.fonts(|f| f.layout_job(job))
+            };
+
+            ui.add_sized(
+                [editor_w, editor_h],
                 egui::TextEdit::multiline(&mut state.body_text)
                     .hint_text(hint)
                     .desired_width(f32::INFINITY)
-                    .desired_rows(12)
-                    .font(egui::TextStyle::Monospace),
+                    .layouter(&mut layouter),
             );
+
             ui.label(
                 egui::RichText::new(format!("Content-Type: {}", content_type_hint))
                     .small()
@@ -240,37 +324,32 @@ fn render_kv_table(
     id: &str,
 ) {
     let mut to_remove: Vec<usize> = Vec::new();
+    let spacing = ui.spacing().item_spacing.x;
+    let checkbox_w = 20.0;
+    let del_btn_w = 20.0;
+    let total_w = ui.available_width();
+    // Two fields share the space left after checkbox, delete button, and 3 gaps
+    let field_w = ((total_w - checkbox_w - del_btn_w - spacing * 3.0) * 0.5).max(60.0);
 
-    egui::Grid::new(id)
-        .num_columns(4)
-        .spacing([4.0, 4.0])
-        .striped(true)
-        .show(ui, |ui| {
-            // Header row
-            ui.label("");
-            ui.label(egui::RichText::new("Key").strong());
-            ui.label(egui::RichText::new("Value").strong());
-            ui.label("");
-            ui.end_row();
+    // Header row
+    ui.horizontal(|ui| {
+        ui.add_space(checkbox_w + spacing);
+        ui.add_sized([field_w, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new("Key").strong()));
+        ui.add_sized([field_w, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new("Value").strong()));
+    });
+    ui.separator();
 
-            for (idx, (key, value, enabled)) in rows.iter_mut().enumerate() {
-                ui.checkbox(enabled, "");
-                ui.add(
-                    egui::TextEdit::singleline(key)
-                        .desired_width(180.0)
-                        .hint_text("key"),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(value)
-                        .desired_width(200.0)
-                        .hint_text("value"),
-                );
-                if ui.small_button("✕").clicked() {
-                    to_remove.push(idx);
-                }
-                ui.end_row();
+    let _ = id;
+    for (idx, (key, value, enabled)) in rows.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.checkbox(enabled, "");
+            ui.add(egui::TextEdit::singleline(key).desired_width(field_w).hint_text("key"));
+            ui.add(egui::TextEdit::singleline(value).desired_width(field_w).hint_text("value"));
+            if ui.small_button("✕").clicked() {
+                to_remove.push(idx);
             }
         });
+    }
 
     for idx in to_remove.iter().rev() {
         rows.remove(*idx);
@@ -702,3 +781,432 @@ fn apply_response(state: &mut HttpClientState, resp: HttpClientResponse) {
     state.response_time_ms = Some(resp.time_ms);
     state.response_size_bytes = Some(resp.size_bytes);
 }
+
+// ─── Beautify helpers ─────────────────────────────────────────────────────────
+
+/// Pretty-print a JSON string. Returns `None` if parsing fails.
+fn beautify_json(input: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(input.trim()).ok()?;
+    serde_json::to_string_pretty(&value).ok()
+}
+
+/// Pretty-print an XML string with 2-space indentation.
+fn beautify_xml(input: &str) -> String {
+    // ── tokenise into tags and text nodes ──────────────────────────────
+    let mut tokens: Vec<String> = Vec::new();
+    let mut remaining = input.trim();
+
+    while !remaining.is_empty() {
+        if remaining.starts_with('<') {
+            let end = xml_tag_end(remaining);
+            tokens.push(remaining[..end].to_string());
+            remaining = remaining[end..].trim_start();
+        } else {
+            let end = remaining.find('<').unwrap_or(remaining.len());
+            let text = remaining[..end].trim();
+            if !text.is_empty() {
+                tokens.push(text.to_string());
+            }
+            remaining = &remaining[end..];
+        }
+    }
+
+    // ── rebuild with indentation ───────────────────────────────────────
+    let mut output = String::new();
+    let mut depth: i32 = 0;
+    const IND: &str = "  ";
+
+    for (i, token) in tokens.iter().enumerate() {
+        if token.starts_with('<') {
+            let tag_upper = token.to_ascii_uppercase();
+            let is_close = token.starts_with("</");
+            let is_self_close = token.ends_with("/>")
+                || token.starts_with("<?")
+                || token.starts_with("<!--")
+                || tag_upper.starts_with("<!D"); // DOCTYPE
+
+            if is_close {
+                depth = (depth - 1).max(0);
+                // Keep closing tag on the same line when previous token was text
+                let prev_is_text = i > 0 && !tokens[i - 1].starts_with('<');
+                if prev_is_text {
+                    output.push_str(token);
+                } else {
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    for _ in 0..depth {
+                        output.push_str(IND);
+                    }
+                    output.push_str(token);
+                }
+            } else {
+                // Opening / self-closing / PI / comment
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                for _ in 0..depth {
+                    output.push_str(IND);
+                }
+                output.push_str(token);
+                if !is_self_close {
+                    depth += 1;
+                }
+            }
+        } else {
+            // Text content – always appended inline after its opening tag
+            output.push_str(token);
+        }
+    }
+
+    output.trim().to_string()
+}
+
+/// Find the byte-offset just past the closing `>` of one XML tag.
+fn xml_tag_end(input: &str) -> usize {
+    if input.starts_with("<!--") {
+        return input.find("-->").map(|p| p + 3).unwrap_or(input.len());
+    }
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 1;
+    let mut in_quote = false;
+    let mut quote_char = b'"';
+    while i < len {
+        if in_quote {
+            if bytes[i] == quote_char {
+                in_quote = false;
+            }
+        } else {
+            match bytes[i] {
+                b'"' | b'\'' => {
+                    in_quote = true;
+                    quote_char = bytes[i];
+                }
+                b'>' => return i + 1,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    len
+}
+
+// ─── HTTP Body Syntax Highlighting ───────────────────────────────────────────
+
+/// JSON syntax highlighter.
+/// Colors: cyan = keys, green = string values, orange = numbers,
+///         purple = true/false/null, gray = punctuation.
+fn highlight_body_json(
+    text: &str,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
+    use egui::{text::LayoutJob, Color32, TextFormat};
+    let mut job = LayoutJob::default();
+
+    let key_col   = Color32::from_rgb(130, 200, 255); // cyan   – keys
+    let str_col   = Color32::from_rgb(152, 195, 121); // green  – string values
+    let num_col   = Color32::from_rgb(209, 154, 102); // orange – numbers
+    let kw_col    = Color32::from_rgb(198, 120, 221); // purple – true/false/null
+    let punct_col = Color32::from_rgb(171, 178, 191); // gray   – brackets/commas
+    let norm_col  = if dark { Color32::from_rgb(220, 220, 220) } else { Color32::from_rgb(30, 30, 30) };
+
+    macro_rules! tf {
+        ($c:expr) => {
+            TextFormat { font_id: font_id.clone(), color: $c, ..Default::default() }
+        };
+    }
+
+    let bs = text.as_bytes();
+    let n  = bs.len();
+    let mut i = 0;
+
+    while i < n {
+        match bs[i] {
+            // ── double-quoted string ────────────────────────────────────
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < n {
+                    if bs[i] == b'\\' { i += 2; continue; }
+                    if bs[i] == b'"'  { i += 1; break; }
+                    i += 1;
+                }
+                // look-ahead: if next non-ws char is ':', this is an object key
+                let mut k = i;
+                while k < n && bs[k].is_ascii_whitespace() { k += 1; }
+                let color = if k < n && bs[k] == b':' { key_col } else { str_col };
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(color)); }
+            }
+            // ── positive number ─────────────────────────────────────────
+            b'0'..=b'9' => {
+                let start = i;
+                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.' || bs[i] == b'e' || bs[i] == b'E') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+            }
+            // ── negative number ─────────────────────────────────────────
+            b'-' if i + 1 < n && bs[i + 1].is_ascii_digit() => {
+                let start = i;
+                i += 1;
+                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.' || bs[i] == b'e' || bs[i] == b'E') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+            }
+            // ── keyword (true / false / null) ───────────────────────────
+            b'a'..=b'z' | b'A'..=b'Z' => {
+                let start = i;
+                while i < n && bs[i].is_ascii_alphanumeric() { i += 1; }
+                let word = text.get(start..i).unwrap_or("");
+                let col  = if matches!(word, "true" | "false" | "null") { kw_col } else { norm_col };
+                job.append(word, 0.0, tf!(col));
+            }
+            // ── structural punctuation ──────────────────────────────────
+            b'{' | b'}' | b'[' | b']' | b':' | b',' => {
+                if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+                i += 1;
+            }
+            // ── whitespace / other ──────────────────────────────────────
+            _ => {
+                let start = i;
+                i += 1;
+                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(norm_col)); }
+            }
+        }
+    }
+    job
+}
+
+/// XML syntax highlighter.
+/// Colors: blue = tag names, light-blue = attr names, green = attr values,
+///         gray = punctuation, muted-green = comments, yellow = CDATA,
+///         purple = processing instructions.
+fn highlight_body_xml(
+    text: &str,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
+    use egui::{text::LayoutJob, Color32, TextFormat};
+    let mut job = LayoutJob::default();
+
+    let tag_col      = Color32::from_rgb( 86, 156, 214); // blue        – tag names
+    let attr_key_col = Color32::from_rgb(146, 202, 245); // light blue  – attr names
+    let attr_val_col = Color32::from_rgb(152, 195, 121); // green       – attr values
+    let punct_col    = Color32::from_rgb(171, 178, 191); // gray        – <, >, /, =
+    let comment_col  = Color32::from_rgb(106, 153,  85); // muted green – comments
+    let cdata_col    = Color32::from_rgb(220, 220, 170); // pale yellow – CDATA
+    let pi_col       = Color32::from_rgb(198, 120, 221); // purple      – <?...?>
+    let norm_col     = if dark { Color32::from_rgb(220, 220, 220) } else { Color32::from_rgb(30, 30, 30) };
+
+    macro_rules! tf {
+        ($c:expr) => {
+            TextFormat { font_id: font_id.clone(), color: $c, ..Default::default() }
+        };
+    }
+
+    let bs = text.as_bytes();
+    let n  = bs.len();
+    let mut i = 0;
+
+    while i < n {
+        if bs[i] != b'<' {
+            // ── text content ─────────────────────────────────────────────
+            let start = i;
+            while i < n && bs[i] != b'<' { i += 1; }
+            if let Some(s) = text.get(start..i) {
+                if !s.is_empty() { job.append(s, 0.0, tf!(norm_col)); }
+            }
+            continue;
+        }
+
+        // ── comment ───────────────────────────────────────────────────
+        if text[i..].starts_with("<!--") {
+            let start = i;
+            i += 4;
+            while i < n {
+                if text[i..].starts_with("-->") { i += 3; break; }
+                i += 1;
+            }
+            if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(comment_col)); }
+            continue;
+        }
+
+        // ── CDATA ────────────────────────────────────────────────────
+        if text[i..].starts_with("<![CDATA[") {
+            let start = i;
+            i += 9;
+            while i < n {
+                if text[i..].starts_with("]]>") { i += 3; break; }
+                i += 1;
+            }
+            if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(cdata_col)); }
+            continue;
+        }
+
+        // ── regular tag ───────────────────────────────────────────────
+        job.append("<", 0.0, tf!(punct_col));
+        i += 1;
+
+        let is_pi      = i < n && bs[i] == b'?';
+        let is_closing = i < n && bs[i] == b'/';
+        if is_closing || is_pi {
+            if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+            i += 1;
+        }
+
+        // tag name
+        let name_start = i;
+        while i < n && !bs[i].is_ascii_whitespace() && bs[i] != b'>' && bs[i] != b'/' && bs[i] != b'?' { i += 1; }
+        if let Some(name) = text.get(name_start..i) {
+            if !name.is_empty() {
+                job.append(name, 0.0, tf!(if is_pi { pi_col } else { tag_col }));
+            }
+        }
+
+        // attributes
+        while i < n && bs[i] != b'>' {
+            if bs[i].is_ascii_whitespace() {
+                let s = i;
+                while i < n && bs[i].is_ascii_whitespace() { i += 1; }
+                if let Some(ws) = text.get(s..i) { job.append(ws, 0.0, tf!(norm_col)); }
+            } else if bs[i] == b'/' || bs[i] == b'?' {
+                if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+                i += 1;
+            } else if bs[i] == b'=' {
+                job.append("=", 0.0, tf!(punct_col));
+                i += 1;
+            } else if bs[i] == b'"' || bs[i] == b'\'' {
+                let q = bs[i];
+                let s = i;
+                i += 1;
+                while i < n && bs[i] != q { i += 1; }
+                if i < n { i += 1; }
+                if let Some(slice) = text.get(s..i) { job.append(slice, 0.0, tf!(attr_val_col)); }
+            } else {
+                let s = i;
+                while i < n && bs[i] != b'=' && bs[i] != b'>' && !bs[i].is_ascii_whitespace() && bs[i] != b'/' { i += 1; }
+                if let Some(name) = text.get(s..i) {
+                    if !name.is_empty() { job.append(name, 0.0, tf!(attr_key_col)); }
+                }
+            }
+        }
+
+        if i < n && bs[i] == b'>' {
+            job.append(">", 0.0, tf!(punct_col));
+            i += 1;
+        }
+    }
+    job
+}
+
+/// GraphQL syntax highlighter.
+/// Colors: purple = keywords, green = strings, muted-green = comments,
+///         orange = types (uppercase), cyan = fields, gray = punctuation.
+fn highlight_body_graphql(
+    text: &str,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
+    use egui::{text::LayoutJob, Color32, TextFormat};
+    let mut job = LayoutJob::default();
+
+    let kw_col      = Color32::from_rgb(198, 120, 221); // purple
+    let str_col     = Color32::from_rgb(152, 195, 121); // green
+    let comment_col = Color32::from_rgb(106, 153,  85); // muted green
+    let type_col    = Color32::from_rgb(230, 180,  80); // orange  – TYPE names
+    let field_col   = Color32::from_rgb(130, 200, 255); // cyan    – field names
+    let num_col     = Color32::from_rgb(209, 154, 102); // orange  – numbers
+    let punct_col   = Color32::from_rgb(171, 178, 191); // gray
+    let norm_col    = if dark { Color32::from_rgb(220, 220, 220) } else { Color32::from_rgb(30, 30, 30) };
+
+    macro_rules! tf {
+        ($c:expr) => {
+            TextFormat { font_id: font_id.clone(), color: $c, ..Default::default() }
+        };
+    }
+
+    let bs = text.as_bytes();
+    let n  = bs.len();
+    let mut i = 0;
+
+    while i < n {
+        match bs[i] {
+            // ── line comment ────────────────────────────────────────────
+            b'#' => {
+                let start = i;
+                while i < n && bs[i] != b'\n' { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(comment_col)); }
+            }
+            // ── triple-quoted or regular string ─────────────────────────
+            b'"' => {
+                let start = i;
+                if text[i..].starts_with("\"\"\"") {
+                    i += 3;
+                    while i < n {
+                        if text[i..].starts_with("\"\"\"") { i += 3; break; }
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                    while i < n {
+                        if bs[i] == b'\\' { i += 2; continue; }
+                        if bs[i] == b'"'  { i += 1; break; }
+                        i += 1;
+                    }
+                }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(str_col)); }
+            }
+            // ── number ─────────────────────────────────────────────────
+            b'0'..=b'9' => {
+                let start = i;
+                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+            }
+            b'-' if i + 1 < n && bs[i + 1].is_ascii_digit() => {
+                let start = i;
+                i += 1;
+                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+            }
+            // ── identifier (keyword / type / field) ─────────────────────
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                let start = i;
+                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'_') { i += 1; }
+                let word = text.get(start..i).unwrap_or("");
+                let col = if is_graphql_keyword(word) {
+                    kw_col
+                } else if word.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    type_col
+                } else {
+                    field_col
+                };
+                job.append(word, 0.0, tf!(col));
+            }
+            // ── punctuation ─────────────────────────────────────────────
+            b'{' | b'}' | b'(' | b')' | b'[' | b']' | b':' | b',' | b'!' | b'@' | b'$' | b'.' => {
+                if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+                i += 1;
+            }
+            // ── whitespace / other ──────────────────────────────────────
+            _ => {
+                let start = i;
+                i += 1;
+                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(norm_col)); }
+            }
+        }
+    }
+    job
+}
+
+fn is_graphql_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "query" | "mutation" | "subscription" | "fragment" | "on"
+        | "type" | "interface" | "union" | "enum" | "input" | "extend"
+        | "schema" | "scalar" | "directive" | "implements"
+        | "true" | "false" | "null"
+        | "if" | "include" | "skip" | "repeatable"
+    )
+}
+
