@@ -286,6 +286,12 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
 }
 
 pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(), String> {
+    // HTTP API tabs don't use SQL save dialog
+    if let Some(tab) = tabular.query_tabs.get(tabular.active_tab_index) {
+        if tab.http_client_state.is_some() {
+            return Ok(());
+        }
+    }
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         // Ensure content holds editor text plus metadata header (id + optional db)
         let mut final_content = tabular.editor.text.clone();

@@ -594,8 +594,10 @@ pub(crate) fn render_connection_dialog(
                             // Try to save to database first
                             if save_connection_to_database(tabular, &connection_to_add) {
                                 // If database save successful, reload from database to get ID
+                                // load_connections already calls refresh_connections_tree internally,
+                                // so no need to call add_connection_to_tree again (would cause duplicates)
                                 load_connections(tabular);
-                                // Find the newly added connection and add to tree incrementally
+                                // Find the newly added connection to get its assigned ID
                                 let added_conn = tabular
                                     .connections
                                     .iter()
@@ -609,7 +611,6 @@ pub(crate) fn render_connection_dialog(
                                 if let Some(conn) = added_conn {
                                     new_conn_id = conn.id;
                                     new_conn_name = conn.name.clone();
-                                    add_connection_to_tree(tabular, &conn);
                                 }
                             } else {
                                 // Fallback to in-memory storage

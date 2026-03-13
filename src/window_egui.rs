@@ -3005,16 +3005,20 @@ impl Tabular {
         }
 
         for connection_id in connection_click_requests {
-            // Find connection name for tab title
-            let connection_name = self
+            // Find connection name and type for tab title & behavior
+            let (connection_name, is_api_http) = self
                 .connections
                 .iter()
                 .find(|conn| conn.id == Some(connection_id))
-                .map(|conn| conn.name.clone())
-                .unwrap_or_else(|| format!("Connection {}", connection_id));
+                .map(|conn| (conn.name.clone(), conn.connection_type == models::enums::DatabaseType::ApiHttp))
+                .unwrap_or_else(|| (format!("Connection {}", connection_id), false));
 
             // Create new tab with this connection pre-selected
-            let tab_title = format!("Query - {}", connection_name);
+            let tab_title = if is_api_http {
+                connection_name.clone()
+            } else {
+                format!("Query - {}", connection_name)
+            };
             editor::create_new_tab_with_connection(
                 self,
                 tab_title,
@@ -3022,14 +3026,21 @@ impl Tabular {
                 Some(connection_id),
             );
 
+            // For API-HTTP connections, set up the HTTP client state on the new tab
+            if is_api_http {
+                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                    tab.http_client_state = Some(models::structs::HttpClientState::default());
+                }
+            }
+
             debug!("Created new tab with connection ID: {}", connection_id);
 
             // NEW: Immediately (lazily-once) create the underlying connection pool so that
             // first table/data click feels faster. Previously pool was only created
             // when executing a query or expanding tables.
-            if !self.connection_pools.contains_key(&connection_id) {
+            if !is_api_http && !self.connection_pools.contains_key(&connection_id) {
                 pools_to_create.push(connection_id);
-            } else {
+            } else if !is_api_http {
                 debug!(
                     "✅ Connection pool already exists for {} (click)",
                     connection_id
@@ -4808,7 +4819,7 @@ impl Tabular {
                             child_table_expansion,
                             child_context,
                             child_table_click,
-                            _child_connection_click,
+                            child_connection_click,
                             _child_query_file,
                             _child_folder_removal,
                             _child_parent_creation,
@@ -4858,6 +4869,9 @@ impl Tabular {
                         }
                         if let Some((conn_id, table_name, node_type, db_name)) = child_table_click {
                             table_click_request = Some((conn_id, table_name, node_type, db_name));
+                        }
+                        if let Some(v) = child_connection_click {
+                            connection_click_request = Some(v);
                         }
                         if let Some(v) = _child_drop_collection_request {
                             drop_collection_request = Some(v);
@@ -4917,7 +4931,7 @@ impl Tabular {
                                 child_table_expansion,
                                 child_context,
                                 child_table_click,
-                                _child_connection_click,
+                                child_connection_click,
                                 _child_query_file,
                                 _child_folder_removal,
                                 _child_parent_creation,
@@ -4975,6 +4989,10 @@ impl Tabular {
                             // Handle child table clicks - propagate to parent
                             if let Some((conn_id, table_name, node_type, db_name)) = child_table_click {
                                 table_click_request = Some((conn_id, table_name, node_type, db_name));
+                            }
+                            // Propagate connection click to parent
+                            if let Some(v) = child_connection_click {
+                                connection_click_request = Some(v);
                             }
                             // Propagate drop collection request to parent
                             if let Some(v) = _child_drop_collection_request {
