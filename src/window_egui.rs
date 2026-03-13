@@ -11776,17 +11776,17 @@ impl App for Tabular {
                     } else {
                         egui::Color32::from_rgb(245, 245, 245)
                     })
-                    .inner_margin(egui::Margin::symmetric(4, 6)),
+                    // .inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 6 }),
             )
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
+                    ui.add_space(-2.0);
                     // Top section with tabs
                     ui.horizontal(|ui| {
-                        // Calculate equal width for three buttons with responsive design
                         let available_width = ui.available_width();
                         let button_spacing = ui.spacing().item_spacing.x;
-                        let button_width = (available_width - (button_spacing * 2.0)) / 3.0;
-                        let button_height = 24.0;
+                        let button_width = (available_width - (button_spacing * 2.0)) / 3.0; // Add extra width to account for padding and make buttons more clickable
+                        let button_height = 27.0;
 
                         // Database tab
                         let database_button = if self.selected_menu == "Database" {
@@ -11796,8 +11796,9 @@ impl App for Tabular {
                                     .text_style(egui::TextStyle::Body),
                             )
                             .fill(egui::Color32::from_rgb(255, 0, 0))
+                            .corner_radius(0.0)
                         } else {
-                            egui::Button::new("Database").fill(egui::Color32::TRANSPARENT)
+                            egui::Button::new("Database").fill(egui::Color32::TRANSPARENT).corner_radius(0.0)
                         };
                         if ui
                             .add_sized([button_width, button_height], database_button)
@@ -11813,9 +11814,10 @@ impl App for Tabular {
                                     .color(egui::Color32::WHITE)
                                     .text_style(egui::TextStyle::Body),
                             )
-                            .fill(egui::Color32::from_rgb(255, 0, 0)) // Orange fill for active
+                            .fill(egui::Color32::from_rgb(255, 0, 0))
+                            .corner_radius(0.0)
                         } else {
-                            egui::Button::new("Queries").fill(egui::Color32::TRANSPARENT)
+                            egui::Button::new("Queries").fill(egui::Color32::TRANSPARENT).corner_radius(0.0)
                         };
                         if ui
                             .add_sized([button_width, button_height], queries_button)
@@ -11843,7 +11845,27 @@ impl App for Tabular {
                         }
                     });
 
-                    ui.separator();
+                    // Paint a 1px border line flush under the buttons — zero height allocation,
+                    // matching the editor tab bar's bottom border so they align as one continuous line.
+                    let line_width = ui.available_width();
+                    let (line_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(line_width, 1.0),
+                        egui::Sense::hover(),
+                    );
+
+                    let full_x = ui.clip_rect().x_range();
+                    ui.painter().hline(
+                        full_x, // Align with button padding
+                        line_rect.top() - 0.3, // Position line flush under buttons
+                        egui::Stroke::new(
+                            1.0,
+                            if ui.visuals().dark_mode {
+                                egui::Color32::from_rgb(55, 55, 55)
+                            } else {
+                                egui::Color32::from_rgb(200, 200, 200)
+                            },
+                        ),
+                    );
 
                     // Middle section with scrollable content
                     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -11942,10 +11964,21 @@ impl App for Tabular {
                                         });
                                 }
 
+                                ui.add_space(-2.5);
                                 // Search box for history
                                 ui.horizontal(|ui| {
-                                    ui.label("🔍");
-                                    let search_response = ui.text_edit_singleline(&mut self.history_search_text);
+                                    let search_bg = if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(40, 40, 40)
+                                    } else {
+                                        egui::Color32::from_rgb(210, 210, 210)
+                                    };
+                                    let search_response = ui.add(
+                                        egui::TextEdit::singleline(&mut self.history_search_text)
+                                            .desired_width(f32::INFINITY)
+                                            .hint_text("Search history...")
+                                            .background_color(search_bg)
+
+                                    );
                                     if search_response.changed() {
                                         // Refilter history when search text changes
                                         sidebar_history::filter_history_tree(self);
@@ -12118,15 +12151,20 @@ impl App for Tabular {
                         let mut to_switch = None;
                         for (i, tab) in self.query_tabs.iter().enumerate() {
                             let active = i == self.active_tab_index;
-                            let color = if active {
+                            let inactive_bg = if ui.visuals().dark_mode {
+                                egui::Color32::from_rgb(28, 28, 28)
+                            } else {
+                                egui::Color32::from_rgb(230, 230, 230)
+                            };
+                            let tab_bg = if active {
                                 egui::Color32::from_rgb(255, 0, 0)
                             } else {
-                                ui.visuals().text_color()
+                                inactive_bg
                             };
-                            let bg = if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(40, 40, 40)
+                            let text_color = if active {
+                                egui::Color32::WHITE
                             } else {
-                                egui::Color32::from_rgb(240, 240, 240)
+                                ui.visuals().text_color()
                             };
                             let mut title = tab.title.clone();
                             if let Some(cid) = tab.connection_id
@@ -12134,28 +12172,73 @@ impl App for Tabular {
                             {
                                 title = format!("{} [{}]", title, n);
                             }
-                            let resp = ui.add_sized(
-                                [120.0, 20.0],
-                                egui::Button::new(
-                                    egui::RichText::new(title).color(color).size(12.0),
-                                )
-                                .fill(bg)
-                                .stroke(egui::Stroke::NONE),
+                            // Render tab as one unified rect: [  label  ×  ]
+                            let close_size = 16.0;
+                            let tab_width = 120.0; // total width including close button
+                            let tab_height = 26.0;
+                            let (tab_rect, tab_resp) = ui.allocate_exact_size(
+                                egui::vec2(tab_width, tab_height),
+                                egui::Sense::click(),
                             );
-                            if resp.clicked() && !active {
-                                to_switch = Some(i);
+                            // Background for whole tab
+                            ui.painter().rect_filled(tab_rect, 0.0, tab_bg);
+                            // Bottom indicator line for inactive tabs
+                            if !active {
+                                ui.painter().hline(
+                                    tab_rect.x_range(),
+                                    tab_rect.bottom() - 1.0,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)),
+                                );
                             }
-                            if (self.query_tabs.len() > 1 || !active)
-                                && ui
-                                    .add_sized(
-                                        [16.0, 16.0],
-                                        egui::Button::new("×")
-                                            .fill(egui::Color32::TRANSPARENT)
-                                            .stroke(egui::Stroke::NONE),
-                                    )
-                                    .clicked()
-                            {
-                                to_close = Some(i);
+                            // Close button rect on the right side of the tab
+                            let close_rect = egui::Rect::from_min_size(
+                                egui::pos2(tab_rect.right() - close_size - 2.0, tab_rect.center().y - close_size / 2.0),
+                                egui::vec2(close_size, close_size),
+                            );
+                            // Label centered in the area left of the close button
+                            let label_area_center = egui::pos2(
+                                tab_rect.left() + (tab_rect.width() - close_size - 4.0) / 2.0,
+                                tab_rect.center().y,
+                            );
+                            ui.painter().text(
+                                label_area_center,
+                                egui::Align2::CENTER_CENTER,
+                                &title,
+                                egui::FontId::proportional(12.0),
+                                text_color,
+                            );
+                            // Paint close "×" inside the tab
+                            let show_close = self.query_tabs.len() > 1 || !active;
+                            if show_close {
+                                // Hover effect on close button
+                                let close_resp = ui.interact(close_rect, ui.id().with(("tab_close", i)), egui::Sense::click());
+                                if close_resp.hovered() {
+                                    let hover_color = if active {
+                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60)
+                                    } else {
+                                        egui::Color32::from_rgba_unmultiplied(128, 128, 128, 60)
+                                    };
+                                    ui.painter().rect_filled(close_rect, 4.0, hover_color);
+                                }
+                                let x_color = if active {
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+                                } else {
+                                    egui::Color32::from_rgba_unmultiplied(180, 180, 180, 220)
+                                };
+                                ui.painter().text(
+                                    close_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "×",
+                                    egui::FontId::proportional(14.0),
+                                    x_color,
+                                );
+                                if close_resp.clicked() {
+                                    to_close = Some(i);
+                                }
+                            }
+                            // Switch tab on click (but not on the close button)
+                            if tab_resp.clicked() && !active && !close_rect.contains(tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO)) {
+                                to_switch = Some(i);
                             }
                         }
                         let plus_bg = if ui.visuals().dark_mode {
