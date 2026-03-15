@@ -29,6 +29,10 @@ pub fn load_http_state(connection_id: i64) -> Option<HttpClientState> {
 // ─── Public entry-point called from window_egui ─────────────────────────────
 
 pub fn render_http_client(ui: &mut egui::Ui, state: &mut HttpClientState) {
+    // Default red accent: selected/active controls use rgb(255,0,0) with white text.
+    ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
+    ui.style_mut().visuals.selection.stroke.color = egui::Color32::WHITE;
+
     // Poll background thread for a completed response
     if state.is_loading {
         let received: Option<HttpClientResponse> = state
@@ -53,7 +57,7 @@ pub fn render_http_client(ui: &mut egui::Ui, state: &mut HttpClientState) {
             // ── LEFT: Request panel ──────────────────────────────────────
             ui.vertical(|ui| {
                 ui.set_width(left_w);
-                ui.set_min_height(available.y - 40.0);
+                ui.set_min_height(available.y);
                 render_request_panel(ui, state);
             });
 
@@ -61,7 +65,7 @@ pub fn render_http_client(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
             // ── RIGHT: Response panel ────────────────────────────────────
             ui.vertical(|ui| {
-                ui.set_min_height(available.y - 40.0);
+                ui.set_min_height(available.y);
                 render_response_panel(ui, state);
             });
         });
@@ -72,6 +76,8 @@ pub fn render_http_client(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
 fn render_url_bar(ui: &mut egui::Ui, state: &mut HttpClientState) {
     ui.horizontal(|ui| {
+        let send_w = 88.0;
+
         // Method selector
         egui::ComboBox::from_id_salt("http_method_combo")
             .width(90.0)
@@ -95,7 +101,7 @@ fn render_url_bar(ui: &mut egui::Ui, state: &mut HttpClientState) {
         let url_resp = ui.add(
             egui::TextEdit::singleline(&mut state.url)
                 .hint_text("https://api.example.com/endpoint")
-                .desired_width(ui.available_width() - 80.0),
+                .desired_width((ui.available_width() - send_w - 8.0).max(120.0)),
         );
 
         // SEND button
@@ -106,7 +112,9 @@ fn render_url_bar(ui: &mut egui::Ui, state: &mut HttpClientState) {
         };
         let send_btn = ui.add_enabled(
             !state.is_loading && !state.url.is_empty(),
-            egui::Button::new(send_label).min_size(egui::vec2(80.0, 0.0)),
+            egui::Button::new(egui::RichText::new(send_label).color(egui::Color32::WHITE))
+                .fill(egui::Color32::from_rgb(255, 0, 0))
+                .min_size(egui::vec2(send_w - 10.0, 0.0)),
         );
         if send_btn.clicked() {
             execute_request(state);
@@ -221,46 +229,13 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 HttpBodyType::Xml => "<root></root>",
                 _ => "",
             };
-            let content_type_hint = match state.body_type {
-                HttpBodyType::Json => "application/json",
-                HttpBodyType::GraphQL => "application/json",
-                HttpBodyType::Xml => "application/xml",
-                _ => "text/plain",
-            };
 
-            // ── Beautify toolbar ────────────────────────────────────────
             let can_beautify = matches!(
                 state.body_type,
                 HttpBodyType::Json | HttpBodyType::GraphQL | HttpBodyType::Xml
             );
-            if can_beautify {
-                ui.horizontal(|ui| {
-                    let btn = ui.button("⚡ Beautify");
-                    if btn.clicked() {
-                        match state.body_type {
-                            HttpBodyType::Json | HttpBodyType::GraphQL => {
-                                if let Some(pretty) = beautify_json(&state.body_text) {
-                                    state.body_text = pretty;
-                                }
-                            }
-                            HttpBodyType::Xml => {
-                                let pretty = beautify_xml(&state.body_text);
-                                if !pretty.is_empty() {
-                                    state.body_text = pretty;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    btn.on_hover_text("Format / pretty-print the body content");
-                });
-                ui.add_space(2.0);
-            }
-
             // ── Editor filling remaining space ──────────────────────────
-            // Reserve ~22 px for the Content-Type label below the editor
-            let label_h = 22.0;
-            let editor_h = (ui.available_height() - label_h - 4.0).max(80.0);
+            let editor_h = ui.available_height().max(80.0);
             let editor_w = ui.available_width();
 
             let dark = ui.visuals().dark_mode;
@@ -298,7 +273,7 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 ui.fonts(|f| f.layout_job(job))
             };
 
-            ui.add_sized(
+            let editor_resp = ui.add_sized(
                 [editor_w, editor_h],
                 egui::TextEdit::multiline(&mut state.body_text)
                     .hint_text(hint)
@@ -306,12 +281,37 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     .layouter(&mut layouter),
             );
 
-            ui.label(
-                egui::RichText::new(format!("Content-Type: {}", content_type_hint))
-                    .small()
-                    .italics()
-                    .color(ui.style().visuals.weak_text_color()),
-            );
+            if can_beautify {
+                let ctx = ui.ctx().clone();
+                let rect = editor_resp.rect;
+                egui::Area::new(egui::Id::new("http_req_beautify_overlay"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(rect.right() - 28.0, rect.bottom() - 28.0))
+                    .show(&ctx, |ui| {
+                    let btn = ui.add_sized(
+                        [22.0, 22.0],
+                        egui::Button::new(egui::RichText::new("⚡").color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(255, 0, 0)),
+                    );
+                    if btn.clicked() {
+                        match state.body_type {
+                            HttpBodyType::Json | HttpBodyType::GraphQL => {
+                                if let Some(pretty) = beautify_json(&state.body_text) {
+                                    state.body_text = pretty;
+                                }
+                            }
+                            HttpBodyType::Xml => {
+                                let pretty = beautify_xml(&state.body_text);
+                                if !pretty.is_empty() {
+                                    state.body_text = pretty;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    btn.on_hover_text("Beautify body");
+                });
+            }
         }
     }
 }
@@ -549,28 +549,6 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
             let is_json = content_type.contains("json");
             let is_xml  = content_type.contains("xml") || content_type.contains("html");
 
-            // ── Toolbar: Beautify + Copy ───────────────────────────────
-            ui.horizontal(|ui| {
-                if is_json || is_xml {
-                    if ui.button("⚡ Beautify").on_hover_text("Format response body").clicked() {
-                        if is_json {
-                            if let Some(pretty) = beautify_json(&state.response_body) {
-                                state.response_body = pretty;
-                            }
-                        } else {
-                            let pretty = beautify_xml(&state.response_body);
-                            if !pretty.is_empty() {
-                                state.response_body = pretty;
-                            }
-                        }
-                    }
-                }
-                if ui.button("⎘ Copy").on_hover_text("Copy response body to clipboard").clicked() {
-                    ui.ctx().copy_text(state.response_body.clone());
-                }
-            });
-            ui.add_space(2.0);
-
             // ── Syntax-highlighted editor, fills remaining height ──────
             let dark = ui.visuals().dark_mode;
             let mut layouter = move |ui: &egui::Ui,
@@ -607,13 +585,41 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
             let h = ui.available_height().max(80.0);
             let w = ui.available_width();
-            ui.add_sized(
+            let editor_resp = ui.add_sized(
                 [w, h],
                 egui::TextEdit::multiline(&mut state.response_body)
                     .desired_width(f32::INFINITY)
                     .interactive(true)
                     .layouter(&mut layouter),
             );
+
+            if is_json || is_xml {
+                let ctx = ui.ctx().clone();
+                let rect = editor_resp.rect;
+                egui::Area::new(egui::Id::new("http_resp_beautify_overlay"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(rect.right() - 28.0, rect.bottom() - 28.0))
+                    .show(&ctx, |ui| {
+                    let btn = ui.add_sized(
+                        [22.0, 22.0],
+                        egui::Button::new(egui::RichText::new("⚡").color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(255, 0, 0)),
+                    );
+                    if btn.clicked() {
+                        if is_json {
+                            if let Some(pretty) = beautify_json(&state.response_body) {
+                                state.response_body = pretty;
+                            }
+                        } else {
+                            let pretty = beautify_xml(&state.response_body);
+                            if !pretty.is_empty() {
+                                state.response_body = pretty;
+                            }
+                        }
+                    }
+                    btn.on_hover_text("Beautify response body");
+                });
+            }
         }
         HttpResponseTab::Headers => {
             egui::ScrollArea::both()
@@ -843,11 +849,30 @@ fn apply_response(state: &mut HttpClientState, resp: HttpClientResponse) {
         state.response_error = None;
         state.response_status = Some(resp.status);
         state.response_status_text = resp.status_text;
-        state.response_body = resp.body;
+        state.response_body = maybe_beautify_json_response(&resp.headers, &resp.body)
+            .unwrap_or(resp.body);
         state.response_headers = resp.headers;
     }
     state.response_time_ms = Some(resp.time_ms);
     state.response_size_bytes = Some(resp.size_bytes);
+}
+
+fn maybe_beautify_json_response(headers: &[(String, String)], body: &str) -> Option<String> {
+    let content_type_is_json = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("content-type") && v.to_ascii_lowercase().contains("json")
+    });
+
+    if content_type_is_json {
+        return beautify_json(body);
+    }
+
+    // Fallback for servers that return JSON without a proper content-type header.
+    let trimmed = body.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return beautify_json(trimmed);
+    }
+
+    None
 }
 
 // ─── Beautify helpers ─────────────────────────────────────────────────────────
