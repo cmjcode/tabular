@@ -234,18 +234,31 @@ enum SqlContext {
     AfterSelect,
     AfterFrom,
     AfterWhere,
+    AfterJoinOn,
     General,
 }
 fn detect_ctx(sql: &str, cursor: usize) -> SqlContext {
     let slice = &sql[..cursor.min(sql.len())];
-    let mut last = None;
+    let mut last: Option<SqlContext> = None;
     for tok in slice.split_whitespace() {
         match tok.to_ascii_uppercase().as_str() {
             "SELECT" => last = Some(SqlContext::AfterSelect),
-            "FROM" | "JOIN" | "LEFT" | "RIGHT" | "INNER" | "OUTER" => {
+            "FROM" | "JOIN" | "LEFT" | "RIGHT" | "INNER" | "OUTER" | "CROSS" | "NATURAL" => {
                 last = Some(SqlContext::AfterFrom)
             }
-            "WHERE" | "AND" | "OR" | "HAVING" => last = Some(SqlContext::AfterWhere),
+            "WHERE" | "HAVING" => last = Some(SqlContext::AfterWhere),
+            "AND" | "OR" => {
+                // AND/OR inside a JOIN ON condition stays in AfterJoinOn context
+                if last != Some(SqlContext::AfterJoinOn) {
+                    last = Some(SqlContext::AfterWhere);
+                }
+            }
+            "ON" => {
+                // ON after a JOIN (AfterFrom) is a join condition clause
+                if last == Some(SqlContext::AfterFrom) {
+                    last = Some(SqlContext::AfterJoinOn);
+                }
+            }
             _ => {}
         }
     }
@@ -318,6 +331,250 @@ fn add_keywords(out: &mut Vec<String>, pref: &str) {
     }
 }
 
+/// Collect all ForeignKey instances from any loaded diagram state in the app.
+fn collect_loaded_fks(app: &Tabular) -> Vec<crate::models::structs::ForeignKey> {
+    app.query_tabs
+        .iter()
+        .filter_map(|tab| tab.diagram_state.as_ref())
+        .flat_map(|ds| ds.nodes.iter())
+        .flat_map(|n| n.foreign_keys.iter().cloned())
+        .collect()
+}
+
+/// Parse alias → real-table-name mappings from a SQL string.
+/// Handles `FROM table alias`, `FROM table AS alias`, `JOIN table alias`, etc.
+/// Returns `HashMap<alias_lowercase, real_table_name_as_written>`.
+fn collect_alias_map(sql: &str) -> std::collections::HashMap<String, String> {
+    let bytes = sql.as_bytes();
+    let lower = sql.to_ascii_lowercase();
+    let lb = lower.as_bytes();
+    let len = bytes.len();
+    let mut map = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < len {
+        let kw_end = if i + 4 <= len
+            && (lb[i..i + 4] == *b"from" || lb[i..i + 4] == *b"join")
+            && (i == 0 || !is_word_char(bytes[i - 1]))
+            && (i + 4 >= len || !is_word_char(bytes[i + 4]))
+        {
+            Some(i + 4)
+        } else {
+            None
+        };
+        if let Some(mut j) = kw_end {
+            while j < len && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            // Skip subqueries
+            if j < len && bytes[j] == b'(' {
+                i += 1;
+                continue;
+            }
+            // Read table name (may include schema prefix and/or quotes)
+            let tname_start = j;
+            while j < len {
+                let b = bytes[j];
+                if b.is_ascii_alphanumeric()
+                    || matches!(b, b'_' | b'.' | b'"' | b'`' | b'[' | b']')
+                {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if j == tname_start {
+                i += 1;
+                continue;
+            }
+            let raw_tname = &sql[tname_start..j];
+            // Use only the last segment (drop schema prefix)
+            let table_name: String = raw_tname
+                .split('.')
+                .last()
+                .map(|s| strip_wrapping_pair(s).to_string())
+                .unwrap_or_else(|| raw_tname.to_string());
+            // Always map the table itself
+            map.entry(table_name.to_ascii_lowercase())
+                .or_insert(table_name.clone());
+            // Skip whitespace
+            while j < len && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            // Optional AS keyword
+            if j + 2 <= len
+                && lb[j..j + 2] == *b"as"
+                && (j + 2 >= len || !is_word_char(bytes[j + 2]))
+            {
+                j += 2;
+                while j < len && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+            }
+            // Read alias (must be a word token and not a SQL keyword)
+            if j < len && is_word_char(bytes[j]) {
+                let alias_start = j;
+                while j < len && is_word_char(bytes[j]) {
+                    j += 1;
+                }
+                let alias = &sql[alias_start..j];
+                let alias_upper = alias.to_ascii_uppercase();
+                let is_kw = SQL_KEYWORDS
+                    .iter()
+                    .any(|kw| *kw == alias_upper.as_str());
+                if !is_kw {
+                    map.insert(alias.to_ascii_lowercase(), table_name.clone());
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    map
+}
+
+/// Build join condition suggestions for `JOIN <table> ON` context.
+/// Returns `table1.col = table2.col` style strings using FK data (when available)
+/// and heuristic column-name matching as fallback.
+fn suggest_join_conditions(
+    app: &mut Tabular,
+    cid: i64,
+    db: &str,
+    tables: &[String],
+    alias_map: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    if tables.len() < 2 {
+        return Vec::new();
+    }
+
+    // Build display name map: real_table_lowercase → alias (or table name if no alias)
+    let mut real_to_display: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for t in tables {
+        real_to_display
+            .entry(t.to_ascii_lowercase())
+            .or_insert(t.clone());
+    }
+    for (alias, real) in alias_map {
+        let real_lower = real.to_ascii_lowercase();
+        if alias != &real_lower {
+            // True alias — use it as the display name
+            real_to_display.insert(real_lower, alias.clone());
+        }
+    }
+    let dn = |name: &str| -> String {
+        real_to_display
+            .get(&name.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
+    };
+
+    // Collect FK info from any open diagram state
+    let fks = collect_loaded_fks(app);
+
+    // Fetch columns for every table involved in the query
+    let mut table_cols: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for t in tables {
+        if let Some(cols) = get_cached_columns(app, cid, db, vec![t.clone()]) {
+            table_cols.insert(t.clone(), cols);
+        }
+    }
+
+    let mut suggestions: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let push = |s: String, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>| {
+        let key = s.to_lowercase();
+        if seen.insert(key) {
+            out.push(s);
+        }
+    };
+
+    // --- FK-based suggestions --------------------------------------------
+    for fk in &fks {
+        let fk_tbl = fk.table_name.to_lowercase();
+        let fk_ref = fk.referenced_table_name.to_lowercase();
+        for t1 in tables {
+            for t2 in tables {
+                if t1 == t2 {
+                    continue;
+                }
+                let t1l = t1.to_lowercase();
+                let t2l = t2.to_lowercase();
+                let d1 = dn(t1);
+                let d2 = dn(t2);
+                if fk_tbl == t1l && fk_ref == t2l {
+                    let cond = format!("{}.{} = {}.{}", d1, fk.column_name, d2, fk.referenced_column_name);
+                    push(cond, &mut seen, &mut suggestions);
+                } else if fk_tbl == t2l && fk_ref == t1l {
+                    let cond = format!("{}.{} = {}.{}", d1, fk.referenced_column_name, d2, fk.column_name);
+                    push(cond, &mut seen, &mut suggestions);
+                }
+            }
+        }
+    }
+
+    // --- Heuristic column-matching ---------------------------------------
+    for i in 0..tables.len() {
+        for j in (i + 1)..tables.len() {
+            let t1 = &tables[i];
+            let t2 = &tables[j];
+            let t1_cols = match table_cols.get(t1) {
+                Some(c) => c,
+                None => continue,
+            };
+            let t2_cols = match table_cols.get(t2) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            // Pattern A: t1 has `<t2_name>_id` or `<t2_singular>_id`, t2 has `id`
+            let t2l = t2.to_lowercase();
+            let t2_singular = t2l.trim_end_matches('s').to_string();
+            let d1 = dn(t1);
+            let d2 = dn(t2);
+            for col1 in t1_cols {
+                let c1l = col1.to_lowercase();
+                let is_fk_col = c1l == format!("{}_id", t2l)
+                    || c1l == format!("{}_id", t2_singular)
+                    || c1l == format!("{}id", t2l)
+                    || c1l == format!("{}id", t2_singular);
+                if is_fk_col && t2_cols.iter().any(|c| c.to_lowercase() == "id") {
+                    let cond = format!("{}.{} = {}.id", d1, col1, d2);
+                    push(cond, &mut seen, &mut suggestions);
+                }
+            }
+
+            // Pattern B: t2 has `<t1_name>_id` or `<t1_singular>_id`, t1 has `id`
+            let t1l = t1.to_lowercase();
+            let t1_singular = t1l.trim_end_matches('s').to_string();
+            for col2 in t2_cols {
+                let c2l = col2.to_lowercase();
+                let is_fk_col = c2l == format!("{}_id", t1l)
+                    || c2l == format!("{}_id", t1_singular)
+                    || c2l == format!("{}id", t1l)
+                    || c2l == format!("{}id", t1_singular);
+                if is_fk_col && t1_cols.iter().any(|c| c.to_lowercase() == "id") {
+                    let cond = format!("{}.id = {}.{}", d1, d2, col2);
+                    push(cond, &mut seen, &mut suggestions);
+                }
+            }
+
+            // Pattern C: same column name in both tables (common join key)
+            for col1 in t1_cols {
+                for col2 in t2_cols {
+                    if col1.to_lowercase() == col2.to_lowercase() {
+                        let cond = format!("{}.{} = {}.{}", d1, col1, d2, col2);
+                        push(cond, &mut seen, &mut suggestions);
+                    }
+                }
+            }
+        }
+    }
+
+    suggestions
+}
+
 pub fn build_suggestions(
     app: &mut Tabular,
     text: &str,
@@ -330,62 +587,104 @@ pub fn build_suggestions(
     // Check for dot-based table access (e.g. "users.na")
     // If prefix contains '.', we try to split it into table_part + col_part
     if let Some((table_part, col_part)) = pl.split_once('.') {
-        // We have a table reference.
-        // table_part ex: "users", col_part ex: "na" (or empty)
-        
+        // Preserve the original-case prefix as typed by the user (for display in suggestions)
+        let display_prefix = prefix.split_once('.').map(|(t, _)| t).unwrap_or(table_part);
+
         let conn_id = app.query_tabs.get(app.active_tab_index).and_then(|t| t.connection_id);
         let db = active_connection_and_db(app)
             .map(|(_, d)| d)
             .unwrap_or_default();
-            
+
         if let Some(cid) = conn_id {
-            // We search for this SPECIFIC table in the scope (or all tables if not found?)
-            // Actually, if user types "users.", "users" might be an alias or real table name.
-            // For now, assuming real table name matching.
-            
-            // Check if table_part is in valid tables (cached)
+            // Build alias map and resolve table_part to real cached table name.
+            // Priority: alias_map lookup → case-insensitive scope_table match
+            let alias_map = collect_alias_map(text);
             let scope_tables = tables_near_cursor(text, cursor);
-            // If table_part is amongst the scope tables (or we just try blindly?)
-            // Just try blindly: if we have columns for this table, return them.
-            
-            // Note: cache lookup uses case-sensitive or insensitive? 
-            // Often cache keys are as-is. `pl` is lowercase.
-            // But let's assume standard matching.
-            
-            // We need to look up columns for `table_part`.
-            // The result should include the full prefix "table_part.col_name" so replacement works?
-            // Yes, because `current_prefix` returns the implementation "users.na".
-            
-            // We can reuse get_cached_columns logic but specific to one table.
-            if let Some(cols) = get_cached_columns(app, cid, &db, vec![table_part.to_string()]) {
-                for c in cols {
-                    if c.to_ascii_lowercase().starts_with(col_part) {
-                        out.push(format!("{}.{}", table_part, c));
+            let real_table = alias_map
+                .get(table_part)
+                .cloned()
+                .or_else(|| {
+                    scope_tables
+                        .iter()
+                        .find(|t| t.to_ascii_lowercase() == table_part)
+                        .cloned()
+                });
+            let real_table_name = real_table.as_deref().unwrap_or(table_part);
+
+            if let Some(all_cols) = get_cached_columns(app, cid, &db, vec![real_table_name.to_string()]) {
+                // Collect FK info to rank FK-relevant columns first
+                let fks = collect_loaded_fks(app);
+                let real_tl = real_table_name.to_ascii_lowercase();
+
+                // Other tables currently in the query (resolved to real names)
+                let other_real: Vec<String> = scope_tables
+                    .iter()
+                    .filter_map(|t| {
+                        if t.to_ascii_lowercase() == real_tl {
+                            None
+                        } else {
+                            Some(
+                                alias_map
+                                    .get(&t.to_ascii_lowercase())
+                                    .cloned()
+                                    .unwrap_or_else(|| t.clone())
+                                    .to_ascii_lowercase(),
+                            )
+                        }
+                    })
+                    .collect();
+
+                // FK-priority set: columns of real_table that participate in a FK
+                // with any other table in scope (either as source or as target)
+                let priority_cols: std::collections::HashSet<String> = fks
+                    .iter()
+                    .filter_map(|fk| {
+                        let ft = fk.table_name.to_ascii_lowercase();
+                        let fr = fk.referenced_table_name.to_ascii_lowercase();
+                        if ft == real_tl && other_real.iter().any(|o| *o == fr) {
+                            Some(fk.column_name.to_ascii_lowercase())
+                        } else if fr == real_tl && other_real.iter().any(|o| *o == ft) {
+                            Some(fk.referenced_column_name.to_ascii_lowercase())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                // Heuristic priority: columns named <other_table>_id
+                let heuristic_priority: std::collections::HashSet<String> = all_cols
+                    .iter()
+                    .filter(|col| {
+                        let cl = col.to_ascii_lowercase();
+                        other_real.iter().any(|ot| {
+                            let sing = ot.trim_end_matches('s').to_string();
+                            cl == format!("{}_id", ot)
+                                || cl == format!("{}_id", sing)
+                                || cl == format!("{}id", ot)
+                        })
+                    })
+                    .map(|c| c.to_ascii_lowercase())
+                    .collect();
+
+                let mut fk_sugg: Vec<String> = Vec::new();
+                let mut reg_sugg: Vec<String> = Vec::new();
+                for c in &all_cols {
+                    if !c.to_ascii_lowercase().starts_with(col_part) {
+                        continue;
+                    }
+                    let suggestion = format!("{}.{}", display_prefix, c);
+                    let cl = c.to_ascii_lowercase();
+                    if priority_cols.contains(&cl) || heuristic_priority.contains(&cl) {
+                        fk_sugg.push(suggestion);
+                    } else {
+                        reg_sugg.push(suggestion);
                     }
                 }
-            } else {
-                // Try case-insensitive table match if table_part didn't work directly?
-                // For now, simple exact/lowercase match attempt.
-                // If the user typed "Users.", table_part="users". 
-                // If cache has "Users", we might miss it.
-                // Let's filter scope_tables for case-insensitive match.
-                let real_table_name = scope_tables.iter().find(|t| t.to_ascii_lowercase() == table_part);
-                if let Some(cols) = real_table_name.and_then(|rt| get_cached_columns(app, cid, &db, vec![rt.clone()])) {
-                        for c in cols {
-                            if c.to_ascii_lowercase().starts_with(col_part) {
-                                // Keep the user's typed case for table part? 
-                                // Or use the real table name?
-                                // If I type "users.", replace with "Users.id"? 
-                                // Usually match user's case for the prefix part, but replacing "users.na" with "Users.Name" is fine.
-                                if let Some(rt) = real_table_name {
-                                    out.push(format!("{}.{}", rt, c));
-                                }
-                            }
-                        }
-                }
+                out.extend(fk_sugg);
+                out.extend(reg_sugg);
             }
         }
-        
+
         return out;
     }
 
@@ -444,6 +743,51 @@ pub fn build_suggestions(
                 for c in cols {
                     if c.to_ascii_lowercase().starts_with(&pl) {
                         out.push(c);
+                    }
+                }
+            }
+        }
+        SqlContext::AfterJoinOn => {
+            add_keywords(&mut out, &pl);
+            if let Some(cid) = conn_id {
+                let alias_map = collect_alias_map(text);
+                // Build real_lower → display_name map
+                let mut real_to_display: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                for t in &tables_in_scope {
+                    real_to_display
+                        .entry(t.to_ascii_lowercase())
+                        .or_insert(t.clone());
+                }
+                for (alias, real) in &alias_map {
+                    let real_lower = real.to_ascii_lowercase();
+                    if alias != &real_lower {
+                        real_to_display.insert(real_lower, alias.clone());
+                    }
+                }
+                // Suggest qualified `alias.column` names for all tables in scope
+                for table in &tables_in_scope {
+                    let display = real_to_display
+                        .get(&table.to_ascii_lowercase())
+                        .map(|s| s.as_str())
+                        .unwrap_or(table.as_str());
+                    if let Some(cols) = get_cached_columns(app, cid, &db, vec![table.clone()]) {
+                        for col in &cols {
+                            let qualified = format!("{}.{}", display, col);
+                            if qualified.to_ascii_lowercase().starts_with(&pl)
+                                || col.to_ascii_lowercase().starts_with(&pl)
+                            {
+                                out.push(qualified);
+                            }
+                        }
+                    }
+                }
+                // Suggest heuristic / FK-based join conditions (formatted with aliases)
+                let join_conds =
+                    suggest_join_conditions(app, cid, &db, &tables_in_scope, &alias_map);
+                for cond in join_conds {
+                    if cond.to_ascii_lowercase().starts_with(&pl) || pl.is_empty() {
+                        out.push(cond);
                     }
                 }
             }
@@ -606,7 +950,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
                 } else {
                     match context {
                         SqlContext::AfterFrom => tables.push(s),
-                        SqlContext::AfterSelect | SqlContext::AfterWhere => columns.push(s),
+                        SqlContext::AfterSelect | SqlContext::AfterWhere | SqlContext::AfterJoinOn => columns.push(s),
                         SqlContext::General => syntax.push(s),
                     }
                 }
@@ -646,12 +990,13 @@ pub fn update_autocomplete(app: &mut Tabular) {
             }
 
             for c in columns {
-                push_suggestion(
-                    c,
-                    crate::models::enums::AutocompleteKind::Column,
-                    Some("column".to_string()),
-                    None,
-                );
+                // Join conditions contain '=' and get a distinct note
+                let (kind, note) = if context == SqlContext::AfterJoinOn && c.contains('=') {
+                    (crate::models::enums::AutocompleteKind::Column, Some("join".to_string()))
+                } else {
+                    (crate::models::enums::AutocompleteKind::Column, Some("column".to_string()))
+                };
+                push_suggestion(c, kind, note, None);
             }
 
             for param in query_tools::parameter_candidates(&pref) {
@@ -680,7 +1025,7 @@ pub fn update_autocomplete(app: &mut Tabular) {
             let snippet_context = match context {
                 SqlContext::AfterSelect => query_tools::SnippetContext::SelectList,
                 SqlContext::AfterFrom => query_tools::SnippetContext::FromClause,
-                SqlContext::AfterWhere => query_tools::SnippetContext::WhereClause,
+                SqlContext::AfterWhere | SqlContext::AfterJoinOn => query_tools::SnippetContext::WhereClause,
                 SqlContext::General => query_tools::SnippetContext::Any,
             };
 

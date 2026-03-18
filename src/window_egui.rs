@@ -28,6 +28,8 @@ struct RenderTreeNodeParams<'a> {
     connection_types: &'a std::collections::HashMap<i64, models::enums::DatabaseType>,
     // Prefetch progress tracking
     prefetch_progress: &'a HashMap<i64, (usize, usize)>,
+    // Pre-loaded PNG textures for DB type icons (key = DatabaseType::icon_key())
+    db_icon_textures: &'a HashMap<String, egui::TextureHandle>,
 }
 
 pub struct Tabular {
@@ -141,7 +143,7 @@ pub struct Tabular {
     pub theme_selector_selected_index: usize,
     // Flag to request theme selector on next frame
     pub request_theme_selector: bool,
-    pub is_dark_mode: bool,
+    pub app_theme: crate::config::AppTheme,
     pub link_editor_theme: bool, // when true editor theme follows app theme
     // Settings window visibility
     pub show_settings_window: bool,
@@ -210,6 +212,8 @@ pub struct Tabular {
     pub temp_sqlite_path: Option<String>,
     // Logo texture
     pub logo_texture: Option<egui::TextureHandle>,
+    // Pre-loaded PNG icons for each DB type (key = DatabaseType::icon_key())
+    pub db_icon_textures: HashMap<String, egui::TextureHandle>,
     // Database cache for performance
     pub database_cache: std::collections::HashMap<i64, Vec<String>>, // connection_id -> databases
     pub database_cache_time: std::collections::HashMap<i64, std::time::Instant>, // connection_id -> cache time
@@ -438,7 +442,7 @@ impl Tabular {
 
     /// Set initial preferences loaded from startup
     pub fn set_initial_prefs(&mut self, prefs: crate::config::AppPreferences) {
-        self.is_dark_mode = prefs.is_dark_mode;
+        self.app_theme = prefs.theme;
         self.link_editor_theme = prefs.link_editor_theme;
         self.advanced_editor.theme = match prefs.editor_theme.as_str() {
             "GITHUB_LIGHT" => crate::models::structs::EditorColorTheme::GithubLight,
@@ -480,6 +484,40 @@ impl Tabular {
             debug!("🌐 Global runtime initialized");
         }
         self.runtime.as_ref().unwrap().clone()
+    }
+
+    /// Load DB-type PNG icons from `assets/db_icons/<key>.png` into GPU textures.
+    /// Called once per each missing key; safe to call every frame (skips already loaded keys).
+    /// Place PNG files named: mysql.png, postgres.png, sqlite.png, redis.png, mssql.png, mongodb.png, apihttp.png
+    fn load_db_icon_textures(&mut self, ctx: &egui::Context) {
+        use models::enums::DatabaseType;
+        let types = [
+            DatabaseType::MySQL,
+            DatabaseType::PostgreSQL,
+            DatabaseType::SQLite,
+            DatabaseType::Redis,
+            DatabaseType::MsSQL,
+            DatabaseType::MongoDB,
+            DatabaseType::ApiHttp,
+        ];
+        for db_type in &types {
+            let key = db_type.icon_key();
+            if self.db_icon_textures.contains_key(key) {
+                continue;
+            }
+            let path = format!("assets/db_icons/{}.png", key);
+            if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let rgba = img.to_rgba8();
+                    let size = [img.width() as usize, img.height() as usize];
+                    let pixels = rgba.as_flat_samples();
+                    let color_image =
+                        egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                    let handle = ctx.load_texture(key, color_image, Default::default());
+                    self.db_icon_textures.insert(key.to_string(), handle);
+                }
+            }
+        }
     }
 
     // Small painter-drawn triangle toggle to avoid font glyph issues
@@ -618,8 +656,8 @@ impl Tabular {
             command_palette_selected_index: 0,
             theme_selector_selected_index: 0,
             request_theme_selector: false,
-            // Dark / Light UI theme setting (default dark)
-            is_dark_mode: true,
+            // App UI theme (default dark)
+            app_theme: crate::config::AppTheme::Dark,
             link_editor_theme: true,
             show_settings_window: false,
             // Database search functionality
@@ -659,6 +697,7 @@ impl Tabular {
             show_about_dialog: false,
             // Logo texture
             logo_texture: None,
+            db_icon_textures: HashMap::new(),
             // Database cache for performance
             database_cache: std::collections::HashMap::new(),
             database_cache_time: std::collections::HashMap::new(),
@@ -2570,6 +2609,7 @@ impl Tabular {
                     is_search_mode,
                     connection_types: &connection_types,
                     prefetch_progress: &self.prefetch_progress,
+                    db_icon_textures: &self.db_icon_textures,
                 },
             );
             if let Some(expansion_req) = expansion_request {
@@ -4291,8 +4331,29 @@ impl Tabular {
                 } else { (ui.visuals().text_color(), "") };
 
                 let mut response = if node.node_type == models::enums::NodeType::Connection {
-                    // Draw colored status dot then a clickable, truncated label occupying full row width
-                    ui.colored_label(status_color, egui::RichText::new("●").strong());
+                    // Draw PNG icon or emoji badge (NO status dot — status color goes on the name)
+                    if let Some(conn_id) = node.connection_id {
+                        if let Some(db_type) = params.connection_types.get(&conn_id) {
+                            let (r, g, b) = db_type.badge_color();
+                            let badge_color = egui::Color32::from_rgb(r, g, b);
+                            // PNG icon if loaded, otherwise fall back to emoji
+                            let icon_key = db_type.icon_key();
+                            if let Some(texture) = params.db_icon_textures.get(icon_key) {
+                                ui.add(
+                                    egui::Image::new(texture)
+                                        .fit_to_exact_size(egui::Vec2::splat(16.0)),
+                                );
+                            } else {
+                                ui.label(db_type.icon());
+                            }
+                            // Colored short label (e.g. "MY", "PG") for text clarity
+                            let badge_text = egui::RichText::new(db_type.badge_label())
+                                .strong()
+                                .small()
+                                .color(badge_color);
+                            ui.label(badge_text);
+                        }
+                    }
                     let mut name_text = node.name.clone();
                     if let Some(conn_id) = node.connection_id {
                         // Show refreshing spinner
@@ -4304,10 +4365,9 @@ impl Tabular {
                             name_text.push_str(&format!(" 📦 {}/{}", completed, total));
                         }
                     }
-                    // Use a regular left-aligned label (no explicit width) so text is not centered.
-                    // truncate() will respect the remaining available width in this row.
+                    // Color the connection name: green = connected, red = disconnected/connecting
                     ui.add(
-                        egui::Label::new(name_text)
+                        egui::Label::new(egui::RichText::new(name_text).color(status_color))
                             .truncate()
                             .sense(egui::Sense::click()),
                     )
@@ -4328,7 +4388,22 @@ impl Tabular {
 
                 // Tooltip for connection status
                 if node.node_type == models::enums::NodeType::Connection && !status_text.is_empty() {
-                    response = response.on_hover_text(format!("Status: {}", status_text));
+                    let mut tip = format!("Status: {}", status_text);
+                    if let Some(conn_id) = node.connection_id {
+                        if let Some(db_type) = params.connection_types.get(&conn_id) {
+                            let db_name = match db_type {
+                                models::enums::DatabaseType::MySQL => "MySQL",
+                                models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
+                                models::enums::DatabaseType::SQLite => "SQLite",
+                                models::enums::DatabaseType::Redis => "Redis",
+                                models::enums::DatabaseType::MsSQL => "Microsoft SQL Server",
+                                models::enums::DatabaseType::MongoDB => "MongoDB",
+                                models::enums::DatabaseType::ApiHttp => "HTTP API",
+                            };
+                            tip = format!("{} · {}", db_name, tip);
+                        }
+                    }
+                    response = response.on_hover_text(tip);
                 }
 
                 // New: Allow clicking the label to also expand/collapse for expandable nodes
@@ -4855,6 +4930,7 @@ impl Tabular {
                                 is_search_mode: params.is_search_mode,
                                 connection_types: params.connection_types,
                                 prefetch_progress: params.prefetch_progress,
+                                db_icon_textures: params.db_icon_textures,
                             },
                         );
                         if let Some(child_expansion) = child_expansion_request {
@@ -4967,6 +5043,7 @@ impl Tabular {
                                     is_search_mode: params.is_search_mode,
                                     connection_types: params.connection_types,
                                     prefetch_progress: params.prefetch_progress,
+                                    db_icon_textures: params.db_icon_textures,
                                 },
                             );
 
@@ -10303,6 +10380,44 @@ impl Tabular {
 }
 
 
+/// Build a soft light-mode visuals palette — lower contrast than the default egui light theme.
+fn light_soft_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::light();
+    let bg = egui::Color32::from_rgb(245, 242, 238);       // warm off-white
+    let panel = egui::Color32::from_rgb(237, 233, 227);    // slightly warmer panel
+    let text = egui::Color32::from_rgb(55, 50, 45);        // soft dark brown (not pure black)
+    let widget_bg = egui::Color32::from_rgb(230, 226, 219);
+    let widget_bg_hovered = egui::Color32::from_rgb(218, 213, 205);
+    let widget_bg_open = egui::Color32::from_rgb(210, 205, 197);
+
+    v.override_text_color = Some(text);
+    v.window_fill = bg;
+    v.panel_fill = panel;
+    v.faint_bg_color = egui::Color32::from_rgb(240, 237, 232);
+    v.extreme_bg_color = egui::Color32::from_rgb(255, 252, 248);
+
+    v.widgets.noninteractive.bg_fill      = panel;
+    v.widgets.noninteractive.weak_bg_fill = panel;
+    v.widgets.noninteractive.fg_stroke    = egui::Stroke::new(1.0, text);
+
+    v.widgets.inactive.bg_fill            = widget_bg;
+    v.widgets.inactive.weak_bg_fill       = widget_bg;
+
+    v.widgets.hovered.bg_fill             = widget_bg_hovered;
+    v.widgets.hovered.weak_bg_fill        = widget_bg_hovered;
+
+    v.widgets.active.bg_fill              = widget_bg_open;
+    v.widgets.active.weak_bg_fill         = widget_bg_open;
+
+    v.widgets.open.bg_fill                = widget_bg_open;
+    v.widgets.open.weak_bg_fill           = widget_bg_open;
+
+    v.selection.bg_fill = egui::Color32::from_rgba_premultiplied(180, 160, 140, 100);
+    // suppress the window/panel border that comes with light() defaults
+    v.window_stroke = egui::Stroke::NONE;
+    v
+}
+
 impl App for Tabular {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         
@@ -10335,6 +10450,8 @@ impl App for Tabular {
         // We can get `TextEditState` from memory using the ID.
         // `if let Some(state) = egui::TextEdit::load_state(ctx, query_id)`
         // `state.cursor.range()` tells us the selection!
+        // Load DB-type PNG icons once from assets/db_icons/ if files are present
+        self.load_db_icon_textures(ctx);
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)
         #[cfg(feature = "query_ast")]
         if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
@@ -10355,7 +10472,7 @@ impl App for Tabular {
             if app.prefs_dirty {
                 if let (Some(store), Some(rt)) = (app.config_store.as_ref(), app.runtime.as_ref()) {
                     let prefs = crate::config::AppPreferences {
-                        is_dark_mode: app.is_dark_mode,
+                        theme: app.app_theme,
                         link_editor_theme: app.link_editor_theme,
                         editor_theme: match app.advanced_editor.theme {
                             crate::models::structs::EditorColorTheme::GithubLight => {
@@ -10510,7 +10627,7 @@ impl App for Tabular {
             match rt.block_on(crate::config::ConfigStore::new()) {
                 Ok(store) => {
                     let prefs = rt.block_on(store.load());
-                    self.is_dark_mode = prefs.is_dark_mode;
+                    self.app_theme = prefs.theme;
                     self.link_editor_theme = prefs.link_editor_theme;
                     self.advanced_editor.theme = match prefs.editor_theme.as_str() {
                         "GITHUB_LIGHT" => crate::models::structs::EditorColorTheme::GithubLight,
@@ -10581,10 +10698,10 @@ impl App for Tabular {
         }
 
         // Apply global UI visuals based on (possibly loaded) theme
-        if self.is_dark_mode {
-            ctx.set_visuals(egui::Visuals::dark());
-        } else {
-            ctx.set_visuals(egui::Visuals::light());
+        match self.app_theme {
+            crate::config::AppTheme::Dark => ctx.set_visuals(egui::Visuals::dark()),
+            crate::config::AppTheme::Light => ctx.set_visuals(egui::Visuals::light()),
+            crate::config::AppTheme::LightSoft => ctx.set_visuals(light_soft_visuals()),
         }
 
         // If waiting for pool, check readiness and auto-run queued query
@@ -10653,7 +10770,7 @@ impl App for Tabular {
         }
         // Sync editor theme only if linking enabled
         if self.link_editor_theme {
-            let desired_editor_theme = if self.is_dark_mode {
+            let desired_editor_theme = if self.app_theme.is_dark() {
                 crate::models::structs::EditorColorTheme::GithubDark
             } else {
                 crate::models::structs::EditorColorTheme::GithubLight
@@ -11170,8 +11287,8 @@ impl App for Tabular {
                 .show(ctx, |ui| {
                     // Tab bar
                     ui.horizontal(|ui| {
-                        // Accent color (red) can adapt for light/dark if needed
-                        let accent = if self.is_dark_mode { egui::Color32::from_rgb(255, 0, 0) } else { egui::Color32::from_rgb(255, 0, 0) };
+                        // Accent color (red)
+                        let accent = egui::Color32::from_rgb(255, 0, 0);
                         let inactive_fg = ui.visuals().text_color();
                         let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
                             let selected = *current == me;
@@ -11197,32 +11314,44 @@ impl App for Tabular {
                     match self.settings_active_pref_tab {
                         PrefTab::ApplicationTheme => {
                             ui.heading("Application Theme");
+                            ui.add_space(4.0);
+                            let prev = self.app_theme;
                             ui.horizontal(|ui| {
                                 ui.label("Choose theme:");
-                                let prev = self.is_dark_mode;
-                                if ui.radio_value(&mut self.is_dark_mode, true, "🌙 Dark").clicked() {
+                                if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::Dark, "🌙 Dark").clicked() {
                                     ctx.set_visuals(egui::Visuals::dark());
                                     if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubDark; }
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
-                                if ui.radio_value(&mut self.is_dark_mode, false, "☀️ Light").clicked() {
+                                if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::Light, "🔆 Light").clicked() {
                                     ctx.set_visuals(egui::Visuals::light());
                                     if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
-                                if self.is_dark_mode != prev { ctx.request_repaint(); }
+                                if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::LightSoft, "⛅ Light Soft").clicked() {
+                                    ctx.set_visuals(light_soft_visuals());
+                                    if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                }
                             });
+                            ui.add_space(2.0);
+                            ui.label(egui::RichText::new(match self.app_theme {
+                                crate::config::AppTheme::Dark => "Classic dark theme.",
+                                crate::config::AppTheme::Light => "High-contrast white theme.",
+                                crate::config::AppTheme::LightSoft => "Warm off-white with lower contrast — easier on the eyes.",
+                            }).size(11.0).color(egui::Color32::from_gray(120)));
+                            if self.app_theme != prev { ctx.request_repaint(); }
                         }
                         PrefTab::EditorTheme => {
                             ui.heading("Editor Theme");
                             ui.horizontal(|ui| {
                                 if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() {
-                                    if self.link_editor_theme { self.advanced_editor.theme = if self.is_dark_mode { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight }; }
+                                    if self.link_editor_theme { self.advanced_editor.theme = if self.app_theme.is_dark() { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight }; }
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
                                 if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
                                     self.link_editor_theme = true;
-                                    self.advanced_editor.theme = if self.is_dark_mode { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight };
+                                    self.advanced_editor.theme = if self.app_theme.is_dark() { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight };
                                     self.prefs_dirty = true; try_save_prefs(self);
                                 }
                             });
