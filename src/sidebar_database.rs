@@ -1358,7 +1358,7 @@ pub(crate) fn add_connection_to_tree(
             .unwrap_or(&"Default".to_string())
             .clone();
 
-        let display_name = format!("{} {}", connection.connection_type.icon(), connection.name);
+        let display_name = connection.name.clone();
         let new_node = models::structs::TreeNode::new_connection(display_name, id);
 
         // Find or create the folder
@@ -1405,7 +1405,7 @@ pub(crate) fn update_connection_in_tree(
             .unwrap_or(&"Default".to_string())
             .clone();
 
-        let new_display_name = format!("{} {}", connection.connection_type.icon(), connection.name);
+        let new_display_name = connection.name.clone();
 
         // Find and remove the old node (might be in different folder)
         let mut old_node_state: Option<(models::structs::TreeNode, String)> = None;
@@ -1641,8 +1641,8 @@ pub(crate) fn create_connections_folder_structure(
 
         for conn in connections {
             if let Some(id) = conn.id {
-                // Create display name with database icon
-                let display_name = format!("{} {}", conn.connection_type.icon(), conn.name);
+                // Display name is just the connection name; DB type badge rendered separately
+                let display_name = conn.name.clone();
                 let node = models::structs::TreeNode::new_connection(display_name, id);
                 folder_connections.push((node, conn.connection_type.clone(), conn.name.clone()));
             } else {

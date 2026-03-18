@@ -127,9 +127,47 @@ impl DatabaseType {
             DatabaseType::PostgreSQL => "🐘",
             DatabaseType::SQLite => "📄",
             DatabaseType::Redis => "🔴",
-            DatabaseType::MsSQL => "💠",
+            DatabaseType::MsSQL => "🛢️",
             DatabaseType::MongoDB => "🍃",
             DatabaseType::ApiHttp => "🌐",
+        }
+    }
+
+    /// Returns a short uppercase label for the colored badge shown in the sidebar
+    pub fn badge_label(&self) -> &'static str {
+        match self {
+            DatabaseType::MySQL => "MySQL",
+            DatabaseType::PostgreSQL => "PostgreSQL",
+            DatabaseType::SQLite => "SQLite",
+            DatabaseType::Redis => "Redis",
+            DatabaseType::MsSQL => "MsSQL",
+            DatabaseType::MongoDB => "MongoDB",
+            DatabaseType::ApiHttp => "API",
+        }
+    }
+
+    /// Returns the brand RGB color for the sidebar badge (r, g, b)
+    pub fn badge_color(&self) -> (u8, u8, u8) {
+        match self {
+            DatabaseType::MySQL => (0, 117, 143),       // MySQL teal-blue
+            DatabaseType::PostgreSQL => (51, 103, 145), // PostgreSQL steel-blue
+            DatabaseType::SQLite => (68, 130, 195),     // SQLite blue
+            DatabaseType::Redis => (210, 56, 42),       // Redis red
+            DatabaseType::MsSQL => (0, 164, 239),       // MS Azure blue
+            DatabaseType::MongoDB => (0, 168, 80),      // MongoDB green
+            DatabaseType::ApiHttp => (139, 79, 191),    // HTTP purple
+        }
+    }
+    /// Returns a filesystem-safe key for loading PNG icons, e.g. "mysql" → assets/db_icons/mysql.png
+    pub fn icon_key(&self) -> &'static str {
+        match self {
+            DatabaseType::MySQL => "mysql",
+            DatabaseType::PostgreSQL => "postgres",
+            DatabaseType::SQLite => "sqlite",
+            DatabaseType::Redis => "redis",
+            DatabaseType::MsSQL => "mssql",
+            DatabaseType::MongoDB => "mongodb",
+            DatabaseType::ApiHttp => "apihttp",
         }
     }
 }

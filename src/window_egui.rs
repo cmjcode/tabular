@@ -28,6 +28,8 @@ struct RenderTreeNodeParams<'a> {
     connection_types: &'a std::collections::HashMap<i64, models::enums::DatabaseType>,
     // Prefetch progress tracking
     prefetch_progress: &'a HashMap<i64, (usize, usize)>,
+    // Pre-loaded PNG textures for DB type icons (key = DatabaseType::icon_key())
+    db_icon_textures: &'a HashMap<String, egui::TextureHandle>,
 }
 
 pub struct Tabular {
@@ -210,6 +212,8 @@ pub struct Tabular {
     pub temp_sqlite_path: Option<String>,
     // Logo texture
     pub logo_texture: Option<egui::TextureHandle>,
+    // Pre-loaded PNG icons for each DB type (key = DatabaseType::icon_key())
+    pub db_icon_textures: HashMap<String, egui::TextureHandle>,
     // Database cache for performance
     pub database_cache: std::collections::HashMap<i64, Vec<String>>, // connection_id -> databases
     pub database_cache_time: std::collections::HashMap<i64, std::time::Instant>, // connection_id -> cache time
@@ -482,6 +486,40 @@ impl Tabular {
         self.runtime.as_ref().unwrap().clone()
     }
 
+    /// Load DB-type PNG icons from `assets/db_icons/<key>.png` into GPU textures.
+    /// Called once per each missing key; safe to call every frame (skips already loaded keys).
+    /// Place PNG files named: mysql.png, postgres.png, sqlite.png, redis.png, mssql.png, mongodb.png, apihttp.png
+    fn load_db_icon_textures(&mut self, ctx: &egui::Context) {
+        use models::enums::DatabaseType;
+        let types = [
+            DatabaseType::MySQL,
+            DatabaseType::PostgreSQL,
+            DatabaseType::SQLite,
+            DatabaseType::Redis,
+            DatabaseType::MsSQL,
+            DatabaseType::MongoDB,
+            DatabaseType::ApiHttp,
+        ];
+        for db_type in &types {
+            let key = db_type.icon_key();
+            if self.db_icon_textures.contains_key(key) {
+                continue;
+            }
+            let path = format!("assets/db_icons/{}.png", key);
+            if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let rgba = img.to_rgba8();
+                    let size = [img.width() as usize, img.height() as usize];
+                    let pixels = rgba.as_flat_samples();
+                    let color_image =
+                        egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                    let handle = ctx.load_texture(key, color_image, Default::default());
+                    self.db_icon_textures.insert(key.to_string(), handle);
+                }
+            }
+        }
+    }
+
     // Small painter-drawn triangle toggle to avoid font glyph issues
     fn triangle_toggle(ui: &mut egui::Ui, expanded: bool) -> egui::Response {
         let size = egui::vec2(16.0, 16.0);
@@ -659,6 +697,7 @@ impl Tabular {
             show_about_dialog: false,
             // Logo texture
             logo_texture: None,
+            db_icon_textures: HashMap::new(),
             // Database cache for performance
             database_cache: std::collections::HashMap::new(),
             database_cache_time: std::collections::HashMap::new(),
@@ -2570,6 +2609,7 @@ impl Tabular {
                     is_search_mode,
                     connection_types: &connection_types,
                     prefetch_progress: &self.prefetch_progress,
+                    db_icon_textures: &self.db_icon_textures,
                 },
             );
             if let Some(expansion_req) = expansion_request {
@@ -4291,8 +4331,29 @@ impl Tabular {
                 } else { (ui.visuals().text_color(), "") };
 
                 let mut response = if node.node_type == models::enums::NodeType::Connection {
-                    // Draw colored status dot then a clickable, truncated label occupying full row width
-                    ui.colored_label(status_color, egui::RichText::new("●").strong());
+                    // Draw PNG icon or emoji badge (NO status dot — status color goes on the name)
+                    if let Some(conn_id) = node.connection_id {
+                        if let Some(db_type) = params.connection_types.get(&conn_id) {
+                            let (r, g, b) = db_type.badge_color();
+                            let badge_color = egui::Color32::from_rgb(r, g, b);
+                            // PNG icon if loaded, otherwise fall back to emoji
+                            let icon_key = db_type.icon_key();
+                            if let Some(texture) = params.db_icon_textures.get(icon_key) {
+                                ui.add(
+                                    egui::Image::new(texture)
+                                        .fit_to_exact_size(egui::Vec2::splat(16.0)),
+                                );
+                            } else {
+                                ui.label(db_type.icon());
+                            }
+                            // Colored short label (e.g. "MY", "PG") for text clarity
+                            let badge_text = egui::RichText::new(db_type.badge_label())
+                                .strong()
+                                .small()
+                                .color(badge_color);
+                            ui.label(badge_text);
+                        }
+                    }
                     let mut name_text = node.name.clone();
                     if let Some(conn_id) = node.connection_id {
                         // Show refreshing spinner
@@ -4304,10 +4365,9 @@ impl Tabular {
                             name_text.push_str(&format!(" 📦 {}/{}", completed, total));
                         }
                     }
-                    // Use a regular left-aligned label (no explicit width) so text is not centered.
-                    // truncate() will respect the remaining available width in this row.
+                    // Color the connection name: green = connected, red = disconnected/connecting
                     ui.add(
-                        egui::Label::new(name_text)
+                        egui::Label::new(egui::RichText::new(name_text).color(status_color))
                             .truncate()
                             .sense(egui::Sense::click()),
                     )
@@ -4328,7 +4388,22 @@ impl Tabular {
 
                 // Tooltip for connection status
                 if node.node_type == models::enums::NodeType::Connection && !status_text.is_empty() {
-                    response = response.on_hover_text(format!("Status: {}", status_text));
+                    let mut tip = format!("Status: {}", status_text);
+                    if let Some(conn_id) = node.connection_id {
+                        if let Some(db_type) = params.connection_types.get(&conn_id) {
+                            let db_name = match db_type {
+                                models::enums::DatabaseType::MySQL => "MySQL",
+                                models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
+                                models::enums::DatabaseType::SQLite => "SQLite",
+                                models::enums::DatabaseType::Redis => "Redis",
+                                models::enums::DatabaseType::MsSQL => "Microsoft SQL Server",
+                                models::enums::DatabaseType::MongoDB => "MongoDB",
+                                models::enums::DatabaseType::ApiHttp => "HTTP API",
+                            };
+                            tip = format!("{} · {}", db_name, tip);
+                        }
+                    }
+                    response = response.on_hover_text(tip);
                 }
 
                 // New: Allow clicking the label to also expand/collapse for expandable nodes
@@ -4855,6 +4930,7 @@ impl Tabular {
                                 is_search_mode: params.is_search_mode,
                                 connection_types: params.connection_types,
                                 prefetch_progress: params.prefetch_progress,
+                                db_icon_textures: params.db_icon_textures,
                             },
                         );
                         if let Some(child_expansion) = child_expansion_request {
@@ -4967,6 +5043,7 @@ impl Tabular {
                                     is_search_mode: params.is_search_mode,
                                     connection_types: params.connection_types,
                                     prefetch_progress: params.prefetch_progress,
+                                    db_icon_textures: params.db_icon_textures,
                                 },
                             );
 
@@ -10335,6 +10412,8 @@ impl App for Tabular {
         // We can get `TextEditState` from memory using the ID.
         // `if let Some(state) = egui::TextEdit::load_state(ctx, query_id)`
         // `state.cursor.range()` tells us the selection!
+        // Load DB-type PNG icons once from assets/db_icons/ if files are present
+        self.load_db_icon_textures(ctx);
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)
         #[cfg(feature = "query_ast")]
         if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
