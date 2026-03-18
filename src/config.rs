@@ -8,9 +8,38 @@ use std::path::PathBuf;
 /// File name to store the current data directory location
 const CONFIG_LOCATION_FILE: &str = "config_location.txt";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AppTheme {
+    #[default]
+    Dark,
+    Light,
+    LightSoft,
+}
+
+impl AppTheme {
+    pub fn is_dark(self) -> bool {
+        self == AppTheme::Dark
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppTheme::Dark => "DARK",
+            AppTheme::Light => "LIGHT",
+            AppTheme::LightSoft => "LIGHT_SOFT",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "LIGHT" => AppTheme::Light,
+            "LIGHT_SOFT" => AppTheme::LightSoft,
+            _ => AppTheme::Dark,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppPreferences {
-    pub is_dark_mode: bool,
+    #[serde(default)]
+    pub theme: AppTheme,
     pub link_editor_theme: bool,
     pub editor_theme: String,
     pub font_size: f32,
@@ -103,7 +132,7 @@ impl ConfigStore {
 
         if let Some(ref pool) = self.pool {
             let mut prefs = AppPreferences {
-                is_dark_mode: true,
+                theme: AppTheme::Dark,
                 link_editor_theme: true,
                 editor_theme: "GITHUB_DARK".into(),
                 font_size: 14.0,
@@ -123,7 +152,10 @@ impl ConfigStore {
                     let k: String = row.get(0);
                     let v: String = row.get(1);
                     match k.as_str() {
-                        "is_dark_mode" => prefs.is_dark_mode = v == "1",
+                        "theme" => prefs.theme = AppTheme::from_str(&v),
+                        // Legacy migration: old boolean flags
+                        "is_dark_mode" => if v != "1" { prefs.theme = AppTheme::Light; },
+                        "is_light_soft" => if v == "1" { prefs.theme = AppTheme::LightSoft; },
                         "link_editor_theme" => prefs.link_editor_theme = v == "1",
                         "editor_theme" => prefs.editor_theme = v,
                         "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
@@ -143,8 +175,8 @@ impl ConfigStore {
             }
 
             info!(
-                "Loaded prefs from SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
-                prefs.is_dark_mode,
+                "Loaded prefs from SQLite: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
+                prefs.theme,
                 prefs.link_editor_theme,
                 prefs.editor_theme,
                 prefs.font_size,
@@ -164,8 +196,8 @@ impl ConfigStore {
         if self.use_json_fallback {
             let _ = self.save_to_json(prefs);
             info!(
-                "Saved prefs to JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
-                prefs.is_dark_mode,
+                "Saved prefs to JSON: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
+                prefs.theme,
                 prefs.link_editor_theme,
                 prefs.editor_theme,
                 prefs.font_size,
@@ -181,7 +213,7 @@ impl ConfigStore {
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
             let entries: [(&str, &str); 9] = [
-                ("is_dark_mode", if prefs.is_dark_mode { "1" } else { "0" }),
+                ("theme", prefs.theme.as_str()),
                 (
                     "link_editor_theme",
                     if prefs.link_editor_theme { "1" } else { "0" },
@@ -229,8 +261,8 @@ impl ConfigStore {
             }
 
             info!(
-                "Saved prefs to SQLite: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, enable_debug_logging={}",
-                prefs.is_dark_mode,
+                "Saved prefs to SQLite: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, enable_debug_logging={}",
+                prefs.theme,
                 prefs.link_editor_theme,
                 prefs.editor_theme,
                 prefs.font_size,
@@ -253,8 +285,8 @@ impl ConfigStore {
         let content = std::fs::read_to_string(path)?;
         let prefs: AppPreferences = serde_json::from_str(&content)?;
         info!(
-            "Loaded prefs from JSON: is_dark_mode={}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}",
-            prefs.is_dark_mode,
+            "Loaded prefs from JSON: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}",
+            prefs.theme,
             prefs.link_editor_theme,
             prefs.editor_theme,
             prefs.font_size,

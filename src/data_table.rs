@@ -224,6 +224,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             thin_stroke,
                                         );
                                         ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 0.0;
                                             let sort_button_width = 45.0;
                                             let text_area_width =
                                                 ui.available_width() - sort_button_width;
@@ -350,52 +351,40 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 col_sel_requests.push((col_index, modifiers));
                                             }
                                         });
-                                        // Add resize handle for all columns, including the last (rightmost) one
-                                        // so users can resize the final column as well.
+                                        // Resize handle: sits entirely within the column's right edge
+                                        // (no extra allocation beyond max_rect) so it doesn't add a
+                                        // visible gap between columns. Only draws when hovered/dragged.
                                         let handle_x = ui.max_rect().max.x;
                                         let handle_y = ui.max_rect().min.y;
                                         let handle_height = available_height;
+                                        // 8px wide hit zone, fully inside the column's right side
                                         let resize_handle_rect = egui::Rect::from_min_size(
-                                            egui::pos2(handle_x - 3.0, handle_y),
-                                            egui::vec2(6.0, handle_height),
+                                            egui::pos2(handle_x - 8.0, handle_y),
+                                            egui::vec2(8.0, handle_height),
                                         );
                                         let resize_response = ui
                                             .allocate_rect(resize_handle_rect, egui::Sense::drag());
 
-                                        // Always show a subtle resize indicator
-                                        let indicator_color = if resize_response.hovered()
-                                            || resize_response.dragged()
-                                        {
-                                            egui::Color32::from_rgba_unmultiplied(
-                                                100, 150, 255, 200,
-                                            )
-                                        } else if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgba_unmultiplied(120, 120, 120, 80)
-                                        } else {
-                                            egui::Color32::from_rgba_unmultiplied(150, 150, 150, 60)
-                                        };
-
-                                        // Draw the resize handle with dotted pattern
-                                        let center_x = handle_x - 1.5;
-                                        let dot_size = 1.0;
-                                        let dot_spacing = 4.0;
-                                        let start_y = handle_y + 8.0;
-                                        let end_y = handle_y + handle_height - 8.0;
-
-                                        for y in (start_y as i32..end_y as i32)
-                                            .step_by(dot_spacing as usize)
-                                        {
-                                            ui.painter().circle_filled(
-                                                egui::pos2(center_x, y as f32),
-                                                dot_size,
-                                                indicator_color,
-                                            );
+                                        // Only draw indicator while actively hovering or dragging
+                                        if resize_response.hovered() || resize_response.dragged() {
+                                            let indicator_color = egui::Color32::from_rgb(255, 0, 0);
+                                            // let center_x = handle_x;
+                                            let dot_size = 1.5;
+                                            let dot_spacing = 2.0;
+                                            let start_y = handle_y + 2.0;
+                                            let end_y = handle_y + handle_height - 2.0;
+                                            for y in (start_y as i32..end_y as i32)
+                                                .step_by(dot_spacing as usize)
+                                            {
+                                                ui.painter().circle_filled(
+                                                    egui::pos2(handle_x, y as f32),
+                                                    dot_size,
+                                                    indicator_color,
+                                                );
+                                            }
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                                         }
 
-                                        if resize_response.hovered() {
-                                            ui.ctx()
-                                                .set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                                        }
                                         if resize_response.dragged() {
                                             let delta_x = resize_response.drag_delta().x;
                                             let new_width = column_width + delta_x;
