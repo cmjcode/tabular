@@ -17,6 +17,7 @@ mod ddl;
 pub(crate) use cache::fetch_and_cache_all_data;
 
 pub use databases::fetch_databases_background_task; // fully pub in original
+#[allow(deprecated)]
 pub(crate) use databases::{
     fetch_databases_from_connection_async, fetch_databases_from_connection_blocking,
 };

@@ -3,7 +3,7 @@ use log::debug;
 use mongodb::Client as MongoClient;
 use redis::{Client, aio::ConnectionManager};
 use sqlx::{
-    SqlitePool, mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions,
+    mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions,
 };
 use std::sync::Arc;
 

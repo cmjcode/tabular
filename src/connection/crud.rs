@@ -1,7 +1,7 @@
 use crate::{models, modules, ssh_tunnel, window_egui};
 use log::debug;
 use mongodb::Client as MongoClient;
-use redis::{Client, aio::ConnectionManager};
+use redis::Client;
 use sqlx::{
     SqlitePool, mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions,
 };

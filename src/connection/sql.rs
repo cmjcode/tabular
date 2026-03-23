@@ -474,10 +474,10 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
     match db_type {
         models::enums::DatabaseType::MsSQL => {
             // Insert TOP 5000 after SELECT if no TOP present
-            if upper_query.starts_with("SELECT") {
-                if let Some(rest) = trimmed_query.get(6..) {
-                    return format!("SELECT TOP 5000{}", rest);
-                }
+            if upper_query.starts_with("SELECT")
+                && let Some(rest) = trimmed_query.get(6..)
+            {
+                return format!("SELECT TOP 5000{}", rest);
             }
             trimmed_query.to_string()
         }

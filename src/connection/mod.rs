@@ -22,31 +22,23 @@ pub mod ui;
 // Keep the same API surface that the rest of the crate expects.
 
 // Types
-pub(crate) use types::{
-    QueryExecutionOptions, QueryJob, QueryJobOutput, QueryJobStatus, QueryPreparationError,
-    QueryResultMessage,
-};
+pub(crate) use types::{QueryJobStatus, QueryResultMessage};
 
 // SQL utilities
-pub(crate) use sql::{
-    add_auto_limit_if_needed, query_contains_pagination, should_enable_auto_pagination,
-};
+pub(crate) use sql::{add_auto_limit_if_needed, should_enable_auto_pagination};
 
 // Pool management
 pub(crate) use pool::{
     cleanup_connection_pool, ensure_background_pool_creation, get_or_create_connection_pool,
-    get_or_create_connection_pool_with_retry, start_background_pool_creation,
-    try_get_connection_pool, create_database_pool,
+    start_background_pool_creation, try_get_connection_pool,
 };
 
 // Query execution
-pub(crate) use execute::{
-    execute_multiple_queries_concurrently, execute_query_with_connection,
-    execute_table_query_sync, prepare_query_job, spawn_query_job,
-};
+pub(crate) use execute::{execute_query_with_connection, prepare_query_job, spawn_query_job};
 
 // Metadata / schema discovery
 pub use metadata::fetch_databases_background_task; // fully pub in original
+#[allow(deprecated)]
 pub(crate) use metadata::{
     fetch_columns_from_database,
     fetch_databases_from_connection_async, fetch_databases_from_connection_blocking,

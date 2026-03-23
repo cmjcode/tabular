@@ -1,16 +1,15 @@
 use crate::{
     driver_mssql, driver_mysql, driver_sqlite, models, modules,
-    window_egui::{self, Tabular},
+    window_egui::Tabular,
 };
 use log::debug;
 use sqlx::{Column, Row, TypeInfo};
 use sqlx::Connection as SqlxConnection;
 use sqlx::mysql::MySqlConnection;
-use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::pool::{resolve_connection_target, try_get_connection_pool, get_or_create_connection_pool};
+use super::pool::{resolve_connection_target, try_get_connection_pool};
 use super::sql::{
     infer_column_origins, infer_select_headers, is_simple_select_statement,
     query_contains_pagination, should_enable_auto_pagination,
@@ -1902,12 +1901,11 @@ pub(crate) fn execute_table_query_sync(
                                                         }
                                                     }
                                                 }
-                                            } else {
-                                                if is_admin_command {
+                                            } else if is_admin_command {
                                                     debug!("Admin command executed successfully");
                                                     final_headers = vec!["Status".to_string()];
                                                     final_data = vec![vec!["Command executed successfully".to_string()]];
-                                                } else {
+                                            } else {
                                                     #[cfg(feature = "query_ast")]
                                                     if final_headers.is_empty()
                                                         && let Some(hh) = _inferred_headers_from_ast.clone()
@@ -1959,7 +1957,6 @@ pub(crate) fn execute_table_query_sync(
                                                     }
                                                     final_data = Vec::new();
                                                 }
-                                            }
                                         }
                                     }
                                     Ok(Err(e)) => {
