@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use log::{debug, info};
 use super::Tabular;
 use crate::spreadsheet::SpreadsheetOperations;
-use crate::{models, connection, cache_data, editor, sidebar_database, sidebar_history,
-            sidebar_query, data_table, dialog, driver_mssql, directory};
+use crate::{models, connection, editor, sidebar_database,
+            sidebar_query, data_table, driver_mssql, directory};
 
-struct RenderTreeNodeParams<'a> {
+pub(crate) struct RenderTreeNodeParams<'a> {
     node_index: usize,
     refreshing_connections: &'a std::collections::HashSet<i64>,
     connection_pools: &'a std::collections::HashMap<i64, models::enums::DatabasePool>,
@@ -590,14 +590,13 @@ impl super::Tabular {
             );
 
             // For API-HTTP connections, set up the HTTP client state on the new tab
-            if is_api_http {
-                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            if is_api_http
+                && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                     // Load previously saved state if available, else use defaults
                     let state = crate::http_client::load_http_state(connection_id)
                         .unwrap_or_default();
                     tab.http_client_state = Some(state);
                 }
-            }
 
             debug!("Created new tab with connection ID: {}", connection_id);
 
@@ -1657,7 +1656,7 @@ impl super::Tabular {
         // Return query files that were clicked
         results
     }
-    pub fn render_tree_node_with_table_expansion(
+    pub(crate) fn render_tree_node_with_table_expansion(
         ui: &mut egui::Ui,
         node: &mut models::structs::TreeNode,
         editor: &mut crate::editor_buffer::EditorBuffer,
@@ -1854,8 +1853,8 @@ impl super::Tabular {
 
                 let mut response = if node.node_type == models::enums::NodeType::Connection {
                     // Draw PNG icon or emoji badge (NO status dot — status color goes on the name)
-                    if let Some(conn_id) = node.connection_id {
-                        if let Some(db_type) = params.connection_types.get(&conn_id) {
+                    if let Some(conn_id) = node.connection_id
+                        && let Some(db_type) = params.connection_types.get(&conn_id) {
                             let (r, g, b) = db_type.badge_color();
                             let badge_color = egui::Color32::from_rgb(r, g, b);
                             // PNG icon if loaded, otherwise fall back to emoji
@@ -1875,7 +1874,6 @@ impl super::Tabular {
                                 .color(badge_color);
                             ui.label(badge_text);
                         }
-                    }
                     let mut name_text = node.name.clone();
                     if let Some(conn_id) = node.connection_id {
                         // Show refreshing spinner
@@ -1911,8 +1909,8 @@ impl super::Tabular {
                 // Tooltip for connection status
                 if node.node_type == models::enums::NodeType::Connection && !status_text.is_empty() {
                     let mut tip = format!("Status: {}", status_text);
-                    if let Some(conn_id) = node.connection_id {
-                        if let Some(db_type) = params.connection_types.get(&conn_id) {
+                    if let Some(conn_id) = node.connection_id
+                        && let Some(db_type) = params.connection_types.get(&conn_id) {
                             let db_name = match db_type {
                                 models::enums::DatabaseType::MySQL => "MySQL",
                                 models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
@@ -1924,7 +1922,6 @@ impl super::Tabular {
                             };
                             tip = format!("{} · {}", db_name, tip);
                         }
-                    }
                     response = response.on_hover_text(tip);
                 }
 

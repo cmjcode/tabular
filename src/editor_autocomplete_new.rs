@@ -390,7 +390,7 @@ fn collect_alias_map(sql: &str) -> std::collections::HashMap<String, String> {
             // Use only the last segment (drop schema prefix)
             let table_name: String = raw_tname
                 .split('.')
-                .last()
+                .next_back()
                 .map(|s| strip_wrapping_pair(s).to_string())
                 .unwrap_or_else(|| raw_tname.to_string());
             // Always map the table itself
@@ -418,9 +418,7 @@ fn collect_alias_map(sql: &str) -> std::collections::HashMap<String, String> {
                 }
                 let alias = &sql[alias_start..j];
                 let alias_upper = alias.to_ascii_uppercase();
-                let is_kw = SQL_KEYWORDS
-                    .iter()
-                    .any(|kw| *kw == alias_upper.as_str());
+                let is_kw = SQL_KEYWORDS.contains(&alias_upper.as_str());
                 if !is_kw {
                     map.insert(alias.to_ascii_lowercase(), table_name.clone());
                 }
@@ -641,9 +639,9 @@ pub fn build_suggestions(
                     .filter_map(|fk| {
                         let ft = fk.table_name.to_ascii_lowercase();
                         let fr = fk.referenced_table_name.to_ascii_lowercase();
-                        if ft == real_tl && other_real.iter().any(|o| *o == fr) {
+                        if ft == real_tl && other_real.contains(&fr) {
                             Some(fk.column_name.to_ascii_lowercase())
-                        } else if fr == real_tl && other_real.iter().any(|o| *o == ft) {
+                        } else if fr == real_tl && other_real.contains(&ft) {
                             Some(fk.referenced_column_name.to_ascii_lowercase())
                         } else {
                             None

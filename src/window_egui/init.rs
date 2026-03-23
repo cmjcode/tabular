@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::collections::{BTreeSet, HashMap};
 use log::{debug, error};
-use sqlx::SqlitePool;
 use crate::models;
 use crate::connection;
 use crate::{sidebar_database, sidebar_query, editor};
@@ -103,8 +102,8 @@ impl super::Tabular {
                 continue;
             }
             let path = format!("assets/db_icons/{}.png", key);
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(img) = image::load_from_memory(&bytes) {
+            if let Ok(bytes) = std::fs::read(&path)
+                && let Ok(img) = image::load_from_memory(&bytes) {
                     let rgba = img.to_rgba8();
                     let size = [img.width() as usize, img.height() as usize];
                     let pixels = rgba.as_flat_samples();
@@ -113,7 +112,6 @@ impl super::Tabular {
                     let handle = ctx.load_texture(key, color_image, Default::default());
                     self.db_icon_textures.insert(key.to_string(), handle);
                 }
-            }
         }
     }
 

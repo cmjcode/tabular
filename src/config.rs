@@ -27,12 +27,16 @@ impl AppTheme {
             AppTheme::LightSoft => "LIGHT_SOFT",
         }
     }
-    pub fn from_str(s: &str) -> Self {
-        match s {
+}
+
+impl std::str::FromStr for AppTheme {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "LIGHT" => AppTheme::Light,
             "LIGHT_SOFT" => AppTheme::LightSoft,
             _ => AppTheme::Dark,
-        }
+        })
     }
 }
 
@@ -152,7 +156,7 @@ impl ConfigStore {
                     let k: String = row.get(0);
                     let v: String = row.get(1);
                     match k.as_str() {
-                        "theme" => prefs.theme = AppTheme::from_str(&v),
+                        "theme" => prefs.theme = v.parse().unwrap_or(AppTheme::Dark),
                         // Legacy migration: old boolean flags
                         "is_dark_mode" => if v != "1" { prefs.theme = AppTheme::Light; },
                         "is_light_soft" => if v == "1" { prefs.theme = AppTheme::LightSoft; },

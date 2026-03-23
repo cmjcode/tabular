@@ -1,4 +1,4 @@
-use crate::{connection, models};
+use crate::models;
 
 impl super::Tabular {
     pub fn open_create_table_wizard(&mut self, connection_id: i64, database_name: Option<String>) {

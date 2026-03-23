@@ -1,12 +1,10 @@
 use eframe::{App, Frame, egui};
-use log::{debug, error, info};
-use std::sync::Arc;
+use log::{debug, info};
 use chrono::{DateTime, Duration, Utc};
 use super::{Tabular, PrefTab};
-use crate::editor_buffer::EditorBuffer;
 use crate::{models, connection, editor, data_table, sidebar_database, sidebar_history,
-            sidebar_query, spreadsheet::SpreadsheetOperations, dialog, directory,
-            cache_data, query_tools};
+            sidebar_query, spreadsheet::SpreadsheetOperations, dialog,
+            cache_data};
 
 fn light_soft_visuals() -> egui::Visuals {
     let mut v = egui::Visuals::light();

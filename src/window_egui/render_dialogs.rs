@@ -1,7 +1,6 @@
 use eframe::egui;
 use log::debug;
 use crate::{models, connection, query_tools, editor, data_table};
-use super::{Tabular, PrefTab};
 
 fn draw_format_sql_button(
     ctx: &egui::Context,

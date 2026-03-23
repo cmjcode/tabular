@@ -1,8 +1,6 @@
-use log::{debug, error, info};
-use std::sync::Arc;
-use std::collections::HashMap;
+use log::debug;
 use super::Tabular;
-use crate::{models, connection, cache_data, data_table, driver_mysql, driver_postgres, driver_sqlite, driver_redis, driver_mssql};
+use crate::{models, connection, cache_data, driver_mysql, driver_postgres, driver_sqlite, driver_redis};
 
 impl super::Tabular {
     pub fn remove_table_from_connection_node(

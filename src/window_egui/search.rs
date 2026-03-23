@@ -1,6 +1,5 @@
 use eframe::egui;
-use std::collections::HashMap;
-use crate::{models, connection, cache_data};
+use crate::{models, connection};
 use log::debug;
 
 impl super::Tabular {

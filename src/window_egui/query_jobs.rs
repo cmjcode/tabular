@@ -1,6 +1,4 @@
-use log::debug;
-use crate::{connection, editor, models, data_table};
-use crate::query_tools;
+use crate::{connection, editor, models};
 
 impl super::Tabular {
     pub fn handle_query_result_message(&mut self, message: connection::QueryResultMessage) {

@@ -1,4 +1,3 @@
-use crate::directory;
 
 impl super::Tabular {
     pub fn handle_directory_picker(&mut self) {

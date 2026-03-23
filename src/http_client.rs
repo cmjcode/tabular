@@ -1106,9 +1106,8 @@ fn highlight_body_xml(
             // ── text content ─────────────────────────────────────────────
             let start = i;
             while i < n && bs[i] != b'<' { i += 1; }
-            if let Some(s) = text.get(start..i) {
-                if !s.is_empty() { job.append(s, 0.0, tf!(norm_col)); }
-            }
+            if let Some(s) = text.get(start..i)
+                && !s.is_empty() { job.append(s, 0.0, tf!(norm_col)); }
             continue;
         }
 
@@ -1150,11 +1149,10 @@ fn highlight_body_xml(
         // tag name
         let name_start = i;
         while i < n && !bs[i].is_ascii_whitespace() && bs[i] != b'>' && bs[i] != b'/' && bs[i] != b'?' { i += 1; }
-        if let Some(name) = text.get(name_start..i) {
-            if !name.is_empty() {
+        if let Some(name) = text.get(name_start..i)
+            && !name.is_empty() {
                 job.append(name, 0.0, tf!(if is_pi { pi_col } else { tag_col }));
             }
-        }
 
         // attributes
         while i < n && bs[i] != b'>' {
@@ -1178,9 +1176,8 @@ fn highlight_body_xml(
             } else {
                 let s = i;
                 while i < n && bs[i] != b'=' && bs[i] != b'>' && !bs[i].is_ascii_whitespace() && bs[i] != b'/' { i += 1; }
-                if let Some(name) = text.get(s..i) {
-                    if !name.is_empty() { job.append(name, 0.0, tf!(attr_key_col)); }
-                }
+                if let Some(name) = text.get(s..i)
+                    && !name.is_empty() { job.append(name, 0.0, tf!(attr_key_col)); }
             }
         }
 

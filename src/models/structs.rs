@@ -32,6 +32,7 @@ impl HttpMethod {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum HttpBodyType {
     // Form Data
     UrlEncoded,
@@ -43,14 +44,13 @@ pub enum HttpBodyType {
     OtherText,
     // Other
     BinaryFile,
+    #[default]
     NoBody,
 }
 
-impl Default for HttpBodyType {
-    fn default() -> Self { HttpBodyType::NoBody }
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum HttpAuthType {
     ApiKey,
     AwsSignature,
@@ -61,34 +61,30 @@ pub enum HttpAuthType {
     OAuth2,
     NtlmAuth,
     InheritParent,
+    #[default]
     NoAuth,
 }
 
-impl Default for HttpAuthType {
-    fn default() -> Self { HttpAuthType::NoAuth }
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum HttpRequestTab {
+    #[default]
     Body,
     Params,
     Headers,
     Auth,
 }
 
-impl Default for HttpRequestTab {
-    fn default() -> Self { HttpRequestTab::Body }
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum HttpResponseTab {
+    #[default]
     Body,
     Headers,
 }
 
-impl Default for HttpResponseTab {
-    fn default() -> Self { HttpResponseTab::Body }
-}
 
 /// Sent from the background thread back to the UI thread.
 pub struct HttpClientResponse {

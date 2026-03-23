@@ -1,19 +1,14 @@
-use chrono::{DateTime, Duration, Utc};
-use eframe::{App, Frame, egui};
+use eframe::egui;
 // Removed egui_code_editor; using simple TextEdit + lapce-core buffer backend
 use crate::editor_buffer::EditorBuffer;
-use log::{debug, error, info};
 use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 
 use crate::{
-    cache_data, connection, dialog, directory, driver_mysql, driver_postgres, driver_redis,
-    driver_sqlite, editor, models, query_tools, sidebar_database, sidebar_history, sidebar_query,
-    spreadsheet::SpreadsheetOperations,
+    connection, models, query_tools,
 };
-use crate::{data_table, driver_mssql};
 
 
 pub mod app_impl;

@@ -1,6 +1,5 @@
 use log::debug;
-use std::sync::Arc;
-use crate::{models, connection, cache_data, data_table, editor, directory, sidebar_query};
+use crate::{models, cache_data, data_table, editor, directory, sidebar_query};
 
 impl super::Tabular {
     pub fn handle_alter_table_request(
