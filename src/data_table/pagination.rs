@@ -1,0 +1,294 @@
+use eframe::egui;
+use log::debug;
+use crate::window_egui;
+use super::clear_table_selection;
+
+pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    // Tidak ada extra space supaya bar menempel konten / tepi bawah
+    ui.horizontal(|ui| {
+        let spacing = ui.spacing_mut();
+        spacing.item_spacing.x = 4.0;
+        spacing.button_padding = egui::vec2(6.0, 2.0);
+
+        if tabular.use_server_pagination && tabular.actual_total_rows.is_some() {
+            let actual_total = tabular.actual_total_rows.unwrap_or(0);
+            if actual_total > 0 {
+                let start_row = tabular.current_page * tabular.page_size + 1;
+                let end_row = ((tabular.current_page + 1) * tabular.page_size).min(actual_total);
+                ui.label(format!("Showing rows {}-{}", start_row, end_row));
+            } else {
+                ui.label("0 rows");
+            }
+            ui.colored_label(egui::Color32::from_rgb(50,205,50), "📡 Server pagination");
+        } else {
+            ui.label(format!("Total rows: {}", tabular.total_rows));
+            if !tabular.use_server_pagination {
+                ui.colored_label(egui::Color32::from_rgb(255, 0, 0), "💾 Client pagination");
+            }
+        }
+        ui.separator();
+
+        // Page size selector
+        ui.label("Rows per page:");
+        let mut page_size_str = tabular.page_size.to_string();
+        // Batasi lebar input supaya tidak mengembang mengisi bar dan membuat gap
+        if ui
+            .add(egui::TextEdit::singleline(&mut page_size_str).desired_width(60.0))
+            .changed()
+            && let Ok(new_size) = page_size_str.parse::<usize>()
+            && new_size > 0
+            && new_size <= 10000
+        {
+            tabular.set_page_size(new_size);
+        }
+
+        ui.separator();
+
+        // Navigation buttons
+        let has_data = if tabular.use_server_pagination {
+            tabular.actual_total_rows.unwrap_or(0) > 0
+        } else {
+            tabular.total_rows > 0
+        };
+        let total_pages = if tabular.use_server_pagination {
+            get_total_pages_server(tabular)
+        } else {
+            get_total_pages(tabular)
+        };
+
+        ui.add_enabled(
+            has_data && tabular.current_page > 0,
+            egui::Button::new("⏮ First"),
+        )
+        .clicked()
+        .then(|| go_to_page(tabular, 0));
+        ui.add_enabled(
+            has_data && tabular.current_page > 0,
+            egui::Button::new("◀ Prev"),
+        )
+        .clicked()
+        .then(|| previous_page(tabular));
+        ui.label(format!(
+            "Page {} of {}",
+            tabular.current_page + 1,
+            total_pages.max(1)
+        ));
+        ui.add_enabled(
+            has_data && tabular.current_page < total_pages.saturating_sub(1),
+            egui::Button::new("Next ▶"),
+        )
+        .clicked()
+        .then(|| next_page(tabular));
+        ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
+            .clicked()
+            .then(|| {
+                let last_page = total_pages.saturating_sub(1);
+                go_to_page(tabular, last_page);
+            });
+
+        ui.separator();
+        if ui.button("Clear selection").clicked() {
+            tabular.selected_rows.clear();
+            tabular.selected_columns.clear();
+            tabular.selected_row = None;
+            tabular.selected_cell = None;
+            tabular.last_clicked_row = None;
+            tabular.last_clicked_column = None;
+        }
+
+        ui.label("Go to page:");
+        let mut page_input = (tabular.current_page + 1).to_string();
+        if ui
+            .add_enabled(has_data, egui::TextEdit::singleline(&mut page_input))
+            .changed()
+            && let Ok(page_num) = page_input.parse::<usize>()
+            && page_num > 0
+        {
+            go_to_page(tabular, page_num - 1);
+        }
+    });
+}
+
+pub fn update_pagination_data(tabular: &mut window_egui::Tabular, all_data: Vec<Vec<String>>) {
+    debug!("=== UPDATE_PAGINATION_DATA DEBUG ===");
+    debug!("Received data rows: {}", all_data.len());
+    if !all_data.is_empty() {
+        debug!("First row sample: {:?}", &all_data[0]);
+    }
+
+    tabular.all_table_data = all_data;
+    tabular.total_rows = tabular.all_table_data.len();
+    tabular.current_page = 0; // Reset to first page
+
+    debug!(
+        "After assignment - all_table_data.len(): {}",
+        tabular.all_table_data.len()
+    );
+    debug!("After assignment - total_rows: {}", tabular.total_rows);
+    debug!("====================================");
+
+    update_current_page_data(tabular);
+
+    // Initialize column widths when new data is loaded
+    initialize_column_widths(tabular);
+}
+
+// Column width management methods
+pub(crate) fn initialize_column_widths(tabular: &mut window_egui::Tabular) {
+    let num_columns = tabular.current_table_headers.len();
+    if num_columns > 0 {
+        // Calculate initial column width based on available space
+        let base_width = 180.0; // Base width per column
+        tabular.column_widths = vec![base_width; num_columns];
+    } else {
+        tabular.column_widths.clear();
+    }
+}
+
+pub(crate) fn get_column_width(tabular: &window_egui::Tabular, column_index: usize) -> f32 {
+    tabular
+        .column_widths
+        .get(column_index)
+        .copied()
+        .unwrap_or(180.0)
+        .max(tabular.min_column_width)
+}
+
+pub(crate) fn set_column_width(
+    tabular: &mut window_egui::Tabular,
+    column_index: usize,
+    width: f32,
+) {
+    if column_index < tabular.column_widths.len() {
+        // Only enforce minimum width, allow unlimited maximum width
+        let safe_width = width.max(tabular.min_column_width);
+        // Ensure we never have invalid floating point values
+        let final_width = if safe_width.is_finite() && safe_width > 0.0 {
+            safe_width
+        } else {
+            tabular.min_column_width
+        };
+        tabular.column_widths[column_index] = final_width;
+    }
+}
+
+pub(crate) fn update_current_page_data(tabular: &mut window_egui::Tabular) {
+    let start_index = tabular.current_page * tabular.page_size;
+    let end_index =
+        ((tabular.current_page + 1) * tabular.page_size).min(tabular.all_table_data.len());
+
+    if start_index < tabular.all_table_data.len() {
+        tabular.current_table_data = tabular.all_table_data[start_index..end_index].to_vec();
+    } else {
+        tabular.current_table_data.clear();
+    }
+}
+
+pub(crate) fn next_page(tabular: &mut window_egui::Tabular) {
+    // Check if we have a base query in the active tab for server-side pagination
+    let has_base_query = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|tab| !tab.base_query.is_empty())
+        .unwrap_or(false);
+
+    if tabular.use_server_pagination && has_base_query {
+        // Server-side pagination
+        let total_pages = get_total_pages_server(tabular);
+        if tabular.current_page < total_pages.saturating_sub(1) {
+            tabular.current_page += 1;
+            tabular.execute_paginated_query();
+            clear_table_selection(tabular);
+        }
+    } else {
+        // Client-side pagination (original behavior)
+        let max_page = (tabular.total_rows.saturating_sub(1)) / tabular.page_size;
+        if tabular.current_page < max_page {
+            tabular.current_page += 1;
+            update_current_page_data(tabular);
+            clear_table_selection(tabular);
+        }
+    }
+}
+
+pub(crate) fn previous_page(tabular: &mut window_egui::Tabular) {
+    // Check if we have a base query in the active tab for server-side pagination
+    let has_base_query = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|tab| !tab.base_query.is_empty())
+        .unwrap_or(false);
+
+    if tabular.use_server_pagination && has_base_query {
+        // Server-side pagination
+        if tabular.current_page > 0 {
+            tabular.current_page -= 1;
+            tabular.execute_paginated_query();
+            clear_table_selection(tabular);
+        }
+    } else {
+        // Client-side pagination (original behavior)
+        if tabular.current_page > 0 {
+            tabular.current_page -= 1;
+            update_current_page_data(tabular);
+            clear_table_selection(tabular);
+        }
+    }
+}
+
+pub(crate) fn go_to_page(tabular: &mut window_egui::Tabular, page: usize) {
+    // Check if we have a base query in the active tab for server-side pagination
+    let has_base_query = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|tab| !tab.base_query.is_empty())
+        .unwrap_or(false);
+
+    if tabular.use_server_pagination && has_base_query {
+        // Server-side pagination
+        let total_pages = get_total_pages_server(tabular);
+        if page < total_pages {
+            tabular.current_page = page;
+            tabular.execute_paginated_query();
+            clear_table_selection(tabular);
+        }
+    } else {
+        // Client-side pagination (original behavior)
+        let max_page = (tabular.total_rows.saturating_sub(1)) / tabular.page_size;
+        if page <= max_page {
+            tabular.current_page = page;
+            update_current_page_data(tabular);
+            clear_table_selection(tabular);
+        }
+    }
+}
+
+pub(crate) fn get_total_pages_server(tabular: &mut window_egui::Tabular) -> usize {
+    // Avoid division by zero if page_size was restored as 0 from an older tab/session
+    let ps = if tabular.page_size == 0 {
+        100
+    } else {
+        tabular.page_size
+    };
+    if let Some(actual_total) = tabular.actual_total_rows {
+        actual_total.div_ceil(ps) // Ceiling division
+    } else {
+        1
+    }
+}
+
+pub(crate) fn get_total_pages(tabular: &window_egui::Tabular) -> usize {
+    if tabular.total_rows == 0 {
+        // Return 1 page if we have headers (table structure exists) but no data
+        if !tabular.current_table_headers.is_empty() {
+            1
+        } else {
+            0
+        }
+    } else if tabular.page_size == 0 {
+        1 // Avoid division by zero, fallback to 1 page
+    } else {
+        tabular.total_rows.div_ceil(tabular.page_size)
+    }
+}
+
