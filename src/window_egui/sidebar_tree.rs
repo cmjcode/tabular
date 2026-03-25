@@ -1653,6 +1653,54 @@ impl super::Tabular {
         // Clean up processed folder removal mappings (optional - only if we want to prevent memory buildup)
         // We could also keep them for potential retry scenarios
 
+        // Handle DnD drop: move connection to target folder
+        let dnd_drop: Option<(i64, String)> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("conn_dnd_drop")));
+        if let Some((drag_conn_id, target_folder)) = dnd_drop {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<(i64, String)>(egui::Id::new("conn_dnd_drop"));
+                d.remove_temp::<i64>(egui::Id::new("conn_dnd_source"));
+            });
+            if let Some(conn) = self
+                .connections
+                .iter_mut()
+                .find(|c| c.id == Some(drag_conn_id))
+            {
+                conn.folder = Some(target_folder);
+                let conn_clone = conn.clone();
+                sidebar_database::update_connection_in_database(self, &conn_clone);
+                sidebar_database::refresh_connections_tree(self);
+                self.needs_refresh = true;
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // Handle "Create Subfolder" context menu request
+        let subfolder_req: Option<String> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("conn_subfolder_req")));
+        if let Some(parent_path) = subfolder_req {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<String>(egui::Id::new("conn_subfolder_req"));
+            });
+            self.subfolder_parent_path = parent_path;
+            self.new_subfolder_name.clear();
+            self.show_create_subfolder_dialog = true;
+        }
+
+        // Handle "Add Connection Here" context menu request
+        let add_to_folder: Option<String> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("conn_add_to_folder")));
+        if let Some(folder_path) = add_to_folder {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<String>(egui::Id::new("conn_add_to_folder"));
+            });
+            self.new_connection.folder = Some(folder_path);
+            self.show_add_connection = true;
+        }
+
         // Return query files that were clicked
         results
     }
@@ -1889,7 +1937,7 @@ impl super::Tabular {
                     ui.add(
                         egui::Label::new(egui::RichText::new(name_text).color(status_color))
                             .truncate()
-                            .sense(egui::Sense::click()),
+                            .sense(egui::Sense::click_and_drag()),
                     )
                 } else {
                     // Non-connection nodes: icon + name, truncated to available width and clickable
@@ -1923,6 +1971,111 @@ impl super::Tabular {
                             tip = format!("{} · {}", db_name, tip);
                         }
                     response = response.on_hover_text(tip);
+                }
+
+                // Drag source: Connection nodes can be dragged to a folder.
+                if node.node_type == models::enums::NodeType::Connection {
+                    if let Some(conn_id) = node.connection_id {
+                        if response.drag_started() {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("conn_dnd_source"), conn_id);
+                                d.remove_temp::<String>(egui::Id::new("conn_dnd_pending_folder"));
+                            });
+                        }
+                        // Show drag cursor & ghost label while dragging
+                        if response.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+                                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                                    egui::Order::Tooltip,
+                                    egui::Id::new("conn_drag_label"),
+                                ));
+                                painter.text(
+                                    pos + egui::vec2(12.0, -8.0),
+                                    egui::Align2::LEFT_TOP,
+                                    format!("📦 {}", node.name),
+                                    egui::FontId::proportional(13.0),
+                                    ui.visuals().text_color(),
+                                );
+                            }
+                        }
+                        // On drop: read the last hovered folder (set in PREVIOUS frame, so render
+                        // order doesn't matter) and execute the move.
+                        if response.drag_stopped() {
+                            let pending_folder: Option<String> = ui
+                                .ctx()
+                                .data(|d| d.get_temp(egui::Id::new("conn_dnd_pending_folder")));
+                            if let Some(folder_path) = pending_folder {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(
+                                        egui::Id::new("conn_dnd_drop"),
+                                        (conn_id, folder_path),
+                                    );
+                                });
+                            }
+                            ui.ctx().data_mut(|d| {
+                                d.remove_temp::<i64>(egui::Id::new("conn_dnd_source"));
+                                d.remove_temp::<String>(egui::Id::new("conn_dnd_pending_folder"));
+                            });
+                        }
+                    }
+                }
+
+                // Drop target: CustomFolder nodes accept dragged connections.
+                // We update conn_dnd_pending_folder every frame the pointer hovers over a folder
+                // while a drag is active.  drag_stopped() on the source reads this value from
+                // the PREVIOUS frame so render order doesn't matter.
+                // Use Y-only containment so indented subfolders (where label rect is shifted right)
+                // are detected as long as the pointer is on the same row, regardless of X offset.
+                if node.node_type == models::enums::NodeType::CustomFolder {
+                    let is_dragging: bool = ui
+                        .ctx()
+                        .data(|d| d.get_temp::<i64>(egui::Id::new("conn_dnd_source")).is_some());
+                    if is_dragging {
+                        let row_rect = response.rect;
+                        let pointer_over = ui
+                            .ctx()
+                            .input(|i| i.pointer.hover_pos())
+                            .map_or(false, |p| {
+                                p.y >= row_rect.min.y && p.y <= row_rect.max.y
+                            });
+                        if pointer_over {
+                            // Use foreground layer painter so the highlight isn't clipped by the
+                            // indent, but constrain X to the sidebar clip rect (not full screen).
+                            let clip = ui.clip_rect();
+                            let highlight_rect = egui::Rect::from_min_max(
+                                egui::pos2(clip.min.x, row_rect.min.y - 1.0),
+                                egui::pos2(clip.max.x, row_rect.max.y + 1.0),
+                            );
+                            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                                egui::Order::Foreground,
+                                egui::Id::new("conn_dnd_highlight"),
+                            ));
+                            painter.rect_filled(
+                                highlight_rect,
+                                2.0,
+                                egui::Color32::from_rgba_unmultiplied(52, 152, 219, 30),
+                            );
+                            painter.rect_stroke(
+                                highlight_rect,
+                                2.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(52, 152, 219)),
+                                egui::StrokeKind::Outside,
+                            );
+                            ui.ctx().request_repaint();
+                            // Update the pending folder every frame we hover over it
+                            let folder_path = node
+                                .file_path
+                                .clone()
+                                .unwrap_or_else(|| node.name.clone());
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    egui::Id::new("conn_dnd_pending_folder"),
+                                    folder_path,
+                                );
+                            });
+                        }
+                    }
                 }
 
                 // New: Allow clicking the label to also expand/collapse for expandable nodes
@@ -2163,6 +2316,36 @@ impl super::Tabular {
                                 folder_removal_mapping = Some((hash, folder_name));
                                 context_menu_request = Some(remove_folder_id);
                             }
+                            ui.close();
+                        }
+                    });
+                }
+
+                // Context menu for connection group/subfolder nodes
+                if node.node_type == models::enums::NodeType::CustomFolder {
+                    let folder_path = node
+                        .file_path
+                        .clone()
+                        .unwrap_or_else(|| node.name.clone());
+                    response.context_menu(|ui| {
+                        if ui.button("📁 Create Subfolder").clicked() {
+                            // Signal: "subfolder_req:<folder_path>"
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    egui::Id::new("conn_subfolder_req"),
+                                    folder_path.clone(),
+                                );
+                            });
+                            ui.close();
+                        }
+                        if ui.button("➕ Add Connection Here").clicked() {
+                            // Signal: "add_to_folder_req:<folder_path>"
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    egui::Id::new("conn_add_to_folder"),
+                                    folder_path.clone(),
+                                );
+                            });
                             ui.close();
                         }
                     });

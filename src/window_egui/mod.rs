@@ -382,6 +382,13 @@ pub struct Tabular {
 
     // Background fetch tracking
     pub fetching_databases: std::collections::HashSet<i64>,
+
+    // Subfolder creation dialog
+    pub show_create_subfolder_dialog: bool,
+    pub new_subfolder_name: String,
+    pub subfolder_parent_path: String,
+    // Standalone (empty) connection folder paths
+    pub connection_folders: Vec<String>,
 }
 
 // Preference tabs enumeration

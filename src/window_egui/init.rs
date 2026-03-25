@@ -438,6 +438,10 @@ impl super::Tabular {
             show_add_replication_dialog: false,
             replication_dialog: None,
             replication_setup_receiver: None,
+            show_create_subfolder_dialog: false,
+            new_subfolder_name: String::new(),
+            subfolder_parent_path: String::new(),
+            connection_folders: Vec::new(),
         };
 
         // Clear any old cached pools

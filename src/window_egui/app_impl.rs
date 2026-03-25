@@ -1523,6 +1523,7 @@ impl App for Tabular {
 
         sidebar_database::render_add_connection_dialog(self, ctx);
         sidebar_database::render_edit_connection_dialog(self, ctx);
+        sidebar_database::render_create_subfolder_dialog(self, ctx);
         if let Some(rx) = &self.replication_setup_receiver
             && let Ok(result) = rx.try_recv()
         {

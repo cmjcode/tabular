@@ -811,6 +811,46 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
     refresh_connections_tree(tabular);
 }
 
+pub(crate) fn load_connection_folders(tabular: &mut window_egui::Tabular) {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        if let Ok(rows) = rt.block_on(async {
+            sqlx::query("SELECT path FROM connection_folders ORDER BY path")
+                .fetch_all(pool_clone.as_ref())
+                .await
+        }) {
+            tabular.connection_folders = rows
+                .into_iter()
+                .filter_map(|r| r.try_get::<String, _>("path").ok())
+                .collect();
+        }
+    }
+}
+
+pub(crate) fn save_connection_folder(
+    tabular: &mut window_egui::Tabular,
+    path: &str,
+) -> bool {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let path = path.to_string();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let ok = rt.block_on(async {
+            sqlx::query("INSERT OR IGNORE INTO connection_folders (path) VALUES (?)")
+                .bind(&path)
+                .execute(pool_clone.as_ref())
+                .await
+        }).is_ok();
+        if ok && !tabular.connection_folders.contains(&path) {
+            tabular.connection_folders.push(path);
+        }
+        ok
+    } else {
+        false
+    }
+}
+
 pub(crate) fn save_connection_to_database(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
@@ -1085,6 +1125,17 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     .execute(&pool)
                     .await;
 
+                    // Create standalone folder paths table (folders that exist without connections)
+                    let _ = sqlx::query(
+                        r#"
+                        CREATE TABLE IF NOT EXISTS connection_folders (
+                            path TEXT NOT NULL UNIQUE
+                        )
+                        "#
+                    )
+                    .execute(&pool)
+                    .await;
+
 
                     // Create database cache table
                     let create_db_cache_result = sqlx::query(
@@ -1257,6 +1308,8 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
         }
         // Load existing connections from database
         load_connections(tabular);
+        // Load standalone folder paths
+        load_connection_folders(tabular);
         // Load query history from database
         sidebar_history::load_query_history(tabular);
     }
@@ -1602,70 +1655,237 @@ pub fn get_default_dba_views(
     }
 }
 
-pub(crate) fn create_connections_folder_structure(
-    tabular: &mut window_egui::Tabular,
+/// Normalizes a folder path: strips leading/trailing slashes, collapses empty segments.
+/// Returns "Default" for empty/None paths.
+fn normalize_folder_path(path: Option<&str>) -> String {
+    let raw = path.unwrap_or("Default");
+    let trimmed = raw.trim();
+    let segs: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.is_empty() {
+        "Default".to_string()
+    } else {
+        segs.join("/")
+    }
+}
+
+/// Recursively builds subfolder/connection nodes under `folder_base`.
+/// `folder_base` is the normalized path to the folder being built (e.g. "Work/Production").
+/// `all_connections` are connections whose normalized paths start with (or equal) `folder_base`.
+/// Depth limit prevents any chance of infinite recursion.
+fn build_folder_nodes_for_level(
+    all_connections: &[&models::structs::ConnectionConfig],
+    folder_base: &str,
+    depth: usize,
 ) -> Vec<models::structs::TreeNode> {
-    // Group connections by custom folder first
-    let mut folder_groups: std::collections::HashMap<
+    if depth > 20 {
+        // Safety fallback: treat all remaining as direct connections
+        return all_connections
+            .iter()
+            .filter_map(|conn| {
+                conn.id.map(|id| {
+                    models::structs::TreeNode::new_connection(conn.name.clone(), id)
+                })
+            })
+            .collect();
+    }
+
+    let mut direct: Vec<(models::structs::TreeNode, models::enums::DatabaseType, String)> = Vec::new();
+    let mut sub_groups: std::collections::HashMap<
         String,
         Vec<&models::structs::ConnectionConfig>,
     > = std::collections::HashMap::new();
 
-    // Group connections by custom folder
-    for conn in &tabular.connections {
-        let folder_name = conn
-            .folder
-            .as_ref()
-            .unwrap_or(&"Default".to_string())
-            .clone();
-        folder_groups.entry(folder_name).or_default().push(conn);
+    for conn in all_connections {
+        // Always normalize — removes any leading/trailing slashes in stored data
+        let full_path = normalize_folder_path(conn.folder.as_deref());
+
+        // Compute the path relative to folder_base
+        let relative: String = if full_path == folder_base {
+            // Connection lives directly in this folder
+            String::new()
+        } else if folder_base.is_empty() {
+            // We are at the root level
+            full_path.clone()
+        } else if let Some(rest) = full_path.strip_prefix(&format!("{}/", folder_base)) {
+            rest.to_string()
+        } else {
+            // Not under this folder_base — treat as direct child (defensive)
+            String::new()
+        };
+
+        if relative.is_empty() {
+            if let Some(id) = conn.id {
+                let node = models::structs::TreeNode::new_connection(conn.name.clone(), id);
+                direct.push((node, conn.connection_type.clone(), conn.name.clone()));
+            }
+        } else {
+            // Find the FIRST non-empty segment (guards against paths like "/foo")
+            if let Some(seg) = relative.split('/').find(|s| !s.is_empty()) {
+                sub_groups
+                    .entry(seg.to_string())
+                    .or_default()
+                    .push(conn);
+            } else {
+                // No valid segment found; fall back to direct child
+                if let Some(id) = conn.id {
+                    let node = models::structs::TreeNode::new_connection(conn.name.clone(), id);
+                    direct.push((node, conn.connection_type.clone(), conn.name.clone()));
+                }
+            }
+        }
     }
 
-    let mut result = Vec::new();
+    // Sort direct connections: by DB type order, then name
+    direct.sort_by(|a, b| {
+        match database_type_order(&a.1).cmp(&database_type_order(&b.1)) {
+            std::cmp::Ordering::Equal => a.2.cmp(&b.2),
+            other => other,
+        }
+    });
+    let connections_vec: Vec<models::structs::TreeNode> =
+        direct.into_iter().map(|(n, _, _)| n).collect();
 
-    // Create folder structure for each custom folder
-    for (folder_name, connections) in folder_groups {
-        if connections.is_empty() {
+    // Build subfolder nodes (sorted alphabetically), then append direct connections
+    let mut subfolder_nodes: Vec<models::structs::TreeNode> = sub_groups
+        .into_iter()
+        .map(|(seg, conns)| {
+            let child_base = if folder_base.is_empty() {
+                seg.clone()
+            } else {
+                format!("{}/{}", folder_base, seg)
+            };
+            let mut subfolder = models::structs::TreeNode::new(
+                seg.clone(),
+                models::enums::NodeType::CustomFolder,
+            );
+            subfolder.is_expanded = false;
+            subfolder.file_path = Some(child_base.clone());
+            subfolder.children =
+                build_folder_nodes_for_level(&conns, &child_base, depth + 1);
+            subfolder
+        })
+        .collect();
+    subfolder_nodes.sort_by(|a, b| a.name.cmp(&b.name));
+    subfolder_nodes.extend(connections_vec);
+    subfolder_nodes
+}
+
+/// Ensures a full folder path exists in the tree, inserting empty CustomFolder nodes as needed.
+/// `full_path` is a normalized path like "Work/Sub/Empty".
+/// `current_prefix` is the path of the current level ("" at root).
+fn ensure_folder_exists_in_tree(
+    nodes: &mut Vec<models::structs::TreeNode>,
+    full_path: &str,
+    current_prefix: &str,
+) {
+    let relative = if current_prefix.is_empty() {
+        full_path.to_string()
+    } else {
+        match full_path.strip_prefix(&format!("{}/", current_prefix)) {
+            Some(rest) => rest.to_string(),
+            None => return, // not under this prefix
+        }
+    };
+
+    let seg = match relative.split('/').find(|s| !s.is_empty()) {
+        Some(s) => s,
+        None => return,
+    };
+
+    let node_path = if current_prefix.is_empty() {
+        seg.to_string()
+    } else {
+        format!("{}/{}", current_prefix, seg)
+    };
+
+    let pos = nodes.iter().position(|n| {
+        n.name == seg && n.node_type == models::enums::NodeType::CustomFolder
+    });
+
+    let idx = match pos {
+        Some(i) => i,
+        None => {
+            let mut node = models::structs::TreeNode::new(
+                seg.to_string(),
+                models::enums::NodeType::CustomFolder,
+            );
+            node.is_expanded = false;
+            node.file_path = Some(node_path.clone());
+            nodes.push(node);
+            nodes.len() - 1
+        }
+    };
+
+    if nodes[idx].file_path.is_none() {
+        nodes[idx].file_path = Some(node_path.clone());
+    }
+
+    // Recurse if there's still more path to create
+    if node_path != full_path {
+        let children = std::mem::take(&mut nodes[idx].children);
+        let mut children = children;
+        ensure_folder_exists_in_tree(&mut children, full_path, &node_path);
+        nodes[idx].children = children;
+    }
+}
+
+pub(crate) fn create_connections_folder_structure(
+    tabular: &mut window_egui::Tabular,
+) -> Vec<models::structs::TreeNode> {
+    // Group connections by the top-level folder segment
+    let mut root_groups: std::collections::HashMap<
+        String,
+        Vec<&models::structs::ConnectionConfig>,
+    > = std::collections::HashMap::new();
+
+    for conn in &tabular.connections {
+        let full_path = normalize_folder_path(conn.folder.as_deref());
+        // Top-level segment — guaranteed non-empty after normalize_folder_path
+        let top = full_path
+            .split('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or("Default")
+            .to_string();
+        root_groups.entry(top).or_default().push(conn);
+    }
+
+    let mut result: Vec<models::structs::TreeNode> = root_groups
+        .into_iter()
+        .filter(|(_, conns)| !conns.is_empty())
+        .map(|(folder_name, conns)| {
+            let mut folder_node = models::structs::TreeNode::new(
+                folder_name.clone(),
+                models::enums::NodeType::CustomFolder,
+            );
+            folder_node.is_expanded = false;
+            folder_node.file_path = Some(folder_name.clone());
+            folder_node.children =
+                build_folder_nodes_for_level(&conns, &folder_name, 0);
+            folder_node
+        })
+        .collect();
+
+    // Sort folders alphabetically, putting "Default" first
+    result.sort_by(|a, b| {
+        if a.name == "Default" {
+            std::cmp::Ordering::Less
+        } else if b.name == "Default" {
+            std::cmp::Ordering::Greater
+        } else {
+            a.name.cmp(&b.name)
+        }
+    });
+
+    // Inject standalone (empty) folder paths so they appear even without connections
+    let standalone_folders = tabular.connection_folders.clone();
+    for folder_path in &standalone_folders {
+        let normalized = normalize_folder_path(Some(folder_path));
+        if normalized == "Default" {
             continue;
         }
-
-        // Create custom folder node
-        let mut custom_folder = models::structs::TreeNode::new(
-            folder_name.clone(),
-            models::enums::NodeType::CustomFolder,
-        );
-        custom_folder.is_expanded = false; // Start collapsed
-
-        // Add connections directly under the folder with database type icon
-        let mut folder_connections = Vec::new();
-
-        for conn in connections {
-            if let Some(id) = conn.id {
-                // Display name is just the connection name; DB type badge rendered separately
-                let display_name = conn.name.clone();
-                let node = models::structs::TreeNode::new_connection(display_name, id);
-                folder_connections.push((node, conn.connection_type.clone(), conn.name.clone()));
-            } else {
-                debug!("  -> Skipping connection with no ID");
-            }
-        }
-
-        // Sort connections by database type first, then by name
-        folder_connections.sort_by(|a, b| {
-            match database_type_order(&a.1).cmp(&database_type_order(&b.1)) {
-                std::cmp::Ordering::Equal => a.2.cmp(&b.2),
-                other => other,
-            }
-        });
-
-        custom_folder.children = folder_connections
-            .into_iter()
-            .map(|(node, _, _)| node)
-            .collect();
-        result.push(custom_folder);
+        ensure_folder_exists_in_tree(&mut result, &normalized, "");
     }
-
-    // Sort folders alphabetically, but put "Default" first
+    // Re-sort after injecting standalone folders (they may have added new top-level entries)
     result.sort_by(|a, b| {
         if a.name == "Default" {
             std::cmp::Ordering::Less
@@ -1681,4 +1901,51 @@ pub(crate) fn create_connections_folder_structure(
     }
 
     result
+}
+
+pub(crate) fn render_create_subfolder_dialog(
+    tabular: &mut window_egui::Tabular,
+    ctx: &egui::Context,
+) {
+    if !tabular.show_create_subfolder_dialog {
+        return;
+    }
+    let mut open = true;
+    let parent = tabular.subfolder_parent_path.clone();
+    egui::Window::new(format!("Create Subfolder in \"{}\"", parent))
+        .resizable(false)
+        .default_width(320.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .collapsible(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label("Subfolder name:");
+            let resp = ui.text_edit_singleline(&mut tabular.new_subfolder_name);
+            resp.request_focus();
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let ok = !tabular.new_subfolder_name.trim().is_empty();
+                ui.add_enabled_ui(ok, |ui| {
+                    if ui.button("Create Folder").clicked() {
+                        let path = format!(
+                            "{}/{}",
+                            tabular.subfolder_parent_path.trim_end_matches('/'),
+                            tabular.new_subfolder_name.trim()
+                        );
+                        save_connection_folder(tabular, &path);
+                        refresh_connections_tree(tabular);
+                        tabular.show_create_subfolder_dialog = false;
+                        tabular.new_subfolder_name.clear();
+                    }
+                });
+                if ui.button("Cancel").clicked() {
+                    tabular.show_create_subfolder_dialog = false;
+                    tabular.new_subfolder_name.clear();
+                }
+            });
+        });
+    if !open {
+        tabular.show_create_subfolder_dialog = false;
+        tabular.new_subfolder_name.clear();
+    }
 }
