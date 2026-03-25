@@ -1916,6 +1916,8 @@ impl super::Tabular {
 
                 let mut response = if node.node_type == models::enums::NodeType::Connection {
                     // Draw PNG icon or emoji badge (NO status dot — status color goes on the name)
+                    let mut icon_response: Option<egui::Response> = None;
+                    let mut badge_response: Option<egui::Response> = None;
                     if let Some(conn_id) = node.connection_id
                         && let Some(db_type) = params.connection_types.get(&conn_id) {
                             let (r, g, b) = db_type.badge_color();
@@ -1923,19 +1925,26 @@ impl super::Tabular {
                             // PNG icon if loaded, otherwise fall back to emoji
                             let icon_key = db_type.icon_key();
                             if let Some(texture) = params.db_icon_textures.get(icon_key) {
-                                ui.add(
+                                icon_response = Some(ui.add(
                                     egui::Image::new(texture)
-                                        .fit_to_exact_size(egui::Vec2::splat(16.0)),
-                                );
+                                        .fit_to_exact_size(egui::Vec2::splat(16.0))
+                                        .sense(egui::Sense::click_and_drag()),
+                                ));
                             } else {
-                                ui.label(db_type.icon());
+                                icon_response = Some(ui.add(
+                                    egui::Label::new(db_type.icon())
+                                        .sense(egui::Sense::click_and_drag()),
+                                ));
                             }
                             // Colored short label (e.g. "MY", "PG") for text clarity
                             let badge_text = egui::RichText::new(db_type.badge_label())
                                 .strong()
                                 .small()
                                 .color(badge_color);
-                            ui.label(badge_text);
+                            badge_response = Some(ui.add(
+                                egui::Label::new(badge_text)
+                                    .sense(egui::Sense::click_and_drag()),
+                            ));
                         }
                     let mut name_text = node.name.clone();
                     if let Some(conn_id) = node.connection_id {
@@ -1949,11 +1958,16 @@ impl super::Tabular {
                         }
                     }
                     // Color the connection name: green = connected, red = disconnected/connecting
-                    ui.add(
+                    let name_response = ui.add(
                         egui::Label::new(egui::RichText::new(name_text).color(status_color))
                             .truncate()
                             .sense(egui::Sense::click_and_drag()),
-                    )
+                    );
+                    // Union all part responses so click/drag on icon or badge works too
+                    let mut combined = name_response;
+                    if let Some(r) = icon_response { combined = combined | r; }
+                    if let Some(r) = badge_response { combined = combined | r; }
+                    combined
                 } else {
                     // Non-connection nodes: icon + name, truncated to available width and clickable
                     let label_text = if icon.is_empty() {
