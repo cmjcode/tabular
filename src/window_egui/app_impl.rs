@@ -1693,11 +1693,32 @@ impl App for Tabular {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         match self.selected_menu.as_str() {
                             "Database" => {
-                                if self.connections.is_empty() {
+                                // Right-click context menu on empty space in the database sidebar
+                                let db_area_response = ui.interact(
+                                    ui.available_rect_before_wrap(),
+                                    egui::Id::new("database_area"),
+                                    egui::Sense::click(),
+                                );
+                                db_area_response.context_menu(|ui| {
+                                    if ui.button("📁 Create Folder").clicked() {
+                                        // Empty parent = create a top-level folder
+                                        self.subfolder_parent_path = String::new();
+                                        self.new_subfolder_name.clear();
+                                        self.show_create_subfolder_dialog = true;
+                                        ui.close();
+                                    }
+                                    if ui.button("➕ Add Connection").clicked() {
+                                        self.new_connection.folder = Some("Default".to_string());
+                                        self.show_add_connection = true;
+                                        ui.close();
+                                    }
+                                });
+                                // Always render the tree so standalone folders without
+                                // connections are also visible.
+                                if self.connections.is_empty() && self.items_tree.is_empty() {
                                     ui.label("No connections configured");
                                     ui.label("Click ➕ to add a new connection");
                                 } else {
-                                    // Render tree directly without mem::take to avoid race conditions
                                     self.render_tree_for_database_section(ui);
                                 }
                             }

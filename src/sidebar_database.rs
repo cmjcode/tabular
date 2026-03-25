@@ -1912,14 +1912,19 @@ pub(crate) fn render_create_subfolder_dialog(
     }
     let mut open = true;
     let parent = tabular.subfolder_parent_path.clone();
-    egui::Window::new(format!("Create Subfolder in \"{}\"", parent))
+    let title = if parent.is_empty() {
+        "Create New Folder".to_string()
+    } else {
+        format!("Create Subfolder in \"{}\"", parent)
+    };
+    egui::Window::new(title)
         .resizable(false)
         .default_width(320.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Subfolder name:");
+            ui.label("Folder name:");
             let resp = ui.text_edit_singleline(&mut tabular.new_subfolder_name);
             resp.request_focus();
             ui.add_space(8.0);
@@ -1927,11 +1932,16 @@ pub(crate) fn render_create_subfolder_dialog(
                 let ok = !tabular.new_subfolder_name.trim().is_empty();
                 ui.add_enabled_ui(ok, |ui| {
                     if ui.button("Create Folder").clicked() {
-                        let path = format!(
-                            "{}/{}",
-                            tabular.subfolder_parent_path.trim_end_matches('/'),
-                            tabular.new_subfolder_name.trim()
-                        );
+                        let path = if tabular.subfolder_parent_path.is_empty() {
+                            // Top-level folder: just use the name directly
+                            tabular.new_subfolder_name.trim().to_string()
+                        } else {
+                            format!(
+                                "{}/{}",
+                                tabular.subfolder_parent_path.trim_end_matches('/'),
+                                tabular.new_subfolder_name.trim()
+                            )
+                        };
                         save_connection_folder(tabular, &path);
                         refresh_connections_tree(tabular);
                         tabular.show_create_subfolder_dialog = false;
