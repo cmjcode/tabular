@@ -1702,6 +1702,17 @@ impl super::Tabular {
             self.show_add_connection = true;
         }
 
+        // Handle "Delete Folder" context menu request
+        let delete_folder: Option<String> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("conn_delete_folder")));
+        if let Some(folder_path) = delete_folder {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<String>(egui::Id::new("conn_delete_folder"));
+            });
+            sidebar_database::delete_connection_folder(self, &folder_path);
+        }
+
         // Return query files that were clicked
         results
     }
@@ -2361,6 +2372,18 @@ impl super::Tabular {
                                 );
                             });
                             ui.close();
+                        }
+                        if node.name != "Default" {
+                            ui.separator();
+                            if ui.button("🗑️ Delete Folder").clicked() {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(
+                                        egui::Id::new("conn_delete_folder"),
+                                        folder_path.clone(),
+                                    );
+                                });
+                                ui.close();
+                            }
                         }
                     });
                 }

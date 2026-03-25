@@ -851,6 +851,41 @@ pub(crate) fn save_connection_folder(
     }
 }
 
+pub(crate) fn delete_connection_folder(
+    tabular: &mut window_egui::Tabular,
+    folder_path: &str,
+) {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let path = folder_path.to_string();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // Remove the folder and any subfolders from connection_folders
+        let _ = rt.block_on(async {
+            sqlx::query("DELETE FROM connection_folders WHERE path = ? OR path LIKE ?")
+                .bind(&path)
+                .bind(format!("{}/%", path))
+                .execute(pool_clone.as_ref())
+                .await
+        });
+        // Move all connections in this folder (or subfolders) to Default
+        let _ = rt.block_on(async {
+            sqlx::query(
+                "UPDATE connections SET folder = 'Default' WHERE folder = ? OR folder LIKE ?",
+            )
+            .bind(&path)
+            .bind(format!("{}/%", path))
+            .execute(pool_clone.as_ref())
+            .await
+        });
+    }
+    // Remove deleted folder and subfolders from in-memory list so the tree
+    // rebuild doesn't re-inject them as standalone empty folders.
+    let prefix = format!("{}/", folder_path);
+    tabular.connection_folders.retain(|f| f != folder_path && !f.starts_with(&prefix));
+    // Reload connections (which also calls refresh_connections_tree at the end)
+    load_connections(tabular);
+}
+
 pub(crate) fn save_connection_to_database(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
