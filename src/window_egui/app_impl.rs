@@ -1877,34 +1877,37 @@ impl App for Tabular {
                     });
 
                     // Bottom section with add button - conditional based on active tab
-                    ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.with_layout(egui::Layout::bottom_up(egui::Align::RIGHT), |ui| {
+                        ui.add_space(10.0); // Bottom spacing
 
-
-                        match self.selected_menu.as_str() {
-                            "Database" => {
-                                let plus_text_color = if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(30, 30, 30)
-                                } else {
-                                    egui::Color32::WHITE
-                                };
-                                if ui
-                                    .add_sized(
-                                        [24.0, 24.0], // Small square button
-                                        egui::Button::new(egui::RichText::new("➕").color(plus_text_color)).fill(egui::Color32::from_rgb(255, 0, 0)),
-                                    )
-                                    .on_hover_text("Add New Database Connection")
-                                    .clicked()
-                                {
-                                    // Reset test connection status saat buka add dialog
-                                    self.test_connection_status = None;
-                                    self.test_connection_in_progress = false;
-                                    self.show_add_connection = true;
+                        ui.horizontal(|ui| {
+                            ui.add_space(5.0); // Right spacing (goes before button since layout is right-aligned)
+                            match self.selected_menu.as_str() {
+                                "Database" => {
+                                    let plus_text_color = if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(30, 30, 30)
+                                    } else {
+                                        egui::Color32::WHITE
+                                    };
+                                    if ui
+                                        .add_sized(
+                                            [24.0, 24.0], // Small square button
+                                            egui::Button::new(egui::RichText::new("➕").color(plus_text_color)).fill(egui::Color32::from_rgb(255, 0, 0)),
+                                        )
+                                        .on_hover_text("Add New Database Connection")
+                                        .clicked()
+                                    {
+                                        // Reset test connection status saat buka add dialog
+                                        self.test_connection_status = None;
+                                        self.test_connection_in_progress = false;
+                                        self.show_add_connection = true;
+                                    }
+                                }
+                                _ => {
+                                    // No button for History tab
                                 }
                             }
-                            _ => {
-                                // No button for History tab
-                            }
-                        }
+                        });
                     });
                 });
             });
