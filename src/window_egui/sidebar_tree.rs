@@ -1658,6 +1658,7 @@ impl super::Tabular {
             .ctx()
             .data(|d| d.get_temp(egui::Id::new("conn_dnd_drop")));
         if let Some((drag_conn_id, target_folder)) = dnd_drop {
+            log::warn!("[DnD] EXECUTING DROP conn_id={} -> folder='{}'", drag_conn_id, target_folder);
             ui.ctx().data_mut(|d| {
                 d.remove_temp::<(i64, String)>(egui::Id::new("conn_dnd_drop"));
                 d.remove_temp::<i64>(egui::Id::new("conn_dnd_source"));
@@ -1745,6 +1746,9 @@ impl super::Tabular {
     node.node_type == models::enums::NodeType::EventsFolder || node.node_type == models::enums::NodeType::DBAViewsFolder ||
        // Do NOT show expand toggles for DBA leaf items; they act as actions when clicked
     node.node_type == models::enums::NodeType::Database || node.node_type == models::enums::NodeType::QueryFolder
+       // Always use the main (expandable) path for CustomFolder so DnD drop target code runs
+       // regardless of whether the folder currently has children.
+       || node.node_type == models::enums::NodeType::CustomFolder
         {
             // Use more unique ID including connection_id for connections
             let unique_id = match node.node_type {
@@ -1977,6 +1981,7 @@ impl super::Tabular {
                 if node.node_type == models::enums::NodeType::Connection {
                     if let Some(conn_id) = node.connection_id {
                         if response.drag_started() {
+                            log::warn!("[DnD] DRAG STARTED conn_id={} name='{}'", conn_id, node.name);
                             ui.ctx().data_mut(|d| {
                                 d.insert_temp(egui::Id::new("conn_dnd_source"), conn_id);
                                 d.remove_temp::<String>(egui::Id::new("conn_dnd_pending_folder"));
@@ -2005,7 +2010,9 @@ impl super::Tabular {
                             let pending_folder: Option<String> = ui
                                 .ctx()
                                 .data(|d| d.get_temp(egui::Id::new("conn_dnd_pending_folder")));
+                            log::warn!("[DnD] DRAG STOPPED conn_id={} pending_folder={:?}", conn_id, pending_folder);
                             if let Some(folder_path) = pending_folder {
+                                log::warn!("[DnD] => setting conn_dnd_drop: ({}, '{}')", conn_id, folder_path);
                                 ui.ctx().data_mut(|d| {
                                     d.insert_temp(
                                         egui::Id::new("conn_dnd_drop"),
@@ -2033,12 +2040,18 @@ impl super::Tabular {
                         .data(|d| d.get_temp::<i64>(egui::Id::new("conn_dnd_source")).is_some());
                     if is_dragging {
                         let row_rect = response.rect;
-                        let pointer_over = ui
-                            .ctx()
-                            .input(|i| i.pointer.hover_pos())
-                            .map_or(false, |p| {
-                                p.y >= row_rect.min.y && p.y <= row_rect.max.y
-                            });
+                        let ptr_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                        let pointer_over = ptr_pos
+                            .map_or(false, |p| p.y >= row_rect.min.y && p.y <= row_rect.max.y);
+                        log::warn!(
+                            "[DnD] CustomFolder='{}' path={:?} row_rect=({:.0},{:.0})-({:.0},{:.0}) ptr={:?} over={}",
+                            node.name,
+                            node.file_path,
+                            row_rect.min.x, row_rect.min.y,
+                            row_rect.max.x, row_rect.max.y,
+                            ptr_pos.map(|p| (p.x as i32, p.y as i32)),
+                            pointer_over
+                        );
                         if pointer_over {
                             // Use foreground layer painter so the highlight isn't clipped by the
                             // indent, but constrain X to the sidebar clip rect (not full screen).
@@ -2068,6 +2081,7 @@ impl super::Tabular {
                                 .file_path
                                 .clone()
                                 .unwrap_or_else(|| node.name.clone());
+                            log::warn!("[DnD] => pending_folder set to '{}'", folder_path);
                             ui.ctx().data_mut(|d| {
                                 d.insert_temp(
                                     egui::Id::new("conn_dnd_pending_folder"),
