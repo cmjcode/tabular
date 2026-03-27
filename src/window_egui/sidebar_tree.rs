@@ -1965,8 +1965,8 @@ impl super::Tabular {
                     );
                     // Union all part responses so click/drag on icon or badge works too
                     let mut combined = name_response;
-                    if let Some(r) = icon_response { combined = combined | r; }
-                    if let Some(r) = badge_response { combined = combined | r; }
+                    if let Some(r) = icon_response { combined |= r; }
+                    if let Some(r) = badge_response { combined |= r; }
                     combined
                 } else {
                     // Non-connection nodes: icon + name, truncated to available width and clickable
@@ -2003,8 +2003,8 @@ impl super::Tabular {
                 }
 
                 // Drag source: Connection nodes can be dragged to a folder.
-                if node.node_type == models::enums::NodeType::Connection {
-                    if let Some(conn_id) = node.connection_id {
+                if node.node_type == models::enums::NodeType::Connection
+                    && let Some(conn_id) = node.connection_id {
                         if response.drag_started() {
                             log::warn!("[DnD] DRAG STARTED conn_id={} name='{}'", conn_id, node.name);
                             ui.ctx().data_mut(|d| {
@@ -2051,7 +2051,6 @@ impl super::Tabular {
                             });
                         }
                     }
-                }
 
                 // Drop target: CustomFolder nodes accept dragged connections.
                 // We update conn_dnd_pending_folder every frame the pointer hovers over a folder
@@ -2067,7 +2066,7 @@ impl super::Tabular {
                         let row_rect = response.rect;
                         let ptr_pos = ui.ctx().input(|i| i.pointer.hover_pos());
                         let pointer_over = ptr_pos
-                            .map_or(false, |p| p.y >= row_rect.min.y && p.y <= row_rect.max.y);
+                            .is_some_and(|p| p.y >= row_rect.min.y && p.y <= row_rect.max.y);
                         log::warn!(
                             "[DnD] CustomFolder='{}' path={:?} row_rect=({:.0},{:.0})-({:.0},{:.0}) ptr={:?} over={}",
                             node.name,

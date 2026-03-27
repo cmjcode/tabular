@@ -1182,12 +1182,12 @@ impl App for Tabular {
                             let is_custom = self.ai_provider == crate::config::AiProvider::Custom;
                             if is_custom {
                                 let accent = egui::Color32::from_rgb(120, 80, 220);
-                                egui::Frame::none()
+                                egui::Frame::new()
                                     .fill(egui::Color32::from_rgba_unmultiplied(120, 80, 220, 20))
                                     .stroke(egui::Stroke::new(1.5, accent))
                                     .inner_margin(egui::Margin::same(8))
                                     .outer_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 4 })
-                                    .rounding(egui::Rounding::same(6))
+                                    .corner_radius(egui::CornerRadius::same(6))
                                     .show(ui, |ui| {
                                         ui.label(egui::RichText::new("🔗 Server URL (required)").size(12.0).color(accent).strong());
                                         ui.add_space(4.0);

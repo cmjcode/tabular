@@ -3661,8 +3661,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Scan for new --AI ... -- blocks to process (only when no inline AI request already in flight)
         // TRIGGER: only when user just pressed Enter (completing the closing --)
-        if just_inserted_newline && tabular.ai_inline_receiver.is_none() && !tabular.ai_api_key.is_empty() {
-            if let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular) {
+        if just_inserted_newline && tabular.ai_inline_receiver.is_none() && !tabular.ai_api_key.is_empty()
+            && let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular) {
                 let schema_context = crate::ai_assistant::build_schema_context(tabular, 30);
                 let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
 
@@ -3694,7 +3694,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 tabular.ai_inline_receiver = Some((block_hash, placeholder_start, placeholder_end, rx));
                 request_scroll_to_cursor = true;
                 ui.ctx().request_repaint();
-            }
         }
 
         // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
@@ -4091,8 +4090,8 @@ fn format_ai_response_as_sql(text: &str) -> String {
 
 pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     // Poll for pending AI response
-    if tabular.ai_is_loading {
-        if let Some(rx) = &tabular.ai_suggestion_receiver {
+    if tabular.ai_is_loading
+        && let Some(rx) = &tabular.ai_suggestion_receiver {
             if let Ok(result) = rx.try_recv() {
                 tabular.ai_is_loading = false;
                 tabular.ai_suggestion_receiver = None;
@@ -4110,7 +4109,6 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                 // Still loading — keep repainting so spinner animates
                 ui.ctx().request_repaint();
             }
-        }
     }
 
     let no_api_key = tabular.ai_api_key.is_empty();
@@ -4252,11 +4250,10 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                     );
                 }
 
-                if !tabular.ai_suggestion.is_empty() || tabular.ai_error.is_some() {
-                    if ui.small_button("🗑 Clear").clicked() {
+                if (!tabular.ai_suggestion.is_empty() || tabular.ai_error.is_some())
+                    && ui.small_button("🗑 Clear").clicked() {
                         tabular.ai_suggestion.clear();
                         tabular.ai_error = None;
-                    }
                 }
             });
 

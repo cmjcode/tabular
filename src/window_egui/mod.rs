@@ -409,6 +409,7 @@ pub struct Tabular {
     // Inline --AI ... -- block processing
     pub ai_inline_processed: std::collections::HashSet<u64>,
     // (block_hash, placeholder_start, placeholder_end, rx)
+    #[allow(clippy::type_complexity)]
     pub ai_inline_receiver: Option<(u64, usize, usize, std::sync::mpsc::Receiver<Result<String, String>>)>,
 }
 

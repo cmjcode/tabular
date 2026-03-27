@@ -21,10 +21,9 @@ pub fn build_schema_context(tabular: &crate::window_egui::Tabular, max_tables: u
 
     if db_name.is_empty() {
         // Try to pick first available database from in-memory cache
-        if let Some(dbs) = tabular.database_cache.get(&conn_id) {
-            if let Some(first_db) = dbs.first() {
+        if let Some(dbs) = tabular.database_cache.get(&conn_id)
+            && let Some(first_db) = dbs.first() {
                 return build_schema_for_db(tabular, conn_id, first_db, max_tables);
-            }
         }
         return String::new();
     }
