@@ -1169,6 +1169,22 @@ impl SpreadsheetOperations for Tabular {
             }
         }
 
+        // Fallback: if no PKs from metadata (e.g. table browse mode where current_column_metadata
+        // is None), query index_cache directly using the cached primary key information.
+        if derived_pks.is_empty() {
+            if let Some(ref tbl) = table {
+                if let Some(db) = self.spreadsheet_extract_database_name() {
+                    if let Some(pks) = self.get_primary_keys_for_table(conn_id, &db, tbl) {
+                        if !pks.is_empty() {
+                            log::info!("🔥 Found PKs from index_cache fallback: {:?}", pks);
+                            std::println!("🔥 Found PKs from index_cache fallback: {:?}", pks);
+                            derived_pks = pks;
+                        }
+                    }
+                }
+            }
+        }
+
         let pk_columns = if !derived_pks.is_empty() {
             &derived_pks
         } else {
@@ -1351,6 +1367,47 @@ impl SpreadsheetOperations for Tabular {
             debug!("🔥 No pending operations to save");
             return;
         }
+
+        // Ensure primary key columns are available before generating SQL.
+        // In table browse mode current_column_metadata is None, so we must load PKs
+        // from the cache or, if not cached yet, directly from the live database.
+        if self.spreadsheet_state.primary_key_columns.is_empty() {
+            let conn_id_opt = self.current_connection_id;
+            let tbl_opt = self.spreadsheet_extract_table_name();
+            let db_str = self.spreadsheet_extract_database_name().unwrap_or_default();
+
+            if let (Some(conn_id), Some(ref tbl)) = (conn_id_opt, tbl_opt) {
+                // 1. Try index_cache first (fastest, no network round-trip)
+                let mut pks = crate::cache_data::get_primary_keys_from_cache(
+                    self, conn_id, &db_str, tbl,
+                )
+                .unwrap_or_default();
+
+                // 2. Cache miss → query the live database directly
+                if pks.is_empty() {
+                    if let Some(conn) = self
+                        .connections
+                        .iter()
+                        .find(|c| c.id == Some(conn_id))
+                        .cloned()
+                    {
+                        pks = self.fetch_primary_key_columns_for_table(
+                            conn_id, &conn, &db_str, tbl,
+                        );
+                    }
+                }
+
+                if !pks.is_empty() {
+                    std::println!("🔥 Pre-loaded PKs for '{}': {:?}", tbl, pks);
+                    debug!("🔥 Pre-loaded PKs for '{}': {:?}", tbl, pks);
+                    self.spreadsheet_state.primary_key_columns = pks;
+                } else {
+                    std::println!("🔥 Warning: could not determine PKs for table '{}' — WHERE clause will use all columns", tbl);
+                    debug!("🔥 Warning: could not determine PKs for table '{}'", tbl);
+                }
+            }
+        }
+
         if let Some(sql) = self.spreadsheet_generate_sql() {
             std::println!("🔥 Generated SQL: {}", sql);
             debug!("🔥 Generated SQL: {}", sql);
