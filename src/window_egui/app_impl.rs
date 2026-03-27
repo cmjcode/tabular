@@ -1447,6 +1447,9 @@ impl App for Tabular {
                         self.prefetch_in_progress.remove(&connection_id);
                         self.prefetch_progress.remove(&connection_id);
                         debug!("Prefetch completed for connection {}", connection_id);
+                        // Reload any already-expanded table/view folders so newly-cached
+                        // tables become visible without the user having to re-click.
+                        self.refresh_all_table_folders(connection_id);
                         ctx.request_repaint();
                     }
                     models::enums::BackgroundResult::SqlitePathPicked { path } => {

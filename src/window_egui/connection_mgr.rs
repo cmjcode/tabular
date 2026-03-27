@@ -451,6 +451,7 @@ impl super::Tabular {
                         connection_id,
                         node,
                         models::enums::NodeType::TablesFolder,
+                        false,
                     );
                 }
                 models::enums::NodeType::ViewsFolder => {
@@ -459,6 +460,7 @@ impl super::Tabular {
                         connection_id,
                         node,
                         models::enums::NodeType::ViewsFolder,
+                        false,
                     );
                 }
                 models::enums::NodeType::StoredProceduresFolder => {
@@ -467,6 +469,7 @@ impl super::Tabular {
                         connection_id,
                         node,
                         models::enums::NodeType::StoredProceduresFolder,
+                        false,
                     );
                 }
                 _ => {

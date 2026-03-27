@@ -28,8 +28,29 @@ pub(crate) fn get_tables_from_cache(
         };
 
         match result {
-            Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
-            Err(_) => None,
+            Ok(rows) => {
+                // Deduplicate — same table_name can appear multiple times if caching
+                // paths ran concurrently or on reconnect.
+                let mut seen = std::collections::HashSet::new();
+                let deduped: Vec<String> = rows
+                    .into_iter()
+                    .map(|(name,)| name)
+                    .filter(|n| seen.insert(n.clone()))
+                    .collect();
+                eprintln!(
+                    "[TABULAR-DEBUG] get_tables_from_cache: conn={} db={:?} type={:?} => {} rows, panen_found={}",
+                    connection_id,
+                    database_name,
+                    table_type,
+                    deduped.len(),
+                    deduped.iter().any(|n| n.to_lowercase().contains("panen"))
+                );
+                Some(deduped)
+            }
+            Err(e) => {
+                eprintln!("[TABULAR-DEBUG] get_tables_from_cache ERROR: conn={} db={:?} type={:?} err={}", connection_id, database_name, table_type, e);
+                None
+            }
         }
     } else {
         None
@@ -117,6 +138,80 @@ pub(crate) fn build_redis_structure_from_cache(
 }
 
 // Cache functions for database structure
+
+/// Delete all table_cache rows for a specific connection + database (all table_types).
+/// Used before a forced refresh so the live fetch always runs instead of returning stale cache.
+pub(crate) fn clear_tables_from_cache_for_db(
+    tabular: &window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+) {
+    eprintln!(
+        "[TABULAR-DEBUG] clear_tables_from_cache_for_db: clearing conn={} db={:?}",
+        connection_id,
+        database_name
+    );
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let db = database_name.to_string();
+        let fut = async move {
+            match sqlx::query(
+                "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
+            )
+            .bind(connection_id)
+            .bind(&db)
+            .execute(pool_clone.as_ref())
+            .await
+            {
+                Ok(result) => eprintln!(
+                    "[TABULAR-DEBUG] clear_tables_from_cache_for_db: deleted {} rows for conn={} db={:?}",
+                    result.rows_affected(),
+                    connection_id,
+                    db
+                ),
+                Err(e) => {
+                    eprintln!(
+                        "[TABULAR-DEBUG] clear_tables_from_cache_for_db ERROR: conn={} db={:?} err={}",
+                        connection_id, db, e
+                    );
+                    // SQLite error code 11 = SQLITE_CORRUPT. Attempt recovery via VACUUM then retry.
+                    let err_str = e.to_string();
+                    if err_str.contains("code: 11") || err_str.contains("malformed") || err_str.contains("corrupt") {
+                        eprintln!("[TABULAR-DEBUG] Detected corrupt SQLite cache — attempting VACUUM to repair...");
+                        let vacuum_result = sqlx::query("VACUUM").execute(pool_clone.as_ref()).await;
+                        match vacuum_result {
+                            Ok(_) => {
+                                eprintln!("[TABULAR-DEBUG] VACUUM succeeded — retrying DELETE");
+                                let _ = sqlx::query(
+                                    "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
+                                )
+                                .bind(connection_id)
+                                .bind(&db)
+                                .execute(pool_clone.as_ref())
+                                .await;
+                            }
+                            Err(vacuum_err) => {
+                                eprintln!("[TABULAR-DEBUG] VACUUM failed: {} — clearing ALL table_cache as fallback", vacuum_err);
+                                // Last resort: truncate the whole table_cache so no stale entries remain
+                                let _ = sqlx::query("DELETE FROM table_cache")
+                                    .execute(pool_clone.as_ref())
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut);
+        } else if let Ok(rt) = tokio::runtime::Runtime::new() {
+            rt.block_on(fut);
+        }
+    } else {
+        eprintln!("[TABULAR-DEBUG] clear_tables_from_cache_for_db: NO db_pool available!");
+    }
+}
+
 pub(crate) fn save_databases_to_cache(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,

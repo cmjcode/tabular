@@ -760,6 +760,29 @@ impl super::Tabular {
                     let folder_type = expansion_req.node_type.clone();
                     let database_name = expansion_req.database_name.clone();
 
+                    eprintln!(
+                        "[TABULAR-DEBUG] expansion_handler: conn={} folder_type={:?} db={:?} force_clear={}",
+                        connection_id, folder_type, database_name, expansion_req.force_clear_cache
+                    );
+
+                    // If this is a forced refresh, clear the table_cache first so the
+                    // live-fetch path is always taken instead of stale cache.
+                    if expansion_req.force_clear_cache {
+                        if let Some(ref db) = database_name {
+                            eprintln!(
+                                "[TABULAR-DEBUG] expansion_handler: forcing cache clear for db={:?}",
+                                db
+                            );
+                            crate::cache_data::clear_tables_from_cache_for_db(
+                                self,
+                                connection_id,
+                                db,
+                            );
+                        } else {
+                            eprintln!("[TABULAR-DEBUG] expansion_handler: force_clear=true but database_name is None! Cannot clear cache.");
+                        }
+                    }
+
                     // Search for folder node by traversing the tree recursively
                     let mut found = false;
                     for node in nodes.iter_mut() {
@@ -770,11 +793,16 @@ impl super::Tabular {
                             &folder_type,
                             &database_name,
                         ) {
+                            eprintln!(
+                                "[TABULAR-DEBUG] expansion_handler: found folder node is_loaded={} db={:?}",
+                                folder_node.is_loaded, folder_node.database_name
+                            );
                             if !folder_node.is_loaded {
                                 self.load_folder_content(
                                     connection_id,
                                     folder_node,
                                     folder_type.clone(),
+                                    expansion_req.force_clear_cache,
                                 );
                                 found = true;
                             }
@@ -1788,6 +1816,7 @@ impl super::Tabular {
                             node_type: models::enums::NodeType::Connection,
                             connection_id: conn_id,
                             database_name: None,
+                            force_clear_cache: false,
                         });
                         // Also set as active connection when expanding
                         connection_click_request = Some(conn_id);
@@ -1829,6 +1858,7 @@ impl super::Tabular {
                             node_type: node.node_type.clone(),
                             connection_id: conn_id,
                             database_name: node.database_name.clone(),
+                            force_clear_cache: false,
                         });
                     }
 
@@ -1842,6 +1872,7 @@ impl super::Tabular {
                             node_type: models::enums::NodeType::Database,
                             connection_id: conn_id,
                             database_name: node.database_name.clone(),
+                            force_clear_cache: false,
                         });
                     }
                 }
@@ -2159,6 +2190,7 @@ impl super::Tabular {
                                 node_type: models::enums::NodeType::Connection,
                                 connection_id: conn_id,
                                 database_name: None,
+                                force_clear_cache: false,
                             });
                             // Also set as active connection when expanding
                             connection_click_request = Some(conn_id);
@@ -2182,6 +2214,7 @@ impl super::Tabular {
                                 node_type: node.node_type.clone(),
                                 connection_id: conn_id,
                                 database_name: node.database_name.clone(),
+                                force_clear_cache: false,
                             });
                         }
 
@@ -2195,6 +2228,7 @@ impl super::Tabular {
                                 node_type: models::enums::NodeType::Database,
                                 connection_id: conn_id,
                                 database_name: node.database_name.clone(),
+                                force_clear_cache: false,
                             });
                         }
                     }
@@ -2458,6 +2492,18 @@ impl super::Tabular {
                                 }
                             } else {
                                 ui.label("Create table not supported for this database");
+                            }
+                            // Refresh: force reload from cache/server
+                            if ui.button("🔄 Refresh Tables").clicked() {
+                                node.is_loaded = false;
+                                node.children.clear();
+                                expansion_request = Some(models::structs::ExpansionRequest {
+                                    node_type: models::enums::NodeType::TablesFolder,
+                                    connection_id: conn_id,
+                                    database_name: node.database_name.clone(),
+                                    force_clear_cache: true,
+                                });
+                                ui.close();
                             }
                         }
                     });

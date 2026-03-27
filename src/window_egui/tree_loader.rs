@@ -1219,6 +1219,7 @@ impl super::Tabular {
         connection_id: i64,
         node: &mut models::structs::TreeNode,
         folder_type: models::enums::NodeType,
+        force_live_fetch: bool,
     ) {
         // Find the connection by ID
         if let Some(connection) = self
@@ -1230,7 +1231,7 @@ impl super::Tabular {
 
             match connection.connection_type {
                 models::enums::DatabaseType::MySQL => {
-                    self.load_mysql_folder_content(connection_id, &connection, node, folder_type);
+                    self.load_mysql_folder_content(connection_id, &connection, node, folder_type, force_live_fetch);
                 }
                 models::enums::DatabaseType::PostgreSQL => {
                     self.load_postgresql_folder_content(
@@ -1238,16 +1239,17 @@ impl super::Tabular {
                         &connection,
                         node,
                         folder_type,
+                        force_live_fetch,
                     );
                 }
                 models::enums::DatabaseType::SQLite => {
-                    self.load_sqlite_folder_content(connection_id, &connection, node, folder_type);
+                    self.load_sqlite_folder_content(connection_id, &connection, node, folder_type, force_live_fetch);
                 }
                 models::enums::DatabaseType::Redis => {
                     self.load_redis_folder_content(connection_id, &connection, node, folder_type);
                 }
                 models::enums::DatabaseType::MsSQL => {
-                    self.load_mssql_folder_content(connection_id, &connection, node, folder_type);
+                    self.load_mssql_folder_content(connection_id, &connection, node, folder_type, force_live_fetch);
                 }
                 models::enums::DatabaseType::MongoDB => {
                     // For MongoDB, TablesFolder represents collections
@@ -1257,8 +1259,9 @@ impl super::Tabular {
                         .unwrap_or_else(|| connection.database.clone());
                     let table_type = "collection";
 
-                    // Try cache first
-                    if let Some(cached) = cache_data::get_tables_from_cache(
+                    // Try cache first (skipped when force_live_fetch is true)
+                    if !force_live_fetch
+                    && let Some(cached) = cache_data::get_tables_from_cache(
                         self,
                         connection_id,
                         &database_name,
@@ -1278,6 +1281,7 @@ impl super::Tabular {
                                 child
                             })
                             .collect();
+                        node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         return;
                     }
 
@@ -1312,6 +1316,7 @@ impl super::Tabular {
                                 child
                             })
                             .collect();
+                        node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                     } else {
                         node.children = vec![models::structs::TreeNode::new(
                             "Failed to load collections".to_string(),
@@ -1333,6 +1338,7 @@ impl super::Tabular {
         connection: &models::structs::ConnectionConfig,
         node: &mut models::structs::TreeNode,
         folder_type: models::enums::NodeType,
+        force_live_fetch: bool,
     ) {
         // Get database name from node or connection default
         let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
@@ -1351,11 +1357,17 @@ impl super::Tabular {
             }
         };
 
-        // First try to get from cache
-        if let Some(cached_items) =
+        // First try to get from cache (skipped when force_live_fetch is true)
+        if !force_live_fetch
+        && let Some(cached_items) =
             cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
             && !cached_items.is_empty()
         {
+            eprintln!(
+                "[TABULAR-DEBUG] MySQL load_folder: CACHE HIT conn={} db={:?} type={:?} count={} panen_found={}",
+                connection_id, database_name, table_type, cached_items.len(),
+                cached_items.iter().any(|n| n.to_lowercase().contains("panen"))
+            );
             // Create tree nodes from cached data
             let child_nodes: Vec<models::structs::TreeNode> = cached_items
                 .into_iter()
@@ -1386,6 +1398,7 @@ impl super::Tabular {
                 .collect();
 
             node.children = child_nodes;
+            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             return;
         }
 
@@ -1396,10 +1409,10 @@ impl super::Tabular {
             database_name,
             table_type,
         ) {
-            debug!(
-                "Successfully fetched {} {} from MySQL database",
-                real_items.len(),
-                table_type
+            eprintln!(
+                "[TABULAR-DEBUG] MySQL load_folder: LIVE FETCH conn={} db={:?} type={:?} count={} panen_found={}",
+                connection_id, database_name, table_type, real_items.len(),
+                real_items.iter().any(|n| n.to_lowercase().contains("panen"))
             );
 
             // Save to cache for future use
@@ -1439,6 +1452,7 @@ impl super::Tabular {
                 .collect();
 
             node.children = child_nodes;
+            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         } else {
             // If database fetch fails, show an informative placeholder instead of confusing sample data
             debug!(
@@ -1472,6 +1486,7 @@ impl super::Tabular {
         connection: &models::structs::ConnectionConfig,
         node: &mut models::structs::TreeNode,
         folder_type: models::enums::NodeType,
+        force_live_fetch: bool,
     ) {
         let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
 
@@ -1487,11 +1502,17 @@ impl super::Tabular {
             }
         };
 
-        // Try cache first
-        if let Some(cached) =
+        // Try cache first (skipped when force_live_fetch is true)
+        if !force_live_fetch
+        && let Some(cached) =
             cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
             && !cached.is_empty()
         {
+            eprintln!(
+                "[TABULAR-DEBUG] PG load_folder: CACHE HIT conn={} db={:?} type={:?} count={} panen_found={}",
+                connection_id, database_name, table_type, cached.len(),
+                cached.iter().any(|n| n.to_lowercase().contains("panen"))
+            );
             node.children = cached
                 .into_iter()
                 .map(|name| {
@@ -1508,6 +1529,7 @@ impl super::Tabular {
                     child
                 })
                 .collect();
+            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             return;
         }
 
@@ -1518,6 +1540,11 @@ impl super::Tabular {
             database_name,
             table_type,
         ) {
+            eprintln!(
+                "[TABULAR-DEBUG] PG load_folder: LIVE FETCH conn={} db={:?} type={:?} count={} panen_found={}",
+                connection_id, database_name, table_type, real_items.len(),
+                real_items.iter().any(|n| n.to_lowercase().contains("panen"))
+            );
             let table_data: Vec<(String, String)> = real_items
                 .iter()
                 .map(|n| (n.clone(), table_type.to_string()))
@@ -1539,6 +1566,7 @@ impl super::Tabular {
                     child
                 })
                 .collect();
+            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         } else {
             node.children = vec![models::structs::TreeNode::new(
                 "Failed to load items".to_string(),
@@ -1552,6 +1580,7 @@ impl super::Tabular {
         _connection: &models::structs::ConnectionConfig,
         node: &mut models::structs::TreeNode,
         folder_type: models::enums::NodeType,
+        force_live_fetch: bool,
     ) {
         debug!("Loading {:?} content for SQLite", folder_type);
 
@@ -1569,7 +1598,9 @@ impl super::Tabular {
             }
         };
 
-        if let Some(cached_items) =
+        // Try cache first (skipped when force_live_fetch is true)
+        if !force_live_fetch
+        && let Some(cached_items) =
             cache_data::get_tables_from_cache(self, connection_id, "main", table_type)
             && !cached_items.is_empty()
         {
@@ -1596,6 +1627,7 @@ impl super::Tabular {
                 })
                 .collect();
 
+            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             return;
         }
 
@@ -1640,6 +1672,7 @@ impl super::Tabular {
                 .collect();
 
             node.children = child_nodes;
+            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         } else {
             // If database fetch fails, add sample data as fallback
             debug!(
@@ -1691,6 +1724,7 @@ impl super::Tabular {
         connection: &models::structs::ConnectionConfig,
         node: &mut models::structs::TreeNode,
         folder_type: models::enums::NodeType,
+        force_live_fetch: bool,
     ) {
         debug!("Loading {:?} content for MsSQL", folder_type);
         let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
@@ -1735,8 +1769,9 @@ impl super::Tabular {
             }
         };
 
-        // Try cache first
-        if let Some(cached) =
+        // Try cache first (skipped when force_live_fetch is true)
+        if !force_live_fetch
+        && let Some(cached) =
             cache_data::get_tables_from_cache(self, connection_id, database_name, kind)
             && !cached.is_empty()
         {
@@ -1749,6 +1784,7 @@ impl super::Tabular {
                     child
                 })
                 .collect();
+            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             return;
         }
 
@@ -1785,6 +1821,7 @@ impl super::Tabular {
                     child
                 })
                 .collect();
+            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         } else {
             // fallback sample
             let sample = match kind {
@@ -2636,5 +2673,45 @@ impl super::Tabular {
         }
     }
 
+    /// Refresh all currently-expanded table/view/etc folders for a connection.
+    /// Called after background prefetch completes so newly-cached tables become visible
+    /// without requiring the user to close and re-open the folder.
+    fn refresh_folder_nodes_recursive(
+        nodes: &mut [models::structs::TreeNode],
+        connection_id: i64,
+        tabular: &mut super::Tabular,
+    ) {
+        for node in nodes.iter_mut() {
+            let reloadable = matches!(
+                node.node_type,
+                models::enums::NodeType::TablesFolder
+                    | models::enums::NodeType::ViewsFolder
+                    | models::enums::NodeType::StoredProceduresFolder
+                    | models::enums::NodeType::UserFunctionsFolder
+                    | models::enums::NodeType::TriggersFolder
+                    | models::enums::NodeType::EventsFolder
+            );
 
+            if reloadable
+                && node.connection_id == Some(connection_id)
+                && node.is_expanded
+                && node.is_loaded
+            {
+                node.is_loaded = false;
+                let folder_type = node.node_type.clone();
+                tabular.load_folder_content(connection_id, node, folder_type, false);
+            }
+
+            // Recurse — node.children is separate from tabular (items_tree was taken out)
+            Self::refresh_folder_nodes_recursive(&mut node.children, connection_id, tabular);
+        }
+    }
+
+    /// Public entry point: refresh all table folders across the entire items_tree for a connection.
+    pub fn refresh_all_table_folders(&mut self, connection_id: i64) {
+        // Take items_tree out so we can mutably borrow self alongside the nodes.
+        let mut items_tree = std::mem::take(&mut self.items_tree);
+        Self::refresh_folder_nodes_recursive(&mut items_tree, connection_id, self);
+        self.items_tree = items_tree;
+    }
 }

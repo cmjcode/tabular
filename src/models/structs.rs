@@ -520,6 +520,9 @@ pub struct ExpansionRequest {
     pub node_type: models::enums::NodeType,
     pub connection_id: i64,
     pub database_name: Option<String>,
+    /// When true, the relevant table_cache entries are deleted before reloading,
+    /// forcing a live fetch from the database server (used by "Refresh Tables").
+    pub force_clear_cache: bool,
 }
 
 // UI state for Create/Edit Index modal
