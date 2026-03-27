@@ -1496,11 +1496,53 @@ pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
         }
     }
     let mut job = LayoutJob::default();
+
+    // Pre-scan for --AI ... -- blocks so we can highlight them with AI prompt color.
+    // Build a set of line indices that fall inside an AI block (inclusive of --AI and -- lines).
+    let mut in_ai_block = false;
+    let mut ai_block_lines = std::collections::HashSet::<usize>::new();
+    for (i, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "--AI" || trimmed.starts_with("--AI ") || trimmed.starts_with("--AI\t") {
+            in_ai_block = true;
+        }
+        if in_ai_block {
+            ai_block_lines.insert(i);
+        }
+        if in_ai_block && !ai_block_lines.is_empty() && trimmed == "--" {
+            in_ai_block = false;
+        }
+    }
+
     for (i, line) in text.lines().enumerate() {
         if i > 0 {
             job.append("\n", 0.0, TextFormat::default());
         }
-        highlight_single_line(line, lang, dark, &mut job);
+        if ai_block_lines.contains(&i) {
+            // Highlight the entire line with the distinct AI-block color
+            job.append(
+                line,
+                0.0,
+                TextFormat {
+                    color: ai_block_color(dark),
+                    italics: true,
+                    ..Default::default()
+                },
+            );
+        } else if line.trim_start().starts_with("-- ✨ AI:") {
+            // Loading placeholder line — styled differently so user knows AI is working
+            job.append(
+                line,
+                0.0,
+                TextFormat {
+                    color: if dark { Color32::from_rgb(140, 90, 220) } else { Color32::from_rgb(150, 60, 210) },
+                    italics: true,
+                    ..Default::default()
+                },
+            );
+        } else {
+            highlight_single_line(line, lang, dark, &mut job);
+        }
     }
     job
 }
@@ -1651,6 +1693,14 @@ fn normal_color(dark: bool) -> Color32 {
         Color32::from_rgb(230, 230, 230) // bright off-white
     } else {
         Color32::from_rgb(15, 15, 20) // near-black
+    }
+}
+
+fn ai_block_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(180, 120, 255) // vivid violet-purple
+    } else {
+        Color32::from_rgb(120, 40, 200) // deep royal purple
     }
 }
 

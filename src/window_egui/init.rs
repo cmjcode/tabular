@@ -55,6 +55,18 @@ impl super::Tabular {
         self.auto_check_updates = prefs.auto_check_updates;
         self.use_server_pagination = prefs.use_server_pagination;
         self.enable_debug_logging = prefs.enable_debug_logging;
+        // Mirror AI settings
+        self.ai_api_key = prefs.ai_api_key.clone();
+        self.ai_model = prefs.ai_model.clone();
+        self.ai_provider = prefs.ai_provider;
+        self.ai_base_url = prefs.ai_base_url.clone();
+        self.ai_settings_api_key_input = prefs.ai_api_key.clone();
+        self.ai_settings_model_input = if prefs.ai_model.is_empty() {
+            prefs.ai_provider.default_model().to_string()
+        } else {
+            prefs.ai_model.clone()
+        };
+        self.ai_settings_base_url_input = prefs.ai_base_url.clone();
 
         // Store as last saved
         self.last_saved_prefs = Some(prefs);
@@ -442,6 +454,22 @@ impl super::Tabular {
             new_subfolder_name: String::new(),
             subfolder_parent_path: String::new(),
             connection_folders: Vec::new(),
+            // AI Assistant
+            show_ai_panel: false,
+            ai_input: String::new(),
+            ai_suggestion: String::new(),
+            ai_is_loading: false,
+            ai_error: None,
+            ai_suggestion_receiver: None,
+            ai_api_key: String::new(),
+            ai_model: String::new(),
+            ai_provider: crate::config::AiProvider::OpenAI,
+            ai_base_url: String::new(),
+            ai_settings_api_key_input: String::new(),
+            ai_settings_model_input: String::new(),
+            ai_settings_base_url_input: String::new(),
+            ai_inline_processed: std::collections::HashSet::new(),
+            ai_inline_receiver: None,
         };
 
         // Clear any old cached pools

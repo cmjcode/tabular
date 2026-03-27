@@ -40,6 +40,126 @@ impl std::str::FromStr for AppTheme {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AiProvider {
+    #[default]
+    OpenAI,
+    Anthropic,
+    Groq,
+    GitHub,
+    Custom,
+}
+
+impl AiProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AiProvider::OpenAI => "OPENAI",
+            AiProvider::Anthropic => "ANTHROPIC",
+            AiProvider::Groq => "GROQ",
+            AiProvider::GitHub => "GITHUB",
+            AiProvider::Custom => "CUSTOM",
+        }
+    }
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AiProvider::OpenAI => "OpenAI (ChatGPT)",
+            AiProvider::Anthropic => "Anthropic (Claude)",
+            AiProvider::Groq => "Groq",
+            AiProvider::GitHub => "GitHub (Copilot/Models)",
+            AiProvider::Custom => "Custom (OpenAI-compatible)",
+        }
+    }
+    pub fn default_model(self) -> &'static str {
+        match self {
+            AiProvider::OpenAI => "gpt-4o-mini",
+            AiProvider::Anthropic => "claude-3-haiku-20240307",
+            AiProvider::Groq => "llama3-70b-8192",
+            AiProvider::GitHub => "gpt-4o-mini",
+            AiProvider::Custom => "gpt-4o-mini",
+        }
+    }
+    pub fn preset_models(self) -> &'static [&'static str] {
+        match self {
+            AiProvider::OpenAI => &[
+                "gpt-4o-mini",
+                "gpt-4o",
+                "gpt-4-turbo",
+                "gpt-4",
+                "gpt-3.5-turbo",
+                "o1-mini",
+                "o1",
+                "o3-mini",
+            ],
+            AiProvider::Anthropic => &[
+                "claude-3-haiku-20240307",
+                "claude-3-sonnet-20240229",
+                "claude-3-opus-20240229",
+                "claude-3-5-sonnet-20241022",
+                "claude-3-5-haiku-20241022",
+            ],
+            AiProvider::Groq => &[
+                "llama3-70b-8192",
+                "llama3-8b-8192",
+                "llama-3.1-70b-versatile",
+                "llama-3.3-70b-versatile",
+                "mixtral-8x7b-32768",
+                "gemma2-9b-it",
+            ],
+            AiProvider::GitHub => &[
+                "gpt-4o-mini",
+                "gpt-4o",
+                "o1-mini",
+                "o1",
+                "Meta-Llama-3.1-70B-Instruct",
+                "Meta-Llama-3.1-8B-Instruct",
+                "Mistral-large",
+                "Mistral-small",
+                "Phi-3.5-mini-instruct",
+                "Phi-3.5-MoE-instruct",
+                "Cohere-command-r-plus",
+            ],
+            AiProvider::Custom => &[
+                "gpt-4o-mini",
+                "gpt-4o",
+                "llama3",
+                "mistral",
+                "deepseek-coder",
+            ],
+        }
+    }
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            AiProvider::OpenAI => "https://api.openai.com/v1",
+            AiProvider::Anthropic => "https://api.anthropic.com/v1",
+            AiProvider::Groq => "https://api.groq.com/openai/v1",
+            AiProvider::GitHub => "https://models.inference.ai.azure.com",
+            AiProvider::Custom => "https://api.openai.com/v1",
+        }
+    }
+    pub fn api_key_hint(self) -> &'static str {
+        match self {
+            AiProvider::GitHub => "GitHub PAT (Settings → Developer settings → Personal access tokens)",
+            AiProvider::OpenAI => "sk-… (platform.openai.com/api-keys)",
+            AiProvider::Anthropic => "sk-ant-… (console.anthropic.com/settings/keys)",
+            AiProvider::Groq => "gsk_… (console.groq.com/keys)",
+            AiProvider::Custom => "API key for your custom endpoint",
+        }
+    }
+}
+
+impl std::str::FromStr for AiProvider {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "ANTHROPIC" => AiProvider::Anthropic,
+            "GROQ" => AiProvider::Groq,
+            "GITHUB" => AiProvider::GitHub,
+            "CUSTOM" => AiProvider::Custom,
+            _ => AiProvider::OpenAI,
+        })
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -55,6 +175,15 @@ pub struct AppPreferences {
     pub last_update_check_iso: Option<String>,
     #[serde(default)]
     pub enable_debug_logging: bool,
+    // AI Assistant settings
+    #[serde(default)]
+    pub ai_api_key: String,
+    #[serde(default)]
+    pub ai_model: String,
+    #[serde(default)]
+    pub ai_provider: AiProvider,
+    #[serde(default)]
+    pub ai_base_url: String,
 }
 
 pub struct ConfigStore {
@@ -146,6 +275,10 @@ impl ConfigStore {
                 use_server_pagination: true, // Default to true for better performance
                 last_update_check_iso: None,
                 enable_debug_logging: false,
+                ai_api_key: String::new(),
+                ai_model: String::new(),
+                ai_provider: AiProvider::OpenAI,
+                ai_base_url: String::new(),
             };
 
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences")
@@ -173,6 +306,10 @@ impl ConfigStore {
                             prefs.last_update_check_iso = if v.is_empty() { None } else { Some(v) }
                         }
                         "enable_debug_logging" => prefs.enable_debug_logging = v == "1",
+                        "ai_api_key" => prefs.ai_api_key = v,
+                        "ai_model" => prefs.ai_model = v,
+                        "ai_provider" => prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI),
+                        "ai_base_url" => prefs.ai_base_url = v,
                         _ => {}
                     }
                 }
@@ -216,7 +353,7 @@ impl ConfigStore {
 
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
-            let entries: [(&str, &str); 9] = [
+            let entries: [(&str, &str); 13] = [
                 ("theme", prefs.theme.as_str()),
                 (
                     "link_editor_theme",
@@ -245,6 +382,10 @@ impl ConfigStore {
                     "enable_debug_logging",
                     if prefs.enable_debug_logging { "1" } else { "0" },
                 ),
+                ("ai_api_key", prefs.ai_api_key.as_str()),
+                ("ai_model", prefs.ai_model.as_str()),
+                ("ai_provider", prefs.ai_provider.as_str()),
+                ("ai_base_url", prefs.ai_base_url.as_str()),
             ];
 
             for (k, v) in entries.iter() {

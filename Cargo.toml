@@ -69,6 +69,7 @@ reqwest = { version = "0.12", features = [
        "json",
        "multipart",
        "rustls-tls",
+       "blocking",
 ], default-features = false }
 semver = "1.0"
 self_update = { version = "0.42", features = [

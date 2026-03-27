@@ -717,6 +717,34 @@ impl super::Tabular {
                     ui.ctx().request_repaint();
                 }
 
+                // Inline AI loading indicator (shown below the format/run buttons while AI is working)
+                if self.ai_inline_receiver.is_some() {
+                    let ai_indicator_pos = egui::pos2(
+                        format_button_pos.x - button_size.x - format_spacing,
+                        button_pos.y,
+                    );
+                    egui::Area::new(egui::Id::new((format!("ai_inline_loading_{}", context_id), self.active_tab_index)))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(ai_indicator_pos)
+                        .show(ui.ctx(), |area_ui| {
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgba_unmultiplied(30, 20, 60, 220))
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                .show(area_ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label(
+                                            egui::RichText::new("AI thinking…")
+                                                .color(egui::Color32::from_rgb(180, 130, 255))
+                                                .size(12.0),
+                                        );
+                                    });
+                                });
+                        });
+                    ui.ctx().request_repaint();
+                }
+
                 // Keyboard shortcut
                 if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::Enter)) {
                     let has_q = if !self.selected_text.trim().is_empty() {

@@ -389,6 +389,27 @@ pub struct Tabular {
     pub subfolder_parent_path: String,
     // Standalone (empty) connection folder paths
     pub connection_folders: Vec<String>,
+
+    // --- AI Assistant ---
+    pub show_ai_panel: bool,
+    pub ai_input: String,
+    pub ai_suggestion: String,
+    pub ai_is_loading: bool,
+    pub ai_error: Option<String>,
+    pub ai_suggestion_receiver: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    // Persisted AI settings (mirrored from prefs for fast read during rendering)
+    pub ai_api_key: String,
+    pub ai_model: String,
+    pub ai_provider: crate::config::AiProvider,
+    pub ai_base_url: String,
+    // Temp buffers for settings UI
+    pub ai_settings_api_key_input: String,
+    pub ai_settings_model_input: String,
+    pub ai_settings_base_url_input: String,
+    // Inline --AI ... -- block processing
+    pub ai_inline_processed: std::collections::HashSet<u64>,
+    // (block_hash, placeholder_start, placeholder_end, rx)
+    pub ai_inline_receiver: Option<(u64, usize, usize, std::sync::mpsc::Receiver<Result<String, String>>)>,
 }
 
 // Preference tabs enumeration
@@ -399,6 +420,7 @@ pub enum PrefTab {
     Performance,
     DataDirectory,
     Update,
+    AiAssistant,
 }
 
 impl Default for Tabular {

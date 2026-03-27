@@ -123,6 +123,10 @@ impl App for Tabular {
                             .as_ref()
                             .and_then(|p| p.last_update_check_iso.clone()),
                         enable_debug_logging: app.enable_debug_logging,
+                        ai_api_key: app.ai_api_key.clone(),
+                        ai_model: app.ai_model.clone(),
+                        ai_provider: app.ai_provider,
+                        ai_base_url: app.ai_base_url.clone(),
                     };
                     rt.block_on(store.save(&prefs));
                     log::info!(
@@ -933,6 +937,7 @@ impl App for Tabular {
                         draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Performance, "Performance Settings");
                         draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::DataDirectory, "Data Directory");
                         draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
+                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
                     });
                     ui.separator();
                     ui.add_space(4.0);
@@ -1076,6 +1081,169 @@ impl App for Tabular {
                             ui.heading("Updates");
                             ui.horizontal(|ui| { if ui.checkbox(&mut self.auto_check_updates, "Automatically check for updates on startup").changed() { self.prefs_dirty = true; try_save_prefs(self); } });
                             ui.label(egui::RichText::new("When enabled, Tabular will check for new versions from GitHub releases").size(11.0).color(egui::Color32::from_gray(120)));
+                        }
+                        PrefTab::AiAssistant => {
+                            ui.heading("✨ AI Assistant");
+                            ui.label(egui::RichText::new("Press Cmd+Shift+A in the editor to toggle the AI panel.").size(11.0).color(egui::Color32::from_gray(130)));
+                            ui.add_space(8.0);
+
+                            // Provider selection
+                            ui.label("AI Provider:");
+                            ui.horizontal_wrapped(|ui| {
+                                let providers = [
+                                    crate::config::AiProvider::OpenAI,
+                                    crate::config::AiProvider::Anthropic,
+                                    crate::config::AiProvider::Groq,
+                                    crate::config::AiProvider::GitHub,
+                                    crate::config::AiProvider::Custom,
+                                ];
+                                for p in providers {
+                                    if ui.radio_value(&mut self.ai_provider, p, p.display_name()).clicked() {
+                                        // Reset model + base_url to defaults for new provider
+                                        self.ai_settings_model_input = p.default_model().to_string();
+                                        self.ai_settings_base_url_input = p.default_base_url().to_string();
+                                        self.ai_model = self.ai_settings_model_input.clone();
+                                        self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                        self.prefs_dirty = true; try_save_prefs(self);
+                                    }
+                                }
+                            });
+                            // GitHub-specific instructions
+                            if self.ai_provider == crate::config::AiProvider::GitHub {
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgb(20, 40, 70))
+                                    .inner_margin(egui::Margin::symmetric(8, 6))
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new("ℹ GitHub Copilot / Models").strong().color(egui::Color32::from_rgb(100, 180, 255)).size(12.0));
+                                        ui.label(egui::RichText::new("Requires a GitHub Personal Access Token (PAT) with 'models:read' scope (or 'copilot' scope for Copilot subscribers).").size(11.0).color(egui::Color32::from_gray(200)));
+                                        ui.hyperlink_to(
+                                            egui::RichText::new("→ Create token at github.com/settings/tokens").size(11.0).color(egui::Color32::from_rgb(100, 180, 255)),
+                                            "https://github.com/settings/tokens"
+                                        );
+                                    });
+                            }
+                            ui.add_space(6.0);
+
+                            // API Key
+                            ui.label("API Key:");
+                            ui.horizontal(|ui| {
+                                let hint = self.ai_provider.api_key_hint();
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut self.ai_settings_api_key_input)
+                                        .password(true)
+                                        .desired_width(280.0)
+                                        .hint_text(hint),
+                                );
+                                if resp.lost_focus() || ui.button("Apply").clicked() {
+                                    self.ai_api_key = self.ai_settings_api_key_input.clone();
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                    self.prefs_save_feedback = Some("API key saved.".to_string());
+                                    self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                }
+                            });
+                            ui.label(egui::RichText::new(format!("Hint: {}", self.ai_provider.api_key_hint())).size(11.0).color(egui::Color32::from_gray(120)));
+                            ui.label(egui::RichText::new("Key stored locally and only sent to the chosen provider.").size(11.0).color(egui::Color32::from_gray(120)));
+                            ui.add_space(6.0);
+
+                            // Model
+                            ui.label("Model:");
+                            ui.horizontal(|ui| {
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut self.ai_settings_model_input)
+                                        .desired_width(220.0)
+                                        .hint_text(self.ai_provider.default_model()),
+                                );
+                                if resp.lost_focus() || ui.button("Apply").clicked() {
+                                    self.ai_model = self.ai_settings_model_input.clone();
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                }
+                                if ui.small_button("Default").clicked() {
+                                    self.ai_settings_model_input = self.ai_provider.default_model().to_string();
+                                    self.ai_model = self.ai_settings_model_input.clone();
+                                    self.prefs_dirty = true; try_save_prefs(self);
+                                }
+                            });
+                            // Preset model picker
+                            ui.label(egui::RichText::new("Quick pick:").size(11.0).color(egui::Color32::from_gray(140)));
+                            ui.horizontal_wrapped(|ui| {
+                                let presets = self.ai_provider.preset_models();
+                                for &m in presets {
+                                    let selected = self.ai_settings_model_input == m;
+                                    if ui.selectable_label(selected, egui::RichText::new(m).size(11.0).monospace()).clicked() {
+                                        self.ai_settings_model_input = m.to_string();
+                                        self.ai_model = m.to_string();
+                                        self.prefs_dirty = true; try_save_prefs(self);
+                                    }
+                                }
+                            });
+
+                            // Base URL — always shown, prominently highlighted for Custom provider
+                            ui.add_space(6.0);
+                            let is_custom = self.ai_provider == crate::config::AiProvider::Custom;
+                            if is_custom {
+                                let accent = egui::Color32::from_rgb(120, 80, 220);
+                                egui::Frame::none()
+                                    .fill(egui::Color32::from_rgba_unmultiplied(120, 80, 220, 20))
+                                    .stroke(egui::Stroke::new(1.5, accent))
+                                    .inner_margin(egui::Margin::same(8))
+                                    .outer_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 4 })
+                                    .rounding(egui::Rounding::same(6))
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new("🔗 Server URL (required)").size(12.0).color(accent).strong());
+                                        ui.add_space(4.0);
+                                        let resp = ui.add(
+                                            egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
+                                                .desired_width(f32::INFINITY)
+                                                .hint_text("https://localhost:11434/v1"),
+                                        );
+                                        if resp.lost_focus() || { let _ = resp; false } {
+                                            self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                            self.prefs_dirty = true; try_save_prefs(self);
+                                        }
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            if ui.button("Apply").clicked() {
+                                                self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                                self.prefs_dirty = true; try_save_prefs(self);
+                                            }
+                                            if ui.small_button("Reset to default").clicked() {
+                                                self.ai_settings_base_url_input = self.ai_provider.default_base_url().to_string();
+                                                self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                                self.prefs_dirty = true; try_save_prefs(self);
+                                            }
+                                        });
+                                        ui.add_space(2.0);
+                                        ui.label(egui::RichText::new("Enter the base URL of your OpenAI-compatible server (e.g., Ollama, LM Studio).").size(11.0).color(egui::Color32::from_gray(150)));
+                                    });
+                            } else {
+                                ui.label(egui::RichText::new(format!("Base URL (default: {})", self.ai_provider.default_base_url())).size(12.0));
+                                ui.horizontal(|ui| {
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
+                                            .desired_width(280.0)
+                                            .hint_text(self.ai_provider.default_base_url()),
+                                    );
+                                    if resp.lost_focus() || ui.button("Apply").clicked() {
+                                        self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                        self.prefs_dirty = true; try_save_prefs(self);
+                                    }
+                                    if ui.small_button("Default").clicked() {
+                                        self.ai_settings_base_url_input = self.ai_provider.default_base_url().to_string();
+                                        self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                        self.prefs_dirty = true; try_save_prefs(self);
+                                    }
+                                });
+                                ui.label(egui::RichText::new("For OpenAI-compatible local servers (e.g., Ollama, LM Studio), change the base URL.").size(11.0).color(egui::Color32::from_gray(120)));
+                            }
+
+                            // Status indicator
+                            ui.add_space(6.0);
+                            if self.ai_api_key.is_empty() {
+                                ui.label(egui::RichText::new("⚠ No API key set — AI panel will show a warning.").color(egui::Color32::from_rgb(220, 160, 30)).size(12.0));
+                            } else {
+                                let masked = format!("{}…{}", &self.ai_api_key[..self.ai_api_key.len().min(6)], &self.ai_api_key[self.ai_api_key.len().saturating_sub(4)..]);
+                                ui.label(egui::RichText::new(format!("✓ Key configured: {masked}")).color(egui::Color32::from_rgb(0, 180, 80)).size(12.0));
+                            }
                         }
                     }
 
@@ -1935,6 +2103,27 @@ impl App for Tabular {
             });
         }
 
+        // ─── AI Assistant Right Panel ───────────────────────────────────────────────
+        if self.show_ai_panel {
+            egui::SidePanel::right("ai_right_panel")
+                .resizable(true)
+                .default_width(350.0)
+                .min_width(280.0)
+                .max_width(600.0)
+                .frame(
+                    egui::Frame::default()
+                        .fill(if ctx.style().visuals.dark_mode {
+                            egui::Color32::from_rgb(22, 24, 34)
+                        } else {
+                            egui::Color32::from_rgb(240, 242, 252)
+                        })
+                        .inner_margin(egui::Margin::ZERO),
+                )
+                .show(ctx, |ui| {
+                    editor::render_ai_panel(self, ui);
+                });
+        }
+
         // Central panel (main editor / data / structure)
         egui::CentralPanel::default()
             .frame(
@@ -2152,6 +2341,28 @@ impl App for Tabular {
                         if gear_response.clicked() {
                             gear_response.request_focus();
                             self.show_settings_menu = !self.show_settings_menu;
+                        }
+
+                        // AI Assistant toggle button (✨)
+                        let ai_btn_bg = if self.show_ai_panel {
+                            egui::Color32::from_rgb(99, 135, 255)
+                        } else if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(40, 40, 40)
+                        } else {
+                            egui::Color32::from_rgb(220, 220, 220)
+                        };
+                        let ai_btn_label = egui::RichText::new("✨")
+                            .color(if self.show_ai_panel {
+                                egui::Color32::WHITE
+                            } else {
+                                ui.visuals().text_color()
+                            });
+                        if ui
+                            .add_sized([24.0, 20.0], egui::Button::new(ai_btn_label).fill(ai_btn_bg))
+                            .on_hover_text(if self.show_ai_panel { "Close AI Assistant (Cmd+Shift+A)" } else { "Open AI Assistant (Cmd+Shift+A)" })
+                            .clicked()
+                        {
+                            self.show_ai_panel = !self.show_ai_panel;
                         }
                         if self.show_settings_menu {
                             let pos = gear_response.rect.left_bottom();

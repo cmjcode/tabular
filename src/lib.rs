@@ -1,6 +1,7 @@
 use eframe::egui;
 
 pub mod auto_updater;
+pub mod ai_assistant;
 pub mod cache_data;
 pub mod config;
 pub mod connection;

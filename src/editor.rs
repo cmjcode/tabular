@@ -784,6 +784,48 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Early repaint for snappy UX
         ui.ctx().request_repaint();
     }
+
+    // Shortcut: Toggle AI Panel (Cmd/Ctrl + Shift + A)
+    let mut trigger_toggle_ai = false;
+    ui.input(|i| {
+        if (i.modifiers.mac_cmd || i.modifiers.command)
+            && i.modifiers.shift
+            && i.key_pressed(egui::Key::A)
+        {
+            trigger_toggle_ai = true;
+        }
+    });
+    if trigger_toggle_ai {
+        ui.ctx().input_mut(|ri| {
+            ri.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+        });
+        tabular.show_ai_panel = !tabular.show_ai_panel;
+        if tabular.show_ai_panel && tabular.ai_input.is_empty() {
+            // Pre-fill the AI prompt with selected text or the whole editor content (capped)
+            let sel = if tabular.selection_start < tabular.selection_end
+                && tabular.selection_end <= tabular.editor.text.len()
+            {
+                tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string()
+            } else {
+                String::new()
+            };
+            tabular.ai_input = if sel.is_empty() {
+                String::new()
+            } else {
+                format!("About this SQL:\n```sql\n{sel}\n```\n")
+            };
+        }
+        ui.ctx().request_repaint();
+    }
     
     // Find & Replace panel
     if tabular.advanced_editor.show_find_replace {
@@ -3617,6 +3659,44 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tab.is_modified = true;
         }
 
+        // Scan for new --AI ... -- blocks to process (only when no inline AI request already in flight)
+        // TRIGGER: only when user just pressed Enter (completing the closing --)
+        if just_inserted_newline && tabular.ai_inline_receiver.is_none() && !tabular.ai_api_key.is_empty() {
+            if let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular) {
+                let schema_context = crate::ai_assistant::build_schema_context(tabular, 30);
+                let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
+
+                // Insert a loading placeholder at the current cursor position (new empty line after --)
+                let placeholder = "-- ✨ AI: Thinking...\n";
+                let cursor_pos = tabular.cursor_position.min(tabular.editor.text.len());
+                tabular.editor.text.insert_str(cursor_pos, placeholder);
+                let placeholder_start = cursor_pos;
+                let placeholder_end = cursor_pos + placeholder.len();
+                // Advance cursor past the placeholder
+                tabular.cursor_position = placeholder_end;
+                tabular.selection_start = placeholder_end;
+                tabular.selection_end = placeholder_end;
+                tabular.editor.mark_text_modified();
+                tabular.highlight_cache.clear();
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.content = tabular.editor.text.clone();
+                    tab.is_modified = true;
+                }
+
+                let rx = crate::ai_assistant::request_ai_suggestion(
+                    tabular.ai_provider,
+                    tabular.ai_api_key.clone(),
+                    tabular.ai_model.clone(),
+                    tabular.ai_base_url.clone(),
+                    system,
+                    prompt,
+                );
+                tabular.ai_inline_receiver = Some((block_hash, placeholder_start, placeholder_end, rx));
+                request_scroll_to_cursor = true;
+                ui.ctx().request_repaint();
+            }
+        }
+
         // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
         ui.ctx().request_repaint();
         // Keep caret visible for a few frames after typing/Enter
@@ -3802,6 +3882,48 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().request_repaint();
     }
 
+    // ── Inline AI block response polling ──────────────────────────────────────
+    // Check if an in-flight inline AI request has a response ready and replace the placeholder.
+    let inline_result = {
+        if let Some((block_hash, placeholder_start, placeholder_end, ref rx)) = tabular.ai_inline_receiver {
+            match rx.try_recv() {
+                Ok(result) => Some((block_hash, placeholder_start, placeholder_end, result)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ui.ctx().request_repaint();
+                    None
+                }
+                Err(_) => {
+                    Some((block_hash, placeholder_start, placeholder_end, Err("Inline AI channel closed".to_string())))
+                }
+            }
+        } else {
+            None
+        }
+    };
+    if let Some((block_hash, placeholder_start, placeholder_end, result)) = inline_result {
+        tabular.ai_inline_receiver = None;
+        tabular.ai_inline_processed.insert(block_hash);
+        let response_text = match result {
+            Ok(text) => format_ai_response_as_sql(&text),
+            Err(e) => format!("-- AI Error: {}\n", e),
+        };
+        let start = placeholder_start.min(tabular.editor.text.len());
+        let end = placeholder_end.min(tabular.editor.text.len());
+        tabular.editor.text.replace_range(start..end, &response_text);
+        let new_cursor = start + response_text.len();
+        tabular.cursor_position = new_cursor;
+        tabular.selection_start = new_cursor;
+        tabular.selection_end = new_cursor;
+        tabular.editor.mark_text_modified();
+        tabular.highlight_cache.clear();
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.content = tabular.editor.text.clone();
+            tab.is_modified = true;
+        }
+        request_scroll_to_cursor = true;
+        ui.ctx().request_repaint();
+    }
+
     // FINAL SCROLL LOGIC: Check if we need to scroll to cursor at the end of the frame
     // This is the most reliable place as all logic (key presses, changes, etc.) has finished.
     // We also compensate for stale galley layout if a newline was just inserted.
@@ -3841,7 +3963,376 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 }
 
-/// Format the selected SQL text if a selection exists, otherwise format the entire editor content.
+// ─── Inline --AI...-- block helpers ──────────────────────────────────────────
+
+/// Detect if Enter was just pressed after typing the closing `--` line inside a `--AI ... --` block.
+/// Cursor is now at the beginning of the freshly created empty line.
+/// Returns `(block_hash, prompt_text)` when a valid, unprocessed block is found.
+fn detect_ai_block_closed_by_enter(tabular: &window_egui::Tabular) -> Option<(u64, String)> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let text = &tabular.editor.text;
+    let cursor = tabular.cursor_position.min(text.len());
+
+    // cursor is at the start of a new empty line after Enter.
+    // The line we just left is at [prev_line_start .. cursor-1).
+    if cursor == 0 {
+        return None;
+    }
+    let prev_nl = cursor - 1; // byte index of the '\n' we just inserted
+    // Find the line before that '\n'
+    let prev_line_end = prev_nl;
+    let prev_line_start = text[..prev_line_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let prev_line = &text[prev_line_start..prev_line_end];
+
+    // The closing marker must be exactly "--"
+    if prev_line.trim() != "--" {
+        return None;
+    }
+
+    // Walk backwards through lines to collect prompt and find opening --AI
+    if prev_line_start == 0 {
+        return None;
+    }
+    let mut search_end = prev_line_start - 1; // byte just before the '\n' of prev_line
+    let mut prompt_lines: Vec<&str> = Vec::new();
+    let block_close_start = prev_line_start; // byte start of the "--" line
+
+    loop {
+        let line_end = search_end;
+        let line_start = text[..line_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line = &text[line_start..line_end];
+        let trimmed = line.trim();
+
+        if trimmed == "--AI" || trimmed.starts_with("--AI ") || trimmed.starts_with("--AI\t") {
+            // Found the opening marker
+            if prompt_lines.is_empty() {
+                return None; // nothing between the markers
+            }
+            prompt_lines.reverse();
+            let prompt = prompt_lines.join("\n");
+
+            // Hash the block so we can track it and avoid re-sending
+            let block_text = &text[line_start..block_close_start];
+            let mut hasher = DefaultHasher::new();
+            block_text.hash(&mut hasher);
+            let block_hash = hasher.finish();
+
+            if tabular.ai_inline_processed.contains(&block_hash) {
+                return None;
+            }
+
+            return Some((block_hash, prompt));
+        }
+
+        // Stop on nested / extra markers to avoid runaway scanning
+        if trimmed == "--" || trimmed.starts_with("--AI") {
+            break;
+        }
+
+        prompt_lines.push(line);
+
+        if line_start == 0 {
+            break;
+        }
+        search_end = line_start - 1;
+    }
+
+    None
+}
+
+/// Format an AI response for inline insertion into a SQL editor.
+/// - Lines inside ```sql / ``` fences are inserted as plain SQL.
+/// - Lines outside fences (explanatory text) are prefixed with `-- ` to make them SQL comments.
+/// - A trailing newline is always appended.
+fn format_ai_response_as_sql(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_code_block = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        // Opening fence
+        if !in_code_block && (trimmed.starts_with("```sql") || trimmed == "```") {
+            in_code_block = true;
+            continue; // skip the fence line itself
+        }
+        // Closing fence
+        if in_code_block && trimmed == "```" {
+            in_code_block = false;
+            continue;
+        }
+
+        if in_code_block {
+            // Raw SQL — keep indentation as-is
+            out.push_str(line);
+            out.push('\n');
+        } else if trimmed.is_empty() {
+            // Blank line outside code — emit one empty line (collapse multiple blanks)
+            if !out.ends_with("\n\n") && !out.is_empty() {
+                out.push('\n');
+            }
+        } else {
+            // Explanatory text — convert to SQL comment; strip markdown backticks
+            let clean = trimmed.replace('`', "");
+            out.push_str("-- ");
+            out.push_str(&clean);
+            out.push('\n');
+        }
+    }
+
+    // Ensure exactly one trailing newline
+    let body = out.trim_end_matches('\n');
+    format!("{}\n", body)
+}
+
+// ─── AI Assistant Panel ───────────────────────────────────────────────────────
+
+pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    // Poll for pending AI response
+    if tabular.ai_is_loading {
+        if let Some(rx) = &tabular.ai_suggestion_receiver {
+            if let Ok(result) = rx.try_recv() {
+                tabular.ai_is_loading = false;
+                tabular.ai_suggestion_receiver = None;
+                match result {
+                    Ok(text) => {
+                        tabular.ai_suggestion = text;
+                        tabular.ai_error = None;
+                    }
+                    Err(e) => {
+                        tabular.ai_error = Some(e);
+                    }
+                }
+                ui.ctx().request_repaint();
+            } else {
+                // Still loading — keep repainting so spinner animates
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
+    let no_api_key = tabular.ai_api_key.is_empty();
+    let accent = egui::Color32::from_rgb(99, 135, 255);
+    let panel_bg = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(28, 30, 40)
+    } else {
+        egui::Color32::from_rgb(242, 244, 255)
+    };
+
+    egui::Frame::new()
+        .fill(panel_bg)
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(if ui.visuals().dark_mode { 55 } else { 200 })))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            // Header row
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("✨ AI Assistant")
+                        .strong()
+                        .color(accent)
+                        .size(13.0),
+                );
+                let provider_label = tabular.ai_provider.display_name();
+                ui.label(
+                    egui::RichText::new(format!("({provider_label})"))
+                        .size(11.0)
+                        .color(egui::Color32::from_gray(140)),
+                );
+                // Schema context indicator
+                let schema_preview = crate::ai_assistant::build_schema_context(tabular, 30);
+                if schema_preview.is_empty() {
+                    ui.label(
+                        egui::RichText::new("⚠ no schema")
+                            .size(10.0)
+                            .color(egui::Color32::from_rgb(180, 140, 40)),
+                    ).on_hover_text("No table schema found in cache. Browse a table first to populate the schema cache.");
+                } else {
+                    let table_count = schema_preview.lines()
+                        .filter(|l| l.starts_with("CREATE TABLE") || l.starts_with("-- Table:"))
+                        .count();
+                    ui.label(
+                        egui::RichText::new(format!("🗄 {table_count} tables"))
+                            .size(10.0)
+                            .color(egui::Color32::from_rgb(80, 200, 120)),
+                    ).on_hover_text(format!("Schema context will be sent with every prompt:\n\n{}", &schema_preview.chars().take(600).collect::<String>()));
+                };
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("✕").on_hover_text("Close panel (Cmd+Shift+A)").clicked() {
+                        tabular.show_ai_panel = false;
+                    }
+                    if ui.small_button("⚙").on_hover_text("Open AI settings").clicked() {
+                        tabular.show_settings_window = true;
+                        tabular.settings_active_pref_tab = crate::window_egui::PrefTab::AiAssistant;
+                    }
+                });
+            });
+
+            if no_api_key {
+                ui.label(
+                    egui::RichText::new("⚠ No API key configured. Open Settings → AI Assistant to add one.")
+                        .color(egui::Color32::from_rgb(220, 160, 30))
+                        .size(12.0),
+                );
+                return;
+            }
+
+            ui.add_space(4.0);
+
+            // Prompt input
+            ui.label(egui::RichText::new("Prompt:").size(12.0));
+            let input_resp = ui.add(
+                egui::TextEdit::multiline(&mut tabular.ai_input)
+                    .desired_rows(3)
+                    .hint_text("Ask something about SQL, databases, or your current query…")
+                    .font(egui::TextStyle::Body)
+                    .desired_width(f32::INFINITY),
+            );
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let can_send = !tabular.ai_input.trim().is_empty() && !tabular.ai_is_loading;
+                let send_btn = ui.add_enabled(
+                    can_send,
+                    egui::Button::new(egui::RichText::new("Send ↵").color(egui::Color32::WHITE))
+                        .fill(if can_send { accent } else { egui::Color32::from_gray(100) }),
+                );
+                let send_via_enter = input_resp.has_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
+
+                if (send_btn.clicked() || send_via_enter) && can_send {
+                    let context_sql = if tabular.selection_start < tabular.selection_end
+                        && tabular.selection_end <= tabular.editor.text.len()
+                    {
+                        tabular.editor.text[tabular.selection_start..tabular.selection_end]
+                            .to_string()
+                    } else {
+                        // Provide up to 2000 chars of editor context if no selection
+                        let t = &tabular.editor.text;
+                        if t.len() > 2000 {
+                            t[..2000].to_string()
+                        } else {
+                            t.clone()
+                        }
+                    };
+
+                    let schema_context = crate::ai_assistant::build_schema_context(tabular, 30);
+                    let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
+                    let user = if context_sql.is_empty() {
+                        tabular.ai_input.clone()
+                    } else {
+                        format!(
+                            "Current SQL context:\n```sql\n{context_sql}\n```\n\n{}",
+                            tabular.ai_input
+                        )
+                    };
+
+                    let rx = crate::ai_assistant::request_ai_suggestion(
+                        tabular.ai_provider,
+                        tabular.ai_api_key.clone(),
+                        tabular.ai_model.clone(),
+                        tabular.ai_base_url.clone(),
+                        system,
+                        user,
+                    );
+                    tabular.ai_suggestion_receiver = Some(rx);
+                    tabular.ai_is_loading = true;
+                    tabular.ai_suggestion.clear();
+                    tabular.ai_error = None;
+                    ui.ctx().request_repaint();
+                }
+
+                if tabular.ai_is_loading {
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new("Thinking…")
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(160)),
+                    );
+                }
+
+                if !tabular.ai_suggestion.is_empty() || tabular.ai_error.is_some() {
+                    if ui.small_button("🗑 Clear").clicked() {
+                        tabular.ai_suggestion.clear();
+                        tabular.ai_error = None;
+                    }
+                }
+            });
+
+            // Error display
+            if let Some(ref err) = tabular.ai_error.clone() {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!("Error: {err}"))
+                        .color(egui::Color32::from_rgb(255, 80, 80))
+                        .size(12.0),
+                );
+            }
+
+            // Response display
+            if !tabular.ai_suggestion.is_empty() {
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Response:").size(12.0).strong());
+
+                egui::ScrollArea::vertical()
+                    .id_salt("ai_response_scroll")
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut tabular.ai_suggestion.clone())
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace)
+                                .interactive(false),
+                        );
+                    });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("📋 Copy").clicked() {
+                        ui.ctx().copy_text(tabular.ai_suggestion.clone());
+                    }
+                    if ui.button("⬆ Insert at cursor").clicked() {
+                        let insert_text = tabular.ai_suggestion.clone();
+                        let pos = tabular.cursor_position.min(tabular.editor.text.len());
+                        tabular.editor.text.insert_str(pos, &insert_text);
+                        let new_cursor = pos + insert_text.len();
+                        tabular.cursor_position = new_cursor;
+                        tabular.selection_start = new_cursor;
+                        tabular.selection_end = new_cursor;
+                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                            tab.content = tabular.editor.text.clone();
+                            tab.is_modified = true;
+                        }
+                        ui.ctx().request_repaint();
+                    }
+                    if ui.button("📝 Replace selection").on_hover_text(
+                        "Replace the currently selected text with this response"
+                    ).clicked() && tabular.selection_start < tabular.selection_end {
+                        let insert_text = tabular.ai_suggestion.clone();
+                        let s = tabular.selection_start;
+                        let e = tabular.selection_end.min(tabular.editor.text.len());
+                        tabular.editor.text.replace_range(s..e, &insert_text);
+                        let new_cursor = s + insert_text.len();
+                        tabular.cursor_position = new_cursor;
+                        tabular.selection_start = new_cursor;
+                        tabular.selection_end = new_cursor;
+                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                            tab.content = tabular.editor.text.clone();
+                            tab.is_modified = true;
+                        }
+                        ui.ctx().request_repaint();
+                    }
+                });
+            }
+        });
+
+    ui.add_space(4.0);
+}
+
+
 /// Preserves caret and selection where possible.
 pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
     let id = ui.make_persistent_id("sql_editor");
