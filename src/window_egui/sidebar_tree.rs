@@ -2509,6 +2509,33 @@ impl super::Tabular {
                     });
                 }
 
+                // Refresh context menu for Views, Stored Procedures, Functions, Triggers, Events folders
+                let folder_refresh_info: Option<(&str, models::enums::NodeType)> = match node.node_type {
+                    models::enums::NodeType::ViewsFolder => Some(("🔄 Refresh Views", models::enums::NodeType::ViewsFolder)),
+                    models::enums::NodeType::StoredProceduresFolder => Some(("🔄 Refresh Procedures", models::enums::NodeType::StoredProceduresFolder)),
+                    models::enums::NodeType::UserFunctionsFolder => Some(("🔄 Refresh Functions", models::enums::NodeType::UserFunctionsFolder)),
+                    models::enums::NodeType::TriggersFolder => Some(("🔄 Refresh Triggers", models::enums::NodeType::TriggersFolder)),
+                    models::enums::NodeType::EventsFolder => Some(("🔄 Refresh Events", models::enums::NodeType::EventsFolder)),
+                    _ => None,
+                };
+                if let Some((label, folder_node_type)) = folder_refresh_info {
+                    if let Some(conn_id) = node.connection_id {
+                        response.context_menu(|ui| {
+                            if ui.button(label).clicked() {
+                                node.is_loaded = false;
+                                node.children.clear();
+                                expansion_request = Some(models::structs::ExpansionRequest {
+                                    node_type: folder_node_type,
+                                    connection_id: conn_id,
+                                    database_name: node.database_name.clone(),
+                                    force_clear_cache: true,
+                                });
+                                ui.close();
+                            }
+                        });
+                    }
+                }
+
                 // Add context menu for table nodes
                 if node.node_type == models::enums::NodeType::Table {
                     response.context_menu(|ui| {
