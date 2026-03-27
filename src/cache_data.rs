@@ -322,15 +322,25 @@ pub(crate) fn save_tables_to_cache(
         let pool_clone = pool.clone();
         let tables_clone = tables.to_vec();
         let database_name = database_name.to_string();
-        let fut = async {
-            // Clear existing cache for this database
-            let _ = sqlx::query(
-                "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
-            )
-            .bind(connection_id)
-            .bind(&database_name)
-            .execute(pool_clone.as_ref())
-            .await;
+        // Collect the unique table_types present in this batch so we only
+        // delete entries of those types (not ALL types for the database).
+        // This prevents expanding "Views" from wiping "Tables" from cache.
+        let types_to_replace: std::collections::HashSet<String> = tables_clone
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
+        let fut = async move {
+            // Delete only entries of the types we are about to replace
+            for table_type in &types_to_replace {
+                let _ = sqlx::query(
+                    "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type = ?",
+                )
+                .bind(connection_id)
+                .bind(&database_name)
+                .bind(table_type)
+                .execute(pool_clone.as_ref())
+                .await;
+            }
 
             // Insert new table names with types
             for (table_name, table_type) in tables_clone {
