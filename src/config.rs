@@ -160,7 +160,7 @@ impl std::str::FromStr for AiProvider {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppPreferences {
     #[serde(default)]
     pub theme: AppTheme,
@@ -184,6 +184,34 @@ pub struct AppPreferences {
     pub ai_provider: AiProvider,
     #[serde(default)]
     pub ai_base_url: String,
+    #[serde(default = "default_redis_browser_auto_refresh_seconds")]
+    pub redis_browser_auto_refresh_seconds: u32,
+}
+
+fn default_redis_browser_auto_refresh_seconds() -> u32 {
+    5
+}
+
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            theme: AppTheme::Dark,
+            link_editor_theme: true,
+            editor_theme: "GITHUB_DARK".into(),
+            font_size: 14.0,
+            word_wrap: true,
+            data_directory: None,
+            auto_check_updates: true,
+            use_server_pagination: true,
+            last_update_check_iso: None,
+            enable_debug_logging: false,
+            ai_api_key: String::new(),
+            ai_model: String::new(),
+            ai_provider: AiProvider::OpenAI,
+            ai_base_url: String::new(),
+            redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
+        }
+    }
 }
 
 pub struct ConfigStore {
@@ -279,6 +307,7 @@ impl ConfigStore {
                 ai_model: String::new(),
                 ai_provider: AiProvider::OpenAI,
                 ai_base_url: String::new(),
+                redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
             };
 
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences")
@@ -310,6 +339,9 @@ impl ConfigStore {
                         "ai_model" => prefs.ai_model = v,
                         "ai_provider" => prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI),
                         "ai_base_url" => prefs.ai_base_url = v,
+                        "redis_browser_auto_refresh_seconds" => {
+                            prefs.redis_browser_auto_refresh_seconds = v.parse().unwrap_or(default_redis_browser_auto_refresh_seconds())
+                        }
                         _ => {}
                     }
                 }
@@ -353,7 +385,8 @@ impl ConfigStore {
 
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
-            let entries: [(&str, &str); 13] = [
+            let redis_browser_auto_refresh_seconds = prefs.redis_browser_auto_refresh_seconds.to_string();
+            let entries: [(&str, &str); 14] = [
                 ("theme", prefs.theme.as_str()),
                 (
                     "link_editor_theme",
@@ -386,6 +419,7 @@ impl ConfigStore {
                 ("ai_model", prefs.ai_model.as_str()),
                 ("ai_provider", prefs.ai_provider.as_str()),
                 ("ai_base_url", prefs.ai_base_url.as_str()),
+                ("redis_browser_auto_refresh_seconds", &redis_browser_auto_refresh_seconds),
             ];
 
             for (k, v) in entries.iter() {

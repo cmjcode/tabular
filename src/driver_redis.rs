@@ -519,15 +519,7 @@ pub(crate) async fn load_redis_browser_state_from_connection(
             .map(|key_name| (key_name, "unknown".to_string()))
             .collect()
     } else {
-        if keyspace_label.starts_with("db")
-            && let Ok(db_num) = keyspace_label.trim_start_matches("db").parse::<i32>()
-        {
-            let _ = redis::cmd("SELECT")
-                .arg(db_num)
-                .query_async::<()>(&mut detect_conn)
-                .await;
-        }
-        scan_keys_and_types_on_node(&mut detect_conn, 500).await
+        fetch_standalone_keys_with_types(connection, &keyspace_label, 500).await
     };
 
     Ok((keyspace_label, key_pairs, is_cluster))
@@ -868,6 +860,49 @@ async fn search_keys_and_types_on_node(
     all_keys
 }
 
+pub(crate) async fn fetch_standalone_keys_with_types(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+    max_keys: usize,
+) -> Vec<(String, String)> {
+    let mut conn = match create_redis_manager_for_target(connection, database_name, None).await {
+        Ok(conn) => conn,
+        Err(error) => {
+            warn!(
+                "[redis_standalone] failed creating dedicated manager for connection {:?} keyspace {}: {}",
+                connection.id,
+                database_name,
+                error
+            );
+            return Vec::new();
+        }
+    };
+
+    scan_keys_and_types_on_node(&mut conn, max_keys).await
+}
+
+pub(crate) async fn search_standalone_keys_with_types(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+    search_text: &str,
+    max_keys: usize,
+) -> Vec<(String, String)> {
+    let mut conn = match create_redis_manager_for_target(connection, database_name, None).await {
+        Ok(conn) => conn,
+        Err(error) => {
+            warn!(
+                "[redis_standalone] failed creating dedicated search manager for connection {:?} keyspace {}: {}",
+                connection.id,
+                database_name,
+                error
+            );
+            return Vec::new();
+        }
+    };
+
+    search_keys_and_types_on_node(&mut conn, search_text, max_keys).await
+}
+
 pub(crate) async fn load_redis_connection_config(
     cache_pool: &SqlitePool,
     connection_id: i64,
@@ -1153,16 +1188,7 @@ pub(crate) async fn search_redis_browser_keys_from_connection(
         return all_keys;
     }
 
-    if database_name.starts_with("db")
-        && let Ok(db_num) = database_name.trim_start_matches("db").parse::<i32>()
-    {
-        let _ = redis::cmd("SELECT")
-            .arg(db_num)
-            .query_async::<()>(&mut detect_conn)
-            .await;
-    }
-
-    search_keys_and_types_on_node(&mut detect_conn, search_text, max_keys).await
+    search_standalone_keys_with_types(connection, database_name, search_text, max_keys).await
 }
 
 /// Detect Redis Cluster mode by inspecting `INFO server`.

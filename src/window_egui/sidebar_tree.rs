@@ -604,12 +604,17 @@ impl super::Tabular {
                         connection_id,
                     );
                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                        tab.redis_browser_state = cached_state
+                    let mut redis_state = cached_state
                     .or_else(|| {
                         Some(crate::driver_redis::redis_browser_loading_state(
                             "Loading Redis browser in background...",
                         ))
-                    });
+                    })
+                    .unwrap_or_default();
+                    redis_state.auto_refresh_enabled = true;
+                    redis_state.auto_refresh_interval_seconds =
+                        self.redis_browser_auto_refresh_default_seconds.max(1);
+                    tab.redis_browser_state = Some(redis_state);
                 }
                 if self.fetching_redis_browser.insert(connection_id)
                     && let Some(sender) = &self.background_sender

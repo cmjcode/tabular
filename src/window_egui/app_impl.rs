@@ -127,6 +127,7 @@ impl App for Tabular {
                         ai_model: app.ai_model.clone(),
                         ai_provider: app.ai_provider,
                         ai_base_url: app.ai_base_url.clone(),
+                        redis_browser_auto_refresh_seconds: app.redis_browser_auto_refresh_default_seconds.max(1),
                     };
                     rt.block_on(store.save(&prefs));
                     log::info!(
@@ -246,6 +247,46 @@ impl App for Tabular {
             } else {
                 // Missing data: stop auto refresh to avoid looping
                 self.stop_auto_refresh();
+            }
+        }
+
+        if let Some(active_tab) = self.query_tabs.get(self.active_tab_index)
+            && let Some(redis_state) = active_tab.redis_browser_state.as_ref()
+            && redis_state.auto_refresh_enabled
+        {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            if let Some(conn_id) = active_tab.connection_id
+                && !self.fetching_redis_browser.contains(&conn_id)
+            {
+                let now = std::time::Instant::now();
+                let should_run = match redis_state.auto_refresh_last_run {
+                    None => true,
+                    Some(last) => {
+                        let interval = std::time::Duration::from_secs(
+                            redis_state.auto_refresh_interval_seconds.max(1) as u64,
+                        );
+                        now.duration_since(last) >= interval
+                    }
+                };
+
+                if should_run {
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                        && let Some(state) = &mut tab.redis_browser_state
+                    {
+                        state.auto_refresh_last_run = Some(now);
+                        state.status_text = format!(
+                            "Auto-refreshing Redis browser every {}s...",
+                            state.auto_refresh_interval_seconds.max(1)
+                        );
+                    }
+                    if self.fetching_redis_browser.insert(conn_id)
+                        && let Some(sender) = &self.background_sender
+                    {
+                        let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
+                            connection_id: conn_id,
+                        });
+                    }
+                }
             }
         }
 
@@ -1050,6 +1091,17 @@ impl App for Tabular {
                                 ui.label(egui::RichText::new("(Requires Restart)").size(11.0).color(egui::Color32::from_gray(120)));
                             });
                             ui.label(egui::RichText::new("Turns on verbose logs. Disable this to improve application performance and reduce disk I/O.").size(11.0).color(egui::Color32::from_gray(120)));
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Redis browser auto-refresh default (seconds):");
+                                let mut seconds = self.redis_browser_auto_refresh_default_seconds.max(1) as i32;
+                                if ui.add(egui::DragValue::new(&mut seconds).range(1..=3600)).changed() {
+                                    self.redis_browser_auto_refresh_default_seconds = seconds.max(1) as u32;
+                                    self.prefs_dirty = true;
+                                    try_save_prefs(self);
+                                }
+                            });
+                            ui.label(egui::RichText::new("Default interval used when Redis browser auto-refresh is enabled.").size(11.0).color(egui::Color32::from_gray(120)));
                         }
                         PrefTab::DataDirectory => {
                             ui.heading("Data Directory");
@@ -1602,7 +1654,27 @@ impl App for Tabular {
                             if tab.connection_id == Some(connection_id)
                                 && tab.redis_browser_state.is_some()
                             {
-                                tab.redis_browser_state = Some(state.clone());
+                                let mut merged_state = state.clone();
+                                if let Some(previous_state) = tab.redis_browser_state.as_ref() {
+                                    merged_state.filter_text = previous_state.filter_text.clone();
+                                    merged_state.type_filter = previous_state.type_filter.clone();
+                                    merged_state.remote_search_in_progress = false;
+                                    merged_state.last_remote_search = previous_state.last_remote_search.clone();
+                                    merged_state.auto_refresh_enabled = previous_state.auto_refresh_enabled;
+                                    merged_state.auto_refresh_interval_seconds = previous_state.auto_refresh_interval_seconds.max(1);
+                                    merged_state.auto_refresh_last_run = previous_state.auto_refresh_last_run;
+                                    merged_state.selected_key = previous_state.selected_key.clone();
+                                    merged_state.selected_key_type = previous_state.selected_key_type.clone();
+                                    merged_state.preview = previous_state.preview.clone();
+                                    if !previous_state.last_error.as_deref().unwrap_or_default().is_empty() {
+                                        merged_state.last_error = previous_state.last_error.clone();
+                                    }
+                                } else {
+                                    merged_state.auto_refresh_enabled = true;
+                                    merged_state.auto_refresh_interval_seconds =
+                                        self.redis_browser_auto_refresh_default_seconds.max(1);
+                                }
+                                tab.redis_browser_state = Some(merged_state);
                             }
                         }
 
@@ -2936,9 +3008,17 @@ impl App for Tabular {
                         match action {
                             crate::redis_browser::RedisBrowserAction::Refresh => {
                                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                    tab.redis_browser_state = Some(crate::driver_redis::redis_browser_loading_state(
-                                        "Refreshing Redis browser in background...",
-                                    ));
+                                    if let Some(state) = &mut tab.redis_browser_state {
+                                        state.status_text = "Refreshing Redis browser in background...".to_string();
+                                        state.last_error = None;
+                                    } else {
+                                        let mut state = crate::driver_redis::redis_browser_loading_state(
+                                            "Refreshing Redis browser in background...",
+                                        );
+                                        state.auto_refresh_interval_seconds =
+                                            self.redis_browser_auto_refresh_default_seconds.max(1);
+                                        tab.redis_browser_state = Some(state);
+                                    }
                                 }
                                 if self.fetching_redis_browser.insert(conn_id)
                                     && let Some(sender) = &self.background_sender

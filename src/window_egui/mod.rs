@@ -363,6 +363,7 @@ pub struct Tabular {
     pub auto_refresh_connection_id: Option<i64>,
     pub show_auto_refresh_dialog: bool,
     pub auto_refresh_interval_input: String,
+    pub redis_browser_auto_refresh_default_seconds: u32,
     // Query execution message panel (similar to TablePlus message tab)
     pub query_message: String,
     pub query_message_is_error: bool,

@@ -56,6 +56,7 @@ impl super::Tabular {
         self.auto_check_updates = prefs.auto_check_updates;
         self.use_server_pagination = prefs.use_server_pagination;
         self.enable_debug_logging = prefs.enable_debug_logging;
+        self.redis_browser_auto_refresh_default_seconds = prefs.redis_browser_auto_refresh_seconds.max(1);
         // Mirror AI settings
         self.ai_api_key = prefs.ai_api_key.clone();
         self.ai_model = prefs.ai_model.clone();
@@ -437,6 +438,7 @@ impl super::Tabular {
             auto_refresh_connection_id: None,
             show_auto_refresh_dialog: false,
             auto_refresh_interval_input: String::new(),
+            redis_browser_auto_refresh_default_seconds: 5,
             // Query message panel
             query_message: String::new(),
             query_message_is_error: false,
@@ -580,118 +582,27 @@ impl super::Tabular {
                                 }
 
                                 log::info!(
-                                    "[redis_keys] background fetch start conn={} keyspace={}",
+                                    "[redis_keys] background standalone fetch start conn={} keyspace={}",
                                     connection_id,
                                     database_name
                                 );
-                                let db_number = database_name
-                                    .strip_prefix("db")
-                                    .and_then(|s| s.parse::<u8>().ok());
 
-                                if db_number.is_none() {
-                                    log::debug!(
-                                        "[redis_keys] keyspace {} uses non-SELECT scan path",
-                                        database_name
-                                    );
-                                }
+                                let cache_pool_ref = cache_pool.as_ref()?;
+                                let connection = driver_redis::load_redis_connection_config(
+                                    cache_pool_ref.as_ref(),
+                                    connection_id,
+                                )
+                                .await?;
 
-                                // Try to get the Redis connection from shared pools
-                                let redis_manager = {
-                                    let pools = shared_pools.lock().ok()?;
-                                    if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
-                                        Some(mgr.as_ref().clone())
-                                    } else {
-                                        None
-                                    }
-                                }?;
-
-                                let mut conn = redis_manager;
-
-                                if let Some(db_number) = db_number {
-                                    // Standard Redis logical DB.
-                                    if let Err(error) = redis::cmd("SELECT")
-                                        .arg(db_number)
-                                        .query_async::<()>(&mut conn)
-                                        .await
-                                    {
-                                        log::warn!(
-                                            "[redis_keys] SELECT {} failed for conn={} keyspace={}: {}",
-                                            db_number,
-                                            connection_id,
-                                            database_name,
-                                            error
-                                        );
-                                    }
-                                }
-
-                                let mut all_keys: Vec<(String, String)> = Vec::new();
-                                let max_keys = 500usize;
-                                let mut cursor = 0u64;
-
-                                loop {
-                                    match redis::cmd("SCAN")
-                                        .arg(cursor)
-                                        .arg("COUNT")
-                                        .arg(100)
-                                        .query_async::<(u64, Vec<String>)>(&mut conn)
-                                        .await
-                                    {
-                                        Ok((next_cursor, keys)) => {
-                                            log::debug!(
-                                                "[redis_keys] SCAN returned {} keys for conn={} keyspace={} cursor={} next_cursor={}",
-                                                keys.len(),
-                                                connection_id,
-                                                database_name,
-                                                cursor,
-                                                next_cursor
-                                            );
-                                            // Pipeline TYPE commands to avoid 1 RTT per key
-                                            let mut pipe = redis::pipe();
-                                            for key in &keys {
-                                                pipe.cmd("TYPE").arg(key);
-                                            }
-                                            let types_result: Result<Vec<String>, _> =
-                                                pipe.query_async(&mut conn).await;
-                                            let types = match types_result {
-                                                Ok(types) => types,
-                                                Err(error) => {
-                                                    log::warn!(
-                                                        "[redis_keys] TYPE pipeline failed for conn={} keyspace={}: {}",
-                                                        connection_id,
-                                                        database_name,
-                                                        error
-                                                    );
-                                                    Vec::new()
-                                                }
-                                            };
-
-                                            for (key, key_type) in keys.into_iter().zip(types.into_iter()) {
-                                                if all_keys.len() >= max_keys {
-                                                    break;
-                                                }
-                                                all_keys.push((key, key_type));
-                                            }
-
-                                            cursor = next_cursor;
-                                            if cursor == 0 || all_keys.len() >= max_keys {
-                                                break;
-                                            }
-                                        }
-                                        Err(error) => {
-                                            log::warn!(
-                                                "[redis_keys] SCAN failed for conn={} keyspace={} cursor={}: {}",
-                                                connection_id,
-                                                database_name,
-                                                cursor,
-                                                error
-                                            );
-                                            break;
-                                        }
-                                    }
-                                }
+                                let all_keys = driver_redis::fetch_standalone_keys_with_types(
+                                    &connection,
+                                    &database_name,
+                                    500,
+                                )
+                                .await;
 
                                 log::info!(
-                                    "[redis_keys] background fetch done conn={} keyspace={} total_keys={}",
+                                    "[redis_keys] background standalone fetch done conn={} keyspace={} total_keys={}",
                                     connection_id,
                                     database_name,
                                     all_keys.len()

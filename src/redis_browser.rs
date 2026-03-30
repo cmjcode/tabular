@@ -25,6 +25,29 @@ fn display_key_type(key_type: &str) -> &str {
     }
 }
 
+fn elide_middle(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    if max_chars <= 3 {
+        return "...".to_string();
+    }
+
+    let lead = (max_chars - 3) / 2;
+    let tail = max_chars - 3 - lead;
+    let prefix: String = text.chars().take(lead).collect();
+    let suffix: String = text
+        .chars()
+        .rev()
+        .take(tail)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{}...{}", prefix, suffix)
+}
+
 fn filtered_key_indices(state: &RedisBrowserState) -> Vec<usize> {
     let needle = state.filter_text.trim().to_ascii_lowercase();
     state
@@ -101,7 +124,7 @@ fn render_json_preview(ui: &mut egui::Ui, json_text: &str) {
                                 });
                             });
 
-                        ui.separator();
+                        ui.add_space(8.0);
                         ui.label(job.clone());
                     });
                 });
@@ -146,6 +169,23 @@ pub fn render_redis_browser(
             }
             ui.separator();
             ui.label(format!("Visible: {}", filtered.len()));
+            ui.separator();
+            if ui.checkbox(&mut state.auto_refresh_enabled, "Auto Refresh").changed() {
+                state.auto_refresh_last_run = None;
+            }
+            let mut selected_interval = state.auto_refresh_interval_seconds.max(1);
+            egui::ComboBox::from_id_salt("redis_browser_auto_refresh_interval")
+                .selected_text(format!("{}s", selected_interval))
+                .width(72.0)
+                .show_ui(ui, |ui| {
+                    for seconds in [1_u32, 2, 5, 10, 15, 30, 60, 120, 300] {
+                        ui.selectable_value(&mut selected_interval, seconds, format!("{}s", seconds));
+                    }
+                });
+            if selected_interval != state.auto_refresh_interval_seconds.max(1) {
+                state.auto_refresh_interval_seconds = selected_interval;
+                state.auto_refresh_last_run = None;
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Refresh").clicked() {
                     action = Some(RedisBrowserAction::Refresh);
@@ -226,10 +266,12 @@ pub fn render_redis_browser(
                                             .strong();
                                         ui.label(badge);
 
+                                        let display_key = elide_middle(&entry.key_name, 72);
                                         let response = ui.selectable_label(
                                             is_selected,
-                                            egui::RichText::new(entry.key_name.clone()).size(13.0),
+                                            egui::RichText::new(display_key).size(13.0),
                                         );
+                                        let response = response.on_hover_text(&entry.key_name);
                                         if response.clicked() {
                                             action = Some(RedisBrowserAction::SelectKey {
                                                 key_name: entry.key_name.clone(),
@@ -258,7 +300,15 @@ pub fn render_redis_browser(
                             .background_color(egui::Color32::from_rgb(255, 0, 0))
                             .strong();
                         ui.label(badge);
-                        ui.heading(preview.key_name.clone());
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(preview.key_name.clone())
+                                    .heading()
+                                    .strong(),
+                            )
+                            .wrap(),
+                        )
+                        .on_hover_text(&preview.key_name);
                     });
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
