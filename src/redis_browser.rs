@@ -137,8 +137,8 @@ pub fn render_redis_browser(
     state: &mut RedisBrowserState,
 ) -> Option<RedisBrowserAction> {
     let mut action = None;
-    ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
-    ui.style_mut().visuals.selection.stroke.color = egui::Color32::WHITE;
+    ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgb(169, 169, 169);
+    ui.style_mut().visuals.selection.stroke.color = egui::Color32::TRANSPARENT;
 
     let filtered = filtered_key_indices(state);
     let trimmed_filter = state.filter_text.trim().to_string();
@@ -269,8 +269,13 @@ pub fn render_redis_browser(
                         for index in filtered {
                             let entry = &state.keys[index];
                             let is_selected = state.selected_key.as_deref() == Some(&entry.key_name);
+                            let dark = ui.visuals().dark_mode;
                             let fill = if is_selected {
-                                egui::Color32::from_rgb(70, 10, 10)
+                                if dark {
+                                    egui::Color32::from_rgb(70, 70, 70)
+                                } else {
+                                    egui::Color32::from_rgb(200, 200, 200)
+                                }
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
@@ -290,7 +295,7 @@ pub fn render_redis_browser(
 
                                         let display_key = elide_middle(&entry.key_name, 72);
                                         let response = ui.selectable_label(
-                                            is_selected,
+                                            false,
                                             egui::RichText::new(display_key).size(13.0),
                                         );
                                         let response = response.on_hover_text(&entry.key_name);
