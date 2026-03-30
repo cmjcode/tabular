@@ -85,6 +85,14 @@ pub enum BackgroundTask {
         connection_id: i64,
         database_name: String,
     },
+    FetchRedisBrowserState {
+        connection_id: i64,
+    },
+    SearchRedisBrowserKeys {
+        connection_id: i64,
+        database_name: String,
+        search_text: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +124,16 @@ pub enum BackgroundResult {
         connection_id: i64,
         database_name: String,
         keys: Vec<(String, String)>, // (key_name, key_type)
+    },
+    RedisBrowserStateFetched {
+        connection_id: i64,
+        state: crate::models::structs::RedisBrowserState,
+    },
+    RedisBrowserSearchFetched {
+        connection_id: i64,
+        database_name: String,
+        search_text: String,
+        keys: Vec<(String, String)>,
     },
 }
 

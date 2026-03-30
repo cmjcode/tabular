@@ -1555,6 +1555,10 @@ pub fn highlight_line(line: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
 }
 
 fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut LayoutJob) {
+    if matches!(lang, LanguageKind::Redis) {
+        highlight_json_like_line(line, dark, job);
+        return;
+    }
 
     let mut chars = line.char_indices().peekable();
     while let Some((start_idx, ch)) = chars.next() {
@@ -1638,6 +1642,131 @@ fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut L
     }
 }
 
+fn highlight_json_like_line(line: &str, dark: bool, job: &mut LayoutJob) {
+    let bytes = line.as_bytes();
+    let mut idx = 0usize;
+
+    while idx < bytes.len() {
+        let ch = line[idx..].chars().next().unwrap_or('\0');
+        let ch_len = ch.len_utf8();
+
+        if ch.is_whitespace() {
+            job.append(
+                &line[idx..idx + ch_len],
+                0.0,
+                TextFormat {
+                    color: normal_color(dark),
+                    ..Default::default()
+                },
+            );
+            idx += ch_len;
+            continue;
+        }
+
+        if ch == '"' {
+            let start = idx;
+            idx += ch_len;
+            let mut escaped = false;
+            while idx < bytes.len() {
+                let current = line[idx..].chars().next().unwrap_or('\0');
+                let current_len = current.len_utf8();
+                idx += current_len;
+                if current == '"' && !escaped {
+                    break;
+                }
+                escaped = current == '\\' && !escaped;
+                if current != '\\' {
+                    escaped = false;
+                }
+            }
+            let token = &line[start..idx.min(line.len())];
+            let mut lookahead = idx;
+            while lookahead < bytes.len() {
+                let next = line[lookahead..].chars().next().unwrap_or('\0');
+                if next.is_whitespace() {
+                    lookahead += next.len_utf8();
+                    continue;
+                }
+                break;
+            }
+            let is_property = lookahead < bytes.len() && line[lookahead..].starts_with(':');
+            job.append(
+                token,
+                0.0,
+                TextFormat {
+                    color: if is_property {
+                        json_property_color(dark)
+                    } else {
+                        string_color(dark)
+                    },
+                    ..Default::default()
+                },
+            );
+            continue;
+        }
+
+        if ch.is_ascii_digit() || ch == '-' {
+            let start = idx;
+            idx += ch_len;
+            while idx < bytes.len() {
+                let next = line[idx..].chars().next().unwrap_or('\0');
+                if next.is_ascii_digit() || matches!(next, '.' | 'e' | 'E' | '+' | '-') {
+                    idx += next.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            job.append(
+                &line[start..idx],
+                0.0,
+                TextFormat {
+                    color: number_color(dark),
+                    ..Default::default()
+                },
+            );
+            continue;
+        }
+
+        if ch.is_ascii_alphabetic() {
+            let start = idx;
+            idx += ch_len;
+            while idx < bytes.len() {
+                let next = line[idx..].chars().next().unwrap_or('\0');
+                if next.is_ascii_alphabetic() {
+                    idx += next.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let word = &line[start..idx];
+            let color = match word {
+                "true" | "false" => json_boolean_color(dark),
+                "null" => json_null_color(dark),
+                _ => normal_color(dark),
+            };
+            job.append(
+                word,
+                0.0,
+                TextFormat {
+                    color,
+                    ..Default::default()
+                },
+            );
+            continue;
+        }
+
+        job.append(
+            &line[idx..idx + ch_len],
+            0.0,
+            TextFormat {
+                color: punctuation_color(dark),
+                ..Default::default()
+            },
+        );
+        idx += ch_len;
+    }
+}
+
 fn word_color(word: &str, lang: LanguageKind, dark: bool) -> Color32 {
     if word.chars().all(|c| c.is_ascii_digit()) {
         return number_color(dark);
@@ -1650,25 +1779,25 @@ fn word_color(word: &str, lang: LanguageKind, dark: bool) -> Color32 {
 
 fn keyword_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(255, 210, 0) // neon amber
+        Color32::from_rgb(255, 110, 110)
     } else {
-        Color32::from_rgb(130, 40, 0) // deep burnt orange
+        Color32::from_rgb(170, 20, 20)
     }
 }
 
 fn number_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(80, 200, 255) // neon cyan-blue
+        Color32::from_rgb(255, 150, 150)
     } else {
-        Color32::from_rgb(0, 60, 180) // deep blue
+        Color32::from_rgb(190, 45, 45)
     }
 }
 
 fn string_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(0, 255, 120) // neon green
+        Color32::from_rgb(255, 185, 185)
     } else {
-        Color32::from_rgb(0, 110, 30) // deep forest green
+        Color32::from_rgb(155, 35, 35)
     }
 }
 
@@ -1677,6 +1806,30 @@ fn comment_color(dark: bool) -> Color32 {
         Color32::from_rgb(160, 160, 160) // bright gray
     } else {
         Color32::from_rgb(60, 70, 80) // dark slate
+    }
+}
+
+fn json_property_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(255, 96, 96)
+    } else {
+        Color32::from_rgb(195, 0, 0)
+    }
+}
+
+fn json_boolean_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(255, 130, 130)
+    } else {
+        Color32::from_rgb(180, 28, 28)
+    }
+}
+
+fn json_null_color(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(220, 140, 140)
+    } else {
+        Color32::from_rgb(150, 50, 50)
     }
 }
 
@@ -1698,9 +1851,9 @@ fn normal_color(dark: bool) -> Color32 {
 
 fn ai_block_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(180, 120, 255) // vivid violet-purple
+        Color32::from_rgb(255, 120, 120)
     } else {
-        Color32::from_rgb(120, 40, 200) // deep royal purple
+        Color32::from_rgb(175, 30, 30)
     }
 }
 

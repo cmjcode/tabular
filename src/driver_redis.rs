@@ -10,6 +10,120 @@ use crate::{cache_data, connection, models, window_egui};
 
 pub(crate) const REDIS_CLUSTER_KEYSPACE: &str = "__redis_cluster__";
 
+fn default_redis_keyspace(connection: &models::structs::ConnectionConfig) -> String {
+    if connection.database.trim().is_empty() {
+        "db0".to_string()
+    } else if connection.database.starts_with("db") {
+        connection.database.clone()
+    } else if connection.database.parse::<u8>().is_ok() {
+        format!("db{}", connection.database.trim())
+    } else {
+        "db0".to_string()
+    }
+}
+
+fn format_ttl_label(ttl: i64) -> String {
+    match ttl {
+        -2 => "Expired".to_string(),
+        -1 => "No limit".to_string(),
+        value if value >= 0 => format!("{} s", value),
+        _ => "Unknown".to_string(),
+    }
+}
+
+fn format_size_label(size: Option<usize>) -> String {
+    match size {
+        Some(size) if size >= 1024 * 1024 => format!("{:.1} MB", size as f64 / 1024.0 / 1024.0),
+        Some(size) if size >= 1024 => format!("{:.1} KB", size as f64 / 1024.0),
+        Some(size) => format!("{} B", size),
+        None => "-".to_string(),
+    }
+}
+
+async fn retry_on_moved_i64_command(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+    key_name: &str,
+    command: &str,
+    extra_args: &[&str],
+) -> Result<i64, String> {
+    let mut conn = create_redis_manager_for_target(connection, database_name, None).await?;
+    let mut cmd = redis::cmd(command);
+    cmd.arg(key_name);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+
+    match cmd.query_async::<i64>(&mut conn).await {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Some((host, port)) = parse_moved_target(&error.to_string()) {
+                let mut redirected =
+                    create_redis_manager_for_target(connection, database_name, Some((&host, &port)))
+                        .await?;
+                let mut redirected_cmd = redis::cmd(command);
+                redirected_cmd.arg(key_name);
+                for arg in extra_args {
+                    redirected_cmd.arg(arg);
+                }
+                redirected_cmd
+                    .query_async::<i64>(&mut redirected)
+                    .await
+                    .map_err(|redirect_error| {
+                        format!(
+                            "Redis {} failed after MOVED redirect to {}:{}: {}",
+                            command, host, port, redirect_error
+                        )
+                    })
+            } else {
+                Err(format!("Redis {} failed: {}", command, error))
+            }
+        }
+    }
+}
+
+async fn retry_on_moved_optional_usize_command(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+    key_name: &str,
+    command: &str,
+    extra_args: &[&str],
+) -> Result<Option<usize>, String> {
+    let mut conn = create_redis_manager_for_target(connection, database_name, None).await?;
+    let mut cmd = redis::cmd(command);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    cmd.arg(key_name);
+
+    match cmd.query_async::<Option<usize>>(&mut conn).await {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Some((host, port)) = parse_moved_target(&error.to_string()) {
+                let mut redirected =
+                    create_redis_manager_for_target(connection, database_name, Some((&host, &port)))
+                        .await?;
+                let mut redirected_cmd = redis::cmd(command);
+                for arg in extra_args {
+                    redirected_cmd.arg(arg);
+                }
+                redirected_cmd.arg(key_name);
+                redirected_cmd
+                    .query_async::<Option<usize>>(&mut redirected)
+                    .await
+                    .map_err(|redirect_error| {
+                        format!(
+                            "Redis {} failed after MOVED redirect to {}:{}: {}",
+                            command, host, port, redirect_error
+                        )
+                    })
+            } else {
+                Err(format!("Redis {} failed: {}", command, error))
+            }
+        }
+    }
+}
+
 fn parse_moved_target(error: &str) -> Option<(String, String)> {
     let address = error
         .split_whitespace()
@@ -104,6 +218,48 @@ async fn retry_on_moved_string_command(
     }
 }
 
+async fn retry_on_moved_required_string_command(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+    key_name: &str,
+    command: &str,
+    extra_args: &[&str],
+) -> Result<String, String> {
+    let mut conn = create_redis_manager_for_target(connection, database_name, None).await?;
+    let mut cmd = redis::cmd(command);
+    cmd.arg(key_name);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+
+    match cmd.query_async::<String>(&mut conn).await {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Some((host, port)) = parse_moved_target(&error.to_string()) {
+                let mut redirected =
+                    create_redis_manager_for_target(connection, database_name, Some((&host, &port)))
+                        .await?;
+                let mut redirected_cmd = redis::cmd(command);
+                redirected_cmd.arg(key_name);
+                for arg in extra_args {
+                    redirected_cmd.arg(arg);
+                }
+                redirected_cmd
+                    .query_async::<String>(&mut redirected)
+                    .await
+                    .map_err(|redirect_error| {
+                        format!(
+                            "Redis {} failed after MOVED redirect to {}:{}: {}",
+                            command, host, port, redirect_error
+                        )
+                    })
+            } else {
+                Err(format!("Redis {} failed: {}", command, error))
+            }
+        }
+    }
+}
+
 async fn retry_on_moved_vec_command(
     connection: &models::structs::ConnectionConfig,
     database_name: &str,
@@ -162,6 +318,267 @@ fn redis_key_preview_filename(key_name: &str) -> String {
 
 pub(crate) fn fetch_redis_key_preview_filename(key_name: &str) -> String {
     redis_key_preview_filename(key_name)
+}
+
+pub(crate) fn fetch_redis_browser_preview(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    key_name: &str,
+    key_type: &str,
+) -> Result<models::structs::RedisBrowserPreview, String> {
+    if let Some(preview) = cache_data::get_redis_browser_preview_from_cache(
+        tabular,
+        connection_id,
+        database_name,
+        key_name,
+    ) {
+        return Ok(preview);
+    }
+
+    let connection = tabular
+        .connections
+        .iter()
+        .find(|candidate| candidate.id == Some(connection_id))
+        .cloned()
+        .ok_or_else(|| format!("Redis connection {} not found", connection_id))?;
+
+    let resolved_key_type = if key_type.trim().is_empty() || key_type.eq_ignore_ascii_case("unknown") {
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|error| format!("Failed to create runtime for Redis key type lookup: {}", error))?;
+        runtime.block_on(async {
+            retry_on_moved_required_string_command(&connection, database_name, key_name, "TYPE", &[]).await
+        })?
+    } else {
+        key_type.to_string()
+    };
+
+    let json_text = fetch_redis_key_pretty_json(
+        tabular,
+        connection_id,
+        database_name,
+        key_name,
+        &resolved_key_type,
+    )?;
+
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|error| format!("Failed to create runtime for Redis preview metadata: {}", error))?;
+
+    let resolved_key_type_for_length = resolved_key_type.clone();
+    let (ttl_label, size_label, length_label) = runtime.block_on(async move {
+        let ttl = retry_on_moved_i64_command(&connection, database_name, key_name, "TTL", &[])
+            .await
+            .unwrap_or(-1);
+        let size = retry_on_moved_optional_usize_command(
+            &connection,
+            database_name,
+            key_name,
+            "MEMORY",
+            &["USAGE"],
+        )
+        .await
+        .ok()
+        .flatten();
+        let length = match resolved_key_type_for_length.to_ascii_lowercase().as_str() {
+            "string" => retry_on_moved_i64_command(&connection, database_name, key_name, "STRLEN", &[])
+                .await
+                .ok(),
+            "hash" => retry_on_moved_i64_command(&connection, database_name, key_name, "HLEN", &[])
+                .await
+                .ok(),
+            "list" => retry_on_moved_i64_command(&connection, database_name, key_name, "LLEN", &[])
+                .await
+                .ok(),
+            "set" => retry_on_moved_i64_command(&connection, database_name, key_name, "SCARD", &[])
+                .await
+                .ok(),
+            "zset" | "sorted_set" => retry_on_moved_i64_command(&connection, database_name, key_name, "ZCARD", &[])
+                .await
+                .ok(),
+            "stream" => retry_on_moved_i64_command(&connection, database_name, key_name, "XLEN", &[])
+                .await
+                .ok(),
+            _ => None,
+        };
+        (
+            format_ttl_label(ttl),
+            format_size_label(size),
+            length.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string()),
+        )
+    });
+
+    let preview = models::structs::RedisBrowserPreview {
+        key_name: key_name.to_string(),
+        key_type: resolved_key_type.clone(),
+        database_name: database_name.to_string(),
+        ttl_label,
+        size_label,
+        length_label,
+        json_text,
+    };
+
+    cache_data::save_redis_browser_preview_to_cache(tabular, connection_id, &preview);
+
+    Ok(preview)
+}
+
+#[allow(dead_code)]
+pub(crate) fn load_redis_browser_state(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+) -> models::structs::RedisBrowserState {
+    let connection = match tabular
+        .connections
+        .iter()
+        .find(|candidate| candidate.id == Some(connection_id))
+        .cloned()
+    {
+        Some(connection) => connection,
+        None => {
+            return models::structs::RedisBrowserState {
+                last_error: Some(format!("Redis connection {} not found", connection_id)),
+                ..Default::default()
+            }
+        }
+    };
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return models::structs::RedisBrowserState {
+                last_error: Some(format!("Failed to create runtime for Redis browser: {}", error)),
+                ..Default::default()
+            }
+        }
+    };
+
+    let result = runtime.block_on(async {
+        let pool = connection::get_or_create_connection_pool(tabular, connection_id)
+            .await
+            .ok_or_else(|| format!("Failed to get Redis pool for connection {}", connection_id))?;
+
+        match pool {
+            models::enums::DatabasePool::Redis(redis_manager) => {
+                load_redis_browser_state_from_connection(&connection, redis_manager.as_ref()).await
+            }
+            _ => Err(format!("Connection {} is not a Redis pool", connection_id)),
+        }
+    });
+
+    match result {
+        Ok((keyspace_label, key_pairs, is_cluster)) => {
+            let key_count = key_pairs.len();
+            let state = models::structs::RedisBrowserState {
+                keyspace_label: keyspace_label.clone(),
+                keys: key_pairs
+                    .into_iter()
+                    .map(|(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
+                        key_name,
+                        key_type,
+                        ttl_label: if is_cluster {
+                            "Cluster".to_string()
+                        } else {
+                            keyspace_label.clone()
+                        },
+                        size_label: "-".to_string(),
+                    })
+                    .collect(),
+                status_text: if is_cluster {
+                    format!("Redis Cluster keyspace · {} keys loaded · metadata loads on selection", key_count)
+                } else {
+                    format!("{} · {} keys loaded", keyspace_label, key_count)
+                },
+                ..Default::default()
+            };
+
+            state
+        }
+        Err(error) => models::structs::RedisBrowserState {
+            last_error: Some(error),
+            ..Default::default()
+        },
+    }
+}
+
+pub(crate) async fn load_redis_browser_state_from_connection(
+    connection: &models::structs::ConnectionConfig,
+    redis_manager: &ConnectionManager,
+) -> Result<(String, Vec<(String, String)>, bool), String> {
+    let mut detect_conn = redis_manager.clone();
+    let is_cluster = detect_cluster_mode(&mut detect_conn).await;
+    let keyspace_label = if is_cluster {
+        REDIS_CLUSTER_KEYSPACE.to_string()
+    } else {
+        default_redis_keyspace(connection)
+    };
+
+    let key_pairs = if is_cluster {
+        fetch_cluster_key_names(connection, redis_manager, 500)
+            .await
+            .into_iter()
+            .map(|key_name| (key_name, "unknown".to_string()))
+            .collect()
+    } else {
+        if keyspace_label.starts_with("db")
+            && let Ok(db_num) = keyspace_label.trim_start_matches("db").parse::<i32>()
+        {
+            let _ = redis::cmd("SELECT")
+                .arg(db_num)
+                .query_async::<()>(&mut detect_conn)
+                .await;
+        }
+        scan_keys_and_types_on_node(&mut detect_conn, 500).await
+    };
+
+    Ok((keyspace_label, key_pairs, is_cluster))
+}
+
+pub(crate) fn redis_browser_loading_state(status_text: &str) -> models::structs::RedisBrowserState {
+    models::structs::RedisBrowserState {
+        status_text: status_text.to_string(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn load_cached_redis_browser_state(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+) -> Option<models::structs::RedisBrowserState> {
+    let connection = tabular
+        .connections
+        .iter()
+        .find(|candidate| candidate.id == Some(connection_id))?
+        .clone();
+
+    let cached_databases = cache_data::get_databases_from_cache(tabular, connection_id).unwrap_or_default();
+    let keyspace_label = if cached_databases.iter().any(|name| name == REDIS_CLUSTER_KEYSPACE) {
+        REDIS_CLUSTER_KEYSPACE.to_string()
+    } else {
+        default_redis_keyspace(&connection)
+    };
+
+    let key_pairs = cache_data::get_redis_browser_keys_from_cache(tabular, connection_id, &keyspace_label)?;
+    let key_count = key_pairs.len();
+    let is_cluster = keyspace_label == REDIS_CLUSTER_KEYSPACE;
+
+    Some(models::structs::RedisBrowserState {
+        keyspace_label: keyspace_label.clone(),
+        keys: key_pairs
+            .into_iter()
+            .map(|(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
+                key_name,
+                key_type,
+                ttl_label: if is_cluster {
+                    "Cluster".to_string()
+                } else {
+                    keyspace_label.clone()
+                },
+                size_label: "-".to_string(),
+            })
+            .collect(),
+        status_text: format!("Cached Redis browser · {} keys", key_count),
+        ..Default::default()
+    })
 }
 
 pub(crate) fn fetch_redis_key_pretty_json(
@@ -362,6 +779,95 @@ async fn scan_keys_and_types_on_node(
     all_keys
 }
 
+async fn scan_key_names_on_node(conn: &mut ConnectionManager, max_keys: usize) -> Vec<String> {
+    let mut all_keys = Vec::new();
+    let mut cursor = 0u64;
+
+    loop {
+        match redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("COUNT")
+            .arg(100)
+            .query_async::<(u64, Vec<String>)>(conn)
+            .await
+        {
+            Ok((next_cursor, keys)) => {
+                for key in keys {
+                    if all_keys.len() >= max_keys {
+                        break;
+                    }
+                    all_keys.push(key);
+                }
+
+                cursor = next_cursor;
+                if cursor == 0 || all_keys.len() >= max_keys {
+                    break;
+                }
+            }
+            Err(error) => {
+                warn!("[redis_cluster] SCAN failed on node: {}", error);
+                break;
+            }
+        }
+    }
+
+    all_keys
+}
+
+async fn search_keys_and_types_on_node(
+    conn: &mut ConnectionManager,
+    search_text: &str,
+    max_keys: usize,
+) -> Vec<(String, String)> {
+    let mut all_keys = Vec::new();
+    let mut cursor = 0u64;
+    let pattern = format!("*{}*", search_text);
+
+    loop {
+        match redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query_async::<(u64, Vec<String>)>(conn)
+            .await
+        {
+            Ok((next_cursor, keys)) => {
+                for key in keys {
+                    if all_keys.len() >= max_keys {
+                        break;
+                    }
+                    if !key.contains(search_text) {
+                        continue;
+                    }
+
+                    let key_type = match redis::cmd("TYPE").arg(&key).query_async::<String>(conn).await {
+                        Ok(key_type) => key_type,
+                        Err(error) => {
+                            warn!("[redis_search] TYPE failed for key {}: {}", key, error);
+                            "unknown".to_string()
+                        }
+                    };
+
+                    all_keys.push((key, key_type));
+                }
+
+                cursor = next_cursor;
+                if cursor == 0 || all_keys.len() >= max_keys {
+                    break;
+                }
+            }
+            Err(error) => {
+                warn!("[redis_search] SCAN MATCH failed on node: {}", error);
+                break;
+            }
+        }
+    }
+
+    all_keys
+}
+
 pub(crate) async fn load_redis_connection_config(
     cache_pool: &SqlitePool,
     connection_id: i64,
@@ -490,6 +996,173 @@ pub(crate) async fn fetch_cluster_keys_with_types(
         connection.id
     );
     all_keys
+}
+
+pub(crate) async fn fetch_cluster_key_names(
+    connection: &models::structs::ConnectionConfig,
+    seed_manager: &ConnectionManager,
+    max_keys: usize,
+) -> Vec<String> {
+    let mut seed_conn = seed_manager.clone();
+    let cluster_nodes = match redis::cmd("CLUSTER")
+        .arg("NODES")
+        .query_async::<String>(&mut seed_conn)
+        .await
+    {
+        Ok(cluster_nodes) => cluster_nodes,
+        Err(error) => {
+            warn!(
+                "[redis_cluster] CLUSTER NODES failed for lightweight browser load on connection {:?}: {}",
+                connection.id,
+                error
+            );
+            return Vec::new();
+        }
+    };
+
+    let master_addresses = parse_cluster_master_addresses(&cluster_nodes);
+    let mut all_keys = Vec::new();
+    let mut seen_keys = HashSet::new();
+
+    for (host, port) in master_addresses {
+        if all_keys.len() >= max_keys {
+            break;
+        }
+
+        let connection_string = build_redis_connection_string(
+            &host,
+            &port,
+            &connection.username,
+            &connection.password,
+        );
+
+        let client = match Client::open(connection_string) {
+            Ok(client) => client,
+            Err(error) => {
+                warn!("[redis_cluster] failed creating client for {}:{}: {}", host, port, error);
+                continue;
+            }
+        };
+
+        let mut node_conn = match ConnectionManager::new(client).await {
+            Ok(conn) => conn,
+            Err(error) => {
+                warn!("[redis_cluster] failed creating connection manager for {}:{}: {}", host, port, error);
+                continue;
+            }
+        };
+
+        for key in scan_key_names_on_node(&mut node_conn, max_keys - all_keys.len()).await {
+            if seen_keys.insert(key.clone()) {
+                all_keys.push(key);
+            }
+            if all_keys.len() >= max_keys {
+                break;
+            }
+        }
+    }
+
+    info!(
+        "[redis_cluster] lightweight browser load collected {} keys for connection {:?}",
+        all_keys.len(),
+        connection.id
+    );
+
+    all_keys
+}
+
+pub(crate) async fn search_redis_browser_keys_from_connection(
+    connection: &models::structs::ConnectionConfig,
+    redis_manager: &ConnectionManager,
+    database_name: &str,
+    search_text: &str,
+    max_keys: usize,
+) -> Vec<(String, String)> {
+    if search_text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let mut detect_conn = redis_manager.clone();
+    let is_cluster = database_name == REDIS_CLUSTER_KEYSPACE || detect_cluster_mode(&mut detect_conn).await;
+
+    if is_cluster {
+        let mut seed_conn = redis_manager.clone();
+        let cluster_nodes = match redis::cmd("CLUSTER")
+            .arg("NODES")
+            .query_async::<String>(&mut seed_conn)
+            .await
+        {
+            Ok(cluster_nodes) => cluster_nodes,
+            Err(error) => {
+                warn!(
+                    "[redis_search] CLUSTER NODES failed for connection {:?}: {}",
+                    connection.id,
+                    error
+                );
+                return Vec::new();
+            }
+        };
+
+        let master_addresses = parse_cluster_master_addresses(&cluster_nodes);
+        let mut all_keys = Vec::new();
+        let mut seen_keys = HashSet::new();
+
+        for (host, port) in master_addresses {
+            if all_keys.len() >= max_keys {
+                break;
+            }
+
+            let connection_string = build_redis_connection_string(
+                &host,
+                &port,
+                &connection.username,
+                &connection.password,
+            );
+            let client = match Client::open(connection_string) {
+                Ok(client) => client,
+                Err(error) => {
+                    warn!("[redis_search] failed creating client for {}:{}: {}", host, port, error);
+                    continue;
+                }
+            };
+
+            let mut node_conn = match ConnectionManager::new(client).await {
+                Ok(conn) => conn,
+                Err(error) => {
+                    warn!("[redis_search] failed creating connection manager for {}:{}: {}", host, port, error);
+                    continue;
+                }
+            };
+
+            for (key, key_type) in search_keys_and_types_on_node(
+                &mut node_conn,
+                search_text,
+                max_keys - all_keys.len(),
+            )
+            .await
+            {
+                if seen_keys.insert(key.clone()) {
+                    all_keys.push((key, key_type));
+                }
+                if all_keys.len() >= max_keys {
+                    break;
+                }
+            }
+        }
+
+        return all_keys;
+    }
+
+    if database_name.starts_with("db")
+        && let Ok(db_num) = database_name.trim_start_matches("db").parse::<i32>()
+    {
+        let _ = redis::cmd("SELECT")
+            .arg(db_num)
+            .query_async::<()>(&mut detect_conn)
+            .await;
+    }
+
+    search_keys_and_types_on_node(&mut detect_conn, search_text, max_keys).await
 }
 
 /// Detect Redis Cluster mode by inspecting `INFO server`.

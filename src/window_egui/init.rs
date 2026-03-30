@@ -231,6 +231,7 @@ impl super::Tabular {
             next_query_job_id: 1,
             refreshing_connections: std::collections::HashSet::new(),
             fetching_redis_keys: std::collections::HashSet::new(),
+            fetching_redis_browser: std::collections::HashSet::new(),
             fetching_databases: std::collections::HashSet::new(),
             pending_expansion_restore: std::collections::HashMap::new(),
             pending_auto_load: std::collections::HashSet::new(),
@@ -702,6 +703,115 @@ impl super::Tabular {
                             let _ = result_sender.send(models::enums::BackgroundResult::RedisKeysFetched {
                                 connection_id,
                                 database_name,
+                                keys: keys.unwrap_or_default(),
+                            });
+                        }
+                    }
+                    models::enums::BackgroundTask::FetchRedisBrowserState { connection_id } => {
+                        if let Ok(rt) = tokio::runtime::Runtime::new() {
+                            let state = rt.block_on(async {
+                                let redis_manager = {
+                                    let pools = shared_pools.lock().ok()?;
+                                    if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
+                                        Some(mgr.as_ref().clone())
+                                    } else {
+                                        None
+                                    }
+                                }?;
+
+                                let cache_pool_ref = cache_pool.as_ref()?;
+                                let connection = driver_redis::load_redis_connection_config(
+                                    cache_pool_ref.as_ref(),
+                                    connection_id,
+                                )
+                                .await?;
+
+                                match driver_redis::load_redis_browser_state_from_connection(
+                                    &connection,
+                                    &redis_manager,
+                                )
+                                .await
+                                {
+                                    Ok((keyspace_label, key_pairs, is_cluster)) => {
+                                        let key_count = key_pairs.len();
+                                        Some(models::structs::RedisBrowserState {
+                                            keyspace_label: keyspace_label.clone(),
+                                            keys: key_pairs
+                                                .into_iter()
+                                                .map(|(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
+                                                    key_name,
+                                                    key_type,
+                                                    ttl_label: if is_cluster {
+                                                        "Cluster".to_string()
+                                                    } else {
+                                                        keyspace_label.clone()
+                                                    },
+                                                    size_label: "-".to_string(),
+                                                })
+                                                .collect(),
+                                            status_text: if is_cluster {
+                                                format!("Redis Cluster keyspace · {} keys loaded · metadata loads on selection", key_count)
+                                            } else {
+                                                format!("{} · {} keys loaded", keyspace_label, key_count)
+                                            },
+                                            ..Default::default()
+                                        })
+                                    }
+                                    Err(error) => Some(models::structs::RedisBrowserState {
+                                        last_error: Some(error),
+                                        ..Default::default()
+                                    }),
+                                }
+                            });
+
+                            let _ = result_sender.send(models::enums::BackgroundResult::RedisBrowserStateFetched {
+                                connection_id,
+                                state: state.unwrap_or_else(|| models::structs::RedisBrowserState {
+                                    last_error: Some(format!("Failed to load Redis browser for connection {}", connection_id)),
+                                    ..Default::default()
+                                }),
+                            });
+                        }
+                    }
+                    models::enums::BackgroundTask::SearchRedisBrowserKeys {
+                        connection_id,
+                        database_name,
+                        search_text,
+                    } => {
+                        if let Ok(rt) = tokio::runtime::Runtime::new() {
+                            let keys = rt.block_on(async {
+                                let redis_manager = {
+                                    let pools = shared_pools.lock().ok()?;
+                                    if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
+                                        Some(mgr.as_ref().clone())
+                                    } else {
+                                        None
+                                    }
+                                }?;
+
+                                let cache_pool_ref = cache_pool.as_ref()?;
+                                let connection = driver_redis::load_redis_connection_config(
+                                    cache_pool_ref.as_ref(),
+                                    connection_id,
+                                )
+                                .await?;
+
+                                Some(
+                                    driver_redis::search_redis_browser_keys_from_connection(
+                                        &connection,
+                                        &redis_manager,
+                                        &database_name,
+                                        &search_text,
+                                        200,
+                                    )
+                                    .await,
+                                )
+                            });
+
+                            let _ = result_sender.send(models::enums::BackgroundResult::RedisBrowserSearchFetched {
+                                connection_id,
+                                database_name,
+                                search_text,
                                 keys: keys.unwrap_or_default(),
                             });
                         }

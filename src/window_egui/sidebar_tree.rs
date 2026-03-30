@@ -569,15 +569,15 @@ impl super::Tabular {
 
         for connection_id in connection_click_requests {
             // Find connection name and type for tab title & behavior
-            let (connection_name, is_api_http) = self
+            let (connection_name, connection_type, is_api_http) = self
                 .connections
                 .iter()
                 .find(|conn| conn.id == Some(connection_id))
-                .map(|conn| (conn.name.clone(), conn.connection_type == models::enums::DatabaseType::ApiHttp))
-                .unwrap_or_else(|| (format!("Connection {}", connection_id), false));
+                .map(|conn| (conn.name.clone(), conn.connection_type.clone(), conn.connection_type == models::enums::DatabaseType::ApiHttp))
+                .unwrap_or_else(|| (format!("Connection {}", connection_id), models::enums::DatabaseType::SQLite, false));
 
             // Create new tab with this connection pre-selected
-            let tab_title = if is_api_http {
+            let tab_title = if is_api_http || connection_type == models::enums::DatabaseType::Redis {
                 connection_name.clone()
             } else {
                 format!("Query - {}", connection_name)
@@ -597,6 +597,35 @@ impl super::Tabular {
                         .unwrap_or_default();
                     tab.http_client_state = Some(state);
                 }
+
+            if connection_type == models::enums::DatabaseType::Redis {
+                    let cached_state = crate::driver_redis::load_cached_redis_browser_state(
+                        self,
+                        connection_id,
+                    );
+                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        tab.redis_browser_state = cached_state
+                    .or_else(|| {
+                        Some(crate::driver_redis::redis_browser_loading_state(
+                            "Loading Redis browser in background...",
+                        ))
+                    });
+                }
+                if self.fetching_redis_browser.insert(connection_id)
+                    && let Some(sender) = &self.background_sender
+                {
+                    let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
+                        connection_id,
+                    });
+                }
+                self.query_message.clear();
+                self.current_table_headers.clear();
+                self.current_table_data.clear();
+                self.all_table_data.clear();
+                self.current_table_name.clear();
+                self.total_rows = 0;
+                self.current_page = 0;
+            }
 
             debug!("Created new tab with connection ID: {}", connection_id);
 

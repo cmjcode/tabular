@@ -689,6 +689,153 @@ pub(crate) fn save_table_rows_to_cache(
     }
 }
 
+fn redis_browser_cache_type(key_type: &str) -> String {
+    format!("redis_browser_key::{}", key_type)
+}
+
+fn redis_browser_preview_cache_name(key_name: &str) -> String {
+    format!("__redis_preview__::{}", key_name)
+}
+
+pub(crate) fn save_redis_browser_keys_to_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    keys: &[(String, String)],
+) {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let database_name = database_name.to_string();
+        let keys = keys.to_vec();
+        let fut = async move {
+            let _ = sqlx::query(
+                "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type LIKE 'redis_browser_key::%'",
+            )
+            .bind(connection_id)
+            .bind(&database_name)
+            .execute(pool_clone.as_ref())
+            .await;
+
+            for (key_name, key_type) in keys {
+                let _ = sqlx::query(
+                    "INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)",
+                )
+                .bind(connection_id)
+                .bind(&database_name)
+                .bind(key_name)
+                .bind(redis_browser_cache_type(&key_type))
+                .execute(pool_clone.as_ref())
+                .await;
+            }
+        };
+        if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+    }
+}
+
+pub(crate) fn get_redis_browser_keys_from_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+) -> Option<Vec<(String, String)>> {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let database_name = database_name.to_string();
+        let fut = async move {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT table_name, table_type FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type LIKE 'redis_browser_key::%' ORDER BY table_name",
+            )
+            .bind(connection_id)
+            .bind(&database_name)
+            .fetch_all(pool_clone.as_ref())
+            .await
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+
+        match result {
+            Ok(rows) if !rows.is_empty() => Some(
+                rows.into_iter()
+                    .map(|(key_name, table_type)| {
+                        let key_type = table_type
+                            .strip_prefix("redis_browser_key::")
+                            .unwrap_or("unknown")
+                            .to_string();
+                        (key_name, key_type)
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+pub(crate) fn save_redis_browser_preview_to_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    preview: &models::structs::RedisBrowserPreview,
+) {
+    let headers = vec![
+        "key_type".to_string(),
+        "ttl_label".to_string(),
+        "size_label".to_string(),
+        "length_label".to_string(),
+        "json_text".to_string(),
+    ];
+    let rows = vec![vec![
+        preview.key_type.clone(),
+        preview.ttl_label.clone(),
+        preview.size_label.clone(),
+        preview.length_label.clone(),
+        preview.json_text.clone(),
+    ]];
+    save_table_rows_to_cache(
+        tabular,
+        connection_id,
+        &preview.database_name,
+        &redis_browser_preview_cache_name(&preview.key_name),
+        &headers,
+        &rows,
+    );
+}
+
+pub(crate) fn get_redis_browser_preview_from_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    key_name: &str,
+) -> Option<models::structs::RedisBrowserPreview> {
+    let cache_name = redis_browser_preview_cache_name(key_name);
+    let (headers, rows) = get_table_rows_from_cache(tabular, connection_id, database_name, &cache_name)?;
+    let first_row = rows.first()?;
+    if first_row.len() != headers.len() {
+        return None;
+    }
+
+    let mut values = std::collections::HashMap::new();
+    for (header, value) in headers.into_iter().zip(first_row.iter().cloned()) {
+        values.insert(header, value);
+    }
+
+    Some(models::structs::RedisBrowserPreview {
+        key_name: key_name.to_string(),
+        key_type: values.remove("key_type").unwrap_or_else(|| "unknown".to_string()),
+        database_name: database_name.to_string(),
+        ttl_label: values.remove("ttl_label").unwrap_or_else(|| "-".to_string()),
+        size_label: values.remove("size_label").unwrap_or_else(|| "-".to_string()),
+        length_label: values.remove("length_label").unwrap_or_else(|| "-".to_string()),
+        json_text: values.remove("json_text").unwrap_or_default(),
+    })
+}
+
 pub(crate) fn get_table_rows_from_cache(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,

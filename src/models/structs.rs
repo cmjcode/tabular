@@ -176,6 +176,88 @@ impl Default for HttpClientState {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum RedisBrowserTypeFilter {
+    #[default]
+    All,
+    String,
+    Hash,
+    List,
+    Set,
+    SortedSet,
+    Stream,
+    Other,
+}
+
+impl RedisBrowserTypeFilter {
+    pub fn label(&self) -> &'static str {
+        match self {
+            RedisBrowserTypeFilter::All => "All Key Types",
+            RedisBrowserTypeFilter::String => "Strings",
+            RedisBrowserTypeFilter::Hash => "Hashes",
+            RedisBrowserTypeFilter::List => "Lists",
+            RedisBrowserTypeFilter::Set => "Sets",
+            RedisBrowserTypeFilter::SortedSet => "Sorted Sets",
+            RedisBrowserTypeFilter::Stream => "Streams",
+            RedisBrowserTypeFilter::Other => "Other",
+        }
+    }
+
+    pub fn matches_type(&self, key_type: &str) -> bool {
+        match self {
+            RedisBrowserTypeFilter::All => true,
+            RedisBrowserTypeFilter::String => key_type.eq_ignore_ascii_case("string"),
+            RedisBrowserTypeFilter::Hash => key_type.eq_ignore_ascii_case("hash"),
+            RedisBrowserTypeFilter::List => key_type.eq_ignore_ascii_case("list"),
+            RedisBrowserTypeFilter::Set => key_type.eq_ignore_ascii_case("set"),
+            RedisBrowserTypeFilter::SortedSet => {
+                key_type.eq_ignore_ascii_case("zset")
+                    || key_type.eq_ignore_ascii_case("sorted_set")
+            }
+            RedisBrowserTypeFilter::Stream => key_type.eq_ignore_ascii_case("stream"),
+            RedisBrowserTypeFilter::Other => {
+                !["string", "hash", "list", "set", "zset", "sorted_set", "stream"]
+                    .iter()
+                    .any(|candidate| key_type.eq_ignore_ascii_case(candidate))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RedisBrowserKeyEntry {
+    pub key_name: String,
+    pub key_type: String,
+    pub ttl_label: String,
+    pub size_label: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RedisBrowserPreview {
+    pub key_name: String,
+    pub key_type: String,
+    pub database_name: String,
+    pub ttl_label: String,
+    pub size_label: String,
+    pub length_label: String,
+    pub json_text: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RedisBrowserState {
+    pub keyspace_label: String,
+    pub keys: Vec<RedisBrowserKeyEntry>,
+    pub filter_text: String,
+    pub type_filter: RedisBrowserTypeFilter,
+    pub remote_search_in_progress: bool,
+    pub last_remote_search: Option<String>,
+    pub selected_key: Option<String>,
+    pub selected_key_type: Option<String>,
+    pub preview: Option<RedisBrowserPreview>,
+    pub last_error: Option<String>,
+    pub status_text: String,
+}
+
 #[derive(Clone)]
 pub struct TreeNode {
     pub name: String,
@@ -405,6 +487,7 @@ pub struct QueryTab {
 
     // HTTP client state (Some(_) means this tab is an HTTP client)
     pub http_client_state: Option<HttpClientState>,
+    pub redis_browser_state: Option<RedisBrowserState>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

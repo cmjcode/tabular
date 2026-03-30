@@ -26,6 +26,7 @@ pub mod http_client;
 pub mod models;
 pub mod modules;
 pub mod query_tools;
+pub mod redis_browser;
 pub mod self_update;
 pub mod sidebar_database;
 pub mod sidebar_history;

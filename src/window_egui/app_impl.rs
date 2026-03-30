@@ -1578,6 +1578,97 @@ impl App for Tabular {
 
                         ctx.request_repaint();
                     }
+                    models::enums::BackgroundResult::RedisBrowserStateFetched {
+                        connection_id,
+                        state,
+                    } => {
+                        self.fetching_redis_browser.remove(&connection_id);
+
+                        let keys_to_cache: Vec<(String, String)> = state
+                            .keys
+                            .iter()
+                            .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
+                            .collect();
+                        if !state.keyspace_label.is_empty() && !keys_to_cache.is_empty() {
+                            cache_data::save_redis_browser_keys_to_cache(
+                                self,
+                                connection_id,
+                                &state.keyspace_label,
+                                &keys_to_cache,
+                            );
+                        }
+
+                        for tab in &mut self.query_tabs {
+                            if tab.connection_id == Some(connection_id)
+                                && tab.redis_browser_state.is_some()
+                            {
+                                tab.redis_browser_state = Some(state.clone());
+                            }
+                        }
+
+                        ctx.request_repaint();
+                    }
+                    models::enums::BackgroundResult::RedisBrowserSearchFetched {
+                        connection_id,
+                        database_name,
+                        search_text,
+                        keys,
+                    } => {
+                        let mut merged_keys_for_cache: Option<Vec<(String, String)>> = None;
+
+                        for tab in &mut self.query_tabs {
+                            if tab.connection_id == Some(connection_id)
+                                && let Some(state) = &mut tab.redis_browser_state
+                            {
+                                state.remote_search_in_progress = false;
+                                state.last_remote_search = Some(search_text.clone());
+
+                                for (key_name, key_type) in &keys {
+                                    if !state.keys.iter().any(|entry| entry.key_name == *key_name) {
+                                        state.keys.push(models::structs::RedisBrowserKeyEntry {
+                                            key_name: key_name.clone(),
+                                            key_type: key_type.clone(),
+                                            ttl_label: if database_name == crate::driver_redis::REDIS_CLUSTER_KEYSPACE {
+                                                "Cluster".to_string()
+                                            } else {
+                                                database_name.clone()
+                                            },
+                                            size_label: "-".to_string(),
+                                        });
+                                    }
+                                }
+
+                                state.keys.sort_by(|left, right| left.key_name.cmp(&right.key_name));
+                                state.status_text = if keys.is_empty() {
+                                    format!("No Redis server matches for '{}'", search_text)
+                                } else {
+                                    format!("Loaded {} Redis server matches for '{}'", keys.len(), search_text)
+                                };
+                                state.last_error = None;
+
+                                merged_keys_for_cache = Some(
+                                    state
+                                        .keys
+                                        .iter()
+                                        .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
+                                        .collect(),
+                                );
+                            }
+                        }
+
+                        if let Some(keys_to_cache) = merged_keys_for_cache
+                            && !database_name.is_empty()
+                        {
+                            cache_data::save_redis_browser_keys_to_cache(
+                                self,
+                                connection_id,
+                                &database_name,
+                                &keys_to_cache,
+                            );
+                        }
+
+                        ctx.request_repaint();
+                    }
                     models::enums::BackgroundResult::UpdateCheckComplete { result } => {
                         // Finish check state first
                         self.update_check_in_progress = false;
@@ -2797,7 +2888,10 @@ impl App for Tabular {
                     // Regular query tabs: Use consolidated rendering
                     let mut rendered_diagram = false;
                     let mut rendered_http = false;
+                    let mut rendered_redis_browser = false;
                     let mut diagram_to_save = None;
+                    let mut redis_action = None;
+                    let mut redis_connection_id = None;
 
                     // Check for HTTP client tab
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
@@ -2807,6 +2901,16 @@ impl App for Tabular {
                             crate::http_client::render_http_client(ui, state);
                         }
                         rendered_http = true;
+                    }
+
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                        && tab.redis_browser_state.is_some()
+                    {
+                        redis_connection_id = tab.connection_id;
+                        if let Some(state) = &mut tab.redis_browser_state {
+                            redis_action = crate::redis_browser::render_redis_browser(ui, state);
+                        }
+                        rendered_redis_browser = true;
                     }
                     
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
@@ -2825,15 +2929,81 @@ impl App for Tabular {
                              let db = db_name_opt.unwrap_or_else(|| "default".to_string());
                              self.save_diagram(cid, &db, &state);
                          }
+
+                    if let Some(conn_id) = redis_connection_id
+                        && let Some(action) = redis_action
+                    {
+                        match action {
+                            crate::redis_browser::RedisBrowserAction::Refresh => {
+                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                    tab.redis_browser_state = Some(crate::driver_redis::redis_browser_loading_state(
+                                        "Refreshing Redis browser in background...",
+                                    ));
+                                }
+                                if self.fetching_redis_browser.insert(conn_id)
+                                    && let Some(sender) = &self.background_sender
+                                {
+                                    let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
+                                        connection_id: conn_id,
+                                    });
+                                }
+                            }
+                            crate::redis_browser::RedisBrowserAction::SearchServer { search_text } => {
+                                let database_name = self
+                                    .query_tabs
+                                    .get(self.active_tab_index)
+                                    .and_then(|tab| tab.redis_browser_state.as_ref())
+                                    .map(|state| state.keyspace_label.clone())
+                                    .unwrap_or_else(|| crate::driver_redis::REDIS_CLUSTER_KEYSPACE.to_string());
+                                if let Some(sender) = &self.background_sender {
+                                    let _ = sender.send(models::enums::BackgroundTask::SearchRedisBrowserKeys {
+                                        connection_id: conn_id,
+                                        database_name,
+                                        search_text,
+                                    });
+                                }
+                            }
+                            crate::redis_browser::RedisBrowserAction::SelectKey { key_name, key_type } => {
+                                let database_name = self
+                                    .query_tabs
+                                    .get(self.active_tab_index)
+                                    .and_then(|tab| tab.redis_browser_state.as_ref())
+                                    .map(|state| state.keyspace_label.clone())
+                                    .unwrap_or_else(|| crate::driver_redis::REDIS_CLUSTER_KEYSPACE.to_string());
+                                let preview = crate::driver_redis::fetch_redis_browser_preview(
+                                    self,
+                                    conn_id,
+                                    &database_name,
+                                    &key_name,
+                                    &key_type,
+                                );
+                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                                    && let Some(state) = &mut tab.redis_browser_state {
+                                    state.selected_key = Some(key_name);
+                                    match preview {
+                                        Ok(preview) => {
+                                            state.selected_key_type = Some(preview.key_type.clone());
+                                            state.preview = Some(preview);
+                                            state.last_error = None;
+                                        }
+                                        Err(error) => {
+                                            state.selected_key_type = Some(key_type);
+                                            state.last_error = Some(error);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     
-                    if !rendered_diagram && !rendered_http {
+                    if !rendered_diagram && !rendered_http && !rendered_redis_browser {
                         self.render_query_editor_with_split(ui, "regular_query");
                     }
                     
                     // Floating tab buttons at bottom-right corner (only show if executed or has message, and not HTTP tab)
                     let executed = self.query_tabs.get(self.active_tab_index).map(|t| t.has_executed_query).unwrap_or(false);
                     let has_headers = !self.current_table_headers.is_empty();
-                    if !rendered_http && (executed || has_headers || !self.query_message.is_empty()) {
+                    if !rendered_http && !rendered_redis_browser && (executed || has_headers || !self.query_message.is_empty()) {
                         let margin = 6.0;
                         let button_height = 18.0; // Match Clear selection button height
                         let button_spacing = 4.0;
