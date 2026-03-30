@@ -92,11 +92,27 @@ pub(crate) fn get_databases_from_cache(
 }
 
 pub(crate) fn build_redis_structure_from_cache(
-    tabular: &mut window_egui::Tabular,
+    _tabular: &mut window_egui::Tabular,
     connection_id: i64,
     node: &mut models::structs::TreeNode,
     databases: &[String],
 ) {
+    if databases.len() == 1 && databases[0] == crate::driver_redis::REDIS_CLUSTER_KEYSPACE {
+        let mut cluster_node = models::structs::TreeNode::new(
+            "Keys".to_string(),
+            models::enums::NodeType::Database,
+        );
+        cluster_node.connection_id = Some(connection_id);
+        cluster_node.database_name = Some(crate::driver_redis::REDIS_CLUSTER_KEYSPACE.to_string());
+        cluster_node.is_loaded = false;
+        cluster_node.children.push(models::structs::TreeNode::new(
+            "Loading keys...".to_string(),
+            models::enums::NodeType::Table,
+        ));
+        node.children = vec![cluster_node];
+        return;
+    }
+
     let mut main_children = Vec::new();
 
     // Create databases folder for Redis
@@ -117,17 +133,14 @@ pub(crate) fn build_redis_structure_from_cache(
             db_node.database_name = Some(db_name.clone());
             db_node.is_loaded = false; // Keys will be loaded when clicked
 
-            // Check if this database has keys by looking for the marker
-            let has_keys =
-                driver_redis::check_redis_database_has_keys(tabular, connection_id, db_name);
-            if has_keys {
-                // Add a placeholder for keys that will be loaded on expansion
-                let loading_node = models::structs::TreeNode::new(
-                    "Loading keys...".to_string(),
-                    models::enums::NodeType::Table,
-                );
-                db_node.children.push(loading_node);
-            }
+            // Always add a placeholder so the node is expandable and triggers a
+            // background key-fetch on click. This also handles Redis Cluster, where
+            // the _has_keys marker is never written by this path.
+            let loading_node = models::structs::TreeNode::new(
+                "Loading keys...".to_string(),
+                models::enums::NodeType::Table,
+            );
+            db_node.children.push(loading_node);
 
             databases_folder.children.push(db_node);
         }

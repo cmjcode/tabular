@@ -880,46 +880,51 @@ impl super::Tabular {
 
                         if is_redis_key {
                             if let Some(k_type) = key_type {
-                                // This is a Redis key - create a query tab with appropriate Redis command
-                                let redis_command = match k_type.to_lowercase().as_str() {
-                                    "string" => format!("GET {}", table_name),
-                                    "hash" => format!("HGETALL {}", table_name),
-                                    "list" => format!("LRANGE {} 0 -1", table_name),
-                                    "set" => format!("SMEMBERS {}", table_name),
-                                    "zset" | "sorted_set" => {
-                                        format!("ZRANGE {} 0 -1 WITHSCORES", table_name)
-                                    }
-                                    "stream" => format!("XRANGE {} - +", table_name),
-                                    _ => format!("TYPE {}", table_name), // Fallback to show type
-                                };
+                                let keyspace = database_name.clone().unwrap_or_default();
+                                let preview_result = crate::driver_redis::fetch_redis_key_pretty_json(
+                                    self,
+                                    connection_id,
+                                    &keyspace,
+                                    &table_name,
+                                    &k_type,
+                                );
 
                                 let tab_title = format!("Redis Key: {} ({})", table_name, k_type);
+                                let tab_content = match preview_result {
+                                    Ok(pretty_json) => pretty_json,
+                                    Err(error) => serde_json::to_string_pretty(&serde_json::json!({
+                                        "key": table_name,
+                                        "type": k_type,
+                                        "database": keyspace,
+                                        "error": error,
+                                    }))
+                                    .unwrap_or_else(|_| "{\n  \"error\": \"Failed to build Redis preview\"\n}".to_string()),
+                                };
+
                                 editor::create_new_tab_with_connection_and_database(
                                     self,
                                     tab_title,
-                                    redis_command.clone(),
+                                    tab_content,
                                     Some(connection_id),
                                     database_name.clone(),
                                 );
 
-                                // Set current connection ID and database for Redis query execution
-                                self.current_connection_id = Some(connection_id);
-
-                                // Auto-execute the Redis query and display results in bottom
-                                if let Some((headers, data)) =
-                                    connection::execute_query_with_connection(
-                                        self,
-                                        connection_id,
-                                        redis_command,
-                                    )
-                                {
-                                    self.current_table_headers = headers;
-                                    self.current_table_data = data.clone();
-                                    self.all_table_data = data;
-                                    self.current_table_name = format!("Redis Key: {}", table_name);
-                                    self.total_rows = self.all_table_data.len();
-                                    self.current_page = 0;
+                                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                    active_tab.file_path = Some(crate::driver_redis::fetch_redis_key_preview_filename(&table_name));
+                                    active_tab.query_message = format!("Loaded Redis key '{}' as JSON preview", table_name);
+                                    active_tab.query_message_is_error = false;
                                 }
+
+                                self.current_connection_id = Some(connection_id);
+                                self.query_message = format!("Loaded Redis key '{}' as JSON preview", table_name);
+                                self.query_message_is_error = false;
+                                self.current_table_headers.clear();
+                                self.current_table_data.clear();
+                                self.all_table_data.clear();
+                                self.current_table_name.clear();
+                                self.total_rows = 0;
+                                self.current_page = 0;
+                                self.is_table_browse_mode = false;
                             }
                         } else {
                             // This is a Redis folder/type - create a query tab for scanning keys

@@ -1002,24 +1002,34 @@ impl super::Tabular {
         // Ambil daftar database Redis dari cache
         if let Some(cached_databases) = cache_data::get_databases_from_cache(self, connection_id) {
             for db_name in cached_databases {
-                if db_name.starts_with("db") {
-                    let mut db_node = models::structs::TreeNode::new(
-                        db_name.clone(),
-                        models::enums::NodeType::Database,
-                    );
-                    db_node.connection_id = Some(connection_id);
-                    db_node.database_name = Some(db_name.clone());
-                    db_node.is_loaded = false;
-
-                    // Tambahkan node child untuk key, akan di-load saat node db di-expand
-                    let loading_keys_node = models::structs::TreeNode::new(
-                        "Loading keys...".to_string(),
-                        models::enums::NodeType::Table,
-                    );
-                    db_node.children.push(loading_keys_node);
-
-                    databases_folder.children.push(db_node);
+                if !db_name.starts_with("db")
+                    && db_name != crate::driver_redis::REDIS_CLUSTER_KEYSPACE
+                {
+                    continue;
                 }
+
+                let display_name = if db_name == crate::driver_redis::REDIS_CLUSTER_KEYSPACE {
+                    "Keys".to_string()
+                } else {
+                    db_name.clone()
+                };
+
+                let mut db_node = models::structs::TreeNode::new(
+                    display_name,
+                    models::enums::NodeType::Database,
+                );
+                db_node.connection_id = Some(connection_id);
+                db_node.database_name = Some(db_name.clone());
+                db_node.is_loaded = false;
+
+                // Tambahkan node child untuk key, akan di-load saat node di-expand
+                let loading_keys_node = models::structs::TreeNode::new(
+                    "Loading keys...".to_string(),
+                    models::enums::NodeType::Table,
+                );
+                db_node.children.push(loading_keys_node);
+
+                databases_folder.children.push(db_node);
             }
             databases_folder.is_loaded = true;
         }
@@ -1053,139 +1063,60 @@ impl super::Tabular {
         database_name: &str,
         db_node: &mut models::structs::TreeNode,
     ) {
-        // Clear existing children and mark as loading
-        db_node.children.clear();
-
-        // Extract database number from database_name (e.g., "db0" -> 0)
-        let db_number = if let Some(suffix) = database_name.strip_prefix("db") {
-            suffix.parse::<u8>().unwrap_or(0)
-        } else {
-            0
-        };
-
-        // Get connection pool and fetch keys
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let keys_result = rt.block_on(async {
-            if let Some(pool) = connection::get_or_create_connection_pool(self, connection_id).await
-            {
-                if let models::enums::DatabasePool::Redis(redis_manager) = pool {
-                    let mut conn = redis_manager.as_ref().clone();
-
-                    // Select the specific database
-                    if let Err(e) = redis::cmd("SELECT")
-                        .arg(db_number)
-                        .query_async::<()>(&mut conn)
-                        .await
-                    {
-                        debug!("❌ Failed to select database {}: {}", db_number, e);
-                        return Vec::new();
-                    }
-
-                    // Use SCAN for safe key enumeration (better than KEYS * in production)
-                    let mut cursor = 0u64;
-                    let mut all_keys = Vec::new();
-                    let max_keys = 100; // Limit to first 100 keys to avoid overwhelming UI
-
-                    loop {
-                        match redis::cmd("SCAN")
-                            .arg(cursor)
-                            .arg("COUNT")
-                            .arg(10)
-                            .query_async::<(u64, Vec<String>)>(&mut conn)
-                            .await
-                        {
-                            Ok((next_cursor, keys)) => {
-                                for key in keys {
-                                    if all_keys.len() >= max_keys {
-                                        break;
-                                    }
-
-                                    // Get the type of each key
-                                    if let Ok(key_type) = redis::cmd("TYPE")
-                                        .arg(&key)
-                                        .query_async::<String>(&mut conn)
-                                        .await
-                                    {
-                                        all_keys.push((key, key_type));
-                                    }
-                                }
-
-                                cursor = next_cursor;
-                                if cursor == 0 || all_keys.len() >= max_keys {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                debug!("❌ SCAN command failed: {}", e);
-                                break;
-                            }
-                        }
-                    }
-
-                    debug!(
-                        "✅ Found {} keys in database {}",
-                        all_keys.len(),
-                        database_name
-                    );
-                    all_keys
-                } else {
-                    debug!("❌ Connection pool is not Redis type");
-                    Vec::new()
-                }
-            } else {
-                debug!("❌ Failed to get Redis connection pool");
-                Vec::new()
-            }
-        });
-
-        // Group keys by type
-        let mut keys_by_type: std::collections::HashMap<String, Vec<(String, String)>> =
-            std::collections::HashMap::new();
-        for (key, key_type) in keys_result {
-            keys_by_type
-                .entry(key_type.clone())
-                .or_default()
-                .push((key, key_type));
-        }
-
-        // Create folder structure for each Redis data type
-        for (data_type, keys) in keys_by_type {
-            let folder_name = match data_type.as_str() {
-                "string" => "Strings",
-                "hash" => "Hashes",
-                "list" => "Lists",
-                "set" => "Sets",
-                "zset" => "Sorted Sets",
-                "stream" => "Streams",
-                _ => &data_type,
-            };
-
-            let mut type_folder = models::structs::TreeNode::new(
-                format!("{} ({})", folder_name, keys.len()),
-                models::enums::NodeType::TablesFolder,
+        // If already fetching, do nothing — the background result will update the tree
+        if self.fetching_redis_keys.contains(&(connection_id, database_name.to_string())) {
+            log::debug!(
+                "[redis_keys] fetch already in progress for connection {} keyspace {}",
+                connection_id,
+                database_name
             );
-            type_folder.connection_id = Some(connection_id);
-            type_folder.database_name = Some(database_name.to_string());
-            type_folder.is_expanded = false;
-            type_folder.is_loaded = true;
-
-            // Add keys of this type to the folder
-            for (key, _key_type) in keys {
-                let mut key_node =
-                    models::structs::TreeNode::new(key.clone(), models::enums::NodeType::Table);
-                key_node.connection_id = Some(connection_id);
-                key_node.database_name = Some(database_name.to_string());
-                type_folder.children.push(key_node);
-            }
-
-            db_node.children.push(type_folder);
+            return;
         }
 
-        db_node.is_loaded = true;
-        debug!(
-            "✅ Database node loaded with {} type folders",
-            db_node.children.len()
+        log::info!(
+            "[redis_keys] queueing key fetch for connection {} keyspace {} node '{}'",
+            connection_id,
+            database_name,
+            db_node.name
         );
+
+        // Mark as fetching and show a loading placeholder
+        self.fetching_redis_keys.insert((connection_id, database_name.to_string()));
+        db_node.children.clear();
+        let loading_node = models::structs::TreeNode::new(
+            "Loading keys...".to_string(),
+            models::enums::NodeType::Table,
+        );
+        db_node.children.push(loading_node);
+        // Keep is_loaded = false so the tree knows it is still pending
+
+        // Dispatch background task — ensure connection pool is available first.
+        // After creation, also copy the pool into shared_connection_pools so the
+        // background FetchRedisKeys task can find it there.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        if let Some(pool) = rt.block_on(connection::get_or_create_connection_pool(self, connection_id)) {
+            if let Ok(mut shared) = self.shared_connection_pools.lock() {
+                shared.entry(connection_id).or_insert(pool);
+                log::debug!(
+                    "[redis_keys] shared pool ready for connection {} keyspace {}",
+                    connection_id,
+                    database_name
+                );
+            }
+        } else {
+            log::warn!(
+                "[redis_keys] no pool available when queueing fetch for connection {} keyspace {}",
+                connection_id,
+                database_name
+            );
+        }
+
+        if let Some(sender) = &self.background_sender {
+            let _ = sender.send(models::enums::BackgroundTask::FetchRedisKeys {
+                connection_id,
+                database_name: database_name.to_string(),
+            });
+        }
     }
 
     pub fn get_databases_cached(&mut self, connection_id: i64) -> Vec<String> {

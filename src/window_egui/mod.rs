@@ -92,6 +92,8 @@ pub struct Tabular {
     pub next_query_job_id: u64,
     // Background refresh status tracking
     pub refreshing_connections: std::collections::HashSet<i64>,
+    // Track Redis key fetches in progress (connection_id, database_name)
+    pub fetching_redis_keys: std::collections::HashSet<(i64, String)>,
     // Pending expansion state restore after refresh
     pub pending_expansion_restore:
         std::collections::HashMap<i64, std::collections::HashMap<String, bool>>,

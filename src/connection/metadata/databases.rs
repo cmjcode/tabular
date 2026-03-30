@@ -90,6 +90,24 @@ pub(crate) fn fetch_databases_from_connection_blocking(
             }
             models::enums::DatabasePool::Redis(redis_manager) => {
                 let mut conn = redis_manager.as_ref().clone();
+
+                // Detect cluster mode — clusters have only a single keyspace.
+                let is_cluster = match redis::cmd("INFO")
+                    .arg("server")
+                    .query_async::<String>(&mut conn)
+                    .await
+                {
+                    Ok(info) => info
+                        .lines()
+                        .any(|l| l.trim().eq_ignore_ascii_case("redis_mode:cluster")),
+                    Err(_) => false,
+                };
+
+                if is_cluster {
+                    debug!("🔀 Redis Cluster detected — single keyspace");
+                    return Some(vec![crate::driver_redis::REDIS_CLUSTER_KEYSPACE.to_string()]);
+                }
+
                 let max_databases = match redis::cmd("CONFIG")
                     .arg("GET")
                     .arg("databases")
@@ -245,6 +263,24 @@ pub(crate) async fn fetch_databases_from_connection_async(
         }
         models::enums::DatabasePool::Redis(redis_manager) => {
             let mut conn = redis_manager.as_ref().clone();
+
+            // Detect cluster mode.
+            let is_cluster = match redis::cmd("INFO")
+                .arg("server")
+                .query_async::<String>(&mut conn)
+                .await
+            {
+                Ok(info) => info
+                    .lines()
+                    .any(|l| l.trim().eq_ignore_ascii_case("redis_mode:cluster")),
+                Err(_) => false,
+            };
+
+            if is_cluster {
+                debug!("🔀 Redis Cluster detected — single keyspace");
+                return Some(vec![crate::driver_redis::REDIS_CLUSTER_KEYSPACE.to_string()]);
+            }
+
             let max_databases = match redis::cmd("CONFIG")
                 .arg("GET")
                 .arg("databases")

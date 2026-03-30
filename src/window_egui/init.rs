@@ -5,6 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use log::{debug, error};
 use crate::models;
 use crate::connection;
+use crate::driver_redis;
 use crate::{sidebar_database, sidebar_query, editor};
 use crate::editor_buffer::EditorBuffer;
 use super::PrefTab;
@@ -229,6 +230,7 @@ impl super::Tabular {
             pending_paginated_jobs: std::collections::HashSet::new(),
             next_query_job_id: 1,
             refreshing_connections: std::collections::HashSet::new(),
+            fetching_redis_keys: std::collections::HashSet::new(),
             fetching_databases: std::collections::HashSet::new(),
             pending_expansion_restore: std::collections::HashMap::new(),
             pending_auto_load: std::collections::HashSet::new(),
@@ -544,6 +546,164 @@ impl super::Tabular {
                                     },
                                 );
                             }
+                        }
+                    }
+                    models::enums::BackgroundTask::FetchRedisKeys { connection_id, database_name } => {
+                        if let Ok(rt) = tokio::runtime::Runtime::new() {
+                            let keys = rt.block_on(async {
+                                if database_name == driver_redis::REDIS_CLUSTER_KEYSPACE {
+                                    let redis_manager = {
+                                        let pools = shared_pools.lock().ok()?;
+                                        if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
+                                            Some(mgr.as_ref().clone())
+                                        } else {
+                                            None
+                                        }
+                                    }?;
+
+                                    let cache_pool_ref = cache_pool.as_ref()?;
+                                    let connection = driver_redis::load_redis_connection_config(
+                                        cache_pool_ref.as_ref(),
+                                        connection_id,
+                                    )
+                                    .await?;
+
+                                    return Some(
+                                        driver_redis::fetch_cluster_keys_with_types(
+                                            &connection,
+                                            &redis_manager,
+                                            500,
+                                        )
+                                        .await,
+                                    );
+                                }
+
+                                log::info!(
+                                    "[redis_keys] background fetch start conn={} keyspace={}",
+                                    connection_id,
+                                    database_name
+                                );
+                                let db_number = database_name
+                                    .strip_prefix("db")
+                                    .and_then(|s| s.parse::<u8>().ok());
+
+                                if db_number.is_none() {
+                                    log::debug!(
+                                        "[redis_keys] keyspace {} uses non-SELECT scan path",
+                                        database_name
+                                    );
+                                }
+
+                                // Try to get the Redis connection from shared pools
+                                let redis_manager = {
+                                    let pools = shared_pools.lock().ok()?;
+                                    if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
+                                        Some(mgr.as_ref().clone())
+                                    } else {
+                                        None
+                                    }
+                                }?;
+
+                                let mut conn = redis_manager;
+
+                                if let Some(db_number) = db_number {
+                                    // Standard Redis logical DB.
+                                    if let Err(error) = redis::cmd("SELECT")
+                                        .arg(db_number)
+                                        .query_async::<()>(&mut conn)
+                                        .await
+                                    {
+                                        log::warn!(
+                                            "[redis_keys] SELECT {} failed for conn={} keyspace={}: {}",
+                                            db_number,
+                                            connection_id,
+                                            database_name,
+                                            error
+                                        );
+                                    }
+                                }
+
+                                let mut all_keys: Vec<(String, String)> = Vec::new();
+                                let max_keys = 500usize;
+                                let mut cursor = 0u64;
+
+                                loop {
+                                    match redis::cmd("SCAN")
+                                        .arg(cursor)
+                                        .arg("COUNT")
+                                        .arg(100)
+                                        .query_async::<(u64, Vec<String>)>(&mut conn)
+                                        .await
+                                    {
+                                        Ok((next_cursor, keys)) => {
+                                            log::debug!(
+                                                "[redis_keys] SCAN returned {} keys for conn={} keyspace={} cursor={} next_cursor={}",
+                                                keys.len(),
+                                                connection_id,
+                                                database_name,
+                                                cursor,
+                                                next_cursor
+                                            );
+                                            // Pipeline TYPE commands to avoid 1 RTT per key
+                                            let mut pipe = redis::pipe();
+                                            for key in &keys {
+                                                pipe.cmd("TYPE").arg(key);
+                                            }
+                                            let types_result: Result<Vec<String>, _> =
+                                                pipe.query_async(&mut conn).await;
+                                            let types = match types_result {
+                                                Ok(types) => types,
+                                                Err(error) => {
+                                                    log::warn!(
+                                                        "[redis_keys] TYPE pipeline failed for conn={} keyspace={}: {}",
+                                                        connection_id,
+                                                        database_name,
+                                                        error
+                                                    );
+                                                    Vec::new()
+                                                }
+                                            };
+
+                                            for (key, key_type) in keys.into_iter().zip(types.into_iter()) {
+                                                if all_keys.len() >= max_keys {
+                                                    break;
+                                                }
+                                                all_keys.push((key, key_type));
+                                            }
+
+                                            cursor = next_cursor;
+                                            if cursor == 0 || all_keys.len() >= max_keys {
+                                                break;
+                                            }
+                                        }
+                                        Err(error) => {
+                                            log::warn!(
+                                                "[redis_keys] SCAN failed for conn={} keyspace={} cursor={}: {}",
+                                                connection_id,
+                                                database_name,
+                                                cursor,
+                                                error
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                log::info!(
+                                    "[redis_keys] background fetch done conn={} keyspace={} total_keys={}",
+                                    connection_id,
+                                    database_name,
+                                    all_keys.len()
+                                );
+
+                                Some(all_keys)
+                            });
+
+                            let _ = result_sender.send(models::enums::BackgroundResult::RedisKeysFetched {
+                                connection_id,
+                                database_name,
+                                keys: keys.unwrap_or_default(),
+                            });
                         }
                     }
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {

@@ -561,6 +561,10 @@ impl super::Tabular {
             let rt = tokio::runtime::Runtime::new().unwrap();
 
             rt.block_on(async {
+                log::info!(
+                    "[clear_connection_cache] clearing sqlite cache for connection {}",
+                    connection_id
+                );
                 // Clear all cache tables for this connection
                 let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
                     .bind(connection_id)
@@ -587,6 +591,11 @@ impl super::Tabular {
                     .bind(connection_id)
                     .execute(pool_clone.as_ref())
                     .await;
+
+                log::info!(
+                    "[clear_connection_cache] finished clearing sqlite cache for connection {}",
+                    connection_id
+                );
             });
         }
     }

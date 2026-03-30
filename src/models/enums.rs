@@ -80,6 +80,11 @@ pub enum BackgroundTask {
     FetchDatabases {
         connection_id: i64,
     },
+    // Fetch Redis keys for a specific database in background
+    FetchRedisKeys {
+        connection_id: i64,
+        database_name: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +110,12 @@ pub enum BackgroundResult {
     DatabasesFetched {
         connection_id: i64,
         databases: Vec<String>,
+    },
+    // Result from background Redis key fetch
+    RedisKeysFetched {
+        connection_id: i64,
+        database_name: String,
+        keys: Vec<(String, String)>, // (key_name, key_type)
     },
 }
 

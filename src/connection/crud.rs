@@ -1,5 +1,5 @@
 use crate::{models, modules, ssh_tunnel, window_egui};
-use log::debug;
+use log::{debug, info, warn};
 use mongodb::Client as MongoClient;
 use redis::Client;
 use sqlx::{
@@ -353,7 +353,10 @@ pub(crate) async fn refresh_connection_background_async(
     connection_id: i64,
     db_pool: &Option<Arc<SqlitePool>>,
 ) -> bool {
-    debug!("Refreshing connection with ID: {}", connection_id);
+    info!(
+        "[refresh_connection] starting background refresh for connection {}",
+        connection_id
+    );
 
     if let Some(cache_pool_arc) = db_pool {
         let connection_result = sqlx::query(
@@ -435,27 +438,85 @@ pub(crate) async fn refresh_connection_background_async(
                 replication_master_id: None,
             };
 
-            // Clear all caches for this connection
-            let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
+            info!(
+                "[refresh_connection] clearing SQLite cache rows for connection {} before reload",
+                connection_id
+            );
+            match sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(cache_pool_arc.as_ref())
-                .await;
-            let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
+                .await
+            {
+                Ok(result) => info!(
+                    "[refresh_connection] database_cache cleared: {} rows",
+                    result.rows_affected()
+                ),
+                Err(error) => warn!(
+                    "[refresh_connection] failed clearing database_cache for {}: {}",
+                    connection_id,
+                    error
+                ),
+            }
+            match sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(cache_pool_arc.as_ref())
-                .await;
-            let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
+                .await
+            {
+                Ok(result) => info!(
+                    "[refresh_connection] table_cache cleared: {} rows",
+                    result.rows_affected()
+                ),
+                Err(error) => warn!(
+                    "[refresh_connection] failed clearing table_cache for {}: {}",
+                    connection_id,
+                    error
+                ),
+            }
+            match sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(cache_pool_arc.as_ref())
-                .await;
-            let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
+                .await
+            {
+                Ok(result) => info!(
+                    "[refresh_connection] column_cache cleared: {} rows",
+                    result.rows_affected()
+                ),
+                Err(error) => warn!(
+                    "[refresh_connection] failed clearing column_cache for {}: {}",
+                    connection_id,
+                    error
+                ),
+            }
+            match sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(cache_pool_arc.as_ref())
-                .await;
-            let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
+                .await
+            {
+                Ok(result) => info!(
+                    "[refresh_connection] row_cache cleared: {} rows",
+                    result.rows_affected()
+                ),
+                Err(error) => warn!(
+                    "[refresh_connection] failed clearing row_cache for {}: {}",
+                    connection_id,
+                    error
+                ),
+            }
+            match sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(cache_pool_arc.as_ref())
-                .await;
+                .await
+            {
+                Ok(result) => info!(
+                    "[refresh_connection] index_cache cleared: {} rows",
+                    result.rows_affected()
+                ),
+                Err(error) => warn!(
+                    "[refresh_connection] failed clearing index_cache for {}: {}",
+                    connection_id,
+                    error
+                ),
+            }
 
             match tokio::time::timeout(
                 std::time::Duration::from_secs(30),
@@ -464,21 +525,53 @@ pub(crate) async fn refresh_connection_background_async(
             .await
             {
                 Ok(Some(new_pool)) => {
-                    fetch_and_cache_all_data(
+                    info!(
+                        "[refresh_connection] database pool recreated for connection {} ({:?})",
+                        connection_id,
+                        connection.connection_type
+                    );
+                    let fetch_result = fetch_and_cache_all_data(
                         connection_id,
                         &connection,
                         &new_pool,
                         cache_pool_arc.as_ref(),
                     )
-                    .await
+                    .await;
+                    info!(
+                        "[refresh_connection] cache reload finished for connection {} => {}",
+                        connection_id,
+                        fetch_result
+                    );
+                    fetch_result
                 }
-                Ok(None) => false,
-                Err(_) => false,
+                Ok(None) => {
+                    warn!(
+                        "[refresh_connection] failed to recreate database pool for connection {}",
+                        connection_id
+                    );
+                    false
+                }
+                Err(error) => {
+                    warn!(
+                        "[refresh_connection] timed out recreating pool for connection {}: {}",
+                        connection_id,
+                        error
+                    );
+                    false
+                }
             }
         } else {
+            warn!(
+                "[refresh_connection] connection {} not found in sqlite metadata store",
+                connection_id
+            );
             false
         }
     } else {
+        warn!(
+            "[refresh_connection] sqlite cache pool unavailable for connection {}",
+            connection_id
+        );
         false
     }
 }

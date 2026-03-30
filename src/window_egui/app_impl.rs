@@ -1486,6 +1486,98 @@ impl App for Tabular {
                         // Refresh UI
                         ctx.request_repaint();
                     }
+                    models::enums::BackgroundResult::RedisKeysFetched {
+                        connection_id,
+                        database_name,
+                        keys,
+                    } => {
+                        log::info!(
+                            "[redis_keys] UI received fetch result conn={} keyspace={} keys={}",
+                            connection_id,
+                            database_name,
+                            keys.len()
+                        );
+                        debug!(
+                            "✅ Redis keys fetched for db '{}': {} keys",
+                            database_name,
+                            keys.len()
+                        );
+
+                        // Remove from in-progress set
+                        self.fetching_redis_keys.remove(&(connection_id, database_name.clone()));
+
+                        // Group keys by type
+                        let mut keys_by_type: std::collections::HashMap<String, Vec<String>> =
+                            std::collections::HashMap::new();
+                        for (key, key_type) in keys {
+                            keys_by_type.entry(key_type).or_default().push(key);
+                        }
+                        let no_keys_found = keys_by_type.is_empty();
+
+                        // Locate the database node in the tree and populate it
+                        for root in &mut self.items_tree {
+                            if let Some(db_node) = crate::window_egui::Tabular::find_redis_database_node(
+                                root,
+                                connection_id,
+                                &Some(database_name.clone()),
+                            ) {
+                                log::debug!(
+                                    "[redis_keys] found UI node '{}' for conn={} keyspace={}",
+                                    db_node.name,
+                                    connection_id,
+                                    database_name
+                                );
+                                db_node.children.clear();
+
+                                let mut sorted_types: Vec<_> = keys_by_type.into_iter().collect();
+                                sorted_types.sort_by(|a, b| a.0.cmp(&b.0));
+
+                                for (data_type, type_keys) in sorted_types {
+                                    let folder_name = match data_type.as_str() {
+                                        "string" => "Strings",
+                                        "hash" => "Hashes",
+                                        "list" => "Lists",
+                                        "set" => "Sets",
+                                        "zset" => "Sorted Sets",
+                                        "stream" => "Streams",
+                                        other => other,
+                                    };
+                                    let mut type_folder = models::structs::TreeNode::new(
+                                        format!("{} ({})", folder_name, type_keys.len()),
+                                        models::enums::NodeType::TablesFolder,
+                                    );
+                                    type_folder.connection_id = Some(connection_id);
+                                    type_folder.database_name = Some(database_name.clone());
+                                    type_folder.is_expanded = false;
+                                    type_folder.is_loaded = true;
+
+                                    for key in type_keys {
+                                        let mut key_node = models::structs::TreeNode::new(
+                                            key,
+                                            models::enums::NodeType::Table,
+                                        );
+                                        key_node.connection_id = Some(connection_id);
+                                        key_node.database_name = Some(database_name.clone());
+                                        type_folder.children.push(key_node);
+                                    }
+                                    db_node.children.push(type_folder);
+                                }
+
+                                db_node.is_loaded = true;
+                                break;
+                            }
+                        }
+
+                        if no_keys_found {
+                            log::warn!(
+                                "[redis_keys] no keys or no types available for conn={} keyspace={}",
+                                connection_id,
+                                database_name
+                            );
+                        }
+
+                        ctx.request_repaint();
+                    }
                     models::enums::BackgroundResult::UpdateCheckComplete { result } => {
                         // Finish check state first
                         self.update_check_in_progress = false;
