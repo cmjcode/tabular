@@ -20,19 +20,44 @@ Tabular is a lightweight, native database client built with the `eframe`/`egui` 
 - Result grid with copy cell / row / full result set
 - Export to CSV & XLSX
 - Rich value formatting (dates, decimals, JSON, BSON, HEX)
+- Inline cell editing with date/time picker support
 - Connection caching & quick reconnect
+- **Connection folder organization** — group connections into folders with drag‑and‑drop reordering
 - Self‑update (GitHub Releases) with semantic version check
 - Configurable data directory (env `TABULAR_DATA_DIR`)
 - Native file dialogs (`rfd`)
 - Cross‑platform theming via egui
 - Sandboxing & notarization ready for macOS
 
-### Query Editor (New, In Progress)
+### AI Assistant (New in v0.6)
+Context‑aware AI assistant integrated directly into the query editor. Press **Cmd+Shift+A** (macOS) / **Ctrl+Shift+A** (Linux/Windows) to toggle the panel.
+- Supported providers: **OpenAI (ChatGPT)**, **Anthropic (Claude)**, **Groq**, **GitHub Copilot/Models**, and **Custom OpenAI‑compatible** endpoints
+- Automatically injects active schema (tables + columns) as context
+- Configurable model, API key, and base URL per provider — all stored in Preferences → ✨ AI Assistant
+
+### Redis Browser (New in v0.7)
+Dedicated visual key explorer for Redis connections.
+- **Auto‑detects** standalone vs. cluster mode on connect
+- Paginated key list (up to 500 keys) with background async loading
+- **Key type filter**: String, Hash, List, Set, Sorted Set, Stream, Other
+- Full‑text key search across the loaded keyspace
+- Preview panel for key values (TTL label, size label, type‑aware display)
+- Cluster support: scans all master nodes automatically
+
+### Built‑in HTTP Client (New in v0.5)
+Lightweight REST/HTTP testing panel available as a tab alongside SQL results.
+- GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS methods
+- Auth: Bearer token, Basic Auth, API Key header
+- Request body: JSON, form‑data, raw text
+- Syntax‑highlighted response viewer (JSON, plain)
+- Per‑connection state persisted to `~/.tabular/http_state/`
+
+### Query Editor (In Progress)
 The legacy `egui::TextEdit` editor is being replaced with a custom widget backed by a rope buffer. Current capabilities:
 - Multi‑caret editing
 - Per‑line syntax highlighting cache (SQL focus first)
-- Basic scroll‑to‑caret
-- Undo/Redo
+- Background / pointer highlight, colored multi‑result tabs
+- Scroll‑to‑caret, Undo/Redo
 - Multi‑line/column selection
 
 Planned next: full autocomplete integration, diff‑based edits, revision tracking, and removal of the legacy path after feature parity.
@@ -168,17 +193,24 @@ Contents of the data directory:
 ### Project Layout (selected)
 ```
 src/
-    main.rs              # Entry point
-    window_egui.rs       # UI / egui integration
-    editor.rs            # Logika editor query
-    editor_autocomplete.rs
-    sidebar_*.rs         # Panel samping (database, history, queries)
-    driver_*.rs          # Abstraksi driver database
-    export.rs            # Ekspor CSV / XLSX
-    self_update.rs       # Cek & aplikasi update
-    config.rs            # Preferensi & direktori data
-    models/              # Struktur data & enum
-    query_ast/           # Lapisan AST kueri (eksperimental, default aktif)
+    main.rs                   # Entry point
+    window_egui/              # UI / egui integration (split into modules)
+    editor.rs                 # Query editor logic
+    editor_autocomplete.rs    # Legacy autocomplete
+    editor_autocomplete_new.rs# New autocomplete engine
+    editor_buffer.rs          # Rope-based editor buffer
+    editor_selection.rs       # Multi-caret / selection logic
+    ai_assistant.rs           # AI Assistant (schema context + provider requests)
+    http_client.rs            # Built-in HTTP client panel
+    redis_browser.rs          # Redis visual key browser
+    sidebar_*.rs              # Side panels (database tree, history, queries)
+    driver_*.rs               # Database driver abstractions
+    spreadsheet.rs            # Inline cell editing / data grid
+    export.rs                 # Export to CSV / XLSX
+    self_update.rs            # Self-update check & apply
+    config.rs                 # Preferences & data directory
+    models/                   # Data structures & enums
+    query_ast/                # Agnostic AST query layer
 ```
 
 ### Quick Start (Dev)
@@ -221,7 +253,7 @@ RUST_LOG=info cargo run
 | Logging        | log, env_logger, dotenv |
 | Utilities      | dirs, regex, colorful |
 
-See `Cargo.toml` for exact versions (current package version: 0.5.18).
+See `Cargo.toml` for exact versions (current package version: **0.7.0**).
 
 ## 9. Contributing
 Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested workflow:
@@ -239,13 +271,22 @@ Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested w
 | UI freeze on long queries       | Use server pagination; streaming improvements WIP  |
 
 ## 11. Roadmap (High level)
+
+### Recently Shipped ✅
+- AI Assistant with multi‑provider support (v0.6)
+- Redis visual key browser with cluster support (v0.7)
+- Built‑in HTTP client (v0.5)
+- Connection folder organization with drag‑and‑drop (v0.5)
+- Inline date/time cell editing (v0.5)
+
+### Upcoming
 - Windows build & signing
 - iPadOS adaptive layout
 - Query formatter / beautifier
 - Result pagination for large datasets
-- Connection grouping & tags
 - Scripting/extension layer
 - Secure secrets storage (Keychain/KWallet/Credential Manager)
+- Full AST executor trait implementation for all drivers
 
 ## 12. License
 This project is dual‑licensed:
@@ -255,13 +296,34 @@ This project is dual‑licensed:
 
 In short: use AGPL for OSS/non‑commercial; obtain a commercial license for closed‑source/commercial integration.
 
-## 13. Acknowledgements
+## 13. Changelog
+
+### v0.7.0
+- **Redis Browser**: full visual key explorer — type filter (String/Hash/List/Set/ZSet/Stream), full‑text key search, key preview panel with TTL & size labels
+- **Redis Cluster support**: auto‑detects standalone vs. cluster mode; scans all master nodes automatically when in cluster mode
+- Background async loading of Redis state via message‑passing channel
+
+### v0.6.x
+- **AI Assistant** (Cmd+Shift+A): schema‑aware query suggestions powered by OpenAI (ChatGPT), Anthropic (Claude), Groq, GitHub Copilot/Models, or any Custom OpenAI‑compatible endpoint; configurable model, API key, and base URL in Preferences
+- Spreadsheet primary‑key detection improved: fallback chain from `index_cache` → live DB query, reducing edit failures in table‑browse mode
+- Sidebar database tree fixes & reliability improvements
+
+### v0.5.x (selected highlights)
+- **Built‑in HTTP Client**: REST/API testing panel available as a tab — supports all major methods, Bearer/Basic/API‑Key auth, JSON & form‑data body, syntax‑highlighted responses, state persisted per connection
+- **Connection Folders**: group connections into named folders; drag‑and‑drop reordering of both connections and folders in the sidebar
+- **Editor**: background & pointer highlight, colored multi‑result tabs (active tab accent), cursor reliability fixes, improved `--` mid‑query comment styling, autocomplete JOIN suggestions
+- **Inline date/time editing**: date & datetime cells in the data grid open a native‑style picker
+- **UI / Theme**: full redesign pass — updated color palette, icon alignment, spacing between columns
+- Connection module refactored into `src/connection/{crud, execute, pool, sql, types, ui}.rs` for easier maintenance
+- `window_egui` split into focused sub‑modules (`app_impl`, `init`, `sidebar_tree`, `tree_loader`, `render_dialogs`, `connection_mgr`)
+
+## 14. Acknowledgements
 Built with the Rust ecosystem. egui & sqlx projects are especially instrumental.
 
 ---
 Made with Rust 🦀 for people who love fast, native tools.
 
-## 14. Agnostic AST Architecture (Advanced)
+## 15. Agnostic AST Architecture (Advanced)
 
 ## 📋 Overview
 
@@ -606,8 +668,8 @@ See `Adding a New Database to Tabular` for step-by-step guide to adding new data
 
 ---
 
-**Last Updated**: 2025-11-11
-**Version**: 0.5.18
+**Last Updated**: 2026-03-30
+**Version**: 0.7.0
 **Maintainer**: Tabular Team
 
 
