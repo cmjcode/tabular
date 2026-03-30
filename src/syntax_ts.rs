@@ -1779,57 +1779,57 @@ fn word_color(word: &str, lang: LanguageKind, dark: bool) -> Color32 {
 
 fn keyword_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(255, 110, 110)
+        Color32::from_rgb(0, 220, 255) // neon cyan
     } else {
-        Color32::from_rgb(170, 20, 20)
+        Color32::from_rgb(0, 100, 200) // deep blue
     }
 }
 
 fn number_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(255, 150, 150)
+        Color32::from_rgb(180, 255, 80) // neon lime
     } else {
-        Color32::from_rgb(190, 45, 45)
+        Color32::from_rgb(20, 140, 0) // forest green
     }
 }
 
 fn string_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(255, 185, 185)
+        Color32::from_rgb(255, 165, 30) // neon amber/orange
     } else {
-        Color32::from_rgb(155, 35, 35)
+        Color32::from_rgb(160, 80, 0) // burnt orange
     }
 }
 
 fn comment_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(160, 160, 160) // bright gray
+        Color32::from_rgb(120, 140, 120) // muted green-gray
     } else {
-        Color32::from_rgb(60, 70, 80) // dark slate
+        Color32::from_rgb(70, 100, 70) // dark muted green
     }
 }
 
 fn json_property_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(255, 96, 96)
+        Color32::from_rgb(0, 255, 190) // neon mint/teal
     } else {
-        Color32::from_rgb(195, 0, 0)
+        Color32::from_rgb(0, 130, 140) // teal
     }
 }
 
 fn json_boolean_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(255, 130, 130)
+        Color32::from_rgb(255, 80, 180) // hot pink
     } else {
-        Color32::from_rgb(180, 28, 28)
+        Color32::from_rgb(180, 0, 120) // deep magenta
     }
 }
 
 fn json_null_color(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(220, 140, 140)
+        Color32::from_rgb(196, 100, 255) // neon purple
     } else {
-        Color32::from_rgb(150, 50, 50)
+        Color32::from_rgb(120, 0, 180) // deep purple
     }
 }
 
