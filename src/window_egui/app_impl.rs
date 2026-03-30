@@ -270,6 +270,11 @@ impl App for Tabular {
                 };
 
                 if should_run {
+                    let selected_keyspace = self
+                        .query_tabs
+                        .get(self.active_tab_index)
+                        .and_then(|tab| tab.redis_browser_state.as_ref())
+                        .map(|state| state.keyspace_label.clone());
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                         && let Some(state) = &mut tab.redis_browser_state
                     {
@@ -284,6 +289,7 @@ impl App for Tabular {
                     {
                         let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
                             connection_id: conn_id,
+                            database_name: selected_keyspace,
                         });
                     }
                 }
@@ -3007,6 +3013,11 @@ impl App for Tabular {
                     {
                         match action {
                             crate::redis_browser::RedisBrowserAction::Refresh => {
+                                let selected_keyspace = self
+                                    .query_tabs
+                                    .get(self.active_tab_index)
+                                    .and_then(|tab| tab.redis_browser_state.as_ref())
+                                    .map(|state| state.keyspace_label.clone());
                                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                     if let Some(state) = &mut tab.redis_browser_state {
                                         state.status_text = "Refreshing Redis browser in background...".to_string();
@@ -3025,6 +3036,30 @@ impl App for Tabular {
                                 {
                                     let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
                                         connection_id: conn_id,
+                                        database_name: selected_keyspace,
+                                    });
+                                }
+                            }
+                            crate::redis_browser::RedisBrowserAction::SelectKeyspace { database_name } => {
+                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                                    && let Some(state) = &mut tab.redis_browser_state {
+                                    state.keyspace_label = database_name.clone();
+                                    state.keys.clear();
+                                    state.selected_key = None;
+                                    state.selected_key_type = None;
+                                    state.preview = None;
+                                    state.filter_text.clear();
+                                    state.last_remote_search = None;
+                                    state.remote_search_in_progress = false;
+                                    state.status_text = format!("Loading {} in background...", database_name);
+                                    state.last_error = None;
+                                }
+                                if self.fetching_redis_browser.insert(conn_id)
+                                    && let Some(sender) = &self.background_sender
+                                {
+                                    let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
+                                        connection_id: conn_id,
+                                        database_name: Some(database_name),
                                     });
                                 }
                             }

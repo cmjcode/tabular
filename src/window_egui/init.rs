@@ -618,7 +618,10 @@ impl super::Tabular {
                             });
                         }
                     }
-                    models::enums::BackgroundTask::FetchRedisBrowserState { connection_id } => {
+                    models::enums::BackgroundTask::FetchRedisBrowserState {
+                        connection_id,
+                        database_name,
+                    } => {
                         if let Ok(rt) = tokio::runtime::Runtime::new() {
                             let state = rt.block_on(async {
                                 let redis_manager = {
@@ -637,15 +640,17 @@ impl super::Tabular {
                                 )
                                 .await?;
 
-                                match driver_redis::load_redis_browser_state_from_connection(
+                                match driver_redis::load_redis_browser_state_for_keyspace(
                                     &connection,
                                     &redis_manager,
+                                    database_name.as_deref(),
                                 )
                                 .await
                                 {
-                                    Ok((keyspace_label, key_pairs, is_cluster)) => {
+                                    Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster)) => {
                                         let key_count = key_pairs.len();
                                         Some(models::structs::RedisBrowserState {
+                                            available_keyspaces,
                                             keyspace_label: keyspace_label.clone(),
                                             keys: key_pairs
                                                 .into_iter()

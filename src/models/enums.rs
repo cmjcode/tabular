@@ -87,6 +87,7 @@ pub enum BackgroundTask {
     },
     FetchRedisBrowserState {
         connection_id: i64,
+        database_name: Option<String>,
     },
     SearchRedisBrowserKeys {
         connection_id: i64,

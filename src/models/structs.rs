@@ -245,6 +245,7 @@ pub struct RedisBrowserPreview {
 
 #[derive(Clone, Debug, Default)]
 pub struct RedisBrowserState {
+    pub available_keyspaces: Vec<String>,
     pub keyspace_label: String,
     pub keys: Vec<RedisBrowserKeyEntry>,
     pub filter_text: String,

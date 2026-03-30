@@ -466,9 +466,10 @@ pub(crate) fn load_redis_browser_state(
     });
 
     match result {
-        Ok((keyspace_label, key_pairs, is_cluster)) => {
+        Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster)) => {
             let key_count = key_pairs.len();
             let state = models::structs::RedisBrowserState {
+                available_keyspaces,
                 keyspace_label: keyspace_label.clone(),
                 keys: key_pairs
                     .into_iter()
@@ -503,9 +504,29 @@ pub(crate) fn load_redis_browser_state(
 pub(crate) async fn load_redis_browser_state_from_connection(
     connection: &models::structs::ConnectionConfig,
     redis_manager: &ConnectionManager,
-) -> Result<(String, Vec<(String, String)>, bool), String> {
+) -> Result<(Vec<String>, String, Vec<(String, String)>, bool), String> {
     let mut detect_conn = redis_manager.clone();
     let is_cluster = detect_cluster_mode(&mut detect_conn).await;
+    let available_keyspaces = if is_cluster {
+        vec![REDIS_CLUSTER_KEYSPACE.to_string()]
+    } else {
+        let mut keyspaces = Vec::new();
+        let max_databases = match redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("databases")
+            .query_async::<Vec<String>>(&mut detect_conn)
+            .await
+        {
+            Ok(config_result) if config_result.len() >= 2 => {
+                config_result[1].parse::<i32>().unwrap_or(16)
+            }
+            _ => 16,
+        };
+        for db_num in 0..max_databases {
+            keyspaces.push(format!("db{}", db_num));
+        }
+        keyspaces
+    };
     let keyspace_label = if is_cluster {
         REDIS_CLUSTER_KEYSPACE.to_string()
     } else {
@@ -522,7 +543,62 @@ pub(crate) async fn load_redis_browser_state_from_connection(
         fetch_standalone_keys_with_types(connection, &keyspace_label, 500).await
     };
 
-    Ok((keyspace_label, key_pairs, is_cluster))
+    Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster))
+}
+
+pub(crate) async fn load_redis_browser_state_for_keyspace(
+    connection: &models::structs::ConnectionConfig,
+    redis_manager: &ConnectionManager,
+    requested_keyspace: Option<&str>,
+) -> Result<(Vec<String>, String, Vec<(String, String)>, bool), String> {
+    let mut detect_conn = redis_manager.clone();
+    let is_cluster = detect_cluster_mode(&mut detect_conn).await;
+    let available_keyspaces = if is_cluster {
+        vec![REDIS_CLUSTER_KEYSPACE.to_string()]
+    } else {
+        let max_databases = match redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("databases")
+            .query_async::<Vec<String>>(&mut detect_conn)
+            .await
+        {
+            Ok(config_result) if config_result.len() >= 2 => {
+                config_result[1].parse::<i32>().unwrap_or(16)
+            }
+            _ => 16,
+        };
+        (0..max_databases).map(|db_num| format!("db{}", db_num)).collect()
+    };
+
+    let detected_keyspace = if is_cluster {
+        REDIS_CLUSTER_KEYSPACE.to_string()
+    } else {
+        default_redis_keyspace(connection)
+    };
+
+    let keyspace_label = if is_cluster {
+        REDIS_CLUSTER_KEYSPACE.to_string()
+    } else if let Some(requested_keyspace) = requested_keyspace {
+        if available_keyspaces.iter().any(|candidate| candidate == requested_keyspace) {
+            requested_keyspace.to_string()
+        } else {
+            detected_keyspace
+        }
+    } else {
+        detected_keyspace
+    };
+
+    let key_pairs = if is_cluster {
+        fetch_cluster_key_names(connection, redis_manager, 500)
+            .await
+            .into_iter()
+            .map(|key_name| (key_name, "unknown".to_string()))
+            .collect()
+    } else {
+        fetch_standalone_keys_with_types(connection, &keyspace_label, 500).await
+    };
+
+    Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster))
 }
 
 pub(crate) fn redis_browser_loading_state(status_text: &str) -> models::structs::RedisBrowserState {
@@ -554,6 +630,7 @@ pub(crate) fn load_cached_redis_browser_state(
     let is_cluster = keyspace_label == REDIS_CLUSTER_KEYSPACE;
 
     Some(models::structs::RedisBrowserState {
+        available_keyspaces: cached_databases.clone(),
         keyspace_label: keyspace_label.clone(),
         keys: key_pairs
             .into_iter()

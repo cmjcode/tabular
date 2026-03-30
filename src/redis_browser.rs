@@ -9,6 +9,7 @@ use crate::models::structs::{
 #[derive(Clone, Debug)]
 pub enum RedisBrowserAction {
     Refresh,
+    SelectKeyspace { database_name: String },
     SelectKey { key_name: String, key_type: String },
     SearchServer { search_text: String },
 }
@@ -159,6 +160,27 @@ pub fn render_redis_browser(
             ui.label(
                 egui::RichText::new(format!("Total: {}", state.keys.len())).strong(),
             );
+            if !state.available_keyspaces.is_empty() {
+                ui.separator();
+                let mut selected_keyspace = state.keyspace_label.clone();
+                egui::ComboBox::from_id_salt("redis_browser_keyspace")
+                    .selected_text(selected_keyspace.clone())
+                    .width(96.0)
+                    .show_ui(ui, |ui| {
+                        for keyspace in &state.available_keyspaces {
+                            ui.selectable_value(
+                                &mut selected_keyspace,
+                                keyspace.clone(),
+                                keyspace,
+                            );
+                        }
+                    });
+                if selected_keyspace != state.keyspace_label {
+                    action = Some(RedisBrowserAction::SelectKeyspace {
+                        database_name: selected_keyspace,
+                    });
+                }
+            }
             if !state.status_text.is_empty() {
                 ui.separator();
                 ui.label(state.status_text.clone());

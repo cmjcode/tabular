@@ -621,6 +621,7 @@ impl super::Tabular {
                 {
                     let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
                         connection_id,
+                        database_name: None,
                     });
                 }
                 self.query_message.clear();
