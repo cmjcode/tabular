@@ -202,9 +202,9 @@ pub(crate) fn load_postgresql_structure(
     dba_children.push(metrics_user_active_folder);
 
     // Render Custom Views
-    log::info!("Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+    log::debug!("Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
     for view in connection.custom_views.iter() {
-        log::info!("Adding custom view node: {}", view.name);
+        log::debug!("Adding custom view node: {}", view.name);
         let mut view_node = models::structs::TreeNode::new(
             view.name.clone(),
             models::enums::NodeType::CustomView,

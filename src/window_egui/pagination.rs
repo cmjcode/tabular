@@ -1,4 +1,4 @@
-use log::{debug, info};
+use log::{debug};
 use crate::spreadsheet::SpreadsheetOperations;
 use crate::{connection, models, data_table, driver_mssql};
 
@@ -179,7 +179,7 @@ impl super::Tabular {
                             &headers_clone,
                             &snapshot,
                         );
-                        info!(
+                        debug!(
                             "💾 Cached first 100 rows (server pagination) for {}/{}",
                             db_name, table
                         );

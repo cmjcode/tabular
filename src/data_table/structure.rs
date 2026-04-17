@@ -1,4 +1,4 @@
-use log::{debug, info};
+use log::{debug};
 use crate::{connection, driver_mssql, models, window_egui};
 
 pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::Tabular) {
@@ -83,7 +83,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                     &table_guess,
                     &cols,
                 );
-                info!(
+                debug!(
                     "🔄 Manual refresh: loaded live structure from server for {}/{} ({} columns)",
                     database,
                     table_guess,
@@ -106,7 +106,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                 crate::cache_data::get_columns_from_cache(tabular, conn_id, &database, &table_guess)
                 && !cols.is_empty()
             {
-                info!(
+                debug!(
                     "📦 Showing cached structure for {}/{} ({} columns)",
                     database,
                     table_guess,
@@ -141,7 +141,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                     &table_guess,
                     &cols,
                 );
-                info!(
+                debug!(
                     "🌐 Loaded live structure from server for {}/{} ({} columns)",
                     database,
                     table_guess,
@@ -243,7 +243,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                         &table_guess,
                         &partitions,
                     );
-                    info!(
+                    debug!(
                         "✅ Refreshed partition cache for {}/{} ({} partitions)",
                         database,
                         table_guess,
@@ -270,7 +270,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                             &table_guess,
                             &partitions,
                         );
-                        info!(
+                        debug!(
                             "✅ Seeded partition cache for {}/{} ({} partitions)",
                             database,
                             table_guess,
@@ -375,7 +375,7 @@ pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
     tabular.is_table_browse_mode = true;
     if tabular.use_server_pagination && !tabular.current_base_query.is_empty() {
         tabular.current_page = 0;
-        info!("🔄 Manual refresh: server pagination first page reloaded");
+        debug!("🔄 Manual refresh: server pagination first page reloaded");
         tabular.execute_paginated_query();
         return;
     }
@@ -454,7 +454,7 @@ pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
                     &headers_clone,
                     &snapshot,
                 );
-                info!(
+                debug!(
                     "💾 Cached first 100 rows after manual refresh for {}/{}",
                     db_name, table
                 );

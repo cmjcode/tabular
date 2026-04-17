@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use eframe::egui;
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use sqlx::{Row, SqlitePool};
 
 use crate::{connection, directory, models, modules, sidebar_history, window_egui};
@@ -1049,6 +1049,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
         return;
     }
 
+
     // Initialize SQLite database
     let rt = tokio::runtime::Runtime::new().unwrap();
     let pool_result = rt.block_on(async {
@@ -1063,7 +1064,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
             match pool {
                 Ok(pool) => {
-                    info!("Database connection successful");
+                    debug!("Database connection successful");
 
                     // Create connections table
                     let create_connections_result = sqlx::query(

@@ -581,7 +581,7 @@ impl super::Tabular {
                                     );
                                 }
 
-                                log::info!(
+                                log::debug!(
                                     "[redis_keys] background standalone fetch start conn={} keyspace={}",
                                     connection_id,
                                     database_name
@@ -601,7 +601,7 @@ impl super::Tabular {
                                 )
                                 .await;
 
-                                log::info!(
+                                log::debug!(
                                     "[redis_keys] background standalone fetch done conn={} keyspace={} total_keys={}",
                                     connection_id,
                                     database_name,

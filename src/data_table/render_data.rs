@@ -607,23 +607,23 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             );
                                             
                                             // Log once per frame (approx) - using a simple counter or just log.
-                                            // log::info!("Rendering cell"); // Too spammy
+                                            // log::debug!("Rendering cell"); // Too spammy
                                             
                                             // DETACHED double click check
                                             if cell_response.double_clicked() {
-                                                log::info!("🔥 Double click detected on row {}, col {}", row_index, col_index);
-                                                log::info!("🔥 is_table_browse_mode: {}", tabular.is_table_browse_mode);
-                                                log::info!("🔥 current_column_metadata.is_some(): {}", tabular.current_column_metadata.is_some());
+                                                log::debug!("🔥 Double click detected on row {}, col {}", row_index, col_index);
+                                                log::debug!("🔥 is_table_browse_mode: {}", tabular.is_table_browse_mode);
+                                                log::debug!("🔥 current_column_metadata.is_some(): {}", tabular.current_column_metadata.is_some());
                                             }
 
                                             // ALLOW EDITING ALWAYS (for custom queries too)
                                             if cell_response.double_clicked() {
                                                 // queue edit start to avoid mutable borrow inside iteration
-                                                log::info!("🔥 Setting start_edit_request");
+                                                log::debug!("🔥 Setting start_edit_request");
                                                 start_edit_request = Some((row_index, col_index));
                                             } else if cell_response.clicked() {
-                                                // log::info!("🔥 Single click detected on row {}, col {}", row_index, col_index);
-                                                log::info!("🔥 Flags check: browse_mode={}, metadata_some={}", 
+                                                // log::debug!("🔥 Single click detected on row {}, col {}", row_index, col_index);
+                                                log::debug!("🔥 Flags check: browse_mode={}, metadata_some={}", 
                                                     tabular.is_table_browse_mode, 
                                                     tabular.current_column_metadata.is_some()
                                                 );
@@ -1147,9 +1147,9 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.selected_cell = Some((r, c));
                 tabular.table_recently_clicked = true;
                 
-                log::info!("🔥 Processing start_edit_request for row {}, col {}", r, c);
+                log::debug!("🔥 Processing start_edit_request for row {}, col {}", r, c);
                 tabular.spreadsheet_start_cell_edit(r, c);
-                log::info!("🔥 spreadsheet_start_cell_edit called. editing_cell is now: {:?}", tabular.spreadsheet_state.editing_cell);
+                log::debug!("🔥 spreadsheet_start_cell_edit called. editing_cell is now: {:?}", tabular.spreadsheet_state.editing_cell);
 
                 // Fetch ENUM options if applicable
                 tabular.spreadsheet_state.enum_options = None;
@@ -1191,7 +1191,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                      // Actually `execute_mysql_query_job` populates it.
                      // Let's assume `type_might_be_enum` is the gate.
                      
-                     log::info!("🔥 [debug] start_edit: table='{}', type_might_be_enum={}", table_name, type_might_be_enum);
+                     log::debug!("🔥 [debug] start_edit: table='{}', type_might_be_enum={}", table_name, type_might_be_enum);
 
                      // If we are browsing a table, try to get cached columns
                      if !table_name.is_empty() && type_might_be_enum {

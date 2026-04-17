@@ -1001,7 +1001,7 @@ pub async fn setup_replication(
 
     // Debug logging to see actual column names
     let columns: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
-    log::info!("[REPLICATION] SHOW MASTER STATUS columns: {:?}", columns);
+    log::debug!("[REPLICATION] SHOW MASTER STATUS columns: {:?}", columns);
 
     // Try new column names first (MySQL 8.0.22+), then old names, then index as last resort
     let file: String = row.try_get("Source_Log_File")

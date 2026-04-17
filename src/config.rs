@@ -1,5 +1,5 @@
 use dirs::home_dir;
-use log::info;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite, sqlite::SqlitePoolOptions};
 use std::fs;
@@ -257,7 +257,7 @@ impl ConfigStore {
         // Use file:// protocol with absolute path
         let url = format!("sqlite://{}?mode=rwc", path.to_string_lossy());
 
-        log::info!("Attempting to create/open database at: {}", url);
+        log::debug!("Attempting to create/open database at: {}", url);
 
         match SqlitePoolOptions::new()
             .max_connections(1)
@@ -270,7 +270,7 @@ impl ConfigStore {
                     .await
                 {
                     Ok(_) => {
-                        log::info!("Config store initialized successfully with SQLite");
+                        log::debug!("Config store initialized successfully with SQLite");
                         Ok(Self { pool: Some(pool), use_json_fallback: false })
                     }
                     Err(e) => {
@@ -347,7 +347,7 @@ impl ConfigStore {
                 }
             }
 
-            info!(
+            debug!(
                 "Loaded prefs from SQLite: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
                 prefs.theme,
                 prefs.link_editor_theme,
@@ -368,7 +368,7 @@ impl ConfigStore {
     pub async fn save(&self, prefs: &AppPreferences) {
         if self.use_json_fallback {
             let _ = self.save_to_json(prefs);
-            info!(
+            debug!(
                 "Saved prefs to JSON: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
                 prefs.theme,
                 prefs.link_editor_theme,
@@ -439,7 +439,7 @@ impl ConfigStore {
                     .await;
             }
 
-            info!(
+            debug!(
                 "Saved prefs to SQLite: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, enable_debug_logging={}",
                 prefs.theme,
                 prefs.link_editor_theme,
@@ -463,7 +463,7 @@ impl ConfigStore {
         let path = Self::json_path();
         let content = std::fs::read_to_string(path)?;
         let prefs: AppPreferences = serde_json::from_str(&content)?;
-        info!(
+        debug!(
             "Loaded prefs from JSON: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}",
             prefs.theme,
             prefs.link_editor_theme,
@@ -553,7 +553,7 @@ fn save_config_location(data_dir: &str) -> Result<(), String> {
         return Err(format!("Cannot write config location file: {}", e));
     }
 
-    log::info!(
+    log::debug!(
         "Saved config location: {} -> {}",
         config_file.display(),
         data_dir
@@ -571,7 +571,7 @@ fn load_config_location() -> Option<String> {
             Ok(content) => {
                 let path = content.trim();
                 if !path.is_empty() && PathBuf::from(path).exists() {
-                    log::info!(
+                    log::debug!(
                         "Loaded config location from {}: {}",
                         config_file.display(),
                         path
@@ -599,7 +599,7 @@ fn load_config_location() -> Option<String> {
 pub fn init_data_dir() {
     // First check if there's a saved config location
     if let Some(saved_location) = load_config_location() {
-        log::info!("Using saved config location: {}", saved_location);
+        log::debug!("Using saved config location: {}", saved_location);
         unsafe {
             std::env::set_var("TABULAR_DATA_DIR", &saved_location);
         }
@@ -608,13 +608,13 @@ pub fn init_data_dir() {
 
     // If no saved location, check environment variable
     if let Ok(env_dir) = std::env::var("TABULAR_DATA_DIR") {
-        log::info!("Using environment variable TABULAR_DATA_DIR: {}", env_dir);
+        log::debug!("Using environment variable TABULAR_DATA_DIR: {}", env_dir);
         return;
     }
 
     // Otherwise use default ~/.tabular
     let default_dir = get_default_tabular_dir();
-    log::info!("Using default data directory: {}", default_dir.display());
+    log::debug!("Using default data directory: {}", default_dir.display());
 }
 
 fn config_dir() -> PathBuf {
@@ -671,6 +671,6 @@ pub fn set_data_dir(new_path: &str) -> Result<(), String> {
         std::env::set_var("TABULAR_DATA_DIR", new_path);
     }
 
-    log::info!("Data directory changed to: {}", new_path);
+    log::debug!("Data directory changed to: {}", new_path);
     Ok(())
 }

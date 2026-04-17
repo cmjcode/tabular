@@ -1,4 +1,4 @@
-use log::{debug, info};
+use log::{debug};
 
 use crate::{
     cache_data, connection, driver_mysql, driver_redis, driver_sqlite, models,
@@ -78,6 +78,7 @@ pub(crate) fn get_databases_from_cache(
         match result {
             Ok(rows) => {
                 let databases: Vec<String> = rows.into_iter().map(|(name,)| name).collect();
+                eprintln!("[TABULAR-DEBUG] get_databases_from_cache: conn={} => {} databases: {:?}", connection_id, databases.len(), databases);
                 Some(databases)
             }
             Err(e) => {
@@ -682,7 +683,7 @@ pub(crate) fn save_table_rows_to_cache(
         } else {
             tokio::runtime::Runtime::new().unwrap().block_on(fut)
         };
-        info!(
+        debug!(
             "💾 Saved first 100 rows to cache for {}/{}/{}",
             connection_id, database_name, table_name
         );
@@ -864,7 +865,7 @@ pub(crate) fn get_table_rows_from_cache(
             Ok(Some((headers_json, rows_json))) => {
                 let headers: Vec<String> = serde_json::from_str(&headers_json).unwrap_or_default();
                 let rows: Vec<Vec<String>> = serde_json::from_str(&rows_json).unwrap_or_default();
-                info!(
+                debug!(
                     "📦 Cache hit for rows {}/{}/{} ({} cols, {} rows)",
                     connection_id,
                     database_name,
@@ -875,7 +876,7 @@ pub(crate) fn get_table_rows_from_cache(
                 Some((headers, rows))
             }
             Ok(None) => {
-                info!(
+                debug!(
                     "🕳️ No row cache found for {}/{}/{} — will use live server",
                     connection_id, database_name, table_name
                 );
@@ -942,7 +943,7 @@ pub(crate) fn save_indexes_to_cache(
         } else {
             tokio::runtime::Runtime::new().unwrap().block_on(fut)
         };
-        info!(
+        debug!(
             "💾 Saved {} indexes to cache for {}/{}/{}",
             indexes.len(),
             connection_id,
@@ -1094,7 +1095,7 @@ pub(crate) fn save_partitions_to_cache(
         } else {
             tokio::runtime::Runtime::new().unwrap().block_on(fut)
         };
-        info!(
+        debug!(
             "✅ Saved {} partitions to cache for {}.{}",
             partitions.len(),
             database_name,

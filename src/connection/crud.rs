@@ -1,5 +1,5 @@
 use crate::{models, modules, ssh_tunnel, window_egui};
-use log::{debug, info, warn};
+use log::{debug, warn};
 use mongodb::Client as MongoClient;
 use redis::Client;
 use sqlx::{
@@ -348,12 +348,134 @@ pub(crate) fn test_database_connection(
     })
 }
 
+/// Returns true if the error is a SQLite database corruption error (SQLITE_CORRUPT, code 11).
+fn is_sqlite_corrupt(e: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db_err) = e {
+        if db_err
+            .code()
+            .map_or(false, |c| c.as_ref() == "11")
+        {
+            return true;
+        }
+        let msg = db_err.message().to_lowercase();
+        return msg.contains("malformed") || msg.contains("disk image is malformed");
+    }
+    false
+}
+
+/// When the SQLite cache is corrupt, attempts recovery by recreating only the cache tables
+/// while preserving the `connections` table.  Returns true if recovery succeeded.
+async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
+    warn!("[cache_recovery] SQLite cache corruption detected — attempting recovery");
+
+    // Try VACUUM first; it can fix WAL/journal corruption without touching data
+    if sqlx::query("VACUUM").execute(cache_pool).await.is_ok() {
+        let check = sqlx::query_scalar::<_, String>("PRAGMA integrity_check(1)")
+            .fetch_one(cache_pool)
+            .await;
+        if matches!(check, Ok(ref s) if s == "ok") {
+            debug!("[cache_recovery] VACUUM resolved the corruption");
+            return true;
+        }
+    }
+
+    // VACUUM insufficient — drop and recreate all cache tables (connections table is untouched)
+    warn!("[cache_recovery] VACUUM insufficient, recreating cache tables...");
+    let drops = [
+        "DROP TABLE IF EXISTS partition_cache",
+        "DROP TABLE IF EXISTS index_cache",
+        "DROP TABLE IF EXISTS row_cache",
+        "DROP TABLE IF EXISTS column_cache",
+        "DROP TABLE IF EXISTS table_cache",
+        "DROP TABLE IF EXISTS database_cache",
+    ];
+    for stmt in &drops {
+        if let Err(e) = sqlx::query(stmt).execute(cache_pool).await {
+            warn!("[cache_recovery] failed to drop cache table: {}", e);
+            // Continue — we still try to recreate below
+        }
+    }
+
+    let creates = [
+        "CREATE TABLE IF NOT EXISTS database_cache (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            connection_id INTEGER NOT NULL,\
+            database_name TEXT NOT NULL,\
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
+            UNIQUE(connection_id, database_name))",
+        "CREATE TABLE IF NOT EXISTS table_cache (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            connection_id INTEGER NOT NULL,\
+            database_name TEXT NOT NULL,\
+            table_name TEXT NOT NULL,\
+            table_type TEXT NOT NULL,\
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
+            UNIQUE(connection_id, database_name, table_name, table_type))",
+        "CREATE TABLE IF NOT EXISTS column_cache (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            connection_id INTEGER NOT NULL,\
+            database_name TEXT NOT NULL,\
+            table_name TEXT NOT NULL,\
+            column_name TEXT NOT NULL,\
+            data_type TEXT NOT NULL,\
+            ordinal_position INTEGER NOT NULL,\
+            is_primary_key INTEGER NOT NULL DEFAULT 0,\
+            is_indexed INTEGER NOT NULL DEFAULT 0,\
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
+            UNIQUE(connection_id, database_name, table_name, column_name))",
+        "CREATE TABLE IF NOT EXISTS row_cache (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            connection_id INTEGER NOT NULL,\
+            database_name TEXT NOT NULL,\
+            table_name TEXT NOT NULL,\
+            headers_json TEXT NOT NULL,\
+            rows_json TEXT NOT NULL,\
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
+            UNIQUE(connection_id, database_name, table_name))",
+        "CREATE TABLE IF NOT EXISTS index_cache (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            connection_id INTEGER NOT NULL,\
+            database_name TEXT NOT NULL,\
+            table_name TEXT NOT NULL,\
+            index_name TEXT NOT NULL,\
+            method TEXT NULL,\
+            is_unique INTEGER NOT NULL DEFAULT 0,\
+            columns_json TEXT NOT NULL DEFAULT '[]',\
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
+            UNIQUE(connection_id, database_name, table_name, index_name))",
+        "CREATE TABLE IF NOT EXISTS partition_cache (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            connection_id INTEGER NOT NULL,\
+            database_name TEXT NOT NULL,\
+            table_name TEXT NOT NULL,\
+            partition_name TEXT NOT NULL,\
+            partition_type TEXT NULL,\
+            partition_expression TEXT NULL,\
+            subpartition_type TEXT NULL,\
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
+            UNIQUE(connection_id, database_name, table_name, partition_name))",
+    ];
+    let mut all_ok = true;
+    for stmt in &creates {
+        if let Err(e) = sqlx::query(stmt).execute(cache_pool).await {
+            warn!("[cache_recovery] failed to recreate cache table: {}", e);
+            all_ok = false;
+        }
+    }
+    if all_ok {
+        debug!("[cache_recovery] Cache tables successfully recreated");
+    } else {
+        warn!("[cache_recovery] Some cache tables could not be recreated; cache may be unavailable until app restart");
+    }
+    all_ok
+}
+
 #[allow(dead_code)]
 pub(crate) async fn refresh_connection_background_async(
     connection_id: i64,
     db_pool: &Option<Arc<SqlitePool>>,
 ) -> bool {
-    info!(
+    debug!(
         "[refresh_connection] starting background refresh for connection {}",
         connection_id
     );
@@ -438,31 +560,44 @@ pub(crate) async fn refresh_connection_background_async(
                 replication_master_id: None,
             };
 
-            info!(
+            debug!(
                 "[refresh_connection] clearing SQLite cache rows for connection {} before reload",
                 connection_id
             );
-            match sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
+
+            // Probe for corruption with the first DELETE; recover before touching more tables.
+            let first_del = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(cache_pool_arc.as_ref())
-                .await
-            {
-                Ok(result) => info!(
+                .await;
+            match &first_del {
+                Ok(r) => debug!(
                     "[refresh_connection] database_cache cleared: {} rows",
-                    result.rows_affected()
+                    r.rows_affected()
                 ),
-                Err(error) => warn!(
+                Err(e) if is_sqlite_corrupt(e) => {
+                    warn!(
+                        "[refresh_connection] cache is corrupt for connection {}: {} — attempting recovery",
+                        connection_id, e
+                    );
+                    recover_corrupt_cache(cache_pool_arc.as_ref()).await;
+                    // After recovery the tables are empty; no further DELETE needed.
+                }
+                Err(e) => warn!(
                     "[refresh_connection] failed clearing database_cache for {}: {}",
-                    connection_id,
-                    error
+                    connection_id, e
                 ),
             }
+
+            // Only run remaining DELETEs when the first one did not detect corruption
+            // (after recovery the tables are already empty).
+            if !matches!(&first_del, Err(e) if is_sqlite_corrupt(e)) {
             match sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(cache_pool_arc.as_ref())
                 .await
             {
-                Ok(result) => info!(
+                Ok(result) => debug!(
                     "[refresh_connection] table_cache cleared: {} rows",
                     result.rows_affected()
                 ),
@@ -477,7 +612,7 @@ pub(crate) async fn refresh_connection_background_async(
                 .execute(cache_pool_arc.as_ref())
                 .await
             {
-                Ok(result) => info!(
+                Ok(result) => debug!(
                     "[refresh_connection] column_cache cleared: {} rows",
                     result.rows_affected()
                 ),
@@ -492,7 +627,7 @@ pub(crate) async fn refresh_connection_background_async(
                 .execute(cache_pool_arc.as_ref())
                 .await
             {
-                Ok(result) => info!(
+                Ok(result) => debug!(
                     "[refresh_connection] row_cache cleared: {} rows",
                     result.rows_affected()
                 ),
@@ -507,7 +642,7 @@ pub(crate) async fn refresh_connection_background_async(
                 .execute(cache_pool_arc.as_ref())
                 .await
             {
-                Ok(result) => info!(
+                Ok(result) => debug!(
                     "[refresh_connection] index_cache cleared: {} rows",
                     result.rows_affected()
                 ),
@@ -517,6 +652,7 @@ pub(crate) async fn refresh_connection_background_async(
                     error
                 ),
             }
+            } // end of non-corrupt-cache DELETE block
 
             match tokio::time::timeout(
                 std::time::Duration::from_secs(30),
@@ -525,7 +661,7 @@ pub(crate) async fn refresh_connection_background_async(
             .await
             {
                 Ok(Some(new_pool)) => {
-                    info!(
+                    debug!(
                         "[refresh_connection] database pool recreated for connection {} ({:?})",
                         connection_id,
                         connection.connection_type
@@ -537,7 +673,7 @@ pub(crate) async fn refresh_connection_background_async(
                         cache_pool_arc.as_ref(),
                     )
                     .await;
-                    info!(
+                    debug!(
                         "[refresh_connection] cache reload finished for connection {} => {}",
                         connection_id,
                         fetch_result

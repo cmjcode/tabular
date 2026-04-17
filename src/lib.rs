@@ -62,7 +62,7 @@ pub fn run() -> Result<(), eframe::Error> {
     let log_level = if prefs.enable_debug_logging {
         log::LevelFilter::Debug
     } else {
-        log::LevelFilter::Warn
+        log::LevelFilter::Info
     };
 
     let _ = env_logger::Builder::from_default_env()
@@ -73,12 +73,12 @@ pub fn run() -> Result<(), eframe::Error> {
         .is_test(false)
         .try_init();
     
-    log::info!(
+    log::debug!(
         "Application starting with data directory: {}",
         config::get_data_dir().display()
     );
     if prefs.enable_debug_logging {
-        log::info!("Debug logging enabled");
+        log::debug!("Debug logging enabled");
     }
 
     let mut options = eframe::NativeOptions::default();

@@ -1,6 +1,6 @@
 use crate::{models, window_egui};
 use futures_util::TryStreamExt;
-use log::debug;
+use log::{debug, warn};
 use sqlx::SqlitePool;
 use crate::connection::pool::{create_database_pool, get_or_create_connection_pool};
 
@@ -209,40 +209,95 @@ pub(crate) async fn fetch_databases_from_connection_async(
     let pool = get_or_create_connection_pool(tabular, connection_id).await?;
     match pool {
         models::enums::DatabasePool::MySQL(mysql_pool) => {
+            debug!("[DB-FETCH] conn={} querying INFORMATION_SCHEMA.SCHEMATA...", connection_id);
             let result = sqlx::query_as::<_, (String,)>(
-                "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS schema_name FROM INFORMATION_SCHEMA.SCHEMATA"
+                "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS schema_name FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME"
             )
             .fetch_all(mysql_pool.as_ref())
             .await;
             match result {
-                Ok(rows) => Some(
-                    rows.into_iter()
+                Ok(rows) => {
+                    debug!("[DB-FETCH] conn={} INFORMATION_SCHEMA.SCHEMATA => {} schemas total:", connection_id, rows.len());
+                    for (db,) in &rows {
+                        debug!("[DB-FETCH]   - {}", db);
+                    }
+                    let filtered: Vec<String> = rows
+                        .into_iter()
                         .map(|(db_name,)| db_name)
                         .filter(|db| {
                             !["information_schema", "performance_schema", "mysql", "sys"]
                                 .contains(&db.as_str())
                         })
-                        .collect(),
-                ),
+                        .collect();
+                    debug!("[DB-FETCH] conn={} after filter => {} user databases: {:?}", connection_id, filtered.len(), filtered);
+                    if filtered.is_empty() {
+                        warn!("[DB-FETCH] conn={} INFORMATION_SCHEMA returned 0 user databases — falling back to SHOW DATABASES", connection_id);
+                        match sqlx::query_as::<_, (String,)>("SHOW DATABASES")
+                            .fetch_all(mysql_pool.as_ref())
+                            .await
+                        {
+                            Ok(show_rows) => {
+                                let show_filtered: Vec<String> = show_rows
+                                    .into_iter()
+                                    .map(|(db,)| db)
+                                    .filter(|db| {
+                                        !["information_schema", "performance_schema", "mysql", "sys"]
+                                            .contains(&db.as_str())
+                                    })
+                                    .collect();
+                                debug!("[DB-FETCH] conn={} SHOW DATABASES => {} databases: {:?}", connection_id, show_filtered.len(), show_filtered);
+                                Some(show_filtered)
+                            }
+                            Err(e2) => {
+                                warn!("[DB-FETCH] conn={} SHOW DATABASES also failed: {}", connection_id, e2);
+                                None
+                            }
+                        }
+                    } else {
+                        Some(filtered)
+                    }
+                },
                 Err(e) => {
-                    debug!(
-                        "Error querying MySQL databases via INFORMATION_SCHEMA: {}",
-                        e
-                    );
-                    None
+                    warn!("[DB-FETCH] conn={} INFORMATION_SCHEMA.SCHEMATA error: {} — falling back to SHOW DATABASES", connection_id, e);
+                    match sqlx::query_as::<_, (String,)>("SHOW DATABASES")
+                        .fetch_all(mysql_pool.as_ref())
+                        .await
+                    {
+                        Ok(show_rows) => {
+                            let show_filtered: Vec<String> = show_rows
+                                .into_iter()
+                                .map(|(db,)| db)
+                                .filter(|db| {
+                                    !["information_schema", "performance_schema", "mysql", "sys"]
+                                        .contains(&db.as_str())
+                                })
+                                .collect();
+                            debug!("[DB-FETCH] conn={} SHOW DATABASES => {} databases: {:?}", connection_id, show_filtered.len(), show_filtered);
+                            Some(show_filtered)
+                        }
+                        Err(e2) => {
+                            warn!("[DB-FETCH] conn={} SHOW DATABASES also failed: {}", connection_id, e2);
+                            None
+                        }
+                    }
                 }
             }
         }
         models::enums::DatabasePool::PostgreSQL(pg_pool) => {
+            debug!("[DB-FETCH] conn={} querying PostgreSQL pg_database...", connection_id);
             let result = sqlx::query_as::<_, (String,)>(
                 "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1')"
             )
             .fetch_all(pg_pool.as_ref())
             .await;
             match result {
-                Ok(rows) => Some(rows.into_iter().map(|(db_name,)| db_name).collect()),
+                Ok(rows) => {
+                    let dbs: Vec<String> = rows.into_iter().map(|(db_name,)| db_name).collect();
+                    debug!("[DB-FETCH] conn={} PostgreSQL => {} databases: {:?}", connection_id, dbs.len(), dbs);
+                    Some(dbs)
+                },
                 Err(e) => {
-                    debug!("Error querying PostgreSQL databases: {}", e);
+                    warn!("[DB-FETCH] conn={} PostgreSQL query error: {}", connection_id, e);
                     None
                 }
             }
@@ -474,24 +529,78 @@ pub async fn fetch_databases_background_task(
     // 3. Fetch databases from pool
     match pool {
         models::enums::DatabasePool::MySQL(mysql_pool) => {
+            debug!("[DB-FETCH] conn={} (background) querying INFORMATION_SCHEMA.SCHEMATA...", connection_id);
             let result = sqlx::query_as::<_, (String,)>(
-                "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS schema_name FROM INFORMATION_SCHEMA.SCHEMATA"
+                "SELECT CONVERT(SCHEMA_NAME USING utf8mb4) AS schema_name FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME"
             )
             .fetch_all(mysql_pool.as_ref())
             .await;
             match result {
-                Ok(rows) => Some(
-                    rows.into_iter()
+                Ok(rows) => {
+                    debug!("[DB-FETCH] conn={} INFORMATION_SCHEMA.SCHEMATA => {} schemas total:", connection_id, rows.len());
+                    for (db,) in &rows {
+                        debug!("[DB-FETCH]   - {}", db);
+                    }
+                    let filtered: Vec<String> = rows
+                        .into_iter()
                         .map(|(db_name,)| db_name)
                         .filter(|db| {
                             !["information_schema", "performance_schema", "mysql", "sys"]
                                 .contains(&db.as_str())
                         })
-                        .collect(),
-                ),
+                        .collect();
+                    debug!("[DB-FETCH] conn={} after filter => {} user databases: {:?}", connection_id, filtered.len(), filtered);
+                    // If INFORMATION_SCHEMA.SCHEMATA returned nothing (permissions issue), fallback to SHOW DATABASES
+                    if filtered.is_empty() {
+                        warn!("[DB-FETCH] conn={} INFORMATION_SCHEMA returned 0 user databases — falling back to SHOW DATABASES", connection_id);
+                        match sqlx::query_as::<_, (String,)>("SHOW DATABASES")
+                            .fetch_all(mysql_pool.as_ref())
+                            .await
+                        {
+                            Ok(show_rows) => {
+                                let show_filtered: Vec<String> = show_rows
+                                    .into_iter()
+                                    .map(|(db,)| db)
+                                    .filter(|db| {
+                                        !["information_schema", "performance_schema", "mysql", "sys"]
+                                            .contains(&db.as_str())
+                                    })
+                                    .collect();
+                                debug!("[DB-FETCH] conn={} SHOW DATABASES => {} databases: {:?}", connection_id, show_filtered.len(), show_filtered);
+                                Some(show_filtered)
+                            }
+                            Err(e2) => {
+                                warn!("[DB-FETCH] conn={} SHOW DATABASES also failed: {}", connection_id, e2);
+                                None
+                            }
+                        }
+                    } else {
+                        Some(filtered)
+                    }
+                },
                 Err(e) => {
-                    debug!("Error querying MySQL databases: {}", e);
-                    None
+                    warn!("[DB-FETCH] conn={} INFORMATION_SCHEMA.SCHEMATA error: {} — falling back to SHOW DATABASES", connection_id, e);
+                    match sqlx::query_as::<_, (String,)>("SHOW DATABASES")
+                        .fetch_all(mysql_pool.as_ref())
+                        .await
+                    {
+                        Ok(show_rows) => {
+                            let show_filtered: Vec<String> = show_rows
+                                .into_iter()
+                                .map(|(db,)| db)
+                                .filter(|db| {
+                                    !["information_schema", "performance_schema", "mysql", "sys"]
+                                        .contains(&db.as_str())
+                                })
+                                .collect();
+                            debug!("[DB-FETCH] conn={} SHOW DATABASES => {} databases: {:?}", connection_id, show_filtered.len(), show_filtered);
+                            Some(show_filtered)
+                        }
+                        Err(e2) => {
+                            warn!("[DB-FETCH] conn={} SHOW DATABASES also failed: {}", connection_id, e2);
+                            None
+                        }
+                    }
                 }
             }
         }

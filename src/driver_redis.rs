@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use log::{debug, info, warn};
+use log::{debug, warn};
 use redis::{Client, aio::ConnectionManager};
 use serde_json::{Map, Value, json};
 use sqlx::Row;
@@ -1054,7 +1054,7 @@ pub(crate) async fn fetch_cluster_keys_with_types(
     };
 
     let master_addresses = parse_cluster_master_addresses(&cluster_nodes);
-    info!(
+    debug!(
         "[redis_cluster] discovered {} master nodes for connection {:?}",
         master_addresses.len(),
         connection.id
@@ -1102,7 +1102,7 @@ pub(crate) async fn fetch_cluster_keys_with_types(
         }
     }
 
-    info!(
+    debug!(
         "[redis_cluster] collected {} keys across cluster for connection {:?}",
         all_keys.len(),
         connection.id
@@ -1174,7 +1174,7 @@ pub(crate) async fn fetch_cluster_key_names(
         }
     }
 
-    info!(
+    debug!(
         "[redis_cluster] lightweight browser load collected {} keys for connection {:?}",
         all_keys.len(),
         connection.id

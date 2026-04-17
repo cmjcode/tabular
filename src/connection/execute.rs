@@ -429,7 +429,7 @@ async fn execute_mysql_query_job(
                                 && let sqlparser::ast::TableFactor::Table { name, .. } = &table_with_joins.relation
                             {
                                 inferred_table_name = Some(name.to_string());
-                                log::info!("🔥 Inferred table name: {}", name);
+                                log::debug!("🔥 Inferred table name: {}", name);
                             } else {
                                 log::warn!("🔥 Failed to infer table name from query: {}", trimmed);
                             }
@@ -511,7 +511,7 @@ async fn execute_mysql_query_job(
                             };
 
                             if !exact_match_possible && !involved_tables.is_empty() {
-                                log::info!("🔥 Fetching ordered schema for involved tables: {:?}", involved_tables);
+                                log::debug!("🔥 Fetching ordered schema for involved tables: {:?}", involved_tables);
                                 for table in &involved_tables {
                                     let col_query = format!("SHOW COLUMNS FROM {}", table);
                                     if let Ok(col_rows) =
@@ -536,14 +536,14 @@ async fn execute_mysql_query_job(
                             };
 
                             if use_fine_grained {
-                                log::info!("🔥 Using fine-grained column table inference");
+                                log::debug!("🔥 Using fine-grained column table inference");
                             }
 
                             for (i, col) in rows[0].columns().iter().enumerate() {
                                 let type_info = col.type_info();
                                 let t_name = String::new();
 
-                                log::info!("🔥 [debug] inferring table for col '{}': t_name='{}', use_fine_grained={}, involved_tables={:?}, expanded_len={}",
+                                log::debug!("🔥 [debug] inferring table for col '{}': t_name='{}', use_fine_grained={}, involved_tables={:?}, expanded_len={}",
                                     col.name(), t_name, use_fine_grained, involved_tables, expanded_schema.len());
 
                                 let table_name = if !t_name.is_empty() {
@@ -588,9 +588,9 @@ async fn execute_mysql_query_job(
                                 };
 
                                 if let Some(final_t) = &table_name {
-                                    log::info!("🔥 [debug] -> Resolved table: {}", final_t);
+                                    log::debug!("🔥 [debug] -> Resolved table: {}", final_t);
                                 } else {
-                                    log::info!("🔥 [debug] -> Resolved table: NONE");
+                                    log::debug!("🔥 [debug] -> Resolved table: NONE");
                                 }
 
                                 meta_vec.push(models::structs::ColumnMetadata {

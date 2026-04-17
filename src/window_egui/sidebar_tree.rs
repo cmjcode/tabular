@@ -1,7 +1,7 @@
 use eframe::egui;
 use std::sync::Arc;
 use std::collections::HashMap;
-use log::{debug, info};
+use log::{debug};
 use super::Tabular;
 use crate::spreadsheet::SpreadsheetOperations;
 use crate::{models, connection, editor, sidebar_database,
@@ -41,28 +41,20 @@ impl super::Tabular {
         // This ensures expanded nodes are loaded from cache before first render
         let pending_loads: Vec<i64> = self.pending_auto_load.drain().collect();
         if !pending_loads.is_empty() {
-            info!(
+            debug!(
                 "📂 Processing {} pending auto-loads BEFORE render",
                 pending_loads.len()
             );
         }
         for connection_id in pending_loads {
-            info!("📂 Processing auto-load for connection {}", connection_id);
-            // Find the connection node
-            let mut found = false;
-            for node in nodes.iter_mut() {
-                if node.node_type == models::enums::NodeType::Connection
-                    && node.connection_id == Some(connection_id)
-                {
-                    info!("   ✅ Found connection node: {}", node.name);
-                    info!("   🔄 Loading expanded nodes recursively from cache...");
-                    self.load_expanded_nodes_recursive(connection_id, node);
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                info!("   ❌ Connection node {} not found in tree!", connection_id);
+            debug!("📂 Processing auto-load for connection {}", connection_id);
+            // Use recursive search so connections inside folder nodes are found
+            if let Some(conn_node) = Self::find_connection_node_recursive(nodes, connection_id) {
+                debug!("   ✅ Found connection node: {}", conn_node.name);
+                debug!("   🔄 Loading expanded nodes recursively from cache...");
+                self.load_expanded_nodes_recursive(connection_id, conn_node);
+            } else {
+                debug!("   ❌ Connection node {} not found in tree!", connection_id);
             }
         }
 
@@ -362,7 +354,7 @@ impl super::Tabular {
                 table_names.insert(fk.table_name.clone());
                 table_names.insert(fk.referenced_table_name.clone());
             }
-            log::info!("Diagram Init: Found {} FKs and {} tables", fks.len(), all_tables.len());
+            log::debug!("Diagram Init: Found {} FKs and {} tables", fks.len(), all_tables.len());
             for t in all_tables {
                 table_names.insert(t);
             }
@@ -1171,7 +1163,7 @@ impl super::Tabular {
                                 )
                             && !cached_headers.is_empty()
                         {
-                            info!(
+                            debug!(
                                 "📦 Showing cached data for table {}/{} ({} cols, {} rows)",
                                 dbn,
                                 table_name,
@@ -1321,7 +1313,7 @@ impl super::Tabular {
                                 self.is_table_browse_mode = true;
                                 println!("================== 1 ============================ ");
                                 debug!("🔄 Taking client-side pagination fallback path");
-                                info!(
+                                debug!(
                                     "🌐 Loading live data from server for table {}/{} (client pagination)",
                                     database_name.clone().unwrap_or_default(),
                                     table_name
@@ -1419,7 +1411,7 @@ impl super::Tabular {
                                             &headers_clone,
                                             &snapshot,
                                         );
-                                        info!(
+                                        debug!(
                                             "💾 Cached first 100 rows after live fetch for {}/{}",
                                             dbn, table_name
                                         );

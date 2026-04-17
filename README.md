@@ -235,6 +235,8 @@ cargo run
 RUST_LOG=info cargo run
 ```
 
+RUST_LOG ini ada info, error
+
 ### Adding a New Driver (short)
 1) Create `driver_<engine>.rs`  2) Implement connection & execution  3) Add feature flag if optional  4) Register in `modules.rs`/factory  5) Update README.
 

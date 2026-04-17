@@ -1,5 +1,5 @@
 use crate::self_update::UpdateInfo;
-use log::info;
+use log::debug;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -36,8 +36,8 @@ impl AutoUpdater {
             .as_ref()
             .ok_or("No download URL available")?;
 
-        info!("🚀 Starting staged update process...");
-        info!("📥 Downloading from: {}", download_url);
+        debug!("🚀 Starting staged update process...");
+        debug!("📥 Downloading from: {}", download_url);
 
         // Download the update
         let client = reqwest::Client::new();
@@ -55,7 +55,7 @@ impl AutoUpdater {
         }
 
         let content = response.bytes().await?;
-        info!("📦 Downloaded {} bytes", content.len());
+        debug!("📦 Downloaded {} bytes", content.len());
 
         #[cfg(target_os = "macos")]
         {
@@ -107,7 +107,7 @@ impl AutoUpdater {
         let dmg_path = self.temp_dir.join(asset_name);
         std::fs::write(&dmg_path, content)?;
 
-        info!("📀 DMG saved to: {}", dmg_path.display());
+        debug!("📀 DMG saved to: {}", dmg_path.display());
 
         // For now, just save to Downloads and open it like before
         // This is more reliable than trying to programmatically mount and extract
@@ -116,8 +116,8 @@ impl AutoUpdater {
         let download_dmg_path = downloads_dir.join(asset_name);
         std::fs::copy(&dmg_path, &download_dmg_path)?;
 
-        info!("✅ Update downloaded to: {}", download_dmg_path.display());
-        info!("🚀 Opening DMG file for installation...");
+        debug!("✅ Update downloaded to: {}", download_dmg_path.display());
+        debug!("🚀 Opening DMG file for installation...");
 
         // Open the DMG file directly so user can install it
         let _ = std::process::Command::new("open")
@@ -138,7 +138,7 @@ impl AutoUpdater {
         content: &[u8],
         update_info: &UpdateInfo,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        info!("🐧 Processing Linux update...");
+        debug!("🐧 Processing Linux update...");
 
         // Save to downloads folder
         let downloads_dir = dirs::download_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -158,10 +158,10 @@ impl AutoUpdater {
 
         let file_path = downloads_dir.join(&filename);
 
-        info!("💾 Saving Linux binary to: {}", file_path.display());
+        debug!("💾 Saving Linux binary to: {}", file_path.display());
         std::fs::write(&file_path, content)?;
 
-        info!("✅ Linux update downloaded! Check Downloads folder.");
+        debug!("✅ Linux update downloaded! Check Downloads folder.");
         Ok(())
     }
 }
@@ -173,7 +173,7 @@ impl AutoUpdater {
         content: &[u8],
         update_info: &UpdateInfo,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        info!("🪟 Processing Windows update...");
+        debug!("🪟 Processing Windows update...");
 
         // Save to downloads folder
         let downloads_dir = dirs::download_dir().unwrap_or_else(|| PathBuf::from("C:\\"));
@@ -193,16 +193,16 @@ impl AutoUpdater {
 
         let file_path = downloads_dir.join(&filename);
 
-        info!("💾 Saving Windows installer to: {}", file_path.display());
+        debug!("💾 Saving Windows installer to: {}", file_path.display());
         std::fs::write(&file_path, content)?;
 
         // // Open the installer automatically
-        // info!("🚀 Opening installer...");
+        // debug!("🚀 Opening installer...");
         // Command::new("cmd")
         //     .args(["/C", "start", "", &file_path.to_string_lossy()])
         //     .spawn()?;
 
-        info!("✅ Windows installer opened!");
+        debug!("✅ Windows installer opened!");
         Ok(())
     }
 }

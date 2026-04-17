@@ -236,11 +236,19 @@ impl super::Tabular {
         None
     }
     pub fn refresh_connection(&mut self, connection_id: i64) {
-        // Clear all cached data for this connection
+        // Clear all cached data for this connection (SQLite tables)
         self.clear_connection_cache(connection_id);
+
+        // Also clear in-memory database cache so next load always hits the server
+        self.database_cache.remove(&connection_id);
+        self.database_cache_time.remove(&connection_id);
 
         // Remove from connection pool cache to force reconnection
         self.connection_pools.remove(&connection_id);
+        // Also remove from shared pools
+        if let Ok(mut shared) = self.shared_connection_pools.lock() {
+            shared.remove(&connection_id);
+        }
 
         // Mark as refreshing
         self.refreshing_connections.insert(connection_id);
@@ -328,7 +336,6 @@ impl super::Tabular {
         node: &mut models::structs::TreeNode,
         state_map: &std::collections::HashMap<String, bool>,
     ) {
-        use log::info;
 
         // Create unique key for this node
         let node_type_str = format!("{:?}", node.node_type);
@@ -344,7 +351,7 @@ impl super::Tabular {
         if let Some(&expanded) = state_map.get(&key) {
             node.is_expanded = expanded;
             if expanded {
-                info!(
+                debug!(
                     "   📂 Restoring expanded: {:?} - {}",
                     node.node_type, node.name
                 );
@@ -422,9 +429,8 @@ impl super::Tabular {
         connection_id: i64,
         node: &mut models::structs::TreeNode,
     ) {
-        use log::info;
 
-        info!(
+        debug!(
             "🔍 Checking node: {:?} '{}' - expanded={}, loaded={}",
             node.node_type, node.name, node.is_expanded, node.is_loaded
         );
@@ -433,20 +439,20 @@ impl super::Tabular {
         if node.is_expanded && !node.is_loaded {
             match node.node_type {
                 models::enums::NodeType::Connection => {
-                    info!("   📂 Loading Connection node from cache");
+                    debug!("   📂 Loading Connection node from cache");
                     self.load_connection_tables(connection_id, node);
                 }
                 models::enums::NodeType::DatabasesFolder => {
-                    info!("   📂 Loading DatabasesFolder from cache");
+                    debug!("   📂 Loading DatabasesFolder from cache");
                     self.load_databases_for_folder(connection_id, node);
                 }
                 models::enums::NodeType::Database => {
-                    info!("   📂 Loading Database node from cache: {}", node.name);
+                    debug!("   📂 Loading Database node from cache: {}", node.name);
                     // Database node contains folders (Tables, Views, etc), they'll be loaded by their children
                     node.is_loaded = true;
                 }
                 models::enums::NodeType::TablesFolder => {
-                    info!("   📂 Loading TablesFolder from cache");
+                    debug!("   📂 Loading TablesFolder from cache");
                     self.load_folder_content(
                         connection_id,
                         node,
@@ -455,7 +461,7 @@ impl super::Tabular {
                     );
                 }
                 models::enums::NodeType::ViewsFolder => {
-                    info!("   📂 Loading ViewsFolder from cache");
+                    debug!("   📂 Loading ViewsFolder from cache");
                     self.load_folder_content(
                         connection_id,
                         node,
@@ -464,7 +470,7 @@ impl super::Tabular {
                     );
                 }
                 models::enums::NodeType::StoredProceduresFolder => {
-                    info!("   📂 Loading StoredProceduresFolder from cache");
+                    debug!("   📂 Loading StoredProceduresFolder from cache");
                     self.load_folder_content(
                         connection_id,
                         node,
@@ -473,17 +479,17 @@ impl super::Tabular {
                     );
                 }
                 _ => {
-                    info!("   ⏭️  Skipping {:?} node (no loader)", node.node_type);
+                    debug!("   ⏭️  Skipping {:?} node (no loader)", node.node_type);
                 }
             }
         } else if node.is_expanded {
-            info!("   ⏭️  Node already loaded, skipping");
+            debug!("   ⏭️  Node already loaded, skipping");
         }
 
         // Recursively process children (depth-first)
         // Clone children vec to avoid borrow issues
         let children_count = node.children.len();
-        info!("   👶 Processing {} children...", children_count);
+        debug!("   👶 Processing {} children...", children_count);
         for i in 0..children_count {
             // Process each child
             if let Some(child) = node.children.get_mut(i) {
@@ -561,10 +567,27 @@ impl super::Tabular {
             let rt = tokio::runtime::Runtime::new().unwrap();
 
             rt.block_on(async {
-                log::info!(
+                log::debug!(
                     "[clear_connection_cache] clearing sqlite cache for connection {}",
                     connection_id
                 );
+
+                // Run a quick integrity check first; if the cache db is corrupted, skip
+                // clearing (the corrupted file will be replaced on next startup) and
+                // just proceed — the live fetch path will still work.
+                let is_ok = sqlx::query_as::<_, (String,)>("PRAGMA integrity_check")
+                    .fetch_one(pool_clone.as_ref())
+                    .await
+                    .map_or(false, |(s,)| s == "ok");
+
+                if !is_ok {
+                    log::warn!(
+                        "[clear_connection_cache] cache db integrity check failed for connection {} — skipping cache clear (will be recovered on restart)",
+                        connection_id
+                    );
+                    return;
+                }
+
                 // Clear all cache tables for this connection
                 let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
                     .bind(connection_id)
@@ -592,7 +615,7 @@ impl super::Tabular {
                     .execute(pool_clone.as_ref())
                     .await;
 
-                log::info!(
+                log::debug!(
                     "[clear_connection_cache] finished clearing sqlite cache for connection {}",
                     connection_id
                 );
@@ -607,7 +630,6 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) {
-        use log::info;
 
         if let Some(ref pool) = self.db_pool {
             let pool_clone = pool.clone();
@@ -616,7 +638,7 @@ impl super::Tabular {
             let rt = tokio::runtime::Runtime::new().unwrap();
 
             rt.block_on(async {
-                info!("🧹 Clearing cache for table {}.{}", db, tbl);
+                debug!("🧹 Clearing cache for table {}.{}", db, tbl);
 
                 // Clear table cache entry
                 let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
@@ -650,7 +672,7 @@ impl super::Tabular {
                     .execute(pool_clone.as_ref())
                     .await;
 
-                info!("✅ Cache cleared for table {}.{}", db, tbl);
+                debug!("✅ Cache cleared for table {}.{}", db, tbl);
             });
         }
     }
@@ -662,15 +684,15 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) {
-        use log::{debug, info};
+        use log::{debug};
 
-        info!(
+        debug!(
             "🌲 Removing table {}.{} from sidebar tree",
             database_name, table_name
         );
-        info!("   Connection ID: {}", connection_id);
-        info!("   Database name: '{}'", database_name);
-        info!("   Table name: '{}'", table_name);
+        debug!("   Connection ID: {}", connection_id);
+        debug!("   Database name: '{}'", database_name);
+        debug!("   Table name: '{}'", table_name);
 
         // Debug: print tree structure
         debug!("   Current tree structure:");
@@ -713,10 +735,10 @@ impl super::Tabular {
         for folder_or_conn in &mut self.items_tree {
             // First check if this is a CustomFolder, if so search its children for the connection
             if folder_or_conn.node_type == models::enums::NodeType::CustomFolder {
-                info!("   Searching in folder: {}", folder_or_conn.name);
+                debug!("   Searching in folder: {}", folder_or_conn.name);
                 for conn_node in &mut folder_or_conn.children {
                     if conn_node.connection_id == Some(connection_id) {
-                        info!(
+                        debug!(
                             "   ✓ Found connection node: {} (ID: {})",
                             conn_node.name, connection_id
                         );
@@ -736,7 +758,7 @@ impl super::Tabular {
             }
             // Also check if this node itself is a connection (for backward compatibility with non-folder structure)
             else if folder_or_conn.connection_id == Some(connection_id) {
-                info!(
+                debug!(
                     "   ✓ Found connection node (direct): {}",
                     folder_or_conn.name
                 );
@@ -753,8 +775,8 @@ impl super::Tabular {
             }
         }
 
-        info!("   ⚠️ Connection {} not found in tree", connection_id);
-        info!(
+        debug!("   ⚠️ Connection {} not found in tree", connection_id);
+        debug!(
             "   ⚠️ Table '{}' not found in tree (may have been already removed)",
             table_name
         );

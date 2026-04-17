@@ -1150,9 +1150,9 @@ impl SpreadsheetOperations for Tabular {
         let state = self.get_spreadsheet_state();
         let metadata = self.get_current_column_metadata();
         if let Some(meta) = metadata {
-            log::info!("🔥 metadata present with {} columns", meta.len());
+            log::debug!("🔥 metadata present with {} columns", meta.len());
             for (i, m) in meta.iter().enumerate() {
-                log::info!("🔥 Col {}: name='{}', table='{:?}', orig='{:?}'", i, m.name, m.table_name, m.original_name);
+                log::debug!("🔥 Col {}: name='{}', table='{:?}', orig='{:?}'", i, m.name, m.table_name, m.original_name);
             }
         } else {
             log::warn!("🔥 No metadata found in spreadsheet_generate_sql override");
@@ -1164,7 +1164,7 @@ impl SpreadsheetOperations for Tabular {
             for m in meta {
                 if m.is_primary_key {
                     derived_pks.push(m.name.clone());
-                    log::info!("🔥 Found PK from metadata: {}", m.name);
+                    log::debug!("🔥 Found PK from metadata: {}", m.name);
                 }
             }
         }
@@ -1176,7 +1176,7 @@ impl SpreadsheetOperations for Tabular {
                 if let Some(db) = self.spreadsheet_extract_database_name() {
                     if let Some(pks) = self.get_primary_keys_for_table(conn_id, &db, tbl) {
                         if !pks.is_empty() {
-                            log::info!("🔥 Found PKs from index_cache fallback: {:?}", pks);
+                            log::debug!("🔥 Found PKs from index_cache fallback: {:?}", pks);
                             std::println!("🔥 Found PKs from index_cache fallback: {:?}", pks);
                             derived_pks = pks;
                         }

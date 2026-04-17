@@ -125,7 +125,7 @@ impl super::Tabular {
                     if let Err(e) = serde_json::to_writer_pretty(writer, state) {
                         log::error!("Failed to serialize diagram state: {}", e);
                     } else {
-                        log::info!("Diagram layout saved to {:?}", path);
+                        log::debug!("Diagram layout saved to {:?}", path);
                     }
                 },
                 Err(e) => log::error!("Failed to create diagram file {:?}: {}", path, e),
@@ -140,7 +140,7 @@ impl super::Tabular {
                         let reader = std::io::BufReader::new(file);
                         match serde_json::from_reader(reader) {
                             Ok(state) => {
-                                log::info!("Diagram layout loaded from {:?}", path);
+                                log::debug!("Diagram layout loaded from {:?}", path);
                                 return Some(state);
                             },
                             Err(e) => log::error!("Failed to deserialize diagram state: {}", e),

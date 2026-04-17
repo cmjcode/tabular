@@ -123,7 +123,7 @@ impl super::Tabular {
             });
     }
     pub fn start_update_download(&mut self) {
-        log::info!("🚀 Starting auto update process...");
+        log::debug!("🚀 Starting auto update process...");
 
         // Prevent multiple simultaneous downloads
         if self.update_download_in_progress {
@@ -139,13 +139,13 @@ impl super::Tabular {
 
         if let Some(update_info) = &self.update_info {
             if let Some(auto_updater) = &self.auto_updater {
-                log::info!(
+                log::debug!(
                     "📦 Update info available: {} -> {}",
                     update_info.current_version,
                     update_info.latest_version
                 );
-                log::info!("📥 Download URL: {:?}", update_info.download_url);
-                log::info!("📄 Asset name: {:?}", update_info.asset_name);
+                log::debug!("📥 Download URL: {:?}", update_info.download_url);
+                log::debug!("📄 Asset name: {:?}", update_info.asset_name);
 
                 self.update_download_in_progress = true;
                 // Prepare channel to receive completion signal
@@ -156,7 +156,7 @@ impl super::Tabular {
                 let auto_updater_clone = auto_updater.clone();
 
                 std::thread::spawn(move || {
-                    log::info!("🔄 Background update thread started (auto updater)");
+                    log::debug!("🔄 Background update thread started (auto updater)");
 
                     // Create a completely new, independent Tokio runtime for the update process
                     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -175,7 +175,7 @@ impl super::Tabular {
                         .block_on(auto_updater_clone.download_and_stage_update(&update_info_clone))
                     {
                         Ok(()) => {
-                            log::info!("✅ Update staged successfully");
+                            log::debug!("✅ Update staged successfully");
                             let _ = tx.send(true);
                         }
                         Err(e) => {

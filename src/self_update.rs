@@ -1,4 +1,4 @@
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -52,7 +52,7 @@ impl fmt::Display for UpdateError {
 impl Error for UpdateError {}
 
 pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
-    info!("Checking for updates from GitHub releases...");
+    debug!("Checking for updates from GitHub releases...");
 
     let url = format!(
         "https://api.github.com/repos/{}/releases/latest",
@@ -222,7 +222,7 @@ fn get_platform_info() -> PlatformInfo {
 
 pub fn open_release_page(update_info: &UpdateInfo) {
     let url = &update_info.release_url;
-    info!("Opening release page: {}", url);
+    debug!("Opening release page: {}", url);
 
     #[cfg(target_os = "macos")]
     {

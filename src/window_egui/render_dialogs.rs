@@ -178,9 +178,9 @@ impl super::Tabular {
         // Extract candidates to avoid borrowing self inside closure
         // Only include connections that have an active pool
         if let Some(state) = &self.replication_dialog {
-            log::info!("[REPLICATION] Building source candidates for target_id: {}", state.target_connection_id);
-            log::info!("[REPLICATION] Total connections: {}", self.connections.len());
-            log::info!("[REPLICATION] Active pools: {}", self.connection_pools.len());
+            log::debug!("[REPLICATION] Building source candidates for target_id: {}", state.target_connection_id);
+            log::debug!("[REPLICATION] Total connections: {}", self.connections.len());
+            log::debug!("[REPLICATION] Active pools: {}", self.connection_pools.len());
             
             for conn in &self.connections {
                 if let Some(conn_id) = conn.id {
@@ -188,19 +188,19 @@ impl super::Tabular {
                     let is_mysql = conn.connection_type == models::enums::DatabaseType::MySQL;
                     let has_pool = self.connection_pools.contains_key(&conn_id);
                     
-                    log::info!(
+                    log::debug!(
                         "[REPLICATION] Conn '{}' (id={}): is_target={}, is_mysql={}, has_pool={}",
                         conn.name, conn_id, is_target, is_mysql, has_pool
                     );
                     
                     if !is_target && is_mysql && has_pool {
                         source_candidates.push((Some(conn_id), conn.name.clone()));
-                        log::info!("[REPLICATION] ✓ Added '{}' to candidates", conn.name);
+                        log::debug!("[REPLICATION] ✓ Added '{}' to candidates", conn.name);
                     }
                 }
             }
             
-            log::info!("[REPLICATION] Total source candidates: {}", source_candidates.len());
+            log::debug!("[REPLICATION] Total source candidates: {}", source_candidates.len());
         }
 
         egui::Window::new("Setup Replication")
@@ -257,8 +257,8 @@ impl super::Tabular {
                         let can_start = state.source_connection_id.is_some() && !state.is_executing;
                         if ui.add_enabled(can_start, egui::Button::new("Init & Start Replication")).clicked() {
                             if let Some(sid) = state.source_connection_id {
-                                log::info!("[REPLICATION] Button clicked! Setting state: is_executing=true, start_replication=true");
-                                log::info!("[REPLICATION] source_id (sid) = {:?}, target_id = {}", sid, state.target_connection_id);
+                                log::debug!("[REPLICATION] Button clicked! Setting state: is_executing=true, start_replication=true");
+                                log::debug!("[REPLICATION] source_id (sid) = {:?}, target_id = {}", sid, state.target_connection_id);
                                 state.is_executing = true;
                                 start_replication = true;
                                 source_id_to_start = Some(sid);
@@ -287,11 +287,11 @@ impl super::Tabular {
         }
         
         if start_replication {
-            log::info!("[REPLICATION] start_replication=true, source_id_to_start={:?}", source_id_to_start);
+            log::debug!("[REPLICATION] start_replication=true, source_id_to_start={:?}", source_id_to_start);
             if let Some(source_id) = source_id_to_start {
                 let target_id = target_id_for_start;
                 
-                log::info!("[REPLICATION] Starting replication setup task for source_id={}, target_id={}", source_id, target_id);
+                log::debug!("[REPLICATION] Starting replication setup task for source_id={}, target_id={}", source_id, target_id);
                 
                 let runtime = self.get_runtime();
                 let (tx, rx) = std::sync::mpsc::channel();
@@ -305,7 +305,7 @@ impl super::Tabular {
                 
                 if let (Some(source_config), Some(target_config)) = (source_config_opt, target_config_opt) {
                     runtime.spawn(async move {
-                        log::info!("[REPLICATION] Async task started");
+                        log::debug!("[REPLICATION] Async task started");
                         
                         // Helper to create pool manually since we can't easily use app-wide helpers here
                         async fn create_mysql_pool(config: &models::structs::ConnectionConfig) -> Result<sqlx::MySqlPool, String> {
@@ -330,7 +330,7 @@ impl super::Tabular {
                         
                         match (source_pool_res, target_pool_res) {
                             (Ok(source_pool), Ok(target_pool)) => {
-                                log::info!("[REPLICATION] Pools created successfully, running setup...");
+                                log::debug!("[REPLICATION] Pools created successfully, running setup...");
                                 let res = crate::driver_mysql::setup_replication(
                                     &source_pool, 
                                     &target_pool, 

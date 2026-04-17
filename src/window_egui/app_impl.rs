@@ -1,5 +1,5 @@
 use eframe::{App, Frame, egui};
-use log::{debug, info};
+use log::{debug};
 use chrono::{DateTime, Duration, Utc};
 use super::{Tabular, PrefTab};
 use crate::{models, connection, editor, data_table, sidebar_database, sidebar_history,
@@ -130,7 +130,7 @@ impl App for Tabular {
                         redis_browser_auto_refresh_seconds: app.redis_browser_auto_refresh_default_seconds.max(1),
                     };
                     rt.block_on(store.save(&prefs));
-                    log::info!(
+                    log::debug!(
                         "Preferences saved successfully to: {}",
                         crate::config::get_data_dir().display()
                     );
@@ -338,7 +338,7 @@ impl App for Tabular {
                     self.config_store = Some(store);
                     self.last_saved_prefs = Some(prefs.clone());
                     self.prefs_loaded = true;
-                    log::info!("Preferences loaded successfully on startup");
+                    log::debug!("Preferences loaded successfully on startup");
 
                     // Check for updates on startup if enabled, but only once per day
                     if prefs.auto_check_updates {
@@ -1124,9 +1124,9 @@ impl App for Tabular {
                                         Ok(()) => {
                                             self.refresh_data_directory();
                                             self.prefs_dirty = true; try_save_prefs(self);
-                                            if let Some(rt) = &self.runtime && let Ok(new_store) = rt.block_on(crate::config::ConfigStore::new()) { self.config_store = Some(new_store); log::info!("Config store reinitialized for new data directory"); }
+                                            if let Some(rt) = &self.runtime && let Ok(new_store) = rt.block_on(crate::config::ConfigStore::new()) { self.config_store = Some(new_store); log::debug!("Config store reinitialized for new data directory"); }
                                             self.prefs_save_feedback = Some("Data directory updated successfully!".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                            log::info!("Data directory changed to: {}", self.data_directory);
+                                            log::debug!("Data directory changed to: {}", self.data_directory);
                                         }
                                         Err(e) => { self.error_message = format!("Failed to change data directory: {}", e); self.show_error_message = true; }
                                     }
@@ -1410,74 +1410,56 @@ impl App for Tabular {
                         self.refreshing_connections.remove(&connection_id);
 
                         if success {
-                            info!(
+                            debug!(
                                 "✅ Background refresh completed successfully for connection {}",
                                 connection_id
                             );
 
-                            // Debug: log all connection nodes in tree
-                            info!(
-                                "   🔍 Searching in items_tree with {} nodes",
-                                self.items_tree.len()
-                            );
-                            for (i, n) in self.items_tree.iter().enumerate() {
-                                info!(
-                                    "      Node {}: type={:?}, conn_id={:?}, name={}",
-                                    i, n.node_type, n.connection_id, n.name
-                                );
-                            }
+                            // Extract expansion state before borrowing items_tree mutably
+                            let expansion_state =
+                                self.pending_expansion_restore.remove(&connection_id);
 
-                            // Re-expand connection node to show fresh data
-                            let mut node_found = false;
-                            for node in &mut self.items_tree {
-                                if node.node_type == models::enums::NodeType::Connection
-                                    && node.connection_id == Some(connection_id)
-                                {
-                                    node_found = true;
-                                    info!("   ✅ Found connection node: {}", node.name);
-
-                                    // Restore expansion state if we have one pending
-                                    if let Some(expansion_state) =
-                                        self.pending_expansion_restore.remove(&connection_id)
-                                    {
-                                        info!(
-                                            "🔄 Restoring {} expansion states for connection {}",
-                                            expansion_state.len(),
-                                            connection_id
-                                        );
-
-                                        // Force reload from cache
-                                        node.is_loaded = false;
-
-                                        // Restore the expansion state
-                                        Self::restore_expansion_state(node, &expansion_state);
-                                        info!("   ✅ Expansion state restored");
-
-                                        // Mark expanded child nodes to reload from cache on next render
-                                        Self::mark_expanded_nodes_loaded(node);
-                                        info!("   ✅ Expanded nodes marked for loading");
-                                    } else {
-                                        info!("   ⚠️  No expansion state to restore");
-                                        // No expansion state to restore, just mark as not loaded
-                                        node.is_loaded = false;
-                                    }
-
-                                    break;
+                            // Re-expand connection node to show fresh data (search recursively
+                            // through folder nodes since connections are nested inside folders)
+                            let node_found = if let Some(conn_node) =
+                                Self::find_connection_node_recursive(
+                                    &mut self.items_tree,
+                                    connection_id,
+                                )
+                            {
+                                debug!("   ✅ Found connection node: {}", conn_node.name);
+                                if let Some(state) = expansion_state {
+                                    debug!(
+                                        "🔄 Restoring {} expansion states for connection {}",
+                                        state.len(),
+                                        connection_id
+                                    );
+                                    conn_node.is_loaded = false;
+                                    Self::restore_expansion_state(conn_node, &state);
+                                    debug!("   ✅ Expansion state restored");
+                                    Self::mark_expanded_nodes_loaded(conn_node);
+                                    debug!("   ✅ Expanded nodes marked for loading");
+                                } else {
+                                    debug!("   ⚠️  No expansion state to restore");
+                                    conn_node.is_loaded = false;
                                 }
-                            }
+                                true
+                            } else {
+                                false
+                            };
 
                             if !node_found {
-                                info!("   ❌ Connection node {} not found in tree!", connection_id);
+                                debug!("   ❌ Connection node {} not found in tree!", connection_id);
                             }
 
                             // Mark this connection as needing auto-load
                             // Will be processed in the sidebar render where we have proper borrow access
                             self.pending_auto_load.insert(connection_id);
-                            info!(
+                            debug!(
                                 "📂 Marked connection {} for auto-load after restore",
                                 connection_id
                             );
-                            info!(
+                            debug!(
                                 "   pending_auto_load size: {}",
                                 self.pending_auto_load.len()
                             );
@@ -1518,7 +1500,7 @@ impl App for Tabular {
                         connection_id,
                         databases,
                     } => {
-                        info!("✅ Received background databases fetch result: {} databases", databases.len());
+                        debug!("✅ Received background databases fetch result: {} databases", databases.len());
                         // Update cache
                         self.database_cache.insert(connection_id, databases.clone());
                         self.database_cache_time
@@ -1549,7 +1531,7 @@ impl App for Tabular {
                         database_name,
                         keys,
                     } => {
-                        log::info!(
+                        log::debug!(
                             "[redis_keys] UI received fetch result conn={} keyspace={} keys={}",
                             connection_id,
                             database_name,
@@ -2817,7 +2799,7 @@ impl App for Tabular {
                                                 if !db_name.is_empty() && !table.is_empty()
                                                     && let Some((hdrs, rows)) = crate::cache_data::get_table_rows_from_cache(self, conn_id, &db_name, &table)
                                                         && !hdrs.is_empty() {
-                                                            info!("📦 Showing cached data (toggle) for {}/{} ({} cols, {} rows)", db_name, table, hdrs.len(), rows.len());
+                                                            debug!("📦 Showing cached data (toggle) for {}/{} ({} cols, {} rows)", db_name, table, hdrs.len(), rows.len());
                                                             self.current_table_headers = hdrs.clone();
                                                             self.current_table_data = rows.clone();
                                                             self.all_table_data = rows;
@@ -3320,12 +3302,12 @@ impl App for Tabular {
                                     .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                     .clicked()
                                 {
-                                    use log::{info, error};
-                                    info!("🗑️ Executing DROP TABLE:");
-                                    info!("   Connection ID: {}", conn_id);
-                                    info!("   Database: {}", db);
-                                    info!("   Table: {}", table);
-                                    info!("   Statement: {}", stmt_str);
+                                    use log::{error};
+                                    debug!("🗑️ Executing DROP TABLE:");
+                                    debug!("   Connection ID: {}", conn_id);
+                                    debug!("   Database: {}", db);
+                                    debug!("   Table: {}", table);
+                                    debug!("   Statement: {}", stmt_str);
                                     // Execute DROP TABLE statement
                                     let result = crate::connection::execute_query_with_connection(
                                         self,
@@ -3335,11 +3317,11 @@ impl App for Tabular {
                                     // Log detailed result
                                     match &result {
                                         Some((headers, rows)) => {
-                                            info!("   Result: Success");
-                                            info!("   Headers: {:?}", headers);
-                                            info!("   Rows count: {}", rows.len());
+                                            debug!("   Result: Success");
+                                            debug!("   Headers: {:?}", headers);
+                                            debug!("   Rows count: {}", rows.len());
                                             if !rows.is_empty() {
-                                                info!("   First row: {:?}", rows.first());
+                                                debug!("   First row: {:?}", rows.first());
                                             }
                                             // Check if it's an error result
                                             if headers.first().map(|h| h == "Error").unwrap_or(false) {
@@ -3361,15 +3343,15 @@ impl App for Tabular {
                                         None => false,
                                     };
                                     if is_success {
-                                        info!("✅ DROP TABLE succeeded for {}.{}", db, table);
-                                        info!("   Connection ID: {}", conn_id);
-                                        info!("   Database: '{}'", db);
-                                        info!("   Table: '{}'", table);
+                                        debug!("✅ DROP TABLE succeeded for {}.{}", db, table);
+                                        debug!("   Connection ID: {}", conn_id);
+                                        debug!("   Database: '{}'", db);
+                                        debug!("   Table: '{}'", table);
                                         // Use incremental update: just remove the table from tree
-                                        info!("🌲 Removing table from sidebar tree (incremental)...");
+                                        debug!("🌲 Removing table from sidebar tree (incremental)...");
                                         self.remove_table_from_tree(conn_id, db, table);
                                         // Clear cache for this table (but don't refresh entire connection)
-                                        info!("🧹 Clearing cache for table {}.{}", db, table);
+                                        debug!("🧹 Clearing cache for table {}.{}", db, table);
                                         self.clear_table_cache(conn_id, db, table);
                                         // Force UI repaint to reflect changes immediately
                                         ui.ctx().request_repaint();

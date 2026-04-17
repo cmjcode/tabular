@@ -9,24 +9,23 @@ impl super::Tabular {
         table_name: &str,
         matches_table: &dyn Fn(&str, &str) -> bool,
     ) -> bool {
-        use log::info;
 
         // Navigate through the tree structure to find the table
         // Structure: Connection -> Databases Folder -> Database -> Tables Folder -> Table
         for child in &mut conn_node.children {
             // Look for Databases folder
             if child.node_type == models::enums::NodeType::DatabasesFolder {
-                info!("   Found DatabasesFolder");
+                debug!("   Found DatabasesFolder");
                 for db_node in &mut child.children {
                     // Find matching database
                     if let Some(ref db_name) = db_node.database_name {
-                        info!("   Checking database: {}", db_name);
+                        debug!("   Checking database: {}", db_name);
                         if db_name == database_name {
-                            info!("   ✓ Database matches!");
+                            debug!("   ✓ Database matches!");
                             // Find Tables folder in this database
                             for folder in &mut db_node.children {
                                 if folder.node_type == models::enums::NodeType::TablesFolder {
-                                    info!(
+                                    debug!(
                                         "   Found TablesFolder with {} tables",
                                         folder.children.len()
                                     );
@@ -37,7 +36,7 @@ impl super::Tabular {
                                             .table_name
                                             .as_ref()
                                             .unwrap_or(&table_node.name);
-                                        info!(
+                                        debug!(
                                             "      - Table in tree: '{}' (node.name='{}', node.table_name={:?})",
                                             tbl_name, table_node.name, table_node.table_name
                                         );
@@ -49,12 +48,12 @@ impl super::Tabular {
                                         let node_name = table_node.table_name.as_ref().unwrap_or(&table_node.name);
                                         let keep = !matches_table(node_name, table_name);
                                         if !keep {
-                                            info!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
+                                            debug!("   ✅ Removed table '{}' from tree (matched with '{}')", node_name, table_name);
                                         }
                                         keep
                                     });
                                     let after_count = folder.children.len();
-                                    info!("   Tables count: {} -> {}", before_count, after_count);
+                                    debug!("   Tables count: {} -> {}", before_count, after_count);
                                     return true;
                                 }
                             }
@@ -66,13 +65,13 @@ impl super::Tabular {
             else if child.node_type == models::enums::NodeType::Database
                 && let Some(ref db_name) = child.database_name
             {
-                info!("   Checking direct database node: {}", db_name);
+                debug!("   Checking direct database node: {}", db_name);
                 if db_name == database_name {
-                    info!("   ✓ Database matches!");
+                    debug!("   ✓ Database matches!");
                     // Find Tables folder in this database
                     for folder in &mut child.children {
                         if folder.node_type == models::enums::NodeType::TablesFolder {
-                            info!(
+                            debug!(
                                 "   Found TablesFolder with {} tables",
                                 folder.children.len()
                             );
@@ -81,7 +80,7 @@ impl super::Tabular {
                             for table_node in &folder.children {
                                 let tbl_name =
                                     table_node.table_name.as_ref().unwrap_or(&table_node.name);
-                                info!(
+                                debug!(
                                     "      - Table in tree: '{}' (node.name='{}', node.table_name={:?})",
                                     tbl_name, table_node.name, table_node.table_name
                                 );
@@ -94,7 +93,7 @@ impl super::Tabular {
                                     table_node.table_name.as_ref().unwrap_or(&table_node.name);
                                 let keep = !matches_table(node_name, table_name);
                                 if !keep {
-                                    info!(
+                                    debug!(
                                         "   ✅ Removed table '{}' from tree (matched with '{}')",
                                         node_name, table_name
                                     );
@@ -102,7 +101,7 @@ impl super::Tabular {
                                 keep
                             });
                             let after_count = folder.children.len();
-                            info!("   Tables count: {} -> {}", before_count, after_count);
+                            debug!("   Tables count: {} -> {}", before_count, after_count);
                             return true;
                         }
                     }
@@ -137,31 +136,10 @@ impl super::Tabular {
             debug!("🔁 Reusing existing connection pool for {}", connection_id);
         }
 
-        // First check if we have cached data
-            // Use cached data if available, otherwise return None (will be fetched in background)
-            // The get_databases_cached function already triggers background fetch if empty
-            if let Some(databases) = {
-                let dbs = self.get_databases_cached(connection_id);
-                if !dbs.is_empty() { Some(dbs) } else { None }
-            } {
-            debug!(
-                "Found cached databases for connection {}: {:?}",
-                connection_id, databases
-            );
-            if !databases.is_empty() {
-                self.build_connection_structure_from_cache(connection_id, node, &databases, false); // Default to false if fully cached, or check config
-                node.is_loaded = true;
-                return;
-            }
-        }
-
-        debug!(
-            "🔄 Cache empty or not found, fetching databases from server for connection {}",
-            connection_id
-        );
-
-        // Try to fetch from actual database server
-        // Use async variant with shared runtime to avoid creating a new runtime per call
+        // Always try to fetch from the actual database server first.
+        // This ensures that after a Refresh the UI always reflects live server data
+        // (avoiding stale/incomplete cached data, e.g. missing databases).
+        // Cache is only used as a fallback when the live fetch fails.
         let (fresh_databases_opt, is_replica) = {
             let rt = self.get_runtime();
             rt.block_on(async {
@@ -187,14 +165,27 @@ impl super::Tabular {
                 "✅ Successfully fetched {} databases from server",
                 fresh_databases.len()
             );
+            eprintln!("[DB-FETCH] load_connection_tables: live fetch returned {} databases for conn {}: {:?}", fresh_databases.len(), connection_id, fresh_databases);
             // Save to cache for future use
             cache_data::save_databases_to_cache(self, connection_id, &fresh_databases);
+            // Also update in-memory cache
+            self.database_cache.insert(connection_id, fresh_databases.clone());
+            self.database_cache_time.insert(connection_id, std::time::Instant::now());
             // Build structure from fresh data
             self.build_connection_structure_from_cache(connection_id, node, &fresh_databases, is_replica);
             node.is_loaded = true;
             return;
         } else {
-            debug!("❌ Failed to fetch databases from server, creating default structure");
+            debug!("❌ Failed to fetch databases from server, falling back to cache");
+            eprintln!("[DB-FETCH] load_connection_tables: live fetch failed/empty, falling back to cache for conn {}", connection_id);
+            // Fallback: use cached data if available
+            let dbs = self.get_databases_cached(connection_id);
+            if !dbs.is_empty() {
+                debug!("Found cached databases for connection {}: {:?}", connection_id, dbs);
+                self.build_connection_structure_from_cache(connection_id, node, &dbs, false);
+                node.is_loaded = true;
+                return;
+            }
         }
 
         // Find the connection by ID
@@ -349,7 +340,7 @@ impl super::Tabular {
                     }
 
                     // Render Custom Views
-                    log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    log::debug!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
                     for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
@@ -445,7 +436,7 @@ impl super::Tabular {
                     }
 
                     // Render Custom Views
-                    log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    log::debug!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
                     for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
@@ -602,7 +593,7 @@ impl super::Tabular {
                    }
 
                     // Render Custom Views
-                    log::info!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    log::debug!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
                     for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
@@ -1073,7 +1064,7 @@ impl super::Tabular {
             return;
         }
 
-        log::info!(
+        log::debug!(
             "[redis_keys] queueing key fetch for connection {} keyspace {} node '{}'",
             connection_id,
             database_name,
