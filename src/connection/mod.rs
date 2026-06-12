@@ -16,6 +16,7 @@ pub mod pool;
 pub mod execute;
 pub mod metadata;
 pub mod crud;
+pub mod session;
 pub mod ui;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────

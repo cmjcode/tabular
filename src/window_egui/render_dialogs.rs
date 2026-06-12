@@ -717,6 +717,105 @@ impl super::Tabular {
                     ui.ctx().request_repaint();
                 }
 
+                // Floating manual-commit (transaction) controls — only for
+                // engines the session task supports (MySQL/PostgreSQL/SQLite).
+                let tx_supported = self
+                    .query_tabs
+                    .get(self.active_tab_index)
+                    .and_then(|t| t.connection_id)
+                    .and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)))
+                    .map(|c| {
+                        crate::connection::session::supports_transactions(&c.connection_type)
+                    })
+                    .unwrap_or(false);
+                if tx_supported {
+                    let (tx_mode, tx_active) = self
+                        .query_tabs
+                        .get(self.active_tab_index)
+                        .map(|t| (t.tx_mode, t.tx_active))
+                        .unwrap_or((false, false));
+                    let tx_pos = egui::pos2(
+                        button_pos.x + button_size.x - 270.0,
+                        button_pos.y - button_size.y - 8.0,
+                    );
+                    let mut toggle_changed = false;
+                    let mut commit_clicked = false;
+                    let mut rollback_clicked = false;
+                    egui::Area::new(egui::Id::new((
+                        format!("floating_tx_controls_{}", context_id),
+                        self.active_tab_index,
+                    )))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(tx_pos)
+                    .show(ui.ctx(), |area_ui| {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgba_unmultiplied(25, 25, 30, 200))
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .inner_margin(egui::Margin::symmetric(6, 3))
+                            .show(area_ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let mut mode = tx_mode;
+                                    if ui
+                                        .checkbox(&mut mode, "Manual commit")
+                                        .on_hover_text(
+                                            "Run statements in a transaction on a dedicated \
+                                             connection; nothing is committed until you press \
+                                             Commit",
+                                        )
+                                        .changed()
+                                    {
+                                        toggle_changed = true;
+                                    }
+                                    if tx_mode {
+                                        if tx_active {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(255, 165, 0),
+                                                "●",
+                                            )
+                                            .on_hover_text("Transaction open (uncommitted)");
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                tx_active,
+                                                egui::Button::new("Commit").small(),
+                                            )
+                                            .clicked()
+                                        {
+                                            commit_clicked = true;
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                tx_active,
+                                                egui::Button::new("Rollback").small(),
+                                            )
+                                            .clicked()
+                                        {
+                                            rollback_clicked = true;
+                                        }
+                                    }
+                                });
+                            });
+                    });
+                    if toggle_changed
+                        && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                    {
+                        tab.tx_mode = !tab.tx_mode;
+                        // Turning the mode off ends the session (implicit rollback).
+                        if !tab.tx_mode {
+                            if let Some(s) = tab.session.take() {
+                                s.close();
+                            }
+                            tab.tx_active = false;
+                        }
+                    }
+                    if commit_clicked {
+                        editor::send_session_tx_command(self, true);
+                    }
+                    if rollback_clicked {
+                        editor::send_session_tx_command(self, false);
+                    }
+                }
+
                 // Inline AI loading indicator (shown below the format/run buttons while AI is working)
                 if self.ai_inline_receiver.is_some() {
                     let ai_indicator_pos = egui::pos2(

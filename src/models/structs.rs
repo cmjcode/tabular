@@ -492,6 +492,11 @@ pub struct QueryTab {
     // HTTP client state (Some(_) means this tab is an HTTP client)
     pub http_client_state: Option<HttpClientState>,
     pub redis_browser_state: Option<RedisBrowserState>,
+
+    // Manual-commit (transaction) mode — see connection/session.rs
+    pub tx_mode: bool,
+    pub tx_active: bool,
+    pub session: Option<crate::connection::session::SessionHandle>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

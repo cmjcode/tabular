@@ -52,6 +52,9 @@ pub(crate) fn create_new_tab(
         should_run_on_open: false,
         http_client_state: None,
         redis_browser_state: None,
+        tx_mode: false,
+        tx_active: false,
+        session: None,
     };
 
     tabular.query_tabs.push(new_tab);
@@ -155,6 +158,10 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     }
 
     if tab_index < tabular.query_tabs.len() {
+        // End the tab's manual-commit session (implicit rollback), if any.
+        if let Some(session) = tabular.query_tabs[tab_index].session.take() {
+            session.close();
+        }
         tabular.query_tabs.remove(tab_index);
 
         // Adjust active tab index
@@ -5166,6 +5173,26 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         debug!("=== EXECUTING {} QUERIES ===", statements.len());
         debug!("Connection ID: {}", connection_id);
         
+        // Manual-commit mode: route statements to the tab's dedicated session
+        // connection so BEGIN/COMMIT and session state persist across runs.
+        let tx_mode_active = tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .map(|t| t.tx_mode)
+            .unwrap_or(false);
+        if tx_mode_active {
+            let supported = tabular
+                .connections
+                .iter()
+                .find(|c| c.id == Some(connection_id))
+                .map(|c| crate::connection::session::supports_transactions(&c.connection_type))
+                .unwrap_or(false);
+            if supported {
+                execute_statements_in_session(tabular, connection_id, statements);
+                return;
+            }
+        }
+
         if statements.len() == 1 {
             let stmt = statements.remove(0);
 
@@ -5280,6 +5307,130 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
                 }
             }
         }
+    }
+}
+
+/// Send statements to the active tab's dedicated session connection
+/// (manual-commit mode), creating or replacing the session as needed.
+fn execute_statements_in_session(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    statements: Vec<String>,
+) {
+    let database_name = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.database_name.clone());
+
+    // (Re)create the session when missing, dead, or bound to another connection.
+    let needs_new = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| match &t.session {
+            Some(s) => s.connection_id != connection_id || s.sender.is_closed(),
+            None => true,
+        })
+        .unwrap_or(true);
+    if needs_new {
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index)
+            && let Some(old) = tab.session.take()
+        {
+            old.close();
+            tab.tx_active = false;
+        }
+        let new_session =
+            crate::connection::session::spawn_session(tabular, connection_id, database_name);
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.session = new_session;
+        }
+    }
+
+    let Some(session) = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.session.clone())
+    else {
+        tabular.error_message =
+            "Cannot start a session connection for manual-commit mode".to_string();
+        tabular.show_error_message = true;
+        tabular.query_execution_in_progress = false;
+        return;
+    };
+
+    let total = statements.len();
+    for (idx, stmt) in statements.into_iter().enumerate() {
+        let job_id = tabular.next_query_job_id;
+        tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+        let preview: String = stmt.chars().take(72).collect();
+        let status = connection::QueryJobStatus {
+            job_id,
+            connection_id,
+            query_preview: if total > 1 {
+                format!("[tx {}/{}] {}", idx + 1, total, preview)
+            } else {
+                format!("[tx] {}", preview)
+            },
+            started_at: Instant::now(),
+            completed: false,
+        };
+        tabular.active_query_jobs.insert(job_id, status);
+
+        if !session.send(crate::connection::session::SessionCommand::Execute {
+            job_id,
+            sql: stmt,
+        }) {
+            tabular.active_query_jobs.remove(&job_id);
+            tabular.error_message =
+                "Session connection is gone; toggle manual commit off and on again".to_string();
+            tabular.show_error_message = true;
+            tabular.query_execution_in_progress = false;
+            return;
+        }
+    }
+
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.tx_active = true;
+    }
+    tabular.current_table_name = if total > 1 {
+        format!("Running {} queries (tx)…", total)
+    } else {
+        "Running query (tx)…".to_string()
+    };
+}
+
+/// Send COMMIT or ROLLBACK to the active tab's session (manual-commit mode).
+pub(crate) fn send_session_tx_command(tabular: &mut window_egui::Tabular, commit: bool) {
+    let Some(session) = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.session.clone())
+    else {
+        return;
+    };
+    let job_id = tabular.next_query_job_id;
+    tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+    let verb = if commit { "COMMIT" } else { "ROLLBACK" };
+    let status = connection::QueryJobStatus {
+        job_id,
+        connection_id: session.connection_id,
+        query_preview: format!("[tx] {}", verb),
+        started_at: Instant::now(),
+        completed: false,
+    };
+    tabular.active_query_jobs.insert(job_id, status);
+    tabular.query_execution_in_progress = true;
+
+    let command = if commit {
+        crate::connection::session::SessionCommand::Commit { job_id }
+    } else {
+        crate::connection::session::SessionCommand::Rollback { job_id }
+    };
+    if !session.send(command) {
+        tabular.active_query_jobs.remove(&job_id);
+        tabular.query_execution_in_progress = false;
+    }
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.tx_active = false;
     }
 }
 
