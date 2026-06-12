@@ -125,6 +125,13 @@ impl SqlDialect for MySqlDialect {
         }
         format!("`{}`", trimmed.replace('`', "``"))
     }
+
+    fn quote_string(&self, s: &str) -> String {
+        // MySQL treats backslash as an escape character by default
+        // (sql_mode without NO_BACKSLASH_ESCAPES), so a trailing `\`
+        // would escape the closing quote — escape backslashes too.
+        format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
+    }
 }
 
 /// PostgreSQL dialect

@@ -480,12 +480,14 @@ pub trait SpreadsheetOperations {
             return "NULL".to_string();
         }
         match conn.connection_type {
-            crate::models::enums::DatabaseType::MySQL
-            | crate::models::enums::DatabaseType::PostgreSQL
-            | crate::models::enums::DatabaseType::MsSQL
-            | crate::models::enums::DatabaseType::SQLite => format!("'{}'", v.replace("'", "''")),
+            // MySQL treats backslash as an escape character by default
+            // (sql_mode without NO_BACKSLASH_ESCAPES), so a trailing `\`
+            // would escape the closing quote — escape backslashes too.
+            crate::models::enums::DatabaseType::MySQL => {
+                format!("'{}'", v.replace('\\', "\\\\").replace('\'', "''"))
+            }
             // Always escape embedded single quotes; never interpolate raw values.
-            _ => format!("'{}'", v.replace("'", "''")),
+            _ => format!("'{}'", v.replace('\'', "''")),
         }
     }
 
@@ -1111,14 +1113,14 @@ impl SpreadsheetOperations for Tabular {
             return "NULL".to_string();
         }
         match conn.connection_type {
-            crate::models::enums::DatabaseType::MySQL
-            | crate::models::enums::DatabaseType::PostgreSQL
-            | crate::models::enums::DatabaseType::MsSQL
-            | crate::models::enums::DatabaseType::SQLite => {
-                std::format!("'{}'", v.replace("'", "''"))
+            // MySQL treats backslash as an escape character by default
+            // (sql_mode without NO_BACKSLASH_ESCAPES), so a trailing `\`
+            // would escape the closing quote — escape backslashes too.
+            crate::models::enums::DatabaseType::MySQL => {
+                std::format!("'{}'", v.replace('\\', "\\\\").replace('\'', "''"))
             }
             // Always escape embedded single quotes; never interpolate raw values.
-            _ => std::format!("'{}'", v.replace("'", "''")),
+            _ => std::format!("'{}'", v.replace('\'', "''")),
         }
     }
 
