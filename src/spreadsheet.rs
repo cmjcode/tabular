@@ -484,7 +484,8 @@ pub trait SpreadsheetOperations {
             | crate::models::enums::DatabaseType::PostgreSQL
             | crate::models::enums::DatabaseType::MsSQL
             | crate::models::enums::DatabaseType::SQLite => format!("'{}'", v.replace("'", "''")),
-            _ => format!("'{}'", v),
+            // Always escape embedded single quotes; never interpolate raw values.
+            _ => format!("'{}'", v.replace("'", "''")),
         }
     }
 
@@ -1116,7 +1117,8 @@ impl SpreadsheetOperations for Tabular {
             | crate::models::enums::DatabaseType::SQLite => {
                 std::format!("'{}'", v.replace("'", "''"))
             }
-            _ => std::format!("'{}'", v),
+            // Always escape embedded single quotes; never interpolate raw values.
+            _ => std::format!("'{}'", v.replace("'", "''")),
         }
     }
 
