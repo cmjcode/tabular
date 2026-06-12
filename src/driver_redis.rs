@@ -468,7 +468,7 @@ pub(crate) fn load_redis_browser_state(
     match result {
         Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster)) => {
             let key_count = key_pairs.len();
-            let state = models::structs::RedisBrowserState {
+            models::structs::RedisBrowserState {
                 available_keyspaces,
                 keyspace_label: keyspace_label.clone(),
                 keys: key_pairs
@@ -490,9 +490,7 @@ pub(crate) fn load_redis_browser_state(
                     format!("{} · {} keys loaded", keyspace_label, key_count)
                 },
                 ..Default::default()
-            };
-
-            state
+            }
         }
         Err(error) => models::structs::RedisBrowserState {
             last_error: Some(error),
@@ -1412,12 +1410,12 @@ pub(crate) fn load_redis_structure(
 
     // Fallback: use whatever is in cache (e.g., when connection is temporarily unreachable).
     debug!("⚠️  Live Redis db fetch failed — falling back to cache");
-    if let Some(databases) = cache_data::get_databases_from_cache(tabular, connection_id) {
-        if !databases.is_empty() {
-            cache_data::build_redis_structure_from_cache(tabular, connection_id, node, &databases);
-            node.is_loaded = true;
-            return;
-        }
+    if let Some(databases) = cache_data::get_databases_from_cache(tabular, connection_id)
+        && !databases.is_empty()
+    {
+        cache_data::build_redis_structure_from_cache(tabular, connection_id, node, &databases);
+        node.is_loaded = true;
+        return;
     }
 
     // Create basic structure for Redis with databases as fallback
@@ -1514,8 +1512,7 @@ pub(crate) fn fetch_tables_from_redis_connection(
                         if is_standard_db
                             && let Ok(db_num) =
                                 database_name.trim_start_matches("db").parse::<i32>()
-                        {
-                            if tokio::time::timeout(
+                            && tokio::time::timeout(
                                 std::time::Duration::from_secs(10),
                                 redis::cmd("SELECT")
                                     .arg(db_num)
@@ -1523,9 +1520,8 @@ pub(crate) fn fetch_tables_from_redis_connection(
                             )
                             .await
                             .is_err()
-                            {
-                                return None;
-                            }
+                        {
+                            return None;
                         }
 
                         // Get a sample of keys (limit to first 100)

@@ -578,7 +578,7 @@ impl super::Tabular {
                 let is_ok = sqlx::query_as::<_, (String,)>("PRAGMA integrity_check")
                     .fetch_one(pool_clone.as_ref())
                     .await
-                    .map_or(false, |(s,)| s == "ok");
+                    .is_ok_and(|(s,)| s == "ok");
 
                 if !is_ok {
                     log::warn!(

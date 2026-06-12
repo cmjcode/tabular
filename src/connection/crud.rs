@@ -351,10 +351,7 @@ pub(crate) fn test_database_connection(
 /// Returns true if the error is a SQLite database corruption error (SQLITE_CORRUPT, code 11).
 fn is_sqlite_corrupt(e: &sqlx::Error) -> bool {
     if let sqlx::Error::Database(db_err) = e {
-        if db_err
-            .code()
-            .map_or(false, |c| c.as_ref() == "11")
-        {
+        if db_err.code().is_some_and(|c| c.as_ref() == "11") {
             return true;
         }
         let msg = db_err.message().to_lowercase();

@@ -475,6 +475,7 @@ impl super::Tabular {
             ai_settings_base_url_input: String::new(),
             ai_inline_processed: std::collections::HashSet::new(),
             ai_inline_receiver: None,
+            toasts: crate::window_egui::notifications::ToastManager::default(),
         };
 
         // Clear any old cached pools

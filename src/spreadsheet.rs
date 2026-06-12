@@ -340,7 +340,7 @@ pub trait SpreadsheetOperations {
     }
 
     fn spreadsheet_extract_table_name(&self) -> Option<String> {
-        println!(
+        debug!(
             "🔥 spreadsheet_extract_table_name called with current_table_name: '{}'",
             self.get_current_table_name()
         );
@@ -348,20 +348,20 @@ pub trait SpreadsheetOperations {
         if self.get_current_table_name().starts_with("Table: ") {
             let s = self.get_current_table_name().strip_prefix("Table: ")?;
             let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
-            println!("🔥 Extracted table name: {:?}", result);
+            debug!("🔥 Extracted table name: {:?}", result);
             result
         } else {
             // Try to extract from active tab if it's a table browse tab
             if let Some(tab) = self.get_query_tabs().get(self.get_active_tab_index()) {
-                println!("🔥 Checking active tab title: '{}'", tab.title);
+                debug!("🔥 Checking active tab title: '{}'", tab.title);
                 if tab.title.starts_with("Table: ") {
                     let s = tab.title.strip_prefix("Table: ")?;
                     let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
-                    println!("🔥 Extracted table name from tab: {:?}", result);
+                    debug!("🔥 Extracted table name from tab: {:?}", result);
                     return result;
                 }
             }
-            println!("🔥 Table name does not start with 'Table: ' and no suitable tab found");
+            debug!("🔥 Table name does not start with 'Table: ' and no suitable tab found");
             None
         }
     }
@@ -862,7 +862,7 @@ impl SpreadsheetOperations for Tabular {
 
 
     fn spreadsheet_extract_table_name(&self) -> Option<String> {
-        std::println!(
+        debug!(
             "🔥 spreadsheet_extract_table_name called with current_table_name: '{}'",
             self.get_current_table_name()
         );
@@ -870,20 +870,20 @@ impl SpreadsheetOperations for Tabular {
         if self.get_current_table_name().starts_with("Table: ") {
             let s = self.get_current_table_name().strip_prefix("Table: ")?;
             let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
-            std::println!("🔥 Extracted table name: {:?}", result);
+            debug!("🔥 Extracted table name: {:?}", result);
             result
         } else {
             // Try to extract from active tab if it's a table browse tab
             if let Some(tab) = self.get_query_tabs().get(self.get_active_tab_index()) {
-                std::println!("🔥 Checking active tab title: '{}'", tab.title);
+                debug!("🔥 Checking active tab title: '{}'", tab.title);
                 if tab.title.starts_with("Table: ") {
                     let s = tab.title.strip_prefix("Table: ")?;
                     let result = Some(s.split(" (").next().unwrap_or("").trim().to_string());
-                    std::println!("🔥 Extracted table name from tab: {:?}", result);
+                    debug!("🔥 Extracted table name from tab: {:?}", result);
                     return result;
                 }
             }
-            std::println!("🔥 Table name does not start with 'Table: ' and no suitable tab found");
+            debug!("🔥 Table name does not start with 'Table: ' and no suitable tab found");
             None
         }
     }
@@ -932,14 +932,14 @@ impl SpreadsheetOperations for Tabular {
         if use_metadata_filtering {
              let target_table = target_table_for_update.unwrap();
              let meta = metadata.as_ref().unwrap();
-             std::println!("🔥 spreadsheet_build_where_clause: filtering for target_table='{}'", target_table);
+             debug!("🔥 spreadsheet_build_where_clause: filtering for target_table='{}'", target_table);
              
              for (i, col_meta) in meta.iter().enumerate() {
                  let belongs_to_table = col_meta.table_name.as_deref().unwrap_or("") == target_table;
                  
                  if belongs_to_table && col_meta.is_primary_key {
                      if let Some(col_name) = headers.get(i) {
-                         std::println!("🔥 Found matching PK: '{}' at index {}", col_name, i);
+                         debug!("🔥 Found matching PK: '{}' at index {}", col_name, i);
                          let id_name = col_meta.original_name.clone().unwrap_or(col_name.clone());
                          let mut val = row_data.get(i).cloned().unwrap_or_default();
                          if let Some(ov) = overrides
@@ -957,15 +957,15 @@ impl SpreadsheetOperations for Tabular {
                      }
                  } else if belongs_to_table {
                      // Debug why non-PK was skipped
-                     // std::println!("🔥 Skipping column '{}' (is_pk={}) for table match", col_meta.name, col_meta.is_primary_key);
+                     // debug!("🔥 Skipping column '{}' (is_pk={}) for table match", col_meta.name, col_meta.is_primary_key);
                  }
              }
         } else {
-             std::println!("🔥 spreadsheet_build_where_clause: NO metadata filtering (target={:?}, meta={})", target_table_for_update, metadata.is_some());
+             debug!("🔥 spreadsheet_build_where_clause: NO metadata filtering (target={:?}, meta={})", target_table_for_update, metadata.is_some());
         }
 
         if where_parts.is_empty() {
-             std::println!("🔥 spreadsheet_build_where_clause: where_parts was empty, using FALLBACK logic");
+             debug!("🔥 spreadsheet_build_where_clause: where_parts was empty, using FALLBACK logic");
              for (i, header) in headers.iter().enumerate() {
                 // NEW: Security check - if we have metadata, ensure this column belongs to target table
                 // This prevents adding columns from joined tables (e.g. date_time) to the WHERE clause
@@ -978,7 +978,7 @@ impl SpreadsheetOperations for Tabular {
                     // Only skip if table name is explicitly known and differs from target.
                     // Use case-insensitive check to be safe.
                     if !tbl.is_empty() && !tbl.eq_ignore_ascii_case(target) {
-                        std::println!("🔥 Fallback skipping column '{}' because it belongs to table '{}' (target='{}')", header, tbl, target);
+                        debug!("🔥 Fallback skipping column '{}' because it belongs to table '{}' (target='{}')", header, tbl, target);
                         continue;
                     }
                 }
@@ -1121,23 +1121,23 @@ impl SpreadsheetOperations for Tabular {
     }
 
     fn spreadsheet_generate_sql(&self) -> Option<String> {
-        std::println!("🔥 spreadsheet_generate_sql called");
+        debug!("🔥 spreadsheet_generate_sql called");
 
         let conn_id = self.get_current_connection_id()?;
-        std::println!("🔥 Found connection ID: {}", conn_id);
+        debug!("🔥 Found connection ID: {}", conn_id);
 
         let conn = self
             .get_connections()
             .iter()
             .find(|c| c.id == Some(conn_id))
             .cloned()?;
-        std::println!("🔥 Found connection config");
+        debug!("🔥 Found connection config");
 
         let table = self.spreadsheet_extract_table_name();
         if let Some(t) = &table {
-            std::println!("🔥 Extracted table name: {}", t);
+            debug!("🔥 Extracted table name: {}", t);
         } else {
-            std::println!("🔥 No global table name found - relying on column metadata");
+            debug!("🔥 No global table name found - relying on column metadata");
         }
 
         let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
@@ -1171,18 +1171,14 @@ impl SpreadsheetOperations for Tabular {
 
         // Fallback: if no PKs from metadata (e.g. table browse mode where current_column_metadata
         // is None), query index_cache directly using the cached primary key information.
-        if derived_pks.is_empty() {
-            if let Some(ref tbl) = table {
-                if let Some(db) = self.spreadsheet_extract_database_name() {
-                    if let Some(pks) = self.get_primary_keys_for_table(conn_id, &db, tbl) {
-                        if !pks.is_empty() {
-                            log::debug!("🔥 Found PKs from index_cache fallback: {:?}", pks);
-                            std::println!("🔥 Found PKs from index_cache fallback: {:?}", pks);
-                            derived_pks = pks;
-                        }
-                    }
-                }
-            }
+        if derived_pks.is_empty()
+            && let Some(ref tbl) = table
+            && let Some(db) = self.spreadsheet_extract_database_name()
+            && let Some(pks) = self.get_primary_keys_for_table(conn_id, &db, tbl)
+            && !pks.is_empty()
+        {
+            debug!("Found PKs from index_cache fallback: {:?}", pks);
+            derived_pks = pks;
         }
 
         let pk_columns = if !derived_pks.is_empty() {
@@ -1213,7 +1209,7 @@ impl SpreadsheetOperations for Tabular {
         }
 
         let mut stmts: Vec<String> = Vec::new();
-        std::println!(
+        debug!(
             "🔥 Processing {} operations",
             state.pending_operations.len()
         );
@@ -1235,7 +1231,7 @@ impl SpreadsheetOperations for Tabular {
                     let table_name_str = match table_name_opt {
                         Some(t) => t,
                         None => {
-                             std::println!("🔥 Unable to determine table name for update at col {}", col_index);
+                             debug!("🔥 Unable to determine table name for update at col {}", col_index);
                              continue;
                         }
                     };
@@ -1248,7 +1244,7 @@ impl SpreadsheetOperations for Tabular {
                     let col = match col_name_str {
                          Some(n) => n,
                          None => {
-                             std::println!("🔥 Missing header for column index {}", col_index);
+                             debug!("🔥 Missing header for column index {}", col_index);
                              continue;
                          }
                     };
@@ -1258,7 +1254,7 @@ impl SpreadsheetOperations for Tabular {
                     let row_data = match row_data {
                         Some(r) => r,
                         None => {
-                            std::println!("🔥 Missing row data at index {}", row_index);
+                            debug!("🔥 Missing row data at index {}", row_index);
                             continue;
                         }
                     };
@@ -1268,7 +1264,7 @@ impl SpreadsheetOperations for Tabular {
                     ) {
                         Some(clause) => clause,
                         None => {
-                            std::println!("🔥 Unable to build WHERE clause for row {}", row_index);
+                            debug!("🔥 Unable to build WHERE clause for row {}", row_index);
                             continue;
                         }
                     };
@@ -1284,7 +1280,7 @@ impl SpreadsheetOperations for Tabular {
 
                 crate::models::structs::CellEditOperation::InsertRow { row_index, values } => {
                     if headers.is_empty() {
-                        std::println!("🔥 Skipping insert: no headers available");
+                        debug!("🔥 Skipping insert: no headers available");
                         continue;
                     }
                     let cols: Vec<String> = headers.iter().map(|c| qt(c)).collect();
@@ -1302,7 +1298,7 @@ impl SpreadsheetOperations for Tabular {
                     let table_for_insert = match &table {
                          Some(t) => t,
                          None => {
-                             std::println!("🔥 Skipping insert: no global table identified");
+                             debug!("🔥 Skipping insert: no global table identified");
                              continue;
                          }
                     };
@@ -1324,7 +1320,7 @@ impl SpreadsheetOperations for Tabular {
                     ) {
                         Some(clause) => clause,
                         None => {
-                            std::println!(
+                            debug!(
                                 "🔥 Unable to build DELETE WHERE clause for row {}",
                                 row_index
                             );
@@ -1334,13 +1330,13 @@ impl SpreadsheetOperations for Tabular {
                     let table_for_delete = match &table {
                          Some(t) => t,
                          None => {
-                             std::println!("🔥 Skipping delete: no global table identified");
+                             debug!("🔥 Skipping delete: no global table identified");
                              continue;
                          }
                     };
                     let sql =
                         std::format!("DELETE FROM {} WHERE {}", qt_table(table_for_delete), where_clause);
-                    std::println!("🔥 Using DELETE WHERE clause: {}", where_clause);
+                    debug!("🔥 Using DELETE WHERE clause: {}", where_clause);
                     stmts.push(sql);
                 }
             }
@@ -1353,18 +1349,17 @@ impl SpreadsheetOperations for Tabular {
     }
 
     fn spreadsheet_save_changes(&mut self) {
-        std::println!(
-            "🔥 spreadsheet_save_changes called with {} pending operations",
-            self.get_spreadsheet_state().pending_operations.len()
-        );
         debug!(
             "🔥 spreadsheet_save_changes called with {} pending operations",
             self.get_spreadsheet_state().pending_operations.len()
         );
+        debug!(
+            "spreadsheet_save_changes called with {} pending operations",
+            self.get_spreadsheet_state().pending_operations.len()
+        );
 
         if self.get_spreadsheet_state().pending_operations.is_empty() {
-            std::println!("🔥 No pending operations to save");
-            debug!("🔥 No pending operations to save");
+            debug!("No pending operations to save");
             return;
         }
 
@@ -1384,39 +1379,34 @@ impl SpreadsheetOperations for Tabular {
                 .unwrap_or_default();
 
                 // 2. Cache miss → query the live database directly
-                if pks.is_empty() {
-                    if let Some(conn) = self
+                if pks.is_empty()
+                    && let Some(conn) = self
                         .connections
                         .iter()
                         .find(|c| c.id == Some(conn_id))
                         .cloned()
-                    {
-                        pks = self.fetch_primary_key_columns_for_table(
-                            conn_id, &conn, &db_str, tbl,
-                        );
-                    }
+                {
+                    pks = self.fetch_primary_key_columns_for_table(
+                        conn_id, &conn, &db_str, tbl,
+                    );
                 }
 
                 if !pks.is_empty() {
-                    std::println!("🔥 Pre-loaded PKs for '{}': {:?}", tbl, pks);
-                    debug!("🔥 Pre-loaded PKs for '{}': {:?}", tbl, pks);
+                    debug!("Pre-loaded PKs for '{}': {:?}", tbl, pks);
                     self.spreadsheet_state.primary_key_columns = pks;
                 } else {
-                    std::println!("🔥 Warning: could not determine PKs for table '{}' — WHERE clause will use all columns", tbl);
-                    debug!("🔥 Warning: could not determine PKs for table '{}'", tbl);
+                    debug!("Warning: could not determine PKs for table '{}' — WHERE clause will use all columns", tbl);
                 }
             }
         }
 
         if let Some(sql) = self.spreadsheet_generate_sql() {
-            std::println!("🔥 Generated SQL: {}", sql);
-            debug!("🔥 Generated SQL: {}", sql);
+            debug!("Generated SQL: {}", sql);
             if let Some(conn_id) = self.get_current_connection_id() {
-                std::println!("🔥 Executing SQL with connection {}", conn_id);
-                debug!("🔥 Executing SQL with connection {}", conn_id);
+                debug!("Executing SQL with connection {}", conn_id);
 
                 // Execute without transaction wrapper to avoid MySQL prepared statement issues
-                std::println!("🔥 Executing SQL: {}", sql);
+                debug!("Executing SQL: {}", sql);
 
                 // Note: This is a bit tricky because we need to call connection::execute_query_with_connection
                 // but this trait doesn't know about the full Tabular struct. We'll need to implement this
@@ -1426,12 +1416,10 @@ impl SpreadsheetOperations for Tabular {
                 // SUCCESS: User requested to stop editing cell on success
                 self.spreadsheet_finish_cell_edit(false);
             } else {
-                std::println!("🔥 No current connection ID");
-                debug!("🔥 No current connection ID");
+                debug!("No current connection ID");
             }
         } else {
-            std::println!("🔥 Failed to generate SQL");
-            debug!("🔥 Failed to generate SQL");
+            debug!("Failed to generate SQL");
         }
     }
 

@@ -2550,22 +2550,22 @@ impl super::Tabular {
                     models::enums::NodeType::EventsFolder => Some(("🔄 Refresh Events", models::enums::NodeType::EventsFolder)),
                     _ => None,
                 };
-                if let Some((label, folder_node_type)) = folder_refresh_info {
-                    if let Some(conn_id) = node.connection_id {
-                        response.context_menu(|ui| {
-                            if ui.button(label).clicked() {
-                                node.is_loaded = false;
-                                node.children.clear();
-                                expansion_request = Some(models::structs::ExpansionRequest {
-                                    node_type: folder_node_type,
-                                    connection_id: conn_id,
-                                    database_name: node.database_name.clone(),
-                                    force_clear_cache: true,
-                                });
-                                ui.close();
-                            }
-                        });
-                    }
+                if let Some((label, folder_node_type)) = folder_refresh_info
+                    && let Some(conn_id) = node.connection_id
+                {
+                    response.context_menu(|ui| {
+                        if ui.button(label).clicked() {
+                            node.is_loaded = false;
+                            node.children.clear();
+                            expansion_request = Some(models::structs::ExpansionRequest {
+                                node_type: folder_node_type,
+                                connection_id: conn_id,
+                                database_name: node.database_name.clone(),
+                                force_clear_cache: true,
+                            });
+                            ui.close();
+                        }
+                    });
                 }
 
                 // Add context menu for table nodes
@@ -2744,6 +2744,26 @@ impl super::Tabular {
             // (central panel logic handled inside update previously)
 
             if node.is_expanded {
+                // Loading indicator: an expanded node whose children are still being
+                // fetched asynchronously (connection / database / table / folder).
+                // Derived purely from existing state — no extra flag to keep in sync.
+                if !node.is_loaded
+                    && node.children.is_empty()
+                    && !params.is_search_mode
+                    && node.node_type != models::enums::NodeType::HistoryDateFolder
+                {
+                    ui.indent(id.with("loading"), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(12.0));
+                            ui.label(
+                                egui::RichText::new("Loading…")
+                                    .italics()
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        });
+                    });
+                    ui.ctx().request_repaint();
+                }
                 // Khusus HistoryDateFolder: render children tanpa indent tambahan (full width)
                 let is_history_date_folder =
                     node.node_type == models::enums::NodeType::HistoryDateFolder;

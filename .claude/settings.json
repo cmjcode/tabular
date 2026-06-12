@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs -I{} sh -c 'echo \"$\\(grep -c \".unwrap\\(\\)\" {}\\) {}\"')",
+      "Bash(sed -n '28,80p' src/window_egui/mod.rs)",
+      "Bash(awk '/pub struct Tabular/{f=1} f&&/^}/{print NR; exit} f&&/:/{c++} END{print \"approx fields:\",c}' src/window_egui/mod.rs)",
+      "Bash(awk '/fn update/{f=NR} f&&/^    }/{print \"update fn ends near\", NR; exit}' src/window_egui/app_impl.rs)",
+      "Bash(sed -n '157,200p' src/window_egui/init.rs)",
+      "Bash(awk 'NR>=157 && /^        }/{print NR\": \"$0} NR>=157 && /\\\\.\\\\.Default|ai_inline_receiver|^    }$/{print NR\": \"$0}' src/window_egui/init.rs)",
+      "Bash(awk 'NR>1 && $0==prev && /debug!/ {print NR\": DUP: \"$0} {prev=$0}' src/spreadsheet.rs)",
+      "Bash(awk -F: '{n=$1; line=$0; if\\(n==prevn+1\\) print prevline\" || \"line; prevn=n; prevline=line}')",
+      "Bash(awk 'NR>1 && $0==prev && /debug!/ {print NR\": \"$0} {prev=$0}' src/spreadsheet.rs)",
+      "Bash(sed -n '470,497p' src/driver_redis.rs)",
+      "Bash(sed -n '1514,1545p' src/driver_redis.rs)",
+      "Bash(cargo test *)",
+      "Bash(awk '/pub struct TreeNode/{f=1} f{print} f&&/^}/{exit}' src/models/structs.rs)",
+      "Bash(awk 'NR>=2730 && NR<=2870 && \\(/is_expanded/ || /if .*\\\\{/ || /HistoryDateFolder/ || /ui.indent/\\)' src/window_egui/sidebar_tree.rs)",
+      "Bash(sed -n '2735,2752p' src/window_egui/sidebar_tree.rs)",
+      "Bash(awk 'NR>=1779 && NR<=2120 && /let id|id = egui::Id|Id::new|make_persistent/' src/window_egui/sidebar_tree.rs)",
+      "Bash(awk -F: '$1>=1779 && $1<=2863')",
+      "Bash(sed -n '170,190p' src/window_egui/tree_loader.rs)",
+      "Bash(sed -n '1245,1255p' src/window_egui/tree_loader.rs)",
+      "Bash(sed -n '70,90p' src/window_egui/query_jobs.rs)",
+      "Bash(sed -n '1,32p' src/data_table/pagination.rs)"
+    ]
+  }
+}

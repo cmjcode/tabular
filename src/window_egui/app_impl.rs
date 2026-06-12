@@ -3268,11 +3268,9 @@ impl App for Tabular {
                                         // Clear caches and refresh connection tree
                                         self.clear_connection_cache(conn_id);
                                         self.refresh_connection(conn_id);
-                                        self.error_message = format!("Collection '{}.{}' berhasil di-drop", db, coll);
-                                        self.show_error_message = true; // Show as toast/dialog
+                                        self.toasts.success(format!("Collection '{}.{}' berhasil di-drop", db, coll));
                                     } else {
-                                        self.error_message = format!("Gagal drop collection '{}.{}'", db, coll);
-                                        self.show_error_message = true;
+                                        self.toasts.error(format!("Gagal drop collection '{}.{}'", db, coll));
                                     }
                                     self.pending_drop_collection = None;
                                 }
@@ -3355,10 +3353,9 @@ impl App for Tabular {
                                         self.clear_table_cache(conn_id, db, table);
                                         // Force UI repaint to reflect changes immediately
                                         ui.ctx().request_repaint();
-                                        self.error_message = format!("Table '{}.{}' berhasil di-drop", db, table);
-                                        self.show_error_message = true;
+                                        self.toasts.success(format!("Table '{}.{}' berhasil di-drop", db, table));
                                     } else {
-                                        error!("❌ DROP TABLE failed for {}.{}", db, table);                                        
+                                        error!("❌ DROP TABLE failed for {}.{}", db, table);
                                         // Show error message from result if available
                                         let error_msg = if let Some((headers, rows)) = result {
                                             if headers.first().map(|h| h == "Error").unwrap_or(false) {
@@ -3372,8 +3369,7 @@ impl App for Tabular {
                                         } else {
                                             format!("Gagal drop table '{}.{}'", db, table)
                                         };
-                                        self.error_message = error_msg;
-                                        self.show_error_message = true;
+                                        self.toasts.error(error_msg);
                                     }
                                     self.pending_drop_table = None;
                                 }
@@ -3528,10 +3524,14 @@ impl App for Tabular {
                         );
                     }
                 } else {
-                    debug!("⚠️ CMD+C but no focus target (table_flag={}, data_sel={:?})", 
+                    debug!("⚠️ CMD+C but no focus target (table_flag={}, data_sel={:?})",
                         self.table_recently_clicked, self.selected_cell);
                 }
         }
+
+        // Centralized, non-blocking toast notifications. Rendered last so they
+        // stack above all panels and dialogs.
+        self.toasts.show(ctx);
     } // end update
 } // end impl App for Tabular
 

@@ -15,6 +15,7 @@ pub mod app_impl;
 pub mod connection_mgr;
 pub mod diagram;
 pub mod init;
+pub mod notifications;
 pub mod pagination;
 pub mod query_jobs;
 pub mod render_dialogs;
@@ -416,6 +417,8 @@ pub struct Tabular {
     // (block_hash, placeholder_start, placeholder_end, rx)
     #[allow(clippy::type_complexity)]
     pub ai_inline_receiver: Option<(u64, usize, usize, std::sync::mpsc::Receiver<Result<String, String>>)>,
+    // Centralized, non-blocking toast/notification surface (see notifications.rs)
+    pub toasts: notifications::ToastManager,
 }
 
 // Preference tabs enumeration

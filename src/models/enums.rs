@@ -96,6 +96,9 @@ pub enum BackgroundTask {
     },
 }
 
+// Infrequent mpsc channel message (one per background task completion), so the
+// size disparity between variants is not a hot-path concern.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum BackgroundResult {
     RefreshComplete {

@@ -4,6 +4,15 @@ use crate::window_egui;
 use super::clear_table_selection;
 
 pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    // Execution time of the currently displayed result (read before the mutable
+    // borrow taken by the closure below).
+    let exec_ms = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.results.get(t.active_result_index))
+        .map(|r| r.execution_time_ms)
+        .filter(|ms| *ms > 0);
+
     // Tidak ada extra space supaya bar menempel konten / tepi bawah
     ui.horizontal(|ui| {
         let spacing = ui.spacing_mut();
@@ -26,6 +35,19 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                 ui.colored_label(egui::Color32::from_rgb(255, 0, 0), "💾 Client pagination");
             }
         }
+
+        // Execution time indicator
+        if let Some(ms) = exec_ms {
+            ui.separator();
+            let label = if ms >= 1000 {
+                format!("⏱ {:.2} s", ms as f64 / 1000.0)
+            } else {
+                format!("⏱ {} ms", ms)
+            };
+            ui.label(egui::RichText::new(label).color(ui.visuals().weak_text_color()))
+                .on_hover_text("Query execution time");
+        }
+
         ui.separator();
 
         // Page size selector
