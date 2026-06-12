@@ -5,6 +5,20 @@ impl super::Tabular {
         self.prune_cancelled_jobs();
         self.active_query_handles.remove(&message.job_id);
 
+        // Drop this job from its sequential-batch group (if any); the group
+        // entry disappears once every member has reported a result.
+        if let Some(pos) = self
+            .query_job_batches
+            .iter()
+            .position(|(ids, _)| ids.contains(&message.job_id))
+        {
+            let ids = &mut self.query_job_batches[pos].0;
+            ids.retain(|id| *id != message.job_id);
+            if ids.is_empty() {
+                self.query_job_batches.remove(pos);
+            }
+        }
+
         if self.cancelled_query_jobs.remove(&message.job_id).is_some() {
             self.pending_paginated_jobs.remove(&message.job_id);
             if self.active_query_jobs.is_empty() {
@@ -198,6 +212,26 @@ impl super::Tabular {
         if let Some(handle) = self.active_query_handles.remove(&job_id) {
             handle.abort();
             cancelled = true;
+        }
+
+        // A sequential batch runs on one task: cancelling any member job
+        // aborts the entire batch and cleans up the sibling statements.
+        if let Some(pos) = self
+            .query_job_batches
+            .iter()
+            .position(|(ids, _)| ids.contains(&job_id))
+        {
+            let (member_ids, abort) = self.query_job_batches.remove(pos);
+            abort.abort();
+            cancelled = true;
+            for member in member_ids {
+                if member != job_id {
+                    self.active_query_jobs.remove(&member);
+                    self.active_query_handles.remove(&member);
+                    self.cancelled_query_jobs
+                        .insert(member, std::time::Instant::now());
+                }
+            }
         }
 
         let had_status = self.active_query_jobs.remove(&job_id).is_some();

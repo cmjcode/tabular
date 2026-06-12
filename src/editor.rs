@@ -5106,54 +5106,20 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
             tab.active_result_index = 0;
         }
 
-        // Inline splitting logic (since external helper failed)
-        // Basic split by ';' but respecting quotes would be better.
-        // For now, we will use a simple split logic that ignores escaped semicolons if possible,
-        // or just rely on the assumption that users separate queries by ;
-        // REVISIT: Using a rigorous splitter is better.
-        let mut statements = Vec::new();
-        let mut current_stmt = String::new();
-        let mut inside_quote = None; // None, Some('\''), Some('"'), Some('`')
-        let mut escaped = false;
-        let chars = query.chars();
-
-        for c in chars {
-            if escaped {
-                current_stmt.push(c);
-                escaped = false;
-                continue;
-            }
-            if c == '\\' {
-                current_stmt.push(c);
-                escaped = true;
-                continue;
-            }
-            if let Some(quote_char) = inside_quote {
-                if c == quote_char {
-                    inside_quote = None;
-                }
-                current_stmt.push(c);
-            } else {
-                match c {
-                    '\'' | '"' | '`' => {
-                        inside_quote = Some(c);
-                        current_stmt.push(c);
-                    }
-                    ';' => {
-                        if !current_stmt.trim().is_empty() {
-                            statements.push(current_stmt.trim().to_string());
-                            current_stmt.clear();
-                        }
-                    }
-                    _ => {
-                        current_stmt.push(c);
-                    }
-                }
-            }
-        }
-        if !current_stmt.trim().is_empty() {
-            statements.push(current_stmt.trim().to_string());
-        }
+        // Split the script into statements (quote/comment aware). '#' starts
+        // a line comment only on MySQL, where it is not an operator.
+        let hash_is_comment = tabular
+            .connections
+            .iter()
+            .find(|c| c.id == Some(connection_id))
+            .map(|c| {
+                matches!(
+                    c.connection_type,
+                    crate::models::enums::DatabaseType::MySQL
+                )
+            })
+            .unwrap_or(false);
+        let mut statements = connection::split_sql_statements(&query, hash_is_comment);
 
         if statements.is_empty() {
             // Should not happen as we checked query.is_empty() above
@@ -5200,15 +5166,12 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         debug!("=== EXECUTING {} QUERIES ===", statements.len());
         debug!("Connection ID: {}", connection_id);
         
-        let multiple_statements = statements.len() > 1;
+        if statements.len() == 1 {
+            let stmt = statements.remove(0);
 
-        for (idx, stmt) in statements.into_iter().enumerate() {
-            debug!("Executing statement {}: {}", idx + 1, stmt);
-            
-            // Auto-enable server-side pagination when the query does not specify LIMIT/TOP/OFFSET/FETCH
-            // Only applicable if running a single statement; multi-statement logic is trickier with pagination.
-            // For now, only auto-paginate if it's a single statement.
-            if !multiple_statements && connection::should_enable_auto_pagination(&stmt) {
+            // Auto-enable server-side pagination when the query does not specify
+            // LIMIT/TOP/OFFSET/FETCH. Only applicable to a single statement.
+            if connection::should_enable_auto_pagination(&stmt) {
                 let base_query = stmt.trim().trim_end_matches(';').to_string();
 
                 tabular.use_server_pagination = true;
@@ -5245,25 +5208,75 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
                     {
                         Ok(handle) => {
                             tabular.active_query_handles.insert(job_id, handle);
-                            if multiple_statements {
-                                tabular.current_table_name = format!("Running query {}/{}...", idx + 1, multiple_statements);
-                            } else {
-                                tabular.current_table_name = "Running query…".to_string();
-                            }
+                            tabular.current_table_name = "Running query…".to_string();
                         }
                         Err(err) => {
                             tabular.active_query_jobs.remove(&job_id);
                             debug!("Failed to spawn async job: {:?}", err);
-                            
-                            // For multi-statement failures, we'll see if subsequent ones can run or if we just log error.
-                            // Currently treating each spawned independently.
-                            // Ideally, we might want to capture this error into a result tab too.
                         }
                     }
                 }
                 Err(err) => {
                     debug!("Failed to prepare async job: {:?}", err);
-                    // Handle pre-spawn errors similar to before...
+                }
+            }
+        } else {
+            // Sequential batch: prepare every statement first, then run them
+            // in order on ONE background task so script-like input behaves
+            // like a script (no races between pool connections). Results
+            // arrive per statement, in statement order.
+            let total = statements.len();
+            let mut jobs = Vec::with_capacity(total);
+            let mut job_ids = Vec::with_capacity(total);
+
+            for (idx, stmt) in statements.into_iter().enumerate() {
+                debug!("Preparing statement {}/{}: {}", idx + 1, total, stmt);
+                let job_id = tabular.next_query_job_id;
+                tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+
+                match connection::prepare_query_job(tabular, connection_id, stmt.clone(), job_id) {
+                    Ok(job) => {
+                        let preview: String = stmt.chars().take(72).collect();
+                        let status = connection::QueryJobStatus {
+                            job_id,
+                            connection_id,
+                            query_preview: format!("[{}/{}] {}", idx + 1, total, preview),
+                            started_at: Instant::now(),
+                            completed: false,
+                        };
+                        tabular.active_query_jobs.insert(job_id, status);
+                        job_ids.push(job_id);
+                        jobs.push(job);
+                    }
+                    Err(err) => {
+                        debug!("Failed to prepare statement {}/{}: {:?}", idx + 1, total, err);
+                    }
+                }
+            }
+
+            if jobs.is_empty() {
+                tabular.query_execution_in_progress = false;
+                return;
+            }
+
+            match connection::spawn_query_job_batch(tabular, jobs, tabular.query_result_sender.clone())
+            {
+                Ok(handle) => {
+                    // The whole batch runs on one task; cancelling any member
+                    // job id aborts the entire batch (see cancel_active_query_job).
+                    let last_id = *job_ids.last().expect("jobs not empty");
+                    tabular
+                        .query_job_batches
+                        .push((job_ids, handle.abort_handle()));
+                    tabular.active_query_handles.insert(last_id, handle);
+                    tabular.current_table_name = format!("Running {} queries…", total);
+                }
+                Err(err) => {
+                    for job_id in &job_ids {
+                        tabular.active_query_jobs.remove(job_id);
+                    }
+                    tabular.query_execution_in_progress = false;
+                    debug!("Failed to spawn batch job: {:?}", err);
                 }
             }
         }

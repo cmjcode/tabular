@@ -89,6 +89,9 @@ pub struct Tabular {
     pub active_query_jobs: std::collections::HashMap<u64, connection::QueryJobStatus>,
     pub active_query_handles: std::collections::HashMap<u64, tokio::task::JoinHandle<()>>,
     pub cancelled_query_jobs: std::collections::HashMap<u64, std::time::Instant>,
+    /// Sequential statement batches: member job ids + one abort handle for
+    /// the whole batch (cancelling any member cancels the entire batch).
+    pub query_job_batches: Vec<(Vec<u64>, tokio::task::AbortHandle)>,
     pub pending_paginated_jobs: std::collections::HashSet<u64>,
     pub next_query_job_id: u64,
     // Background refresh status tracking

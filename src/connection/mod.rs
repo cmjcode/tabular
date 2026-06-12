@@ -25,7 +25,9 @@ pub mod ui;
 pub(crate) use types::{QueryJobStatus, QueryResultMessage};
 
 // SQL utilities
-pub(crate) use sql::{add_auto_limit_if_needed, should_enable_auto_pagination};
+pub(crate) use sql::{
+    add_auto_limit_if_needed, should_enable_auto_pagination, split_sql_statements,
+};
 
 // Pool management
 pub(crate) use pool::{
@@ -34,7 +36,9 @@ pub(crate) use pool::{
 };
 
 // Query execution
-pub(crate) use execute::{execute_query_with_connection, prepare_query_job, spawn_query_job};
+pub(crate) use execute::{
+    execute_query_with_connection, prepare_query_job, spawn_query_job, spawn_query_job_batch,
+};
 
 // Metadata / schema discovery
 pub use metadata::fetch_databases_background_task; // fully pub in original

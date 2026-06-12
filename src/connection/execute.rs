@@ -100,6 +100,59 @@ pub(crate) fn spawn_query_job(
     Ok(handle)
 }
 
+/// Run a batch of statements **sequentially** on one task so script-like
+/// input (`CREATE …; INSERT …; SELECT …`) executes in order instead of
+/// racing on separate pool connections. Each statement reports its own
+/// `QueryResultMessage`; after the first failure the remaining statements
+/// are skipped (reported as errors) rather than executed.
+pub(crate) fn spawn_query_job_batch(
+    tabular: &mut Tabular,
+    jobs: Vec<QueryJob>,
+    sender: std::sync::mpsc::Sender<QueryResultMessage>,
+) -> Result<tokio::task::JoinHandle<()>, QueryPreparationError> {
+    let runtime = tabular
+        .runtime
+        .clone()
+        .ok_or(QueryPreparationError::RuntimeUnavailable)?;
+
+    let handle = runtime.spawn(async move {
+        let mut previous_failed = false;
+        for mut job in jobs {
+            if previous_failed {
+                let _ = sender.send(skipped_statement_message(&job));
+                continue;
+            }
+            // Reset the clock so each statement reports its own duration,
+            // not the time spent waiting behind earlier statements.
+            job.started_at = Instant::now();
+            let result = execute_query_job(job).await;
+            previous_failed = !result.success;
+            let _ = sender.send(result);
+        }
+    });
+
+    Ok(handle)
+}
+
+fn skipped_statement_message(job: &QueryJob) -> QueryResultMessage {
+    let message = "Skipped: a previous statement in this batch failed".to_string();
+    QueryResultMessage {
+        job_id: job.job_id,
+        connection_id: job.options.connection_id,
+        success: false,
+        headers: vec!["Error".to_string()],
+        rows: vec![vec![message.clone()]],
+        error: Some(message),
+        duration: std::time::Duration::ZERO,
+        query: job.options.query.clone(),
+        dba_special_mode: job.options.dba_special_mode.clone(),
+        ast_debug_sql: None,
+        ast_headers: None,
+        affected_rows: None,
+        column_metadata: None,
+    }
+}
+
 async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
     let start = job.started_at;
     let connection_id = job.options.connection_id;

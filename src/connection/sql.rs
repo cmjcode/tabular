@@ -488,6 +488,87 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
     }
 }
 
+/// Split a SQL script into individual statements on top-level semicolons.
+///
+/// Honors quoted strings (`'…'`, `"…"`, `` `…` ``) with doubled-quote and
+/// backslash escapes, line comments (`--`, and `#` when `hash_is_comment`
+/// is true — MySQL only, since `#` is an operator elsewhere) and block
+/// comments (`/* … */`). Comments stay part of their statement's text.
+pub fn split_sql_statements(sql: &str, hash_is_comment: bool) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut chars = sql.chars().peekable();
+    let mut inside_quote: Option<char> = None;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while let Some(c) = chars.next() {
+        if in_line_comment {
+            current.push(c);
+            if c == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if in_block_comment {
+            current.push(c);
+            if c == '*' && chars.peek() == Some(&'/') {
+                current.push(chars.next().unwrap());
+                in_block_comment = false;
+            }
+            continue;
+        }
+        if let Some(q) = inside_quote {
+            current.push(c);
+            if c == '\\' {
+                // MySQL-style escape: next char is literal (incl. \' and \\)
+                if let Some(n) = chars.next() {
+                    current.push(n);
+                }
+            } else if c == q {
+                if chars.peek() == Some(&q) {
+                    // Doubled quote ('' / "" / ``) stays inside the literal
+                    current.push(chars.next().unwrap());
+                } else {
+                    inside_quote = None;
+                }
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' | '`' => {
+                inside_quote = Some(c);
+                current.push(c);
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                current.push(c);
+                current.push(chars.next().unwrap());
+                in_line_comment = true;
+            }
+            '#' if hash_is_comment => {
+                current.push(c);
+                in_line_comment = true;
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                current.push(c);
+                current.push(chars.next().unwrap());
+                in_block_comment = true;
+            }
+            ';' => {
+                if !current.trim().is_empty() {
+                    statements.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        statements.push(current.trim().to_string());
+    }
+    statements
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +606,46 @@ mod tests {
         assert!(!should_enable_auto_pagination(
             "SELECT * FROM users; SELECT * FROM orders"
         ));
+    }
+
+    #[test]
+    fn split_basic_statements() {
+        let stmts = split_sql_statements("SELECT 1; SELECT 2;  ; SELECT 3", false);
+        assert_eq!(stmts, vec!["SELECT 1", "SELECT 2", "SELECT 3"]);
+    }
+
+    #[test]
+    fn split_ignores_semicolons_in_strings() {
+        let stmts = split_sql_statements("SELECT 'a;b'; SELECT \"x;y\"", false);
+        assert_eq!(stmts, vec!["SELECT 'a;b'", "SELECT \"x;y\""]);
+    }
+
+    #[test]
+    fn split_handles_doubled_and_escaped_quotes() {
+        let stmts = split_sql_statements("SELECT 'it''s; fine'; SELECT 'a\\'; b'", false);
+        assert_eq!(stmts, vec!["SELECT 'it''s; fine'", "SELECT 'a\\'; b'"]);
+    }
+
+    #[test]
+    fn split_ignores_semicolons_and_quotes_in_comments() {
+        let stmts = split_sql_statements(
+            "SELECT 1; -- don't split; here\nSELECT 2; /* nor; 'here' */ SELECT 3",
+            false,
+        );
+        assert_eq!(stmts.len(), 3);
+        assert_eq!(stmts[0], "SELECT 1");
+        assert!(stmts[1].starts_with("-- don't split; here"));
+        assert!(stmts[1].ends_with("SELECT 2"));
+        assert!(stmts[2].starts_with("/* nor; 'here' */"));
+    }
+
+    #[test]
+    fn split_hash_comment_only_when_enabled() {
+        // MySQL: '#' starts a comment, semicolon inside is not a separator
+        let mysql = split_sql_statements("SELECT 1 # trailing; comment\n; SELECT 2", true);
+        assert_eq!(mysql.len(), 2);
+        // PostgreSQL: '#' is an operator, the semicolon splits normally
+        let pg = split_sql_statements("SELECT a # b; SELECT 2", false);
+        assert_eq!(pg, vec!["SELECT a # b", "SELECT 2"]);
     }
 }

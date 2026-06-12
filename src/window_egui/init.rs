@@ -228,6 +228,7 @@ impl super::Tabular {
             active_query_jobs: std::collections::HashMap::new(),
             active_query_handles: std::collections::HashMap::new(),
             cancelled_query_jobs: std::collections::HashMap::new(),
+            query_job_batches: Vec::new(),
             pending_paginated_jobs: std::collections::HashSet::new(),
             next_query_job_id: 1,
             refreshing_connections: std::collections::HashSet::new(),
