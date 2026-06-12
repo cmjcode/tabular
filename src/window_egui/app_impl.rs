@@ -129,6 +129,376 @@ impl Tabular {
         }
     }
 
+    /// Render the Preferences/Settings modal window.
+    /// Extracted verbatim from `update()` (behavior-preserving).
+    fn render_settings_dialog(&mut self, ctx: &egui::Context) {
+            if self.show_settings_window {
+                let mut open_flag = true; // local to satisfy borrow rules
+                egui::Window::new("Preferences")
+                    .open(&mut open_flag)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .default_width(420.0)
+                    .show(ctx, |ui| {
+                        // Tab bar
+                        ui.horizontal(|ui| {
+                            // Accent color (red)
+                            let accent = egui::Color32::from_rgb(255, 0, 0);
+                            let inactive_fg = ui.visuals().text_color();
+                            let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
+                                let selected = *current == me;
+                                let (bg, fg) = if selected { (accent, egui::Color32::WHITE) } else { (egui::Color32::TRANSPARENT, inactive_fg) };
+                                let button = egui::Button::new(egui::RichText::new(label).color(fg).size(13.0))
+                                    .fill(bg)
+                                    .stroke(if selected { egui::Stroke { width: 1.0, color: accent } } else { egui::Stroke { width: 1.0, color: ui.visuals().widgets.inactive.bg_stroke.color } })
+                                    .min_size(egui::vec2(0.0, 24.0));
+                                // Attempt to use new corner radius API if available (ignore if not)
+                                // Rounding disabled for compatibility with current egui version
+                                let resp = ui.add(button);
+                                if resp.clicked() { *current = me; }
+                            };
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::ApplicationTheme, "Application Theme");
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::EditorTheme, "Editor Theme");
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Performance, "Performance Settings");
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::DataDirectory, "Data Directory");
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
+                        });
+                        ui.separator();
+                        ui.add_space(4.0);
+
+                        match self.settings_active_pref_tab {
+                            PrefTab::ApplicationTheme => {
+                                ui.heading("Application Theme");
+                                ui.add_space(4.0);
+                                let prev = self.app_theme;
+                                ui.horizontal(|ui| {
+                                    ui.label("Choose theme:");
+                                    if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::Dark, "🌙 Dark").clicked() {
+                                        ctx.set_visuals(egui::Visuals::dark());
+                                        if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubDark; }
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                    }
+                                    if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::Light, "🔆 Light").clicked() {
+                                        ctx.set_visuals(egui::Visuals::light());
+                                        if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                    }
+                                    if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::LightSoft, "⛅ Light Soft").clicked() {
+                                        ctx.set_visuals(light_soft_visuals());
+                                        if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                    }
+                                });
+                                ui.add_space(2.0);
+                                ui.label(egui::RichText::new(match self.app_theme {
+                                    crate::config::AppTheme::Dark => "Classic dark theme.",
+                                    crate::config::AppTheme::Light => "High-contrast white theme.",
+                                    crate::config::AppTheme::LightSoft => "Warm off-white with lower contrast — easier on the eyes.",
+                                }).size(11.0).color(egui::Color32::from_gray(120)));
+                                if self.app_theme != prev { ctx.request_repaint(); }
+                            }
+                            PrefTab::EditorTheme => {
+                                ui.heading("Editor Theme");
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() {
+                                        if self.link_editor_theme { self.advanced_editor.theme = if self.app_theme.is_dark() { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight }; }
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                    }
+                                    if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
+                                        self.link_editor_theme = true;
+                                        self.advanced_editor.theme = if self.app_theme.is_dark() { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight };
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                    }
+                                });
+                                if self.link_editor_theme { ui.label(egui::RichText::new("(Editor theme follows application theme; uncheck to customize)").size(11.0).color(egui::Color32::from_gray(120))); }
+                                ui.label("Choose syntax highlighting theme for SQL editor");
+                                ui.add_space(4.0);
+                                let themes: &[(crate::models::structs::EditorColorTheme, &str, &str)] = &[
+                                    (crate::models::structs::EditorColorTheme::GithubDark, "GitHub Dark", "Dark theme with blue accents"),
+                                    (crate::models::structs::EditorColorTheme::GithubLight, "GitHub Light", "Clean light theme"),
+                                    (crate::models::structs::EditorColorTheme::Gruvbox, "Gruvbox", "Warm earthy retro palette"),
+                                ];
+                                for (theme, name, desc) in themes {
+                                    ui.horizontal(|ui| {
+                                        let selected = self.advanced_editor.theme == *theme;
+                                        if ui.selectable_label(selected, *name).clicked() {
+                                            self.advanced_editor.theme = *theme;
+                                            if self.link_editor_theme { self.link_editor_theme = false; }
+                                            self.prefs_dirty = true; self.try_save_prefs();
+                                        }
+                                        if selected { ui.label(egui::RichText::new("✓").color(egui::Color32::from_rgb(0,150,255))); }
+                                    });
+                                    ui.label(egui::RichText::new(*desc).size(11.0).color(egui::Color32::from_gray(120)));
+                                    ui.add_space(4.0);
+                                }
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    ui.label("Font size:");
+                                    let mut fs = self.advanced_editor.font_size as i32;
+                                    if ui.add(egui::DragValue::new(&mut fs).range(8..=32)).changed() {
+                                        self.advanced_editor.font_size = fs as f32;
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                    }
+                                    ui.separator();
+                                    ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed();
+                                    if ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap").changed() { self.prefs_dirty = true; self.try_save_prefs(); }
+                                });
+                            }
+                            PrefTab::Performance => {
+                                ui.heading("Performance Settings");
+                                ui.horizontal(|ui| {
+                                    let prev_pagination = self.use_server_pagination;
+                                    if ui.checkbox(&mut self.use_server_pagination, "Server-side pagination")
+                                        .on_hover_text("When enabled, queries large tables in pages from the server instead of loading all data at once. Much faster for large datasets.")
+                                        .changed() {
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                        if prev_pagination != self.use_server_pagination && !self.current_table_headers.is_empty() {
+                                            if self.use_server_pagination { self.prefs_save_feedback = Some("Server pagination enabled. Browse a table to see the difference!".to_string()); }
+                                            else { self.prefs_save_feedback = Some("Client pagination enabled. Data will be loaded all at once.".to_string()); }
+                                            self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                        }
+                                    }
+                                });
+                                ui.label(egui::RichText::new("Server pagination queries data in smaller chunks (e.g., 100 rows at a time) from the database.\nThis is much faster for large tables but may not work with all custom queries.").size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.add_space(8.0);
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut self.enable_debug_logging, "Enable Debug Logging").changed() {
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                        if self.enable_debug_logging {
+                                            self.prefs_save_feedback = Some("Debug logging enabled. Please restart the application for this to take effect.".to_string());
+                                        } else {
+                                            self.prefs_save_feedback = Some("Debug logging disabled. Restart the application to improve performance.".to_string());
+                                        }
+                                        self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                    }
+                                    ui.label(egui::RichText::new("(Requires Restart)").size(11.0).color(egui::Color32::from_gray(120)));
+                                });
+                                ui.label(egui::RichText::new("Turns on verbose logs. Disable this to improve application performance and reduce disk I/O.").size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.add_space(8.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Redis browser auto-refresh default (seconds):");
+                                    let mut seconds = self.redis_browser_auto_refresh_default_seconds.max(1) as i32;
+                                    if ui.add(egui::DragValue::new(&mut seconds).range(1..=3600)).changed() {
+                                        self.redis_browser_auto_refresh_default_seconds = seconds.max(1) as u32;
+                                        self.prefs_dirty = true;
+                                        self.try_save_prefs();
+                                    }
+                                });
+                                ui.label(egui::RichText::new("Default interval used when Redis browser auto-refresh is enabled.").size(11.0).color(egui::Color32::from_gray(120)));
+                            }
+                            PrefTab::DataDirectory => {
+                                ui.heading("Data Directory");
+                                ui.label("Choose where Tabular stores its data (connections, queries, history):");
+                                ui.add_space(4.0);
+                                if self.temp_data_directory.is_empty() { self.temp_data_directory = self.data_directory.clone(); }
+                                ui.horizontal(|ui| { ui.label("Current location:"); ui.monospace(&self.data_directory); });
+                                ui.horizontal(|ui| { ui.label("New location:"); ui.text_edit_singleline(&mut self.temp_data_directory); if ui.button("📁 Browse").clicked() { self.handle_directory_picker(); } });
+                                ui.horizontal(|ui| {
+                                    let changed = self.temp_data_directory != self.data_directory;
+                                    let valid_path = !self.temp_data_directory.trim().is_empty() && std::path::Path::new(&self.temp_data_directory).is_absolute();
+                                    if ui.add_enabled(changed && valid_path, egui::Button::new("Apply Changes")).clicked() {
+                                        match crate::config::set_data_dir(&self.temp_data_directory) {
+                                            Ok(()) => {
+                                                self.refresh_data_directory();
+                                                self.prefs_dirty = true; self.try_save_prefs();
+                                                if let Some(rt) = &self.runtime && let Ok(new_store) = rt.block_on(crate::config::ConfigStore::new()) { self.config_store = Some(new_store); log::debug!("Config store reinitialized for new data directory"); }
+                                                self.prefs_save_feedback = Some("Data directory updated successfully!".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                                log::debug!("Data directory changed to: {}", self.data_directory);
+                                            }
+                                            Err(e) => { self.error_message = format!("Failed to change data directory: {}", e); self.show_error_message = true; }
+                                        }
+                                    }
+                                    if ui.button("Reset to Default").clicked() { self.temp_data_directory = dirs::home_dir().map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() }).unwrap_or_else(|| ".".to_string()); }
+                                });
+                                ui.label(egui::RichText::new("⚠️ Changing data directory will require restarting the application").size(11.0).color(egui::Color32::from_rgb(200, 150, 0)));
+                            }
+                            PrefTab::Update => {
+                                ui.heading("Updates");
+                                ui.horizontal(|ui| { if ui.checkbox(&mut self.auto_check_updates, "Automatically check for updates on startup").changed() { self.prefs_dirty = true; self.try_save_prefs(); } });
+                                ui.label(egui::RichText::new("When enabled, Tabular will check for new versions from GitHub releases").size(11.0).color(egui::Color32::from_gray(120)));
+                            }
+                            PrefTab::AiAssistant => {
+                                ui.heading("✨ AI Assistant");
+                                ui.label(egui::RichText::new("Press Cmd+Shift+A in the editor to toggle the AI panel.").size(11.0).color(egui::Color32::from_gray(130)));
+                                ui.add_space(8.0);
+
+                                // Provider selection
+                                ui.label("AI Provider:");
+                                ui.horizontal_wrapped(|ui| {
+                                    let providers = [
+                                        crate::config::AiProvider::OpenAI,
+                                        crate::config::AiProvider::Anthropic,
+                                        crate::config::AiProvider::Groq,
+                                        crate::config::AiProvider::GitHub,
+                                        crate::config::AiProvider::Custom,
+                                    ];
+                                    for p in providers {
+                                        if ui.radio_value(&mut self.ai_provider, p, p.display_name()).clicked() {
+                                            // Reset model + base_url to defaults for new provider
+                                            self.ai_settings_model_input = p.default_model().to_string();
+                                            self.ai_settings_base_url_input = p.default_base_url().to_string();
+                                            self.ai_model = self.ai_settings_model_input.clone();
+                                            self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                            self.prefs_dirty = true; self.try_save_prefs();
+                                        }
+                                    }
+                                });
+                                // GitHub-specific instructions
+                                if self.ai_provider == crate::config::AiProvider::GitHub {
+                                    egui::Frame::new()
+                                        .fill(egui::Color32::from_rgb(20, 40, 70))
+                                        .inner_margin(egui::Margin::symmetric(8, 6))
+                                        .show(ui, |ui| {
+                                            ui.label(egui::RichText::new("ℹ GitHub Copilot / Models").strong().color(egui::Color32::from_rgb(100, 180, 255)).size(12.0));
+                                            ui.label(egui::RichText::new("Requires a GitHub Personal Access Token (PAT) with 'models:read' scope (or 'copilot' scope for Copilot subscribers).").size(11.0).color(egui::Color32::from_gray(200)));
+                                            ui.hyperlink_to(
+                                                egui::RichText::new("→ Create token at github.com/settings/tokens").size(11.0).color(egui::Color32::from_rgb(100, 180, 255)),
+                                                "https://github.com/settings/tokens"
+                                            );
+                                        });
+                                }
+                                ui.add_space(6.0);
+
+                                // API Key
+                                ui.label("API Key:");
+                                ui.horizontal(|ui| {
+                                    let hint = self.ai_provider.api_key_hint();
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.ai_settings_api_key_input)
+                                            .password(true)
+                                            .desired_width(280.0)
+                                            .hint_text(hint),
+                                    );
+                                    if resp.lost_focus() || ui.button("Apply").clicked() {
+                                        self.ai_api_key = self.ai_settings_api_key_input.clone();
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                        self.prefs_save_feedback = Some("API key saved.".to_string());
+                                        self.prefs_last_saved_at = Some(std::time::Instant::now());
+                                    }
+                                });
+                                ui.label(egui::RichText::new(format!("Hint: {}", self.ai_provider.api_key_hint())).size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.label(egui::RichText::new("Key stored locally and only sent to the chosen provider.").size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.add_space(6.0);
+
+                                // Model
+                                ui.label("Model:");
+                                ui.horizontal(|ui| {
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.ai_settings_model_input)
+                                            .desired_width(220.0)
+                                            .hint_text(self.ai_provider.default_model()),
+                                    );
+                                    if resp.lost_focus() || ui.button("Apply").clicked() {
+                                        self.ai_model = self.ai_settings_model_input.clone();
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                    }
+                                    if ui.small_button("Default").clicked() {
+                                        self.ai_settings_model_input = self.ai_provider.default_model().to_string();
+                                        self.ai_model = self.ai_settings_model_input.clone();
+                                        self.prefs_dirty = true; self.try_save_prefs();
+                                    }
+                                });
+                                // Preset model picker
+                                ui.label(egui::RichText::new("Quick pick:").size(11.0).color(egui::Color32::from_gray(140)));
+                                ui.horizontal_wrapped(|ui| {
+                                    let presets = self.ai_provider.preset_models();
+                                    for &m in presets {
+                                        let selected = self.ai_settings_model_input == m;
+                                        if ui.selectable_label(selected, egui::RichText::new(m).size(11.0).monospace()).clicked() {
+                                            self.ai_settings_model_input = m.to_string();
+                                            self.ai_model = m.to_string();
+                                            self.prefs_dirty = true; self.try_save_prefs();
+                                        }
+                                    }
+                                });
+
+                                // Base URL — always shown, prominently highlighted for Custom provider
+                                ui.add_space(6.0);
+                                let is_custom = self.ai_provider == crate::config::AiProvider::Custom;
+                                if is_custom {
+                                    let accent = egui::Color32::from_rgb(120, 80, 220);
+                                    egui::Frame::new()
+                                        .fill(egui::Color32::from_rgba_unmultiplied(120, 80, 220, 20))
+                                        .stroke(egui::Stroke::new(1.5, accent))
+                                        .inner_margin(egui::Margin::same(8))
+                                        .outer_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 4 })
+                                        .corner_radius(egui::CornerRadius::same(6))
+                                        .show(ui, |ui| {
+                                            ui.label(egui::RichText::new("🔗 Server URL (required)").size(12.0).color(accent).strong());
+                                            ui.add_space(4.0);
+                                            let resp = ui.add(
+                                                egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
+                                                    .desired_width(f32::INFINITY)
+                                                    .hint_text("https://localhost:11434/v1"),
+                                            );
+                                            if resp.lost_focus() || { let _ = resp; false } {
+                                                self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                                self.prefs_dirty = true; self.try_save_prefs();
+                                            }
+                                            ui.add_space(4.0);
+                                            ui.horizontal(|ui| {
+                                                if ui.button("Apply").clicked() {
+                                                    self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                                    self.prefs_dirty = true; self.try_save_prefs();
+                                                }
+                                                if ui.small_button("Reset to default").clicked() {
+                                                    self.ai_settings_base_url_input = self.ai_provider.default_base_url().to_string();
+                                                    self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                                    self.prefs_dirty = true; self.try_save_prefs();
+                                                }
+                                            });
+                                            ui.add_space(2.0);
+                                            ui.label(egui::RichText::new("Enter the base URL of your OpenAI-compatible server (e.g., Ollama, LM Studio).").size(11.0).color(egui::Color32::from_gray(150)));
+                                        });
+                                } else {
+                                    ui.label(egui::RichText::new(format!("Base URL (default: {})", self.ai_provider.default_base_url())).size(12.0));
+                                    ui.horizontal(|ui| {
+                                        let resp = ui.add(
+                                            egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
+                                                .desired_width(280.0)
+                                                .hint_text(self.ai_provider.default_base_url()),
+                                        );
+                                        if resp.lost_focus() || ui.button("Apply").clicked() {
+                                            self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                            self.prefs_dirty = true; self.try_save_prefs();
+                                        }
+                                        if ui.small_button("Default").clicked() {
+                                            self.ai_settings_base_url_input = self.ai_provider.default_base_url().to_string();
+                                            self.ai_base_url = self.ai_settings_base_url_input.clone();
+                                            self.prefs_dirty = true; self.try_save_prefs();
+                                        }
+                                    });
+                                    ui.label(egui::RichText::new("For OpenAI-compatible local servers (e.g., Ollama, LM Studio), change the base URL.").size(11.0).color(egui::Color32::from_gray(120)));
+                                }
+
+                                // Status indicator
+                                ui.add_space(6.0);
+                                if self.ai_api_key.is_empty() {
+                                    ui.label(egui::RichText::new("⚠ No API key set — AI panel will show a warning.").color(egui::Color32::from_rgb(220, 160, 30)).size(12.0));
+                                } else {
+                                    let masked = format!("{}…{}", &self.ai_api_key[..self.ai_api_key.len().min(6)], &self.ai_api_key[self.ai_api_key.len().saturating_sub(4)..]);
+                                    ui.label(egui::RichText::new(format!("✓ Key configured: {masked}")).color(egui::Color32::from_rgb(0, 180, 80)).size(12.0));
+                                }
+                            }
+                        }
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("💾 Save Preferences").clicked() {
+                                self.prefs_dirty = true; self.try_save_prefs(); self.prefs_save_feedback = Some("Saved".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
+                            }
+                            if let Some(msg) = &self.prefs_save_feedback { ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0,150,0))); }
+                        });
+                    });
+                if !open_flag {
+                    self.show_settings_window = false;
+                }
+            }
+    }
+
     /// Persist preferences immediately when `prefs_dirty` is set.
     /// Extracted from the former `try_save_prefs` closure in `update()`.
     fn try_save_prefs(&mut self) {
@@ -1015,371 +1385,7 @@ impl App for Tabular {
         self.render_cache_miss_dialog(ctx);
         
         // Settings window with higher z-order
-        if self.show_settings_window {
-            let mut open_flag = true; // local to satisfy borrow rules
-            egui::Window::new("Preferences")
-                .open(&mut open_flag)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .default_width(420.0)
-                .show(ctx, |ui| {
-                    // Tab bar
-                    ui.horizontal(|ui| {
-                        // Accent color (red)
-                        let accent = egui::Color32::from_rgb(255, 0, 0);
-                        let inactive_fg = ui.visuals().text_color();
-                        let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
-                            let selected = *current == me;
-                            let (bg, fg) = if selected { (accent, egui::Color32::WHITE) } else { (egui::Color32::TRANSPARENT, inactive_fg) };
-                            let button = egui::Button::new(egui::RichText::new(label).color(fg).size(13.0))
-                                .fill(bg)
-                                .stroke(if selected { egui::Stroke { width: 1.0, color: accent } } else { egui::Stroke { width: 1.0, color: ui.visuals().widgets.inactive.bg_stroke.color } })
-                                .min_size(egui::vec2(0.0, 24.0));
-                            // Attempt to use new corner radius API if available (ignore if not)
-                            // Rounding disabled for compatibility with current egui version
-                            let resp = ui.add(button);
-                            if resp.clicked() { *current = me; }
-                        };
-                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::ApplicationTheme, "Application Theme");
-                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::EditorTheme, "Editor Theme");
-                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Performance, "Performance Settings");
-                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::DataDirectory, "Data Directory");
-                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
-                        draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
-                    });
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    match self.settings_active_pref_tab {
-                        PrefTab::ApplicationTheme => {
-                            ui.heading("Application Theme");
-                            ui.add_space(4.0);
-                            let prev = self.app_theme;
-                            ui.horizontal(|ui| {
-                                ui.label("Choose theme:");
-                                if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::Dark, "🌙 Dark").clicked() {
-                                    ctx.set_visuals(egui::Visuals::dark());
-                                    if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubDark; }
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                }
-                                if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::Light, "🔆 Light").clicked() {
-                                    ctx.set_visuals(egui::Visuals::light());
-                                    if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                }
-                                if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::LightSoft, "⛅ Light Soft").clicked() {
-                                    ctx.set_visuals(light_soft_visuals());
-                                    if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                }
-                            });
-                            ui.add_space(2.0);
-                            ui.label(egui::RichText::new(match self.app_theme {
-                                crate::config::AppTheme::Dark => "Classic dark theme.",
-                                crate::config::AppTheme::Light => "High-contrast white theme.",
-                                crate::config::AppTheme::LightSoft => "Warm off-white with lower contrast — easier on the eyes.",
-                            }).size(11.0).color(egui::Color32::from_gray(120)));
-                            if self.app_theme != prev { ctx.request_repaint(); }
-                        }
-                        PrefTab::EditorTheme => {
-                            ui.heading("Editor Theme");
-                            ui.horizontal(|ui| {
-                                if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() {
-                                    if self.link_editor_theme { self.advanced_editor.theme = if self.app_theme.is_dark() { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight }; }
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                }
-                                if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
-                                    self.link_editor_theme = true;
-                                    self.advanced_editor.theme = if self.app_theme.is_dark() { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight };
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                }
-                            });
-                            if self.link_editor_theme { ui.label(egui::RichText::new("(Editor theme follows application theme; uncheck to customize)").size(11.0).color(egui::Color32::from_gray(120))); }
-                            ui.label("Choose syntax highlighting theme for SQL editor");
-                            ui.add_space(4.0);
-                            let themes: &[(crate::models::structs::EditorColorTheme, &str, &str)] = &[
-                                (crate::models::structs::EditorColorTheme::GithubDark, "GitHub Dark", "Dark theme with blue accents"),
-                                (crate::models::structs::EditorColorTheme::GithubLight, "GitHub Light", "Clean light theme"),
-                                (crate::models::structs::EditorColorTheme::Gruvbox, "Gruvbox", "Warm earthy retro palette"),
-                            ];
-                            for (theme, name, desc) in themes {
-                                ui.horizontal(|ui| {
-                                    let selected = self.advanced_editor.theme == *theme;
-                                    if ui.selectable_label(selected, *name).clicked() {
-                                        self.advanced_editor.theme = *theme;
-                                        if self.link_editor_theme { self.link_editor_theme = false; }
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                    if selected { ui.label(egui::RichText::new("✓").color(egui::Color32::from_rgb(0,150,255))); }
-                                });
-                                ui.label(egui::RichText::new(*desc).size(11.0).color(egui::Color32::from_gray(120)));
-                                ui.add_space(4.0);
-                            }
-                            ui.separator();
-                            ui.horizontal(|ui| {
-                                ui.label("Font size:");
-                                let mut fs = self.advanced_editor.font_size as i32;
-                                if ui.add(egui::DragValue::new(&mut fs).range(8..=32)).changed() {
-                                    self.advanced_editor.font_size = fs as f32;
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                }
-                                ui.separator();
-                                ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed();
-                                if ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap").changed() { self.prefs_dirty = true; self.try_save_prefs(); }
-                            });
-                        }
-                        PrefTab::Performance => {
-                            ui.heading("Performance Settings");
-                            ui.horizontal(|ui| {
-                                let prev_pagination = self.use_server_pagination;
-                                if ui.checkbox(&mut self.use_server_pagination, "Server-side pagination")
-                                    .on_hover_text("When enabled, queries large tables in pages from the server instead of loading all data at once. Much faster for large datasets.")
-                                    .changed() {
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                    if prev_pagination != self.use_server_pagination && !self.current_table_headers.is_empty() {
-                                        if self.use_server_pagination { self.prefs_save_feedback = Some("Server pagination enabled. Browse a table to see the difference!".to_string()); }
-                                        else { self.prefs_save_feedback = Some("Client pagination enabled. Data will be loaded all at once.".to_string()); }
-                                        self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                    }
-                                }
-                            });
-                            ui.label(egui::RichText::new("Server pagination queries data in smaller chunks (e.g., 100 rows at a time) from the database.\nThis is much faster for large tables but may not work with all custom queries.").size(11.0).color(egui::Color32::from_gray(120)));
-                            ui.add_space(8.0);
-                            ui.horizontal(|ui| {
-                                if ui.checkbox(&mut self.enable_debug_logging, "Enable Debug Logging").changed() {
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                    if self.enable_debug_logging {
-                                        self.prefs_save_feedback = Some("Debug logging enabled. Please restart the application for this to take effect.".to_string());
-                                    } else {
-                                        self.prefs_save_feedback = Some("Debug logging disabled. Restart the application to improve performance.".to_string());
-                                    }
-                                    self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                }
-                                ui.label(egui::RichText::new("(Requires Restart)").size(11.0).color(egui::Color32::from_gray(120)));
-                            });
-                            ui.label(egui::RichText::new("Turns on verbose logs. Disable this to improve application performance and reduce disk I/O.").size(11.0).color(egui::Color32::from_gray(120)));
-                            ui.add_space(8.0);
-                            ui.horizontal(|ui| {
-                                ui.label("Redis browser auto-refresh default (seconds):");
-                                let mut seconds = self.redis_browser_auto_refresh_default_seconds.max(1) as i32;
-                                if ui.add(egui::DragValue::new(&mut seconds).range(1..=3600)).changed() {
-                                    self.redis_browser_auto_refresh_default_seconds = seconds.max(1) as u32;
-                                    self.prefs_dirty = true;
-                                    self.try_save_prefs();
-                                }
-                            });
-                            ui.label(egui::RichText::new("Default interval used when Redis browser auto-refresh is enabled.").size(11.0).color(egui::Color32::from_gray(120)));
-                        }
-                        PrefTab::DataDirectory => {
-                            ui.heading("Data Directory");
-                            ui.label("Choose where Tabular stores its data (connections, queries, history):");
-                            ui.add_space(4.0);
-                            if self.temp_data_directory.is_empty() { self.temp_data_directory = self.data_directory.clone(); }
-                            ui.horizontal(|ui| { ui.label("Current location:"); ui.monospace(&self.data_directory); });
-                            ui.horizontal(|ui| { ui.label("New location:"); ui.text_edit_singleline(&mut self.temp_data_directory); if ui.button("📁 Browse").clicked() { self.handle_directory_picker(); } });
-                            ui.horizontal(|ui| {
-                                let changed = self.temp_data_directory != self.data_directory;
-                                let valid_path = !self.temp_data_directory.trim().is_empty() && std::path::Path::new(&self.temp_data_directory).is_absolute();
-                                if ui.add_enabled(changed && valid_path, egui::Button::new("Apply Changes")).clicked() {
-                                    match crate::config::set_data_dir(&self.temp_data_directory) {
-                                        Ok(()) => {
-                                            self.refresh_data_directory();
-                                            self.prefs_dirty = true; self.try_save_prefs();
-                                            if let Some(rt) = &self.runtime && let Ok(new_store) = rt.block_on(crate::config::ConfigStore::new()) { self.config_store = Some(new_store); log::debug!("Config store reinitialized for new data directory"); }
-                                            self.prefs_save_feedback = Some("Data directory updated successfully!".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                            log::debug!("Data directory changed to: {}", self.data_directory);
-                                        }
-                                        Err(e) => { self.error_message = format!("Failed to change data directory: {}", e); self.show_error_message = true; }
-                                    }
-                                }
-                                if ui.button("Reset to Default").clicked() { self.temp_data_directory = dirs::home_dir().map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() }).unwrap_or_else(|| ".".to_string()); }
-                            });
-                            ui.label(egui::RichText::new("⚠️ Changing data directory will require restarting the application").size(11.0).color(egui::Color32::from_rgb(200, 150, 0)));
-                        }
-                        PrefTab::Update => {
-                            ui.heading("Updates");
-                            ui.horizontal(|ui| { if ui.checkbox(&mut self.auto_check_updates, "Automatically check for updates on startup").changed() { self.prefs_dirty = true; self.try_save_prefs(); } });
-                            ui.label(egui::RichText::new("When enabled, Tabular will check for new versions from GitHub releases").size(11.0).color(egui::Color32::from_gray(120)));
-                        }
-                        PrefTab::AiAssistant => {
-                            ui.heading("✨ AI Assistant");
-                            ui.label(egui::RichText::new("Press Cmd+Shift+A in the editor to toggle the AI panel.").size(11.0).color(egui::Color32::from_gray(130)));
-                            ui.add_space(8.0);
-
-                            // Provider selection
-                            ui.label("AI Provider:");
-                            ui.horizontal_wrapped(|ui| {
-                                let providers = [
-                                    crate::config::AiProvider::OpenAI,
-                                    crate::config::AiProvider::Anthropic,
-                                    crate::config::AiProvider::Groq,
-                                    crate::config::AiProvider::GitHub,
-                                    crate::config::AiProvider::Custom,
-                                ];
-                                for p in providers {
-                                    if ui.radio_value(&mut self.ai_provider, p, p.display_name()).clicked() {
-                                        // Reset model + base_url to defaults for new provider
-                                        self.ai_settings_model_input = p.default_model().to_string();
-                                        self.ai_settings_base_url_input = p.default_base_url().to_string();
-                                        self.ai_model = self.ai_settings_model_input.clone();
-                                        self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                }
-                            });
-                            // GitHub-specific instructions
-                            if self.ai_provider == crate::config::AiProvider::GitHub {
-                                egui::Frame::new()
-                                    .fill(egui::Color32::from_rgb(20, 40, 70))
-                                    .inner_margin(egui::Margin::symmetric(8, 6))
-                                    .show(ui, |ui| {
-                                        ui.label(egui::RichText::new("ℹ GitHub Copilot / Models").strong().color(egui::Color32::from_rgb(100, 180, 255)).size(12.0));
-                                        ui.label(egui::RichText::new("Requires a GitHub Personal Access Token (PAT) with 'models:read' scope (or 'copilot' scope for Copilot subscribers).").size(11.0).color(egui::Color32::from_gray(200)));
-                                        ui.hyperlink_to(
-                                            egui::RichText::new("→ Create token at github.com/settings/tokens").size(11.0).color(egui::Color32::from_rgb(100, 180, 255)),
-                                            "https://github.com/settings/tokens"
-                                        );
-                                    });
-                            }
-                            ui.add_space(6.0);
-
-                            // API Key
-                            ui.label("API Key:");
-                            ui.horizontal(|ui| {
-                                let hint = self.ai_provider.api_key_hint();
-                                let resp = ui.add(
-                                    egui::TextEdit::singleline(&mut self.ai_settings_api_key_input)
-                                        .password(true)
-                                        .desired_width(280.0)
-                                        .hint_text(hint),
-                                );
-                                if resp.lost_focus() || ui.button("Apply").clicked() {
-                                    self.ai_api_key = self.ai_settings_api_key_input.clone();
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                    self.prefs_save_feedback = Some("API key saved.".to_string());
-                                    self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                }
-                            });
-                            ui.label(egui::RichText::new(format!("Hint: {}", self.ai_provider.api_key_hint())).size(11.0).color(egui::Color32::from_gray(120)));
-                            ui.label(egui::RichText::new("Key stored locally and only sent to the chosen provider.").size(11.0).color(egui::Color32::from_gray(120)));
-                            ui.add_space(6.0);
-
-                            // Model
-                            ui.label("Model:");
-                            ui.horizontal(|ui| {
-                                let resp = ui.add(
-                                    egui::TextEdit::singleline(&mut self.ai_settings_model_input)
-                                        .desired_width(220.0)
-                                        .hint_text(self.ai_provider.default_model()),
-                                );
-                                if resp.lost_focus() || ui.button("Apply").clicked() {
-                                    self.ai_model = self.ai_settings_model_input.clone();
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                }
-                                if ui.small_button("Default").clicked() {
-                                    self.ai_settings_model_input = self.ai_provider.default_model().to_string();
-                                    self.ai_model = self.ai_settings_model_input.clone();
-                                    self.prefs_dirty = true; self.try_save_prefs();
-                                }
-                            });
-                            // Preset model picker
-                            ui.label(egui::RichText::new("Quick pick:").size(11.0).color(egui::Color32::from_gray(140)));
-                            ui.horizontal_wrapped(|ui| {
-                                let presets = self.ai_provider.preset_models();
-                                for &m in presets {
-                                    let selected = self.ai_settings_model_input == m;
-                                    if ui.selectable_label(selected, egui::RichText::new(m).size(11.0).monospace()).clicked() {
-                                        self.ai_settings_model_input = m.to_string();
-                                        self.ai_model = m.to_string();
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                }
-                            });
-
-                            // Base URL — always shown, prominently highlighted for Custom provider
-                            ui.add_space(6.0);
-                            let is_custom = self.ai_provider == crate::config::AiProvider::Custom;
-                            if is_custom {
-                                let accent = egui::Color32::from_rgb(120, 80, 220);
-                                egui::Frame::new()
-                                    .fill(egui::Color32::from_rgba_unmultiplied(120, 80, 220, 20))
-                                    .stroke(egui::Stroke::new(1.5, accent))
-                                    .inner_margin(egui::Margin::same(8))
-                                    .outer_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 4 })
-                                    .corner_radius(egui::CornerRadius::same(6))
-                                    .show(ui, |ui| {
-                                        ui.label(egui::RichText::new("🔗 Server URL (required)").size(12.0).color(accent).strong());
-                                        ui.add_space(4.0);
-                                        let resp = ui.add(
-                                            egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
-                                                .desired_width(f32::INFINITY)
-                                                .hint_text("https://localhost:11434/v1"),
-                                        );
-                                        if resp.lost_focus() || { let _ = resp; false } {
-                                            self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                            self.prefs_dirty = true; self.try_save_prefs();
-                                        }
-                                        ui.add_space(4.0);
-                                        ui.horizontal(|ui| {
-                                            if ui.button("Apply").clicked() {
-                                                self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                                self.prefs_dirty = true; self.try_save_prefs();
-                                            }
-                                            if ui.small_button("Reset to default").clicked() {
-                                                self.ai_settings_base_url_input = self.ai_provider.default_base_url().to_string();
-                                                self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                                self.prefs_dirty = true; self.try_save_prefs();
-                                            }
-                                        });
-                                        ui.add_space(2.0);
-                                        ui.label(egui::RichText::new("Enter the base URL of your OpenAI-compatible server (e.g., Ollama, LM Studio).").size(11.0).color(egui::Color32::from_gray(150)));
-                                    });
-                            } else {
-                                ui.label(egui::RichText::new(format!("Base URL (default: {})", self.ai_provider.default_base_url())).size(12.0));
-                                ui.horizontal(|ui| {
-                                    let resp = ui.add(
-                                        egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
-                                            .desired_width(280.0)
-                                            .hint_text(self.ai_provider.default_base_url()),
-                                    );
-                                    if resp.lost_focus() || ui.button("Apply").clicked() {
-                                        self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                    if ui.small_button("Default").clicked() {
-                                        self.ai_settings_base_url_input = self.ai_provider.default_base_url().to_string();
-                                        self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                });
-                                ui.label(egui::RichText::new("For OpenAI-compatible local servers (e.g., Ollama, LM Studio), change the base URL.").size(11.0).color(egui::Color32::from_gray(120)));
-                            }
-
-                            // Status indicator
-                            ui.add_space(6.0);
-                            if self.ai_api_key.is_empty() {
-                                ui.label(egui::RichText::new("⚠ No API key set — AI panel will show a warning.").color(egui::Color32::from_rgb(220, 160, 30)).size(12.0));
-                            } else {
-                                let masked = format!("{}…{}", &self.ai_api_key[..self.ai_api_key.len().min(6)], &self.ai_api_key[self.ai_api_key.len().saturating_sub(4)..]);
-                                ui.label(egui::RichText::new(format!("✓ Key configured: {masked}")).color(egui::Color32::from_rgb(0, 180, 80)).size(12.0));
-                            }
-                        }
-                    }
-
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("💾 Save Preferences").clicked() {
-                            self.prefs_dirty = true; self.try_save_prefs(); self.prefs_save_feedback = Some("Saved".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
-                        }
-                        if let Some(msg) = &self.prefs_save_feedback { ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0,150,0))); }
-                    });
-                });
-            if !open_flag {
-                self.show_settings_window = false;
-            }
-        }
+        self.render_settings_dialog(ctx);
 
         // Centered loading overlay when waiting for connection pool
         self.render_connecting_overlay(ctx);
