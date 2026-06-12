@@ -2302,6 +2302,257 @@ impl Tabular {
                 });
     }
 
+    /// Handle Cmd/Ctrl+C copy for the data table / structure views.
+    /// Extracted verbatim from `update()`; `copy_shortcut_detected` is the
+    /// per-frame flag computed during keyboard handling.
+    fn handle_table_copy_shortcut(&mut self, ctx: &egui::Context, copy_shortcut_detected: bool) {
+            if copy_shortcut_detected {
+                debug!("📋 CMD+C for table/structure - executing copy...");
+            
+                let has_structure_selection = self.structure_selected_cell.is_some() 
+                    || self.structure_sel_anchor.is_some();
+                let has_data_selection = self.selected_cell.is_some() 
+                    || self.table_sel_anchor.is_some();
+                
+                let structure_focus = self.table_bottom_view
+                    == models::structs::TableBottomView::Structure
+                    && (self.table_recently_clicked || has_structure_selection);
+                let data_focus = self.table_recently_clicked || has_data_selection;
+            
+                debug!("📋 Table copy: table_flag={}, data_sel={:?}, struct_focus={}, data_focus={}", 
+                    self.table_recently_clicked,
+                    self.selected_cell,
+                    structure_focus,
+                    data_focus
+                );
+
+                // Handle structure/data copy
+                if structure_focus {
+                        // Structure multi-cell block
+                        if let (Some((ar, ac)), Some((br, bc))) =
+                            (self.structure_sel_anchor, self.structure_selected_cell)
+                        {
+                            let rmin = ar.min(br);
+                            let rmax = ar.max(br);
+                            let cmin = ac.min(bc);
+                            let cmax = ac.max(bc);
+                            let mut csv_out = String::new();
+                        
+                            match self.structure_sub_view {
+                                models::structs::StructureSubView::Columns => {
+                                    for r in rmin..=rmax {
+                                        if let Some(row) = self.structure_columns.get(r) {
+                                            let rowvals = [
+                                                (r + 1).to_string(),
+                                                row.name.clone(),
+                                                row.data_type.clone(),
+                                                row.nullable.map(|b| if b { "YES" } else { "NO" }).unwrap_or("?").to_string(),
+                                                row.default_value.clone().unwrap_or_default(),
+                                                row.extra.clone().unwrap_or_default(),
+                                            ];
+                                            let mut fields: Vec<String> = Vec::new();
+                                            for c in cmin..=cmax {
+                                                let v = rowvals.get(c).cloned().unwrap_or_default();
+                                                fields.push(if v.contains(',') || v.contains('"') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v });
+                                            }
+                                            csv_out.push_str(&fields.join(","));
+                                            csv_out.push('\n');
+                                        }
+                                    }
+                                }
+                                models::structs::StructureSubView::Indexes => {
+                                    for r in rmin..=rmax {
+                                        if let Some(row) = self.structure_indexes.get(r) {
+                                            let rowvals = [
+                                                (r + 1).to_string(),
+                                                row.name.clone(),
+                                                row.method.clone().unwrap_or_default(),
+                                                if row.unique { "YES".to_string() } else { "NO".to_string() },
+                                                if row.columns.is_empty() { String::new() } else { row.columns.join(",") },
+                                            ];
+                                            let mut fields: Vec<String> = Vec::new();
+                                            for c in cmin..=cmax {
+                                                let v = rowvals.get(c).cloned().unwrap_or_default();
+                                                fields.push(if v.contains(',') || v.contains('"') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v });
+                                            }
+                                            csv_out.push_str(&fields.join(","));
+                                            csv_out.push('\n');
+                                        }
+                                    }
+                                }
+                            }
+                        
+                            if !csv_out.is_empty() {
+                                ctx.copy_text(csv_out.clone());
+                                debug!("📋 Copied Structure block {}x{} ({} chars)", rmax-rmin+1, cmax-cmin+1, csv_out.len());
+                            }
+                        }
+                        // Structure single cell
+                        else if let Some((r, c)) = self.structure_selected_cell {
+                            let val = match self.structure_sub_view {
+                                models::structs::StructureSubView::Columns => {
+                                    if let Some(row) = self.structure_columns.get(r) {
+                                        let rowvals = [(r + 1).to_string(), row.name.clone(), row.data_type.clone(), 
+                                                       row.nullable.map(|b| if b { "YES" } else { "NO" }).unwrap_or("?").to_string(),
+                                                       row.default_value.clone().unwrap_or_default(), row.extra.clone().unwrap_or_default()];
+                                        rowvals.get(c).cloned().unwrap_or_default()
+                                    } else { String::new() }
+                                }
+                                models::structs::StructureSubView::Indexes => {
+                                    if let Some(row) = self.structure_indexes.get(r) {
+                                        let rowvals = [(r + 1).to_string(), row.name.clone(), row.method.clone().unwrap_or_default(),
+                                                       if row.unique { "YES".to_string() } else { "NO".to_string() },
+                                                       if row.columns.is_empty() { String::new() } else { row.columns.join(",") }];
+                                        rowvals.get(c).cloned().unwrap_or_default()
+                                    } else { String::new() }
+                                }
+                            };
+                            ctx.copy_text(val.clone());
+                            debug!("📋 Copied Structure cell ({},{}) len={} chars", r, c, val.len());
+                        }
+                    }
+                    // Data table copy
+                    else if data_focus {
+                        // Multi-cell block
+                        if let (Some(a), Some(b)) = (self.table_sel_anchor, self.selected_cell) {
+                            if let Some(csv) = crate::data_table::copy_selected_block_as_csv(self, a, b) {
+                                ctx.copy_text(csv.clone());
+                                debug!("📋 Copied Data block ({} chars)", csv.len());
+                            }
+                        }
+                        // Single cell
+                        else if let Some((r, c)) = self.selected_cell {
+                            if let Some(row) = self.current_table_data.get(r)
+                                && let Some(val) = row.get(c)
+                            {
+                                ctx.copy_text(val.clone());
+                                debug!("📋 Copied cell ({},{}) len={} chars", r, c, val.len());
+                            }
+                        }
+                        // Selected rows
+                        else if !self.selected_rows.is_empty() {
+                            if let Some(csv) = data_table::copy_selected_rows_as_csv(self) {
+                                ctx.copy_text(csv.clone());
+                                debug!("📋 Copied {} row(s) ({} chars)", self.selected_rows.len(), csv.len());
+                            }
+                        }
+                        // Selected columns
+                        else if !self.selected_columns.is_empty()
+                            && let Some(csv) = data_table::copy_selected_columns_as_csv(self)
+                        {
+                            ctx.copy_text(csv.clone());
+                            debug!(
+                                "📋 Copied {} col(s) ({} chars)",
+                                self.selected_columns.len(),
+                                csv.len()
+                            );
+                        }
+                    } else {
+                        debug!("⚠️ CMD+C but no focus target (table_flag={}, data_sel={:?})",
+                            self.table_recently_clicked, self.selected_cell);
+                    }
+            }
+    }
+
+    /// Render the feature-gated "Query AST Debug" floating window (Phase F).
+    /// Extracted verbatim from `update()`.
+    #[cfg(feature = "query_ast")]
+    fn render_query_ast_debug_window(&mut self, ctx: &egui::Context) {
+            if self.show_query_ast_debug {
+                egui::Window::new("Query AST Debug")
+                    .open(&mut self.show_query_ast_debug)
+                    .resizable(true)
+                    .default_size(egui::vec2(520.0, 320.0))
+                    .show(ctx, |ui| {
+                        // Attempt to capture latest plan hash/cache key from thread-local store (pop once per frame)
+                        if let Some((h, key, ctes)) = crate::query_ast::take_last_debug() {
+                            self.last_plan_hash = Some(h);
+                            self.last_plan_cache_key = Some(key);
+                            self.last_ctes = ctes;
+                        }
+                        ui.label("Press F9 to toggle this panel.");
+                        if ui.button("Refresh Stats").clicked() {
+                            let (h, m) = crate::query_ast::cache_stats();
+                            self.last_cache_hits = h;
+                            self.last_cache_misses = m;
+                            if let Some(sql) = &self.last_compiled_sql
+                                && let Some(active_tab) = self.query_tabs.get(self.active_tab_index)
+                                && let Some(conn_id) = active_tab.connection_id
+                                && let Some(conn) =
+                                    self.connections.iter().find(|c| c.id == Some(conn_id))
+                            {
+                                if let Ok(plan_txt) =
+                                    crate::query_ast::debug_plan(sql, &conn.connection_type)
+                                {
+                                    self.last_debug_plan = Some(plan_txt);
+                                }
+                                if let Ok((nodes, depth, subs_total, subs_corr, wins)) =
+                                    crate::query_ast::plan_metrics(sql)
+                                {
+                                    ui.label(format!(
+                                        "Plan: nodes={} depth={} subqueries={} (corr={}) windows={}",
+                                        nodes, depth, subs_total, subs_corr, wins
+                                    ));
+                                }
+                            }
+                        }
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "Cache: hits={} misses={} hit_rate={:.1}%",
+                                self.last_cache_hits,
+                                self.last_cache_misses,
+                                if self.last_cache_hits + self.last_cache_misses > 0 {
+                                    (self.last_cache_hits as f64 * 100.0)
+                                        / (self.last_cache_hits + self.last_cache_misses) as f64
+                                } else {
+                                    0.0
+                                }
+                            ));
+                        });
+                        let rules = crate::query_ast::last_rewrite_rules();
+                        if !rules.is_empty() {
+                            ui.collapsing("Rewrite Rules Applied", |ui| {
+                                ui.label(rules.join(", "));
+                            });
+                        }
+                        if let Some(h) = self.last_plan_hash {
+                            ui.label(format!("Plan Hash: {:x}", h));
+                        }
+                        if let Some(k) = &self.last_plan_cache_key {
+                            ui.collapsing("Cache Key", |ui| {
+                                ui.code(k);
+                            });
+                        }
+                        if let Some(ctes) = &self.last_ctes
+                            && !ctes.is_empty()
+                        {
+                            ui.collapsing("Remaining CTEs", |ui| {
+                                ui.label(ctes.join(", "));
+                            });
+                        }
+                        if let Some(sql) = &self.last_compiled_sql {
+                            ui.collapsing("Last Emitted SQL", |ui| {
+                                ui.code(sql);
+                            });
+                        }
+                        if !self.last_compiled_headers.is_empty() {
+                            ui.collapsing("Last Inferred Headers", |ui| {
+                                ui.label(self.last_compiled_headers.join(", "));
+                            });
+                        }
+                        if let Some(plan) = &self.last_debug_plan {
+                            ui.collapsing("Logical Plan", |ui| {
+                                ui.code(plan);
+                            });
+                        }
+                        if self.last_compiled_sql.is_none() {
+                            ui.label("(Run a SELECT query to populate data)");
+                        }
+                    });
+            }
+    }
+
     /// Persist preferences immediately when `prefs_dirty` is set.
     /// Extracted from the former `try_save_prefs` closure in `update()`.
     fn try_save_prefs(&mut self) {
@@ -2721,99 +2972,7 @@ impl App for Tabular {
 
         // --- Query AST Debug floating window (Phase F) ---
         #[cfg(feature = "query_ast")]
-        if self.show_query_ast_debug {
-            egui::Window::new("Query AST Debug")
-                .open(&mut self.show_query_ast_debug)
-                .resizable(true)
-                .default_size(egui::vec2(520.0, 320.0))
-                .show(ctx, |ui| {
-                    // Attempt to capture latest plan hash/cache key from thread-local store (pop once per frame)
-                    if let Some((h, key, ctes)) = crate::query_ast::take_last_debug() {
-                        self.last_plan_hash = Some(h);
-                        self.last_plan_cache_key = Some(key);
-                        self.last_ctes = ctes;
-                    }
-                    ui.label("Press F9 to toggle this panel.");
-                    if ui.button("Refresh Stats").clicked() {
-                        let (h, m) = crate::query_ast::cache_stats();
-                        self.last_cache_hits = h;
-                        self.last_cache_misses = m;
-                        if let Some(sql) = &self.last_compiled_sql
-                            && let Some(active_tab) = self.query_tabs.get(self.active_tab_index)
-                            && let Some(conn_id) = active_tab.connection_id
-                            && let Some(conn) =
-                                self.connections.iter().find(|c| c.id == Some(conn_id))
-                        {
-                            if let Ok(plan_txt) =
-                                crate::query_ast::debug_plan(sql, &conn.connection_type)
-                            {
-                                self.last_debug_plan = Some(plan_txt);
-                            }
-                            if let Ok((nodes, depth, subs_total, subs_corr, wins)) =
-                                crate::query_ast::plan_metrics(sql)
-                            {
-                                ui.label(format!(
-                                    "Plan: nodes={} depth={} subqueries={} (corr={}) windows={}",
-                                    nodes, depth, subs_total, subs_corr, wins
-                                ));
-                            }
-                        }
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "Cache: hits={} misses={} hit_rate={:.1}%",
-                            self.last_cache_hits,
-                            self.last_cache_misses,
-                            if self.last_cache_hits + self.last_cache_misses > 0 {
-                                (self.last_cache_hits as f64 * 100.0)
-                                    / (self.last_cache_hits + self.last_cache_misses) as f64
-                            } else {
-                                0.0
-                            }
-                        ));
-                    });
-                    let rules = crate::query_ast::last_rewrite_rules();
-                    if !rules.is_empty() {
-                        ui.collapsing("Rewrite Rules Applied", |ui| {
-                            ui.label(rules.join(", "));
-                        });
-                    }
-                    if let Some(h) = self.last_plan_hash {
-                        ui.label(format!("Plan Hash: {:x}", h));
-                    }
-                    if let Some(k) = &self.last_plan_cache_key {
-                        ui.collapsing("Cache Key", |ui| {
-                            ui.code(k);
-                        });
-                    }
-                    if let Some(ctes) = &self.last_ctes
-                        && !ctes.is_empty()
-                    {
-                        ui.collapsing("Remaining CTEs", |ui| {
-                            ui.label(ctes.join(", "));
-                        });
-                    }
-                    if let Some(sql) = &self.last_compiled_sql {
-                        ui.collapsing("Last Emitted SQL", |ui| {
-                            ui.code(sql);
-                        });
-                    }
-                    if !self.last_compiled_headers.is_empty() {
-                        ui.collapsing("Last Inferred Headers", |ui| {
-                            ui.label(self.last_compiled_headers.join(", "));
-                        });
-                    }
-                    if let Some(plan) = &self.last_debug_plan {
-                        ui.collapsing("Logical Plan", |ui| {
-                            ui.code(plan);
-                        });
-                    }
-                    if self.last_compiled_sql.is_none() {
-                        ui.label("(Run a SELECT query to populate data)");
-                    }
-                });
-        }
+        self.render_query_ast_debug_window(ctx);
 
         // Detect Copy shortcut ONLY for table/structure - rely on table_recently_clicked flag
         // which is set when user clicks table cell and reset when clicking editor.
@@ -3436,152 +3595,7 @@ impl App for Tabular {
 
         // Handle copy operations AFTER UI render (state already updated)
         // Note: We only reach here if table/structure has potential focus (not editor/message)
-        if copy_shortcut_detected {
-            debug!("📋 CMD+C for table/structure - executing copy...");
-            
-            let has_structure_selection = self.structure_selected_cell.is_some() 
-                || self.structure_sel_anchor.is_some();
-            let has_data_selection = self.selected_cell.is_some() 
-                || self.table_sel_anchor.is_some();
-                
-            let structure_focus = self.table_bottom_view
-                == models::structs::TableBottomView::Structure
-                && (self.table_recently_clicked || has_structure_selection);
-            let data_focus = self.table_recently_clicked || has_data_selection;
-            
-            debug!("📋 Table copy: table_flag={}, data_sel={:?}, struct_focus={}, data_focus={}", 
-                self.table_recently_clicked,
-                self.selected_cell,
-                structure_focus,
-                data_focus
-            );
-
-            // Handle structure/data copy
-            if structure_focus {
-                    // Structure multi-cell block
-                    if let (Some((ar, ac)), Some((br, bc))) =
-                        (self.structure_sel_anchor, self.structure_selected_cell)
-                    {
-                        let rmin = ar.min(br);
-                        let rmax = ar.max(br);
-                        let cmin = ac.min(bc);
-                        let cmax = ac.max(bc);
-                        let mut csv_out = String::new();
-                        
-                        match self.structure_sub_view {
-                            models::structs::StructureSubView::Columns => {
-                                for r in rmin..=rmax {
-                                    if let Some(row) = self.structure_columns.get(r) {
-                                        let rowvals = [
-                                            (r + 1).to_string(),
-                                            row.name.clone(),
-                                            row.data_type.clone(),
-                                            row.nullable.map(|b| if b { "YES" } else { "NO" }).unwrap_or("?").to_string(),
-                                            row.default_value.clone().unwrap_or_default(),
-                                            row.extra.clone().unwrap_or_default(),
-                                        ];
-                                        let mut fields: Vec<String> = Vec::new();
-                                        for c in cmin..=cmax {
-                                            let v = rowvals.get(c).cloned().unwrap_or_default();
-                                            fields.push(if v.contains(',') || v.contains('"') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v });
-                                        }
-                                        csv_out.push_str(&fields.join(","));
-                                        csv_out.push('\n');
-                                    }
-                                }
-                            }
-                            models::structs::StructureSubView::Indexes => {
-                                for r in rmin..=rmax {
-                                    if let Some(row) = self.structure_indexes.get(r) {
-                                        let rowvals = [
-                                            (r + 1).to_string(),
-                                            row.name.clone(),
-                                            row.method.clone().unwrap_or_default(),
-                                            if row.unique { "YES".to_string() } else { "NO".to_string() },
-                                            if row.columns.is_empty() { String::new() } else { row.columns.join(",") },
-                                        ];
-                                        let mut fields: Vec<String> = Vec::new();
-                                        for c in cmin..=cmax {
-                                            let v = rowvals.get(c).cloned().unwrap_or_default();
-                                            fields.push(if v.contains(',') || v.contains('"') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v });
-                                        }
-                                        csv_out.push_str(&fields.join(","));
-                                        csv_out.push('\n');
-                                    }
-                                }
-                            }
-                        }
-                        
-                        if !csv_out.is_empty() {
-                            ctx.copy_text(csv_out.clone());
-                            debug!("📋 Copied Structure block {}x{} ({} chars)", rmax-rmin+1, cmax-cmin+1, csv_out.len());
-                        }
-                    }
-                    // Structure single cell
-                    else if let Some((r, c)) = self.structure_selected_cell {
-                        let val = match self.structure_sub_view {
-                            models::structs::StructureSubView::Columns => {
-                                if let Some(row) = self.structure_columns.get(r) {
-                                    let rowvals = [(r + 1).to_string(), row.name.clone(), row.data_type.clone(), 
-                                                   row.nullable.map(|b| if b { "YES" } else { "NO" }).unwrap_or("?").to_string(),
-                                                   row.default_value.clone().unwrap_or_default(), row.extra.clone().unwrap_or_default()];
-                                    rowvals.get(c).cloned().unwrap_or_default()
-                                } else { String::new() }
-                            }
-                            models::structs::StructureSubView::Indexes => {
-                                if let Some(row) = self.structure_indexes.get(r) {
-                                    let rowvals = [(r + 1).to_string(), row.name.clone(), row.method.clone().unwrap_or_default(),
-                                                   if row.unique { "YES".to_string() } else { "NO".to_string() },
-                                                   if row.columns.is_empty() { String::new() } else { row.columns.join(",") }];
-                                    rowvals.get(c).cloned().unwrap_or_default()
-                                } else { String::new() }
-                            }
-                        };
-                        ctx.copy_text(val.clone());
-                        debug!("📋 Copied Structure cell ({},{}) len={} chars", r, c, val.len());
-                    }
-                }
-                // Data table copy
-                else if data_focus {
-                    // Multi-cell block
-                    if let (Some(a), Some(b)) = (self.table_sel_anchor, self.selected_cell) {
-                        if let Some(csv) = crate::data_table::copy_selected_block_as_csv(self, a, b) {
-                            ctx.copy_text(csv.clone());
-                            debug!("📋 Copied Data block ({} chars)", csv.len());
-                        }
-                    }
-                    // Single cell
-                    else if let Some((r, c)) = self.selected_cell {
-                        if let Some(row) = self.current_table_data.get(r)
-                            && let Some(val) = row.get(c)
-                        {
-                            ctx.copy_text(val.clone());
-                            debug!("📋 Copied cell ({},{}) len={} chars", r, c, val.len());
-                        }
-                    }
-                    // Selected rows
-                    else if !self.selected_rows.is_empty() {
-                        if let Some(csv) = data_table::copy_selected_rows_as_csv(self) {
-                            ctx.copy_text(csv.clone());
-                            debug!("📋 Copied {} row(s) ({} chars)", self.selected_rows.len(), csv.len());
-                        }
-                    }
-                    // Selected columns
-                    else if !self.selected_columns.is_empty()
-                        && let Some(csv) = data_table::copy_selected_columns_as_csv(self)
-                    {
-                        ctx.copy_text(csv.clone());
-                        debug!(
-                            "📋 Copied {} col(s) ({} chars)",
-                            self.selected_columns.len(),
-                            csv.len()
-                        );
-                    }
-                } else {
-                    debug!("⚠️ CMD+C but no focus target (table_flag={}, data_sel={:?})",
-                        self.table_recently_clicked, self.selected_cell);
-                }
-        }
+        self.handle_table_copy_shortcut(ctx, copy_shortcut_detected);
 
         // Centralized, non-blocking toast notifications. Rendered last so they
         // stack above all panels and dialogs.
