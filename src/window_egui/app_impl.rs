@@ -45,6 +45,90 @@ fn light_soft_visuals() -> egui::Visuals {
 
 
 impl Tabular {
+    /// Render the "Auto Refresh Interval" modal dialog when requested.
+    /// Extracted verbatim from `update()` (behavior-preserving).
+    fn render_auto_refresh_dialog(&mut self, ctx: &egui::Context) {
+        if self.show_auto_refresh_dialog {
+            egui::Window::new("Auto Refresh Interval")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Set auto refresh interval (seconds):");
+                    ui.text_edit_singleline(&mut self.auto_refresh_interval_input);
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() {
+                            if let Ok(v) = self.auto_refresh_interval_input.trim().parse::<u32>() {
+                                let v = std::cmp::max(1, v); // minimum 1 second
+                                self.auto_refresh_interval_seconds = v;
+                                self.auto_refresh_active = true;
+                                self.auto_refresh_last_run = None;
+                                self.show_auto_refresh_dialog = false;
+                            } else {
+                                // Invalid input keeps dialog open; user can correct it
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_auto_refresh_dialog = false;
+                            self.stop_auto_refresh();
+                        }
+                    });
+                });
+        }
+    }
+
+    /// Render the centered "Connecting…" overlay while waiting for a
+    /// connection pool. Extracted verbatim from `update()`.
+    fn render_connecting_overlay(&mut self, ctx: &egui::Context) {
+        if self.pool_wait_in_progress {
+            let elapsed = self
+                .pool_wait_started_at
+                .map(|t| t.elapsed())
+                .unwrap_or_default();
+            let mut keep_open = true; // local to control overlay
+            egui::Window::new("Connecting…")
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .collapsible(false)
+                .resizable(false)
+                .title_bar(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        let conn_name = self
+                            .pool_wait_connection_id
+                            .and_then(|id| self.get_connection_name(id))
+                            .unwrap_or_else(|| "(connection)".to_string());
+                        ui.label(format!("Establishing connection pool for '{}'…", conn_name));
+                    });
+                    if elapsed.as_secs() >= 10 {
+                        ui.label(
+                            egui::RichText::new("This can take a while for slow networks.")
+                                .size(11.0)
+                                .weak(),
+                        );
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            keep_open = false;
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("Waiting {}s", elapsed.as_secs()))
+                                .size(11.0)
+                                .weak(),
+                        );
+                    });
+                });
+            if !keep_open {
+                // Cancel waiting but keep background creation going
+                self.pool_wait_in_progress = false;
+                self.pool_wait_connection_id = None;
+                self.pool_wait_query.clear();
+                self.pool_wait_started_at = None;
+            }
+        }
+    }
+
     /// Persist preferences immediately when `prefs_dirty` is set.
     /// Extracted from the former `try_save_prefs` closure in `update()`.
     fn try_save_prefs(&mut self) {
@@ -176,33 +260,7 @@ impl App for Tabular {
         });
 
         // Render Auto Refresh interval popup dialog if requested
-        if self.show_auto_refresh_dialog {
-            egui::Window::new("Auto Refresh Interval")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("Set auto refresh interval (seconds):");
-                    ui.text_edit_singleline(&mut self.auto_refresh_interval_input);
-                    ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() {
-                            if let Ok(v) = self.auto_refresh_interval_input.trim().parse::<u32>() {
-                                let v = std::cmp::max(1, v); // minimum 1 second
-                                self.auto_refresh_interval_seconds = v;
-                                self.auto_refresh_active = true;
-                                self.auto_refresh_last_run = None;
-                                self.show_auto_refresh_dialog = false;
-                            } else {
-                                // Invalid input keeps dialog open; user can correct it
-                            }
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.show_auto_refresh_dialog = false;
-                            self.stop_auto_refresh();
-                        }
-                    });
-                });
-        }
+        self.render_auto_refresh_dialog(ctx);
 
         // Auto Refresh execution loop: run query when interval elapsed
         if self.auto_refresh_active {
@@ -1324,53 +1382,7 @@ impl App for Tabular {
         }
 
         // Centered loading overlay when waiting for connection pool
-        if self.pool_wait_in_progress {
-            let elapsed = self
-                .pool_wait_started_at
-                .map(|t| t.elapsed())
-                .unwrap_or_default();
-            let mut keep_open = true; // local to control overlay
-            egui::Window::new("Connecting…")
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .collapsible(false)
-                .resizable(false)
-                .title_bar(true)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        let conn_name = self
-                            .pool_wait_connection_id
-                            .and_then(|id| self.get_connection_name(id))
-                            .unwrap_or_else(|| "(connection)".to_string());
-                        ui.label(format!("Establishing connection pool for '{}'…", conn_name));
-                    });
-                    if elapsed.as_secs() >= 10 {
-                        ui.label(
-                            egui::RichText::new("This can take a while for slow networks.")
-                                .size(11.0)
-                                .weak(),
-                        );
-                    }
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            keep_open = false;
-                        }
-                        ui.label(
-                            egui::RichText::new(format!("Waiting {}s", elapsed.as_secs()))
-                                .size(11.0)
-                                .weak(),
-                        );
-                    });
-                });
-            if !keep_open {
-                // Cancel waiting but keep background creation going
-                self.pool_wait_in_progress = false;
-                self.pool_wait_connection_id = None;
-                self.pool_wait_query.clear();
-                self.pool_wait_started_at = None;
-            }
-        }
+        self.render_connecting_overlay(ctx);
 
         // Check for directory picker results
         if let Some(receiver) = &self.directory_picker_result
