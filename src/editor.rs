@@ -4993,6 +4993,78 @@ pub(crate) fn execute_query_with_text(tabular: &mut window_egui::Tabular, select
     execute_query_internal(tabular, query);
 }
 
+/// Run the engine-appropriate EXPLAIN for the current statement
+/// (selection > statement at cursor > full editor text). The plan comes
+/// back through the normal result grid.
+pub(crate) fn explain_current_query(
+    tabular: &mut window_egui::Tabular,
+    selected_text: String,
+) {
+    tabular.is_table_browse_mode = false;
+    tabular.extend_query_icon_hold();
+
+    let raw = if !selected_text.trim().is_empty() {
+        selected_text.trim().to_string()
+    } else {
+        let cursor_query = extract_query_from_cursor(tabular);
+        if !cursor_query.trim().is_empty() {
+            cursor_query
+        } else {
+            tabular.editor.text.trim().to_string()
+        }
+    };
+    if raw.is_empty() {
+        return;
+    }
+
+    let connection_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.connection_id)
+        .or(tabular.current_connection_id);
+    let Some(connection_id) = connection_id else {
+        tabular
+            .toasts
+            .error("Pick a connection before running EXPLAIN".to_string());
+        return;
+    };
+    let connection_type = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))
+        .map(|c| c.connection_type.clone());
+
+    let prefix = match connection_type {
+        Some(crate::models::enums::DatabaseType::MySQL)
+        | Some(crate::models::enums::DatabaseType::PostgreSQL) => "EXPLAIN ",
+        Some(crate::models::enums::DatabaseType::SQLite) => "EXPLAIN QUERY PLAN ",
+        // MsSQL needs SET SHOWPLAN_ALL in its own batch — follow-up work.
+        _ => {
+            tabular
+                .toasts
+                .error("EXPLAIN is not supported for this connection type yet".to_string());
+            return;
+        }
+    };
+
+    // EXPLAIN applies to a single statement: take the first one.
+    let is_mysql = matches!(
+        connection_type,
+        Some(crate::models::enums::DatabaseType::MySQL)
+    );
+    let stmt = connection::split_sql_statements(&raw, is_mysql)
+        .into_iter()
+        .next()
+        .unwrap_or(raw);
+
+    let explain_sql = if stmt.trim_start().to_uppercase().starts_with("EXPLAIN") {
+        stmt
+    } else {
+        format!("{}{}", prefix, stmt)
+    };
+    execute_query_internal(tabular, explain_sql);
+}
+
 pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
     tabular.is_table_browse_mode = false;
     tabular.extend_query_icon_hold();

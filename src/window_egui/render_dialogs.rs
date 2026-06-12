@@ -29,6 +29,33 @@ fn draw_format_sql_button(
     clicked
 }
 
+fn draw_explain_button(
+    ctx: &egui::Context,
+    area_id: egui::Id,
+    pos: egui::Pos2,
+    size: egui::Vec2,
+    corner: u8,
+) -> bool {
+    let mut clicked = false;
+    let explain_text = egui::RichText::new("🔍").size(15.0);
+    egui::Area::new(area_id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |area_ui| {
+            let button = egui::Button::new(explain_text.clone())
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(1.5, egui::Color32::TRANSPARENT))
+                .corner_radius(egui::CornerRadius::same(corner));
+            let response = area_ui
+                .add_sized(size, button)
+                .on_hover_text("Explain query plan (EXPLAIN)");
+            if response.clicked() {
+                clicked = true;
+            }
+        });
+    clicked
+}
+
 
 impl super::Tabular {
     pub fn render_lint_panel(&mut self, ui: &mut egui::Ui) {
@@ -703,6 +730,19 @@ impl super::Tabular {
                     button_corner,
                 );
 
+                // Floating EXPLAIN button (left of the format button)
+                let explain_button_pos = egui::pos2(
+                    format_button_pos.x - button_size.x - format_spacing,
+                    button_pos.y,
+                );
+                let explain_clicked = draw_explain_button(
+                    ui.ctx(),
+                    egui::Id::new((format!("floating_explain_button_{}", context_id), self.active_tab_index)),
+                    explain_button_pos,
+                    button_size,
+                    button_corner,
+                );
+
                 if execute_clicked {
                     self.is_table_browse_mode = false;
                     self.extend_query_icon_hold();
@@ -714,6 +754,34 @@ impl super::Tabular {
                 if format_clicked {
                     editor::reformat_current_sql(self, ui);
                     ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                    ui.ctx().request_repaint();
+                }
+
+                if explain_clicked {
+                    let id = egui::Id::new("sql_editor");
+                    let mut direct_selected = String::new();
+                    if let Some(range) =
+                        crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                    {
+                        let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                            s.char_indices()
+                                .map(|(b, _)| b)
+                                .chain(std::iter::once(s.len()))
+                                .nth(char_idx)
+                                .unwrap_or(s.len())
+                        };
+                        let start_b = to_byte_index(&self.editor.text, range.start);
+                        let end_b = to_byte_index(&self.editor.text, range.end);
+                        if start_b < end_b && end_b <= self.editor.text.len() {
+                            direct_selected = self.editor.text[start_b..end_b].to_string();
+                        }
+                    }
+                    let captured = if !direct_selected.is_empty() {
+                        direct_selected
+                    } else {
+                        self.selected_text.clone()
+                    };
+                    editor::explain_current_query(self, captured);
                     ui.ctx().request_repaint();
                 }
 
@@ -819,7 +887,7 @@ impl super::Tabular {
                 // Inline AI loading indicator (shown below the format/run buttons while AI is working)
                 if self.ai_inline_receiver.is_some() {
                     let ai_indicator_pos = egui::pos2(
-                        format_button_pos.x - button_size.x - format_spacing,
+                        explain_button_pos.x - button_size.x - format_spacing,
                         button_pos.y,
                     );
                     egui::Area::new(egui::Id::new((format!("ai_inline_loading_{}", context_id), self.active_tab_index)))
