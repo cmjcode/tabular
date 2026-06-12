@@ -499,6 +499,415 @@ impl Tabular {
             }
     }
 
+    /// Drain native file/directory picker result channels into state.
+    /// Extracted verbatim from `update()`.
+    fn process_file_picker_results(&mut self) {
+        // Check for directory picker results
+        if let Some(receiver) = &self.directory_picker_result
+            && let Ok(selected_path) = receiver.try_recv()
+        {
+            self.temp_data_directory = selected_path;
+            self.directory_picker_result = None; // Clean up the receiver
+        }
+
+        // Check for save directory picker results
+        if let Some(receiver) = &self.save_directory_picker_result
+            && let Ok(selected_path) = receiver.try_recv()
+        {
+            self.save_directory = selected_path;
+            self.save_directory_picker_result = None; // Clean up the receiver
+        }
+
+        // Check for SQLite path picker results (for new SQLite connection)
+        if let Some(receiver) = &self.sqlite_path_picker_result
+            && let Ok(selected_path) = receiver.try_recv()
+        {
+            self.temp_sqlite_path = Some(selected_path);
+            self.sqlite_path_picker_result = None;
+        }
+    }
+
+    /// Drain and process all pending `BackgroundResult` messages.
+    /// Extracted verbatim from `update()`.
+    fn process_background_results(&mut self, ctx: &egui::Context) {
+            // Check for background task results
+            let mut results = Vec::new();
+            if let Some(receiver) = &self.background_receiver {
+                while let Ok(result) = receiver.try_recv() {
+                    results.push(result);
+                }
+            }
+        
+            for result in results {
+                    match result {
+                        models::enums::BackgroundResult::RefreshComplete {
+                            connection_id,
+                            success,
+                        } => {
+                            // Remove from refreshing set
+                            self.refreshing_connections.remove(&connection_id);
+
+                            if success {
+                                debug!(
+                                    "✅ Background refresh completed successfully for connection {}",
+                                    connection_id
+                                );
+
+                                // Extract expansion state before borrowing items_tree mutably
+                                let expansion_state =
+                                    self.pending_expansion_restore.remove(&connection_id);
+
+                                // Re-expand connection node to show fresh data (search recursively
+                                // through folder nodes since connections are nested inside folders)
+                                let node_found = if let Some(conn_node) =
+                                    Self::find_connection_node_recursive(
+                                        &mut self.items_tree,
+                                        connection_id,
+                                    )
+                                {
+                                    debug!("   ✅ Found connection node: {}", conn_node.name);
+                                    if let Some(state) = expansion_state {
+                                        debug!(
+                                            "🔄 Restoring {} expansion states for connection {}",
+                                            state.len(),
+                                            connection_id
+                                        );
+                                        conn_node.is_loaded = false;
+                                        Self::restore_expansion_state(conn_node, &state);
+                                        debug!("   ✅ Expansion state restored");
+                                        Self::mark_expanded_nodes_loaded(conn_node);
+                                        debug!("   ✅ Expanded nodes marked for loading");
+                                    } else {
+                                        debug!("   ⚠️  No expansion state to restore");
+                                        conn_node.is_loaded = false;
+                                    }
+                                    true
+                                } else {
+                                    false
+                                };
+
+                                if !node_found {
+                                    debug!("   ❌ Connection node {} not found in tree!", connection_id);
+                                }
+
+                                // Mark this connection as needing auto-load
+                                // Will be processed in the sidebar render where we have proper borrow access
+                                self.pending_auto_load.insert(connection_id);
+                                debug!(
+                                    "📂 Marked connection {} for auto-load after restore",
+                                    connection_id
+                                );
+                                debug!(
+                                    "   pending_auto_load size: {}",
+                                    self.pending_auto_load.len()
+                                );
+
+                                // Request UI repaint to show updated data
+                                ctx.request_repaint();
+                            } else {
+                                debug!("Background refresh failed for connection {}", connection_id);
+                                // Clean up pending restore state on failure
+                                self.pending_expansion_restore.remove(&connection_id);
+                            }
+                        }
+                        models::enums::BackgroundResult::PrefetchProgress {
+                            connection_id,
+                            completed,
+                            total,
+                        } => {
+                            // Update prefetch progress
+                            self.prefetch_progress
+                                .insert(connection_id, (completed, total));
+                            ctx.request_repaint();
+                        }
+                        models::enums::BackgroundResult::PrefetchComplete { connection_id } => {
+                            // Prefetch completed
+                            self.prefetch_in_progress.remove(&connection_id);
+                            self.prefetch_progress.remove(&connection_id);
+                            debug!("Prefetch completed for connection {}", connection_id);
+                            // Reload any already-expanded table/view folders so newly-cached
+                            // tables become visible without the user having to re-click.
+                            self.refresh_all_table_folders(connection_id);
+                            ctx.request_repaint();
+                        }
+                        models::enums::BackgroundResult::SqlitePathPicked { path } => {
+                            self.temp_sqlite_path = Some(path);
+                            ctx.request_repaint();
+                        }
+                        models::enums::BackgroundResult::DatabasesFetched {
+                            connection_id,
+                            databases,
+                        } => {
+                            debug!("✅ Received background databases fetch result: {} databases", databases.len());
+                            // Update cache
+                            self.database_cache.insert(connection_id, databases.clone());
+                            self.database_cache_time
+                                .insert(connection_id, std::time::Instant::now());
+                        
+                            // Also save to SQLite cache
+                            cache_data::save_databases_to_cache(self, connection_id, &databases);
+                        
+                            // Update UI tree if connection node exists
+                            for node in &mut self.items_tree {
+                                if node.node_type == models::enums::NodeType::Connection
+                                    && node.connection_id == Some(connection_id)
+                                {
+                                    // Force reload of children
+                                    node.is_loaded = false; 
+                                    break;
+                                }
+                            }
+                        
+                             // Also remove from fetching set
+                            self.fetching_databases.remove(&connection_id);
+
+                            // Refresh UI
+                            ctx.request_repaint();
+                        }
+                        models::enums::BackgroundResult::RedisKeysFetched {
+                            connection_id,
+                            database_name,
+                            keys,
+                        } => {
+                            log::debug!(
+                                "[redis_keys] UI received fetch result conn={} keyspace={} keys={}",
+                                connection_id,
+                                database_name,
+                                keys.len()
+                            );
+                            debug!(
+                                "✅ Redis keys fetched for db '{}': {} keys",
+                                database_name,
+                                keys.len()
+                            );
+
+                            // Remove from in-progress set
+                            self.fetching_redis_keys.remove(&(connection_id, database_name.clone()));
+
+                            // Group keys by type
+                            let mut keys_by_type: std::collections::HashMap<String, Vec<String>> =
+                                std::collections::HashMap::new();
+                            for (key, key_type) in keys {
+                                keys_by_type.entry(key_type).or_default().push(key);
+                            }
+                            let no_keys_found = keys_by_type.is_empty();
+
+                            // Locate the database node in the tree and populate it
+                            for root in &mut self.items_tree {
+                                if let Some(db_node) = crate::window_egui::Tabular::find_redis_database_node(
+                                    root,
+                                    connection_id,
+                                    &Some(database_name.clone()),
+                                ) {
+                                    log::debug!(
+                                        "[redis_keys] found UI node '{}' for conn={} keyspace={}",
+                                        db_node.name,
+                                        connection_id,
+                                        database_name
+                                    );
+                                    db_node.children.clear();
+
+                                    let mut sorted_types: Vec<_> = keys_by_type.into_iter().collect();
+                                    sorted_types.sort_by(|a, b| a.0.cmp(&b.0));
+
+                                    for (data_type, type_keys) in sorted_types {
+                                        let folder_name = match data_type.as_str() {
+                                            "string" => "Strings",
+                                            "hash" => "Hashes",
+                                            "list" => "Lists",
+                                            "set" => "Sets",
+                                            "zset" => "Sorted Sets",
+                                            "stream" => "Streams",
+                                            other => other,
+                                        };
+                                        let mut type_folder = models::structs::TreeNode::new(
+                                            format!("{} ({})", folder_name, type_keys.len()),
+                                            models::enums::NodeType::TablesFolder,
+                                        );
+                                        type_folder.connection_id = Some(connection_id);
+                                        type_folder.database_name = Some(database_name.clone());
+                                        type_folder.is_expanded = false;
+                                        type_folder.is_loaded = true;
+
+                                        for key in type_keys {
+                                            let mut key_node = models::structs::TreeNode::new(
+                                                key,
+                                                models::enums::NodeType::Table,
+                                            );
+                                            key_node.connection_id = Some(connection_id);
+                                            key_node.database_name = Some(database_name.clone());
+                                            type_folder.children.push(key_node);
+                                        }
+                                        db_node.children.push(type_folder);
+                                    }
+
+                                    db_node.is_loaded = true;
+                                    break;
+                                }
+                            }
+
+                            if no_keys_found {
+                                log::warn!(
+                                    "[redis_keys] no keys or no types available for conn={} keyspace={}",
+                                    connection_id,
+                                    database_name
+                                );
+                            }
+
+                            ctx.request_repaint();
+                        }
+                        models::enums::BackgroundResult::RedisBrowserStateFetched {
+                            connection_id,
+                            state,
+                        } => {
+                            self.fetching_redis_browser.remove(&connection_id);
+
+                            let keys_to_cache: Vec<(String, String)> = state
+                                .keys
+                                .iter()
+                                .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
+                                .collect();
+                            if !state.keyspace_label.is_empty() && !keys_to_cache.is_empty() {
+                                cache_data::save_redis_browser_keys_to_cache(
+                                    self,
+                                    connection_id,
+                                    &state.keyspace_label,
+                                    &keys_to_cache,
+                                );
+                            }
+
+                            for tab in &mut self.query_tabs {
+                                if tab.connection_id == Some(connection_id)
+                                    && tab.redis_browser_state.is_some()
+                                {
+                                    let mut merged_state = state.clone();
+                                    if let Some(previous_state) = tab.redis_browser_state.as_ref() {
+                                        merged_state.filter_text = previous_state.filter_text.clone();
+                                        merged_state.type_filter = previous_state.type_filter.clone();
+                                        merged_state.remote_search_in_progress = false;
+                                        merged_state.last_remote_search = previous_state.last_remote_search.clone();
+                                        merged_state.auto_refresh_enabled = previous_state.auto_refresh_enabled;
+                                        merged_state.auto_refresh_interval_seconds = previous_state.auto_refresh_interval_seconds.max(1);
+                                        merged_state.auto_refresh_last_run = previous_state.auto_refresh_last_run;
+                                        merged_state.selected_key = previous_state.selected_key.clone();
+                                        merged_state.selected_key_type = previous_state.selected_key_type.clone();
+                                        merged_state.preview = previous_state.preview.clone();
+                                        if !previous_state.last_error.as_deref().unwrap_or_default().is_empty() {
+                                            merged_state.last_error = previous_state.last_error.clone();
+                                        }
+                                    } else {
+                                        merged_state.auto_refresh_enabled = true;
+                                        merged_state.auto_refresh_interval_seconds =
+                                            self.redis_browser_auto_refresh_default_seconds.max(1);
+                                    }
+                                    tab.redis_browser_state = Some(merged_state);
+                                }
+                            }
+
+                            ctx.request_repaint();
+                        }
+                        models::enums::BackgroundResult::RedisBrowserSearchFetched {
+                            connection_id,
+                            database_name,
+                            search_text,
+                            keys,
+                        } => {
+                            let mut merged_keys_for_cache: Option<Vec<(String, String)>> = None;
+
+                            for tab in &mut self.query_tabs {
+                                if tab.connection_id == Some(connection_id)
+                                    && let Some(state) = &mut tab.redis_browser_state
+                                {
+                                    state.remote_search_in_progress = false;
+                                    state.last_remote_search = Some(search_text.clone());
+
+                                    for (key_name, key_type) in &keys {
+                                        if !state.keys.iter().any(|entry| entry.key_name == *key_name) {
+                                            state.keys.push(models::structs::RedisBrowserKeyEntry {
+                                                key_name: key_name.clone(),
+                                                key_type: key_type.clone(),
+                                                ttl_label: if database_name == crate::driver_redis::REDIS_CLUSTER_KEYSPACE {
+                                                    "Cluster".to_string()
+                                                } else {
+                                                    database_name.clone()
+                                                },
+                                                size_label: "-".to_string(),
+                                            });
+                                        }
+                                    }
+
+                                    state.keys.sort_by(|left, right| left.key_name.cmp(&right.key_name));
+                                    state.status_text = if keys.is_empty() {
+                                        format!("No Redis server matches for '{}'", search_text)
+                                    } else {
+                                        format!("Loaded {} Redis server matches for '{}'", keys.len(), search_text)
+                                    };
+                                    state.last_error = None;
+
+                                    merged_keys_for_cache = Some(
+                                        state
+                                            .keys
+                                            .iter()
+                                            .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
+                                            .collect(),
+                                    );
+                                }
+                            }
+
+                            if let Some(keys_to_cache) = merged_keys_for_cache
+                                && !database_name.is_empty()
+                            {
+                                cache_data::save_redis_browser_keys_to_cache(
+                                    self,
+                                    connection_id,
+                                    &database_name,
+                                    &keys_to_cache,
+                                );
+                            }
+
+                            ctx.request_repaint();
+                        }
+                        models::enums::BackgroundResult::UpdateCheckComplete { result } => {
+                            // Finish check state first
+                            self.update_check_in_progress = false;
+                            let was_manual = self.manual_update_check;
+                            self.manual_update_check = false;
+
+                            // Defer actions requiring mutable self in separate block to avoid borrow overlap
+                            match result {
+                                Ok(info) => {
+                                    let update_available = info.update_available;
+                                    self.update_info = Some(info.clone());
+                                    self.update_check_error = None;
+                                    if was_manual {
+                                        self.show_update_dialog = true;
+                                    } else if update_available {
+                                        self.show_update_notification = true;
+                                        if !self.update_download_started
+                                            && !self.update_download_in_progress
+                                        {
+                                            self.update_download_started = true;
+                                            // Start download after loop ends via flag (can't call method that mutably borrows self again inside borrow scope)
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    self.update_check_error = Some(err);
+                                    self.show_update_dialog = true;
+                                }
+                            }
+                            ctx.request_repaint();
+                        }
+                    }
+                }
+
+
+            while let Ok(message) = self.query_result_receiver.try_recv() {
+                self.handle_query_result_message(message);
+                ctx.request_repaint();
+            }
+    }
+
     /// Persist preferences immediately when `prefs_dirty` is set.
     /// Extracted from the former `try_save_prefs` closure in `update()`.
     fn try_save_prefs(&mut self) {
@@ -1390,406 +1799,11 @@ impl App for Tabular {
         // Centered loading overlay when waiting for connection pool
         self.render_connecting_overlay(ctx);
 
-        // Check for directory picker results
-        if let Some(receiver) = &self.directory_picker_result
-            && let Ok(selected_path) = receiver.try_recv()
-        {
-            self.temp_data_directory = selected_path;
-            self.directory_picker_result = None; // Clean up the receiver
-        }
-
-        // Check for save directory picker results
-        if let Some(receiver) = &self.save_directory_picker_result
-            && let Ok(selected_path) = receiver.try_recv()
-        {
-            self.save_directory = selected_path;
-            self.save_directory_picker_result = None; // Clean up the receiver
-        }
-
-        // Check for SQLite path picker results (for new SQLite connection)
-        if let Some(receiver) = &self.sqlite_path_picker_result
-            && let Ok(selected_path) = receiver.try_recv()
-        {
-            self.temp_sqlite_path = Some(selected_path);
-            self.sqlite_path_picker_result = None;
-        }
+        // Drain any native file/directory picker channels into state.
+        self.process_file_picker_results();
 
         // Check for background task results
-        let mut results = Vec::new();
-        if let Some(receiver) = &self.background_receiver {
-            while let Ok(result) = receiver.try_recv() {
-                results.push(result);
-            }
-        }
-        
-        for result in results {
-                match result {
-                    models::enums::BackgroundResult::RefreshComplete {
-                        connection_id,
-                        success,
-                    } => {
-                        // Remove from refreshing set
-                        self.refreshing_connections.remove(&connection_id);
-
-                        if success {
-                            debug!(
-                                "✅ Background refresh completed successfully for connection {}",
-                                connection_id
-                            );
-
-                            // Extract expansion state before borrowing items_tree mutably
-                            let expansion_state =
-                                self.pending_expansion_restore.remove(&connection_id);
-
-                            // Re-expand connection node to show fresh data (search recursively
-                            // through folder nodes since connections are nested inside folders)
-                            let node_found = if let Some(conn_node) =
-                                Self::find_connection_node_recursive(
-                                    &mut self.items_tree,
-                                    connection_id,
-                                )
-                            {
-                                debug!("   ✅ Found connection node: {}", conn_node.name);
-                                if let Some(state) = expansion_state {
-                                    debug!(
-                                        "🔄 Restoring {} expansion states for connection {}",
-                                        state.len(),
-                                        connection_id
-                                    );
-                                    conn_node.is_loaded = false;
-                                    Self::restore_expansion_state(conn_node, &state);
-                                    debug!("   ✅ Expansion state restored");
-                                    Self::mark_expanded_nodes_loaded(conn_node);
-                                    debug!("   ✅ Expanded nodes marked for loading");
-                                } else {
-                                    debug!("   ⚠️  No expansion state to restore");
-                                    conn_node.is_loaded = false;
-                                }
-                                true
-                            } else {
-                                false
-                            };
-
-                            if !node_found {
-                                debug!("   ❌ Connection node {} not found in tree!", connection_id);
-                            }
-
-                            // Mark this connection as needing auto-load
-                            // Will be processed in the sidebar render where we have proper borrow access
-                            self.pending_auto_load.insert(connection_id);
-                            debug!(
-                                "📂 Marked connection {} for auto-load after restore",
-                                connection_id
-                            );
-                            debug!(
-                                "   pending_auto_load size: {}",
-                                self.pending_auto_load.len()
-                            );
-
-                            // Request UI repaint to show updated data
-                            ctx.request_repaint();
-                        } else {
-                            debug!("Background refresh failed for connection {}", connection_id);
-                            // Clean up pending restore state on failure
-                            self.pending_expansion_restore.remove(&connection_id);
-                        }
-                    }
-                    models::enums::BackgroundResult::PrefetchProgress {
-                        connection_id,
-                        completed,
-                        total,
-                    } => {
-                        // Update prefetch progress
-                        self.prefetch_progress
-                            .insert(connection_id, (completed, total));
-                        ctx.request_repaint();
-                    }
-                    models::enums::BackgroundResult::PrefetchComplete { connection_id } => {
-                        // Prefetch completed
-                        self.prefetch_in_progress.remove(&connection_id);
-                        self.prefetch_progress.remove(&connection_id);
-                        debug!("Prefetch completed for connection {}", connection_id);
-                        // Reload any already-expanded table/view folders so newly-cached
-                        // tables become visible without the user having to re-click.
-                        self.refresh_all_table_folders(connection_id);
-                        ctx.request_repaint();
-                    }
-                    models::enums::BackgroundResult::SqlitePathPicked { path } => {
-                        self.temp_sqlite_path = Some(path);
-                        ctx.request_repaint();
-                    }
-                    models::enums::BackgroundResult::DatabasesFetched {
-                        connection_id,
-                        databases,
-                    } => {
-                        debug!("✅ Received background databases fetch result: {} databases", databases.len());
-                        // Update cache
-                        self.database_cache.insert(connection_id, databases.clone());
-                        self.database_cache_time
-                            .insert(connection_id, std::time::Instant::now());
-                        
-                        // Also save to SQLite cache
-                        cache_data::save_databases_to_cache(self, connection_id, &databases);
-                        
-                        // Update UI tree if connection node exists
-                        for node in &mut self.items_tree {
-                            if node.node_type == models::enums::NodeType::Connection
-                                && node.connection_id == Some(connection_id)
-                            {
-                                // Force reload of children
-                                node.is_loaded = false; 
-                                break;
-                            }
-                        }
-                        
-                         // Also remove from fetching set
-                        self.fetching_databases.remove(&connection_id);
-
-                        // Refresh UI
-                        ctx.request_repaint();
-                    }
-                    models::enums::BackgroundResult::RedisKeysFetched {
-                        connection_id,
-                        database_name,
-                        keys,
-                    } => {
-                        log::debug!(
-                            "[redis_keys] UI received fetch result conn={} keyspace={} keys={}",
-                            connection_id,
-                            database_name,
-                            keys.len()
-                        );
-                        debug!(
-                            "✅ Redis keys fetched for db '{}': {} keys",
-                            database_name,
-                            keys.len()
-                        );
-
-                        // Remove from in-progress set
-                        self.fetching_redis_keys.remove(&(connection_id, database_name.clone()));
-
-                        // Group keys by type
-                        let mut keys_by_type: std::collections::HashMap<String, Vec<String>> =
-                            std::collections::HashMap::new();
-                        for (key, key_type) in keys {
-                            keys_by_type.entry(key_type).or_default().push(key);
-                        }
-                        let no_keys_found = keys_by_type.is_empty();
-
-                        // Locate the database node in the tree and populate it
-                        for root in &mut self.items_tree {
-                            if let Some(db_node) = crate::window_egui::Tabular::find_redis_database_node(
-                                root,
-                                connection_id,
-                                &Some(database_name.clone()),
-                            ) {
-                                log::debug!(
-                                    "[redis_keys] found UI node '{}' for conn={} keyspace={}",
-                                    db_node.name,
-                                    connection_id,
-                                    database_name
-                                );
-                                db_node.children.clear();
-
-                                let mut sorted_types: Vec<_> = keys_by_type.into_iter().collect();
-                                sorted_types.sort_by(|a, b| a.0.cmp(&b.0));
-
-                                for (data_type, type_keys) in sorted_types {
-                                    let folder_name = match data_type.as_str() {
-                                        "string" => "Strings",
-                                        "hash" => "Hashes",
-                                        "list" => "Lists",
-                                        "set" => "Sets",
-                                        "zset" => "Sorted Sets",
-                                        "stream" => "Streams",
-                                        other => other,
-                                    };
-                                    let mut type_folder = models::structs::TreeNode::new(
-                                        format!("{} ({})", folder_name, type_keys.len()),
-                                        models::enums::NodeType::TablesFolder,
-                                    );
-                                    type_folder.connection_id = Some(connection_id);
-                                    type_folder.database_name = Some(database_name.clone());
-                                    type_folder.is_expanded = false;
-                                    type_folder.is_loaded = true;
-
-                                    for key in type_keys {
-                                        let mut key_node = models::structs::TreeNode::new(
-                                            key,
-                                            models::enums::NodeType::Table,
-                                        );
-                                        key_node.connection_id = Some(connection_id);
-                                        key_node.database_name = Some(database_name.clone());
-                                        type_folder.children.push(key_node);
-                                    }
-                                    db_node.children.push(type_folder);
-                                }
-
-                                db_node.is_loaded = true;
-                                break;
-                            }
-                        }
-
-                        if no_keys_found {
-                            log::warn!(
-                                "[redis_keys] no keys or no types available for conn={} keyspace={}",
-                                connection_id,
-                                database_name
-                            );
-                        }
-
-                        ctx.request_repaint();
-                    }
-                    models::enums::BackgroundResult::RedisBrowserStateFetched {
-                        connection_id,
-                        state,
-                    } => {
-                        self.fetching_redis_browser.remove(&connection_id);
-
-                        let keys_to_cache: Vec<(String, String)> = state
-                            .keys
-                            .iter()
-                            .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
-                            .collect();
-                        if !state.keyspace_label.is_empty() && !keys_to_cache.is_empty() {
-                            cache_data::save_redis_browser_keys_to_cache(
-                                self,
-                                connection_id,
-                                &state.keyspace_label,
-                                &keys_to_cache,
-                            );
-                        }
-
-                        for tab in &mut self.query_tabs {
-                            if tab.connection_id == Some(connection_id)
-                                && tab.redis_browser_state.is_some()
-                            {
-                                let mut merged_state = state.clone();
-                                if let Some(previous_state) = tab.redis_browser_state.as_ref() {
-                                    merged_state.filter_text = previous_state.filter_text.clone();
-                                    merged_state.type_filter = previous_state.type_filter.clone();
-                                    merged_state.remote_search_in_progress = false;
-                                    merged_state.last_remote_search = previous_state.last_remote_search.clone();
-                                    merged_state.auto_refresh_enabled = previous_state.auto_refresh_enabled;
-                                    merged_state.auto_refresh_interval_seconds = previous_state.auto_refresh_interval_seconds.max(1);
-                                    merged_state.auto_refresh_last_run = previous_state.auto_refresh_last_run;
-                                    merged_state.selected_key = previous_state.selected_key.clone();
-                                    merged_state.selected_key_type = previous_state.selected_key_type.clone();
-                                    merged_state.preview = previous_state.preview.clone();
-                                    if !previous_state.last_error.as_deref().unwrap_or_default().is_empty() {
-                                        merged_state.last_error = previous_state.last_error.clone();
-                                    }
-                                } else {
-                                    merged_state.auto_refresh_enabled = true;
-                                    merged_state.auto_refresh_interval_seconds =
-                                        self.redis_browser_auto_refresh_default_seconds.max(1);
-                                }
-                                tab.redis_browser_state = Some(merged_state);
-                            }
-                        }
-
-                        ctx.request_repaint();
-                    }
-                    models::enums::BackgroundResult::RedisBrowserSearchFetched {
-                        connection_id,
-                        database_name,
-                        search_text,
-                        keys,
-                    } => {
-                        let mut merged_keys_for_cache: Option<Vec<(String, String)>> = None;
-
-                        for tab in &mut self.query_tabs {
-                            if tab.connection_id == Some(connection_id)
-                                && let Some(state) = &mut tab.redis_browser_state
-                            {
-                                state.remote_search_in_progress = false;
-                                state.last_remote_search = Some(search_text.clone());
-
-                                for (key_name, key_type) in &keys {
-                                    if !state.keys.iter().any(|entry| entry.key_name == *key_name) {
-                                        state.keys.push(models::structs::RedisBrowserKeyEntry {
-                                            key_name: key_name.clone(),
-                                            key_type: key_type.clone(),
-                                            ttl_label: if database_name == crate::driver_redis::REDIS_CLUSTER_KEYSPACE {
-                                                "Cluster".to_string()
-                                            } else {
-                                                database_name.clone()
-                                            },
-                                            size_label: "-".to_string(),
-                                        });
-                                    }
-                                }
-
-                                state.keys.sort_by(|left, right| left.key_name.cmp(&right.key_name));
-                                state.status_text = if keys.is_empty() {
-                                    format!("No Redis server matches for '{}'", search_text)
-                                } else {
-                                    format!("Loaded {} Redis server matches for '{}'", keys.len(), search_text)
-                                };
-                                state.last_error = None;
-
-                                merged_keys_for_cache = Some(
-                                    state
-                                        .keys
-                                        .iter()
-                                        .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
-                                        .collect(),
-                                );
-                            }
-                        }
-
-                        if let Some(keys_to_cache) = merged_keys_for_cache
-                            && !database_name.is_empty()
-                        {
-                            cache_data::save_redis_browser_keys_to_cache(
-                                self,
-                                connection_id,
-                                &database_name,
-                                &keys_to_cache,
-                            );
-                        }
-
-                        ctx.request_repaint();
-                    }
-                    models::enums::BackgroundResult::UpdateCheckComplete { result } => {
-                        // Finish check state first
-                        self.update_check_in_progress = false;
-                        let was_manual = self.manual_update_check;
-                        self.manual_update_check = false;
-
-                        // Defer actions requiring mutable self in separate block to avoid borrow overlap
-                        match result {
-                            Ok(info) => {
-                                let update_available = info.update_available;
-                                self.update_info = Some(info.clone());
-                                self.update_check_error = None;
-                                if was_manual {
-                                    self.show_update_dialog = true;
-                                } else if update_available {
-                                    self.show_update_notification = true;
-                                    if !self.update_download_started
-                                        && !self.update_download_in_progress
-                                    {
-                                        self.update_download_started = true;
-                                        // Start download after loop ends via flag (can't call method that mutably borrows self again inside borrow scope)
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                self.update_check_error = Some(err);
-                                self.show_update_dialog = true;
-                            }
-                        }
-                        ctx.request_repaint();
-                    }
-                }
-            }
-
-
-        while let Ok(message) = self.query_result_receiver.try_recv() {
-            self.handle_query_result_message(message);
-            ctx.request_repaint();
-        }
+        self.process_background_results(ctx);
 
         // Kick off deferred auto download if flagged (done outside borrow loops)
         if self.update_download_started && !self.update_download_in_progress {
