@@ -1,16 +1,23 @@
 //! Secret storage for credentials (DB passwords, SSH credentials, AI API keys).
 //!
-//! Primary backend is the OS keychain: macOS/iOS Keychain, Windows Credential
-//! Manager, and (opt-in via the `linux-keyring` cargo feature) the freedesktop
-//! Secret Service. When the keychain is unavailable or fails, values fall back
-//! to `secrets.enc` in the data directory, encrypted with ChaCha20-Poly1305
-//! using a locally generated key in `secrets.key` (0600 on Unix).
+//! All secrets live in `secrets.enc` (data directory), encrypted with
+//! ChaCha20-Poly1305 under a single **master key**. The master key is held
+//! in the OS keychain as ONE item (macOS/iOS Keychain, Windows Credential
+//! Manager, Linux Secret Service via the `linux-keyring` feature) and is
+//! cached in-process, so the keychain is touched at most once per run —
+//! one permission prompt, not one per credential. Without a keychain the
+//! key falls back to `secrets.key` on disk (0600 on Unix).
 //!
-//! Database/preference rows then hold only [`SECRET_SENTINEL`]; legacy
-//! plaintext rows are migrated lazily on load via [`resolve_stored`].
+//! An earlier layout stored each secret as its own keychain item, which on
+//! unsigned dev builds triggered a permission popup per credential per
+//! rebuild; [`get_secret`] migrates those items into `secrets.enc` and
+//! deletes them.
 //!
-//! Set `TABULAR_DISABLE_KEYRING=1` to force the encrypted-file backend
-//! (useful for tests/CI where no keychain is available).
+//! Database/preference rows hold only [`SECRET_SENTINEL`]; legacy plaintext
+//! rows are migrated lazily on load via [`resolve_stored`].
+//!
+//! Set `TABULAR_DISABLE_KEYRING=1` to skip the keychain entirely
+//! (useful for tests/CI and for dev builds).
 
 use log::warn;
 
@@ -95,28 +102,35 @@ pub fn delete_connection_secrets(connection_id: i64) {
 }
 
 pub fn set_secret(name: &str, value: &str) -> bool {
-    if keyring_enabled() && backend_keyring::set(name, value) {
-        // Drop any stale fallback copy so reads can't return an old value.
-        backend_file::delete(name);
+    // Skip the write when unchanged — callers re-store on every save.
+    if backend_file::get(name).as_deref() == Some(value) {
         return true;
     }
     backend_file::set(name, value)
 }
 
 pub fn get_secret(name: &str) -> Option<String> {
+    if let Some(v) = backend_file::get(name) {
+        return Some(v);
+    }
+    // Legacy layout: one keychain item per secret. Migrate it into the
+    // encrypted store and delete the item so it never prompts again.
     if keyring_enabled()
         && let Some(v) = backend_keyring::get(name)
     {
+        let _ = backend_file::set(name, &v);
+        backend_keyring::delete(name);
         return Some(v);
     }
-    backend_file::get(name)
+    None
 }
 
 pub fn delete_secret(name: &str) {
+    backend_file::delete(name);
     if keyring_enabled() {
+        // Drop any legacy per-secret keychain item too.
         backend_keyring::delete(name);
     }
-    backend_file::delete(name);
 }
 
 fn keyring_enabled() -> bool {
@@ -187,10 +201,10 @@ mod backend_keyring {
     pub fn delete(_name: &str) {}
 }
 
-/// Encrypted-file fallback: `secrets.enc` is a JSON map of
-/// `name -> hex(nonce || ciphertext)` under a ChaCha20-Poly1305 key stored
-/// in `secrets.key`. Protects at rest against casual file reads/backups;
-/// the key lives next to the data, so the OS keychain remains preferred.
+/// Encrypted store: `secrets.enc` is a JSON map of
+/// `name -> hex(nonce || ciphertext)` under a ChaCha20-Poly1305 master key.
+/// The master key lives in the OS keychain (one item, cached per process);
+/// without a keychain it falls back to `secrets.key` on disk (0600).
 mod backend_file {
     use chacha20poly1305::aead::{Aead, OsRng};
     use chacha20poly1305::{AeadCore, ChaCha20Poly1305, Key, KeyInit, Nonce};
@@ -199,6 +213,10 @@ mod backend_file {
     use std::path::{Path, PathBuf};
 
     const NONCE_LEN: usize = 12;
+    const MASTER_KEY_NAME: &str = "master-key";
+
+    // Cached for the whole process so the keychain prompts at most once.
+    static MASTER_KEY: std::sync::OnceLock<Option<[u8; 32]>> = std::sync::OnceLock::new();
 
     fn key_path() -> PathBuf {
         crate::config::get_data_dir().join("secrets.key")
@@ -220,31 +238,64 @@ mod backend_file {
         }
     }
 
-    fn load_or_create_key() -> Option<Key> {
-        let path = key_path();
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            match hex::decode(content.trim()) {
-                Ok(bytes) if bytes.len() == 32 => {
-                    let mut key_bytes = [0u8; 32];
-                    key_bytes.copy_from_slice(&bytes);
-                    return Some(Key::from(key_bytes));
-                }
-                _ => {
-                    warn!("secrets.key is malformed; fallback secret store unavailable");
-                    return None;
-                }
-            }
+    fn master_key() -> Option<Key> {
+        MASTER_KEY.get_or_init(resolve_master_key).map(Key::from)
+    }
+
+    fn read_key_file() -> Option<[u8; 32]> {
+        let content = std::fs::read_to_string(key_path()).ok()?;
+        let bytes = hex::decode(content.trim()).ok()?;
+        if bytes.len() != 32 {
+            warn!("secrets.key is malformed; ignoring it");
+            return None;
         }
-        let key = ChaCha20Poly1305::generate_key(&mut OsRng);
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&bytes);
+        Some(key_bytes)
+    }
+
+    /// Resolution order: keychain item → legacy on-disk key (imported into
+    /// the keychain when possible) → freshly generated key.
+    fn resolve_master_key() -> Option<[u8; 32]> {
+        if super::keyring_enabled()
+            && let Some(hex_key) = super::backend_keyring::get(MASTER_KEY_NAME)
+            && let Ok(bytes) = hex::decode(hex_key.trim())
+            && bytes.len() == 32
+        {
+            let mut key_bytes = [0u8; 32];
+            key_bytes.copy_from_slice(&bytes);
+            // The key lives in the keychain; drop any stale on-disk copy.
+            let _ = std::fs::remove_file(key_path());
+            return Some(key_bytes);
+        }
+
+        if let Some(key_bytes) = read_key_file() {
+            if super::keyring_enabled()
+                && super::backend_keyring::set(MASTER_KEY_NAME, &hex::encode(key_bytes))
+            {
+                let _ = std::fs::remove_file(key_path());
+            }
+            return Some(key_bytes);
+        }
+
+        let generated = ChaCha20Poly1305::generate_key(&mut OsRng);
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&generated);
+        if super::keyring_enabled()
+            && super::backend_keyring::set(MASTER_KEY_NAME, &hex::encode(key_bytes))
+        {
+            return Some(key_bytes);
+        }
+        let path = key_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Err(e) = std::fs::write(&path, hex::encode(key)) {
+        if let Err(e) = std::fs::write(&path, hex::encode(key_bytes)) {
             warn!("cannot create secrets.key: {}", e);
             return None;
         }
         restrict_permissions(&path);
-        Some(key)
+        Some(key_bytes)
     }
 
     fn load_entries() -> HashMap<String, String> {
@@ -277,7 +328,7 @@ mod backend_file {
         if raw.len() <= NONCE_LEN {
             return None;
         }
-        let key = load_or_create_key()?;
+        let key = master_key()?;
         let cipher = ChaCha20Poly1305::new(&key);
         let (nonce, ciphertext) = raw.split_at(NONCE_LEN);
         let mut nonce_bytes = [0u8; NONCE_LEN];
@@ -287,7 +338,7 @@ mod backend_file {
     }
 
     pub fn set(name: &str, value: &str) -> bool {
-        let Some(key) = load_or_create_key() else {
+        let Some(key) = master_key() else {
             return false;
         };
         let cipher = ChaCha20Poly1305::new(&key);
