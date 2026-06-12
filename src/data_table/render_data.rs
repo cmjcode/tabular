@@ -931,6 +931,44 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         );
                                                         ui.close();
                                                     }
+                                                    if ui.button("🧾 Export to JSON").clicked() {
+                                                        export::export_to_json(
+                                                            &tabular.all_table_data,
+                                                            &tabular.current_table_headers,
+                                                            &tabular.current_table_name,
+                                                        );
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("📝 Export to Markdown").clicked()
+                                                    {
+                                                        export::export_to_markdown(
+                                                            &tabular.all_table_data,
+                                                            &tabular.current_table_headers,
+                                                            &tabular.current_table_name,
+                                                        );
+                                                        ui.close();
+                                                    }
+                                                    if ui
+                                                        .button("🛢 Export as SQL INSERTs")
+                                                        .clicked()
+                                                    {
+                                                        let db_type = tabular
+                                                            .current_connection_id
+                                                            .and_then(|cid| {
+                                                                tabular
+                                                                    .connections
+                                                                    .iter()
+                                                                    .find(|c| c.id == Some(cid))
+                                                            })
+                                                            .map(|c| c.connection_type.clone());
+                                                        export::export_to_sql_inserts(
+                                                            &tabular.all_table_data,
+                                                            &tabular.current_table_headers,
+                                                            &tabular.current_table_name,
+                                                            db_type.as_ref(),
+                                                        );
+                                                        ui.close();
+                                                    }
                                                     ui.separator();
                                                     if tabular.is_table_browse_mode
                                                         && ui.button("🗑 Delete this Row").clicked()
@@ -979,6 +1017,37 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     &tabular.all_table_data,
                                     &tabular.current_table_headers,
                                     &tabular.current_table_name,
+                                );
+                                ui.close();
+                            }
+                            if ui.button("🧾 Export to JSON").clicked() {
+                                export::export_to_json(
+                                    &tabular.all_table_data,
+                                    &tabular.current_table_headers,
+                                    &tabular.current_table_name,
+                                );
+                                ui.close();
+                            }
+                            if ui.button("📝 Export to Markdown").clicked() {
+                                export::export_to_markdown(
+                                    &tabular.all_table_data,
+                                    &tabular.current_table_headers,
+                                    &tabular.current_table_name,
+                                );
+                                ui.close();
+                            }
+                            if ui.button("🛢 Export as SQL INSERTs").clicked() {
+                                let db_type = tabular
+                                    .current_connection_id
+                                    .and_then(|cid| {
+                                        tabular.connections.iter().find(|c| c.id == Some(cid))
+                                    })
+                                    .map(|c| c.connection_type.clone());
+                                export::export_to_sql_inserts(
+                                    &tabular.all_table_data,
+                                    &tabular.current_table_headers,
+                                    &tabular.current_table_name,
+                                    db_type.as_ref(),
                                 );
                                 ui.close();
                             }
