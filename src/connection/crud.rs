@@ -23,6 +23,21 @@ pub(crate) fn update_connection_in_database(
             // Restart any existing SSH tunnel with updated settings
             ssh_tunnel::shutdown_for_connection(&connection);
 
+            // Externalize credentials to the secret store; columns get the
+            // sentinel (or plaintext when no backend is available).
+            let password_stored = crate::secrets::store_or_keep(
+                &crate::secrets::connection_secret_name(id, "password"),
+                &connection.password,
+            );
+            let ssh_key_stored = crate::secrets::store_or_keep(
+                &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                &connection.ssh_private_key,
+            );
+            let ssh_password_stored = crate::secrets::store_or_keep(
+                &crate::secrets::connection_secret_name(id, "ssh_password"),
+                &connection.ssh_password,
+            );
+
             let result = rt.block_on(async {
                 sqlx::query(
                     "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ? WHERE id = ?"
@@ -31,7 +46,7 @@ pub(crate) fn update_connection_in_database(
                 .bind(connection.host)
                 .bind(connection.port)
                 .bind(connection.username)
-                .bind(connection.password)
+                .bind(password_stored)
                 .bind(connection.database)
                 .bind(format!("{:?}", connection.connection_type))
                 .bind(connection.folder)
@@ -40,8 +55,8 @@ pub(crate) fn update_connection_in_database(
                 .bind(connection.ssh_port)
                 .bind(connection.ssh_username)
                 .bind(connection.ssh_auth_method.as_db_value())
-                .bind(connection.ssh_private_key)
-                .bind(connection.ssh_password)
+                .bind(ssh_key_stored)
+                .bind(ssh_password_stored)
                 .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
                 .bind(id)
                 .execute(pool_clone.as_ref())
@@ -117,6 +132,8 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
             }
         }
     }
+
+    crate::secrets::delete_connection_secrets(connection_id);
 
     tabular.connections.retain(|c| c.id != Some(connection_id));
     tabular.connection_pools.remove(&connection_id);
@@ -527,6 +544,21 @@ pub(crate) async fn refresh_connection_background_async(
             let ssh_accept_unknown_host_keys = row
                 .try_get::<i64, _>("ssh_accept_unknown_host_keys")
                 .unwrap_or(0);
+
+            // Hydrate credentials from the secret store (read-only; the main
+            // loader in sidebar_database.rs owns legacy plaintext migration).
+            let password = crate::secrets::resolve_readonly(
+                &crate::secrets::connection_secret_name(id, "password"),
+                &password,
+            );
+            let ssh_private_key = crate::secrets::resolve_readonly(
+                &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                &ssh_private_key,
+            );
+            let ssh_password = crate::secrets::resolve_readonly(
+                &crate::secrets::connection_secret_name(id, "ssh_password"),
+                &ssh_password,
+            );
 
             let connection = models::structs::ConnectionConfig {
                 id: Some(id),

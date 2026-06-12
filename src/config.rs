@@ -310,6 +310,10 @@ impl ConfigStore {
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
             };
 
+            // Set when a legacy plaintext AI key was migrated to the secret
+            // store during this load; the row is rewritten below.
+            let mut ai_key_rewrite: Option<String> = None;
+
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences")
                 .fetch_all(pool)
                 .await
@@ -335,7 +339,12 @@ impl ConfigStore {
                             prefs.last_update_check_iso = if v.is_empty() { None } else { Some(v) }
                         }
                         "enable_debug_logging" => prefs.enable_debug_logging = v == "1",
-                        "ai_api_key" => prefs.ai_api_key = v,
+                        "ai_api_key" => {
+                            let (real, rewrite) =
+                                crate::secrets::resolve_stored("pref:ai_api_key", &v);
+                            prefs.ai_api_key = real;
+                            ai_key_rewrite = rewrite;
+                        }
                         "ai_model" => prefs.ai_model = v,
                         "ai_provider" => prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI),
                         "ai_base_url" => prefs.ai_base_url = v,
@@ -345,6 +354,14 @@ impl ConfigStore {
                         _ => {}
                     }
                 }
+            }
+
+            if let Some(value) = ai_key_rewrite {
+                let _ = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
+                    .bind("ai_api_key")
+                    .bind(value)
+                    .execute(pool)
+                    .await;
             }
 
             debug!(
@@ -386,6 +403,9 @@ impl ConfigStore {
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
             let redis_browser_auto_refresh_seconds = prefs.redis_browser_auto_refresh_seconds.to_string();
+            // The key goes to the OS keychain; the row keeps only a sentinel.
+            let ai_api_key_stored =
+                crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
             let entries: [(&str, &str); 14] = [
                 ("theme", prefs.theme.as_str()),
                 (
@@ -415,7 +435,7 @@ impl ConfigStore {
                     "enable_debug_logging",
                     if prefs.enable_debug_logging { "1" } else { "0" },
                 ),
-                ("ai_api_key", prefs.ai_api_key.as_str()),
+                ("ai_api_key", ai_api_key_stored.as_str()),
                 ("ai_model", prefs.ai_model.as_str()),
                 ("ai_provider", prefs.ai_provider.as_str()),
                 ("ai_base_url", prefs.ai_base_url.as_str()),
@@ -461,8 +481,19 @@ impl ConfigStore {
 
     fn load_from_json(&self) -> Result<AppPreferences, Box<dyn std::error::Error>> {
         let path = Self::json_path();
-        let content = std::fs::read_to_string(path)?;
-        let prefs: AppPreferences = serde_json::from_str(&content)?;
+        let content = std::fs::read_to_string(&path)?;
+        let mut prefs: AppPreferences = serde_json::from_str(&content)?;
+        let (real, rewrite) = crate::secrets::resolve_stored("pref:ai_api_key", &prefs.ai_api_key);
+        if let Some(value) = rewrite {
+            // Legacy plaintext key migrated to the secret store: rewrite the
+            // JSON file so it only holds the sentinel.
+            let mut sanitized = prefs.clone();
+            sanitized.ai_api_key = value;
+            if let Ok(json) = serde_json::to_string_pretty(&sanitized) {
+                let _ = std::fs::write(&path, json);
+            }
+        }
+        prefs.ai_api_key = real;
         debug!(
             "Loaded prefs from JSON: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}",
             prefs.theme,
@@ -478,7 +509,10 @@ impl ConfigStore {
 
     fn save_to_json(&self, prefs: &AppPreferences) -> Result<(), Box<dyn std::error::Error>> {
         let path = Self::json_path();
-        let content = serde_json::to_string_pretty(prefs)?;
+        // The key goes to the OS keychain; the file keeps only a sentinel.
+        let mut sanitized = prefs.clone();
+        sanitized.ai_api_key = crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
+        let content = serde_json::to_string_pretty(&sanitized)?;
         std::fs::write(path, content)?;
         Ok(())
     }

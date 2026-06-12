@@ -999,15 +999,20 @@ pub(crate) async fn load_redis_connection_config(
     .await
     .ok()??;
 
+    let id = row.try_get::<i64, _>("id").ok()?;
+
     Some(models::structs::ConnectionConfig {
-        id: Some(row.try_get::<i64, _>("id").ok()?),
+        id: Some(id),
         name: row.try_get::<String, _>("name").unwrap_or_default(),
         host: row.try_get::<String, _>("host").unwrap_or_default(),
         port: row
             .try_get::<String, _>("port")
             .unwrap_or_else(|_| "6379".to_string()),
         username: row.try_get::<String, _>("username").unwrap_or_default(),
-        password: row.try_get::<String, _>("password").unwrap_or_default(),
+        password: crate::secrets::resolve_readonly(
+            &crate::secrets::connection_secret_name(id, "password"),
+            &row.try_get::<String, _>("password").unwrap_or_default(),
+        ),
         database: row.try_get::<String, _>("database_name").unwrap_or_default(),
         connection_type: models::enums::DatabaseType::Redis,
         folder: row.try_get::<Option<String>, _>("folder").unwrap_or(None),
@@ -1021,8 +1026,14 @@ pub(crate) async fn load_redis_connection_config(
             &row.try_get::<String, _>("ssh_auth_method")
                 .unwrap_or_else(|_| "key".to_string()),
         ),
-        ssh_private_key: row.try_get::<String, _>("ssh_private_key").unwrap_or_default(),
-        ssh_password: row.try_get::<String, _>("ssh_password").unwrap_or_default(),
+        ssh_private_key: crate::secrets::resolve_readonly(
+            &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+            &row.try_get::<String, _>("ssh_private_key").unwrap_or_default(),
+        ),
+        ssh_password: crate::secrets::resolve_readonly(
+            &crate::secrets::connection_secret_name(id, "ssh_password"),
+            &row.try_get::<String, _>("ssh_password").unwrap_or_default(),
+        ),
         ssh_accept_unknown_host_keys: row.try_get::<i64, _>("ssh_accept_unknown_host_keys").unwrap_or(0) != 0,
         custom_views: Vec::new(),
         replication_master_id: None,

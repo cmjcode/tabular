@@ -89,9 +89,29 @@ async-trait = "0.1.89"
 cargo-deb = "3.6.3"
 deadpool = "0.12.3"
 deadpool-tiberius = "0.1.9"
+# Cipher for the encrypted-file secret store fallback (src/secrets.rs);
+# the primary OS-keychain backends are declared per-target below.
+chacha20poly1305 = "0.10"
+
+# OS keychain backends (see src/secrets.rs). Linux is opt-in via the
+# `linux-keyring` feature because Secret Service pulls a D-Bus build/runtime
+# dependency into the packaging chain (deb/flatpak/AUR); without it Linux
+# uses the encrypted-file store.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"], optional = true }
 
 [features]
 default = ["tree_sitter_sequel", "query_ast"]
+
+# Linux only: store secrets in the freedesktop Secret Service instead of the
+# encrypted file (requires libdbus at build/run time).
+linux-keyring = ["dep:keyring"]
 
 # Enable experimental tree-sitter SQL highlighting / structural parsing.
 # Activate with: `cargo run --features tree_sitter_sequel` (nama feature memakai underscore)

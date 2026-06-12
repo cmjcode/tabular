@@ -724,6 +724,7 @@ pub(crate) fn render_edit_connection_dialog(
 pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
+        let rewrite_pool = pool.clone();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let connections_result = rt.block_on(async {
@@ -747,6 +748,9 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
     });
 
         if let Ok(rows) = connections_result {
+            // Legacy plaintext rows migrated to the secret store during this
+            // load get their columns rewritten with the sentinel afterwards.
+            let mut secret_rewrites: Vec<(i64, &'static str, String)> = Vec::new();
             tabular.connections = rows
                 .into_iter()
                 .filter_map(|row| {
@@ -770,6 +774,28 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                         row.try_get::<i64, _>("ssh_accept_unknown_host_keys").ok()?;
                     let custom_views_json = row.try_get::<String, _>("custom_views").ok().unwrap_or_else(|| "[]".to_string());
                     let replication_master_id = row.try_get::<Option<i64>, _>("replication_master_id").ok().flatten();
+
+                    let (password, pw_rewrite) = crate::secrets::resolve_stored(
+                        &crate::secrets::connection_secret_name(id, "password"),
+                        &password,
+                    );
+                    let (ssh_private_key, key_rewrite) = crate::secrets::resolve_stored(
+                        &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                        &ssh_private_key,
+                    );
+                    let (ssh_password, sshpw_rewrite) = crate::secrets::resolve_stored(
+                        &crate::secrets::connection_secret_name(id, "ssh_password"),
+                        &ssh_password,
+                    );
+                    for (field, rewrite) in [
+                        ("password", pw_rewrite),
+                        ("ssh_private_key", key_rewrite),
+                        ("ssh_password", sshpw_rewrite),
+                    ] {
+                        if let Some(value) = rewrite {
+                            secret_rewrites.push((id, field, value));
+                        }
+                    }
 
                     Some(models::structs::ConnectionConfig {
                         id: Some(id),
@@ -804,6 +830,17 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                     })
                 })
                 .collect();
+
+            for (id, field, value) in secret_rewrites {
+                // Field names are fixed identifiers above, never user input.
+                let _ = rt.block_on(async {
+                    sqlx::query(&format!("UPDATE connections SET {} = ? WHERE id = ?", field))
+                        .bind(value)
+                        .bind(id)
+                        .execute(rewrite_pool.as_ref())
+                        .await
+                });
+            }
         }
     }
 
@@ -886,12 +923,56 @@ pub(crate) fn delete_connection_folder(
     load_connections(tabular);
 }
 
+/// Move a connection's credentials into the secret store and rewrite the row
+/// so the columns only hold the sentinel (or plaintext if no backend worked).
+fn externalize_connection_secrets(
+    rt: &tokio::runtime::Runtime,
+    pool: &std::sync::Arc<sqlx::SqlitePool>,
+    connection_id: i64,
+    password: &str,
+    ssh_private_key: &str,
+    ssh_password: &str,
+) {
+    let stored_password = crate::secrets::store_or_keep(
+        &crate::secrets::connection_secret_name(connection_id, "password"),
+        password,
+    );
+    let stored_key = crate::secrets::store_or_keep(
+        &crate::secrets::connection_secret_name(connection_id, "ssh_private_key"),
+        ssh_private_key,
+    );
+    let stored_ssh_password = crate::secrets::store_or_keep(
+        &crate::secrets::connection_secret_name(connection_id, "ssh_password"),
+        ssh_password,
+    );
+    if stored_password == password
+        && stored_key == ssh_private_key
+        && stored_ssh_password == ssh_password
+    {
+        return;
+    }
+    let _ = rt.block_on(async {
+        sqlx::query(
+            "UPDATE connections SET password = ?, ssh_private_key = ?, ssh_password = ? WHERE id = ?",
+        )
+        .bind(stored_password)
+        .bind(stored_key)
+        .bind(stored_ssh_password)
+        .bind(connection_id)
+        .execute(pool.as_ref())
+        .await
+    });
+}
+
 pub(crate) fn save_connection_to_database(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
 ) -> bool {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
+        let secret_password = connection.password.clone();
+        let secret_ssh_key = connection.ssh_private_key.clone();
+        let secret_ssh_password = connection.ssh_password.clone();
         let connection = connection.clone();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -920,8 +1001,23 @@ pub(crate) fn save_connection_to_database(
             .execute(pool_clone.as_ref())
             .await
        });
-  
-          result.is_ok()
+
+          match result {
+              Ok(res) => {
+                  // Row id is only known after the insert; move the freshly
+                  // written plaintext credentials into the secret store now.
+                  externalize_connection_secrets(
+                      &rt,
+                      &pool_clone,
+                      res.last_insert_rowid(),
+                      &secret_password,
+                      &secret_ssh_key,
+                      &secret_ssh_password,
+                  );
+                  true
+              }
+              Err(_) => false,
+          }
       } else {
           false
       }
@@ -935,7 +1031,31 @@ pub(crate) fn save_connection_to_database(
           let pool_clone = pool.clone();
           let connection = connection.clone();
           let rt = tokio::runtime::Runtime::new().unwrap();
-  
+
+          // Externalize credentials to the secret store; columns get the
+          // sentinel (or plaintext when no backend is available).
+          let (password_stored, ssh_key_stored, ssh_password_stored) = match connection.id {
+              Some(id) => (
+                  crate::secrets::store_or_keep(
+                      &crate::secrets::connection_secret_name(id, "password"),
+                      &connection.password,
+                  ),
+                  crate::secrets::store_or_keep(
+                      &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                      &connection.ssh_private_key,
+                  ),
+                  crate::secrets::store_or_keep(
+                      &crate::secrets::connection_secret_name(id, "ssh_password"),
+                      &connection.ssh_password,
+                  ),
+              ),
+              None => (
+                  connection.password.clone(),
+                  connection.ssh_private_key.clone(),
+                  connection.ssh_password.clone(),
+              ),
+          };
+
           let result = rt.block_on(async {
               sqlx::query(
                   "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ? WHERE id = ?"
@@ -944,7 +1064,7 @@ pub(crate) fn save_connection_to_database(
               .bind(connection.host)
               .bind(connection.port)
               .bind(connection.username)
-              .bind(connection.password)
+              .bind(password_stored)
               .bind(connection.database)
               .bind(format!("{:?}", connection.connection_type))
               .bind(connection.folder)
@@ -953,8 +1073,8 @@ pub(crate) fn save_connection_to_database(
               .bind(connection.ssh_port)
               .bind(connection.ssh_username)
               .bind(connection.ssh_auth_method.as_db_value())
-              .bind(connection.ssh_private_key)
-              .bind(connection.ssh_password)
+              .bind(ssh_key_stored)
+              .bind(ssh_password_stored)
               .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
               .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
               .bind(connection.replication_master_id)
