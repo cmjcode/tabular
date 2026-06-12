@@ -16,8 +16,12 @@
 //! Database/preference rows hold only [`SECRET_SENTINEL`]; legacy plaintext
 //! rows are migrated lazily on load via [`resolve_stored`].
 //!
-//! Set `TABULAR_DISABLE_KEYRING=1` to skip the keychain entirely
-//! (useful for tests/CI and for dev builds).
+//! Debug builds never CREATE keychain items (unsigned dev binaries get a
+//! new code identity per rebuild, so "Always Allow" never sticks); the
+//! master key lives in `secrets.key` instead, and any keychain-held key or
+//! legacy items are rescued to disk once, then removed from the keychain.
+//! `TABULAR_DISABLE_KEYRING=1` skips the keychain entirely (tests/CI);
+//! `TABULAR_FORCE_KEYRING=1` forces keychain use in debug builds.
 
 use log::warn;
 
@@ -115,7 +119,7 @@ pub fn get_secret(name: &str) -> Option<String> {
     }
     // Legacy layout: one keychain item per secret. Migrate it into the
     // encrypted store and delete the item so it never prompts again.
-    if keyring_enabled()
+    if keyring_allowed()
         && let Some(v) = backend_keyring::get(name)
     {
         let _ = backend_file::set(name, &v);
@@ -127,17 +131,47 @@ pub fn get_secret(name: &str) -> Option<String> {
 
 pub fn delete_secret(name: &str) {
     backend_file::delete(name);
-    if keyring_enabled() {
+    if keyring_allowed() {
         // Drop any legacy per-secret keychain item too.
         backend_keyring::delete(name);
     }
 }
 
-fn keyring_enabled() -> bool {
-    !matches!(
+#[derive(PartialEq, Clone, Copy)]
+enum KeyringMode {
+    /// Keychain holds the master key (signed/release builds).
+    On,
+    /// Debug builds: never CREATE keychain items — unsigned dev binaries get
+    /// a new code identity every rebuild, so macOS "Always Allow" grants
+    /// never stick and every run prompts again. Existing items are still
+    /// read once to rescue them into the file-backed store, then deleted.
+    Rescue,
+    /// TABULAR_DISABLE_KEYRING=1: never touch the keychain (tests/CI).
+    Off,
+}
+
+fn keyring_mode() -> KeyringMode {
+    if matches!(
         std::env::var("TABULAR_DISABLE_KEYRING").ok().as_deref(),
         Some("1") | Some("true")
-    )
+    ) {
+        return KeyringMode::Off;
+    }
+    if matches!(
+        std::env::var("TABULAR_FORCE_KEYRING").ok().as_deref(),
+        Some("1") | Some("true")
+    ) {
+        return KeyringMode::On;
+    }
+    if cfg!(debug_assertions) {
+        KeyringMode::Rescue
+    } else {
+        KeyringMode::On
+    }
+}
+
+fn keyring_allowed() -> bool {
+    keyring_mode() != KeyringMode::Off
 }
 
 #[cfg(any(
@@ -254,26 +288,27 @@ mod backend_file {
         Some(key_bytes)
     }
 
-    /// Resolution order: keychain item → legacy on-disk key (imported into
-    /// the keychain when possible) → freshly generated key.
+    /// Resolution order: on-disk `secrets.key` (always wins — works
+    /// identically for debug and release builds sharing one data dir) →
+    /// keychain item (Rescue mode persists it to disk and deletes the
+    /// keychain copy) → freshly generated key.
     fn resolve_master_key() -> Option<[u8; 32]> {
-        if super::keyring_enabled()
+        if let Some(key_bytes) = read_key_file() {
+            return Some(key_bytes);
+        }
+
+        let mode = super::keyring_mode();
+        if mode != super::KeyringMode::Off
             && let Some(hex_key) = super::backend_keyring::get(MASTER_KEY_NAME)
             && let Ok(bytes) = hex::decode(hex_key.trim())
             && bytes.len() == 32
         {
             let mut key_bytes = [0u8; 32];
             key_bytes.copy_from_slice(&bytes);
-            // The key lives in the keychain; drop any stale on-disk copy.
-            let _ = std::fs::remove_file(key_path());
-            return Some(key_bytes);
-        }
-
-        if let Some(key_bytes) = read_key_file() {
-            if super::keyring_enabled()
-                && super::backend_keyring::set(MASTER_KEY_NAME, &hex::encode(key_bytes))
-            {
-                let _ = std::fs::remove_file(key_path());
+            if mode == super::KeyringMode::Rescue && write_key_file(&key_bytes) {
+                // Dev builds: key now lives on disk; drop the keychain copy
+                // so rebuilds never trigger another permission prompt.
+                super::backend_keyring::delete(MASTER_KEY_NAME);
             }
             return Some(key_bytes);
         }
@@ -281,21 +316,33 @@ mod backend_file {
         let generated = ChaCha20Poly1305::generate_key(&mut OsRng);
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(&generated);
-        if super::keyring_enabled()
+        if mode == super::KeyringMode::On
             && super::backend_keyring::set(MASTER_KEY_NAME, &hex::encode(key_bytes))
         {
             return Some(key_bytes);
         }
+        if write_key_file(&key_bytes) {
+            Some(key_bytes)
+        } else {
+            None
+        }
+    }
+
+    fn write_key_file(key_bytes: &[u8; 32]) -> bool {
         let path = key_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Err(e) = std::fs::write(&path, hex::encode(key_bytes)) {
-            warn!("cannot create secrets.key: {}", e);
-            return None;
+        match std::fs::write(&path, hex::encode(key_bytes)) {
+            Ok(_) => {
+                restrict_permissions(&path);
+                true
+            }
+            Err(e) => {
+                warn!("cannot create secrets.key: {}", e);
+                false
+            }
         }
-        restrict_permissions(&path);
-        Some(key_bytes)
     }
 
     fn load_entries() -> HashMap<String, String> {
