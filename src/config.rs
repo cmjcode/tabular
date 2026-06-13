@@ -557,6 +557,15 @@ impl ConfigStore {
     }
 }
 
+/// Local config directory (~/.tabular) — never the custom data dir.
+///
+/// Use this for files that must NOT be cloud-synced (e.g. `secrets.key`).
+/// If the custom data dir points to Google Drive / Dropbox / etc., using
+/// `get_data_dir()` for key material causes sync conflicts and key loss.
+pub fn get_local_data_dir() -> PathBuf {
+    get_default_tabular_dir()
+}
+
 /// Get the default tabular directory in home folder
 fn get_default_tabular_dir() -> PathBuf {
     if let Some(mut hd) = home_dir() {

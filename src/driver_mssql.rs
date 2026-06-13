@@ -47,55 +47,14 @@ pub(crate) fn load_mssql_structure(
     dba_folder.connection_id = Some(connection_id);
 
     let mut dba_children = Vec::new();
-    // Users
-    let mut users_folder =
-        models::structs::TreeNode::new("Users".to_string(), models::enums::NodeType::UsersFolder);
-    users_folder.connection_id = Some(connection_id);
-    users_folder.is_loaded = false;
-    dba_children.push(users_folder);
 
-    // Privileges
-    let mut priv_folder = models::structs::TreeNode::new(
-        "Privileges".to_string(),
-        models::enums::NodeType::PrivilegesFolder,
-    );
-    priv_folder.connection_id = Some(connection_id);
-    priv_folder.is_loaded = false;
-    dba_children.push(priv_folder);
-
-    // Processes
-    let mut proc_folder = models::structs::TreeNode::new(
-        "Processes".to_string(),
-        models::enums::NodeType::ProcessesFolder,
-    );
-    proc_folder.connection_id = Some(connection_id);
-    proc_folder.is_loaded = false;
-    dba_children.push(proc_folder);
-
-    // Status
-    let mut status_folder =
-        models::structs::TreeNode::new("Status".to_string(), models::enums::NodeType::StatusFolder);
-    status_folder.connection_id = Some(connection_id);
-    status_folder.is_loaded = false;
-    dba_children.push(status_folder);
-
-    // Blocked Query
-    let mut blocked_folder = models::structs::TreeNode::new(
-        "Blocked Query".to_string(),
-        models::enums::NodeType::BlockedQueriesFolder,
-    );
-    blocked_folder.connection_id = Some(connection_id);
-    blocked_folder.is_loaded = false;
-    dba_children.push(blocked_folder);
-
-    // User Active
-    let mut metrics_user_active_folder = models::structs::TreeNode::new(
-        "User Active".to_string(),
-        models::enums::NodeType::MetricsUserActiveFolder,
-    );
-    metrics_user_active_folder.connection_id = Some(connection_id);
-    metrics_user_active_folder.is_loaded = false;
-    dba_children.push(metrics_user_active_folder);
+    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MsSQL) {
+        let mut dba_node = models::structs::TreeNode::new(name.to_string(), node_type);
+        dba_node.connection_id = Some(connection_id);
+        dba_node.is_loaded = false;
+        dba_node.query = Some(query.to_string());
+        dba_children.push(dba_node);
+    }
 
     dba_folder.children = dba_children;
     main_children.push(dba_folder);

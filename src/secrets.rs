@@ -117,13 +117,16 @@ pub fn get_secret(name: &str) -> Option<String> {
     if let Some(v) = backend_file::get(name) {
         return Some(v);
     }
-    // Legacy layout: one keychain item per secret. Migrate it into the
-    // encrypted store and delete the item so it never prompts again.
-    if keyring_allowed()
+    // Legacy per-secret keychain items (old layout). Only migrate in On
+    // (signed release) builds — Rescue/debug builds change code identity
+    // every rebuild, so attempting keychain access here would prompt on
+    // every run even after migration.
+    if keyring_mode() == KeyringMode::On
         && let Some(v) = backend_keyring::get(name)
     {
-        let _ = backend_file::set(name, &v);
-        backend_keyring::delete(name);
+        if backend_file::set(name, &v) {
+            backend_keyring::delete(name);
+        }
         return Some(v);
     }
     None
@@ -253,7 +256,10 @@ mod backend_file {
     static MASTER_KEY: std::sync::OnceLock<Option<[u8; 32]>> = std::sync::OnceLock::new();
 
     fn key_path() -> PathBuf {
-        crate::config::get_data_dir().join("secrets.key")
+        // Key must live in the local dir (~/.tabular), NOT the custom data dir
+        // which may be Google Drive / Dropbox / NFS. Cloud sync of the master
+        // key causes conflicts and silent key rotation, breaking secrets.enc.
+        crate::config::get_local_data_dir().join("secrets.key")
     }
 
     fn store_path() -> PathBuf {
