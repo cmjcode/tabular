@@ -87,6 +87,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             // Defer delete-row action to avoid mutable borrow inside UI closures
             let mut delete_row_index_request: Option<usize> = None;
             let mut add_row_request: Option<usize> = None;
+            let mut open_csv_import = false;
 
             // Ensure column widths are initialized
             if tabular.column_widths.len() != headers.len() {
@@ -969,6 +970,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         );
                                                         ui.close();
                                                     }
+                                                    if tabular.is_table_browse_mode
+                                                        && ui.button("📥 Import CSV...").clicked()
+                                                    {
+                                                        open_csv_import = true;
+                                                        ui.close();
+                                                    }
                                                     ui.separator();
                                                     if tabular.is_table_browse_mode
                                                         && ui.button("🗑 Delete this Row").clicked()
@@ -1049,6 +1056,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     &tabular.current_table_name,
                                     db_type.as_ref(),
                                 );
+                                ui.close();
+                            }
+                            if tabular.is_table_browse_mode
+                                && ui.button("📥 Import CSV...").clicked()
+                            {
+                                open_csv_import = true;
                                 ui.close();
                             }
                             ui.separator();
@@ -1298,6 +1311,63 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 }
             }
             // (Cell edit text updates already applied above before changing edit target)
+
+            // Open CSV import dialog for the current table
+            if open_csv_import {
+                if let Some(conn_id) = tabular.current_connection_id {
+                    if let Some(conn) = tabular.connections.iter().find(|c| c.id == Some(conn_id)) {
+                        let db_type = conn.connection_type.clone();
+                        // Extract bare table name (strip "Table: " prefix if present)
+                        let raw = tabular.current_table_name.trim();
+                        let table_name = raw.strip_prefix("Table:").map(str::trim).unwrap_or(raw).to_string();
+                        // Use current database from cache_miss_request context or best-effort
+                        // Walk items_tree recursively to find the database_name for this table
+                        fn find_db_name(
+                            nodes: &[crate::models::structs::TreeNode],
+                            conn_id: i64,
+                            table: &str,
+                        ) -> Option<String> {
+                            for n in nodes {
+                                if n.connection_id == Some(conn_id)
+                                    && n.table_name.as_deref().map_or(false, |t| t.eq_ignore_ascii_case(table))
+                                    && n.database_name.is_some()
+                                {
+                                    return n.database_name.clone();
+                                }
+                                if let Some(found) = find_db_name(&n.children, conn_id, table) {
+                                    return Some(found);
+                                }
+                            }
+                            None
+                        }
+                        let database_name: Option<String> =
+                            find_db_name(&tabular.items_tree, conn_id, &table_name);
+                        let table_cols: Vec<String> = database_name.as_deref()
+                            .and_then(|db| crate::cache_data::get_columns_from_cache(tabular, conn_id, db, &table_name))
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|(name, _)| name)
+                            .collect();
+                        tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
+                            connection_id: conn_id,
+                            database_name,
+                            table_name,
+                            db_type,
+                            file_path: None,
+                            delimiter: ',',
+                            has_header_row: true,
+                            null_value: String::new(),
+                            preview_headers: vec![],
+                            preview_rows: vec![],
+                            table_columns: table_cols,
+                            column_mappings: vec![],
+                            status: crate::models::structs::CsvImportStatus::Idle,
+                            progress_message: String::new(),
+                        });
+                        tabular.show_csv_import_dialog = true;
+                    }
+                }
+            }
 
             // Perform deferred delete after UI borrows are released
             if let Some(ri) = delete_row_index_request.take() {

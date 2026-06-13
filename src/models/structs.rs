@@ -916,7 +916,44 @@ pub type RenderTreeNodeResult = (
     Option<(i64, String)>,
     // New: request to edit Custom View (connection_id, view_name, query)
     Option<(i64, String, String)>,
+    // New: request to open Import CSV wizard (connection_id, database_name, table_name)
+    Option<(i64, Option<String>, String)>,
 );
+
+// ── CSV Import Wizard ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum CsvImportStatus {
+    #[default]
+    Idle,
+    Importing,
+    Done(usize),
+    Failed(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct CsvColumnMapping {
+    pub csv_header: String,
+    pub target_column: String, // "__skip__" = skip this column
+}
+
+#[derive(Clone, Debug)]
+pub struct CsvImportState {
+    pub connection_id: i64,
+    pub database_name: Option<String>,
+    pub table_name: String,
+    pub db_type: crate::models::enums::DatabaseType,
+    pub file_path: Option<std::path::PathBuf>,
+    pub delimiter: char,
+    pub has_header_row: bool,
+    pub null_value: String,
+    pub preview_headers: Vec<String>,
+    pub preview_rows: Vec<Vec<String>>,
+    pub table_columns: Vec<String>,
+    pub column_mappings: Vec<CsvColumnMapping>,
+    pub status: CsvImportStatus,
+    pub progress_message: String,
+}
 
 mod serde_color {
     use serde::{Deserialize, Deserializer, Serializer};

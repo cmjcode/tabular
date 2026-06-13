@@ -1259,3 +1259,465 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
         }
     }
 }
+
+// ── CSV Import Wizard ─────────────────────────────────────────────────────────
+
+fn parse_csv_preview(
+    path: &std::path::Path,
+    delimiter: char,
+    has_header_row: bool,
+) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delimiter as u8)
+        .has_headers(has_header_row)
+        .flexible(true)
+        .from_path(path)
+        .map_err(|e| e.to_string())?;
+
+    let headers: Vec<String> = if has_header_row {
+        rdr.headers().map_err(|e| e.to_string())?.iter().map(|s| s.to_string()).collect()
+    } else {
+        vec![]
+    };
+
+    let mut preview: Vec<Vec<String>> = Vec::new();
+    for result in rdr.records().take(5) {
+        let record = result.map_err(|e| e.to_string())?;
+        preview.push(record.iter().map(|s| s.to_string()).collect());
+    }
+    Ok((headers, preview))
+}
+
+fn parse_csv_all(
+    path: &std::path::Path,
+    delimiter: char,
+    has_header_row: bool,
+) -> Result<Vec<Vec<String>>, String> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delimiter as u8)
+        .has_headers(has_header_row)
+        .flexible(true)
+        .from_path(path)
+        .map_err(|e| e.to_string())?;
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for result in rdr.records() {
+        let record = result.map_err(|e| e.to_string())?;
+        rows.push(record.iter().map(|s| s.to_string()).collect());
+    }
+    Ok(rows)
+}
+
+fn csv_quote_value(v: &str, null_value: &str, db_type: &crate::models::enums::DatabaseType) -> String {
+    if v == null_value || (null_value.is_empty() && v.is_empty()) {
+        return "NULL".to_string();
+    }
+    match db_type {
+        crate::models::enums::DatabaseType::MySQL => {
+            format!("'{}'", v.replace('\\', "\\\\").replace('\'', "''"))
+        }
+        _ => format!("'{}'", v.replace('\'', "''")),
+    }
+}
+
+fn csv_quote_ident(s: &str, db_type: &crate::models::enums::DatabaseType) -> String {
+    match db_type {
+        crate::models::enums::DatabaseType::MySQL => format!("`{}`", s.replace('`', "``")),
+        crate::models::enums::DatabaseType::MsSQL => format!("[{}]", s.trim_matches(['[', ']'])),
+        _ => format!("\"{}\"", s.replace('"', "\"\"")),
+    }
+}
+
+fn build_csv_insert_batches(
+    table_name: &str,
+    database_name: Option<&str>,
+    db_type: &crate::models::enums::DatabaseType,
+    column_mappings: &[crate::models::structs::CsvColumnMapping],
+    all_rows: &[Vec<String>],
+    null_value: &str,
+) -> Vec<String> {
+    let active_indices: Vec<(usize, &str)> = column_mappings
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.target_column != "__skip__" && !m.target_column.is_empty())
+        .map(|(i, m)| (i, m.target_column.as_str()))
+        .collect();
+
+    if active_indices.is_empty() || all_rows.is_empty() {
+        return vec![];
+    }
+
+    let full_table = match (db_type, database_name) {
+        (crate::models::enums::DatabaseType::MySQL, Some(db)) => {
+            format!("{}.{}", csv_quote_ident(db, db_type), csv_quote_ident(table_name, db_type))
+        }
+        (crate::models::enums::DatabaseType::PostgreSQL, Some(schema)) => {
+            format!("{}.{}", csv_quote_ident(schema, db_type), csv_quote_ident(table_name, db_type))
+        }
+        (crate::models::enums::DatabaseType::MsSQL, Some(db)) => {
+            format!("[{}].dbo.{}", db, csv_quote_ident(table_name, db_type))
+        }
+        _ => csv_quote_ident(table_name, db_type),
+    };
+
+    let col_list: String = active_indices
+        .iter()
+        .map(|(_, col)| csv_quote_ident(col, db_type))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut batches = Vec::new();
+    for chunk in all_rows.chunks(100) {
+        let rows_sql: Vec<String> = chunk
+            .iter()
+            .map(|row| {
+                let vals: Vec<String> = active_indices
+                    .iter()
+                    .map(|(ci, _)| {
+                        let v = row.get(*ci).map(String::as_str).unwrap_or("");
+                        csv_quote_value(v, null_value, db_type)
+                    })
+                    .collect();
+                format!("({})", vals.join(", "))
+            })
+            .collect();
+
+        batches.push(format!(
+            "INSERT INTO {} ({}) VALUES\n{};",
+            full_table, col_list, rows_sql.join(",\n")
+        ));
+    }
+    batches
+}
+
+pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    if !tabular.show_csv_import_dialog {
+        return;
+    }
+    if tabular.csv_import_state.is_none() {
+        tabular.show_csv_import_dialog = false;
+        return;
+    }
+
+    let table_name = tabular.csv_import_state.as_ref().unwrap().table_name.clone();
+    let title = format!("Import CSV \u{2192} {}", table_name);
+    let mut open_flag = tabular.show_csv_import_dialog;
+    let mut should_close = false;
+    let mut trigger_file_pick = false;
+    let mut trigger_import = false;
+    let mut redelimit = false;
+
+    egui::Window::new(&title)
+        .collapsible(false)
+        .resizable(true)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(660.0)
+        .max_height(540.0)
+        .open(&mut open_flag)
+        .show(ctx, |ui| {
+            let state = tabular.csv_import_state.as_mut().unwrap();
+
+            // ── Settings ─────────────────────────────────────────────────────
+            ui.horizontal(|ui| {
+                ui.label("Delimiter:");
+                for (ch, label) in [(',', "Comma"), (';', "Semicolon"), ('\t', "Tab"), ('|', "Pipe")] {
+                    if ui.selectable_label(state.delimiter == ch, label).clicked()
+                        && state.delimiter != ch
+                    {
+                        state.delimiter = ch;
+                        if state.file_path.is_some() {
+                            redelimit = true;
+                        }
+                    }
+                }
+                ui.separator();
+                if ui.checkbox(&mut state.has_header_row, "First row = header").changed()
+                    && state.file_path.is_some()
+                {
+                    redelimit = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Treat as NULL:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.null_value)
+                        .desired_width(120.0)
+                        .hint_text("empty = empty string"),
+                );
+            });
+            ui.add_space(4.0);
+
+            // ── File picker ───────────────────────────────────────────────────
+            ui.horizontal(|ui| {
+                let btn_label = if state.file_path.is_some() { "🔄 Change File..." } else { "📂 Pick CSV File..." };
+                if ui.button(btn_label).clicked() {
+                    trigger_file_pick = true;
+                }
+                if let Some(path) = &state.file_path {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    ui.label(egui::RichText::new(name).color(egui::Color32::from_rgb(100, 200, 100)));
+                } else {
+                    ui.label(egui::RichText::new("No file selected").color(egui::Color32::GRAY).italics());
+                }
+            });
+
+            // ── Column mapping + preview ──────────────────────────────────────
+            if !state.column_mappings.is_empty() {
+                ui.add_space(6.0);
+                ui.separator();
+                ui.label(egui::RichText::new("Column Mapping").strong());
+                ui.label(
+                    egui::RichText::new("Map each CSV column to a target table column. Choose '(skip)' to ignore.")
+                        .small()
+                        .color(egui::Color32::GRAY),
+                );
+                ui.add_space(4.0);
+
+                let scroll_h = (state.column_mappings.len().min(10) as f32 * 28.0 + 32.0).max(60.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("csv_map_scroll")
+                    .max_height(scroll_h)
+                    .show(ui, |ui| {
+                        egui::Grid::new("csv_mapping_grid")
+                            .num_columns(3)
+                            .spacing([8.0, 4.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("CSV Column").strong());
+                                ui.label(egui::RichText::new("Table Column").strong());
+                                ui.label(egui::RichText::new("Preview").strong());
+                                ui.end_row();
+
+                                for (i, mapping) in state.column_mappings.iter_mut().enumerate() {
+                                    ui.label(&mapping.csv_header);
+                                    let mut sel = mapping.target_column.clone();
+                                    egui::ComboBox::from_id_salt(egui::Id::new(("csv_map", i)))
+                                        .selected_text(if sel == "__skip__" { "(skip)" } else { sel.as_str() })
+                                        .width(180.0)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut sel, "__skip__".to_string(), "(skip)");
+                                            for col in &state.table_columns {
+                                                ui.selectable_value(&mut sel, col.clone(), col.as_str());
+                                            }
+                                        });
+                                    mapping.target_column = sel;
+
+                                    let preview_val = state.preview_rows.first()
+                                        .and_then(|r| r.get(i))
+                                        .map(String::as_str)
+                                        .unwrap_or("");
+                                    ui.label(
+                                        egui::RichText::new(if preview_val.is_empty() { "(empty)" } else { preview_val })
+                                            .small()
+                                            .color(egui::Color32::GRAY),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
+
+                ui.add_space(4.0);
+                ui.collapsing("Data Preview (first 5 rows)", |ui| {
+                    egui::ScrollArea::horizontal().show(ui, |ui| {
+                        egui::Grid::new("csv_preview_grid")
+                            .spacing([4.0, 2.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for h in &state.preview_headers {
+                                    ui.label(egui::RichText::new(h).strong().small());
+                                }
+                                if !state.preview_headers.is_empty() { ui.end_row(); }
+                                for row in &state.preview_rows {
+                                    for cell in row {
+                                        ui.label(egui::RichText::new(cell).small());
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                });
+            }
+
+            // ── Status message ─────────────────────────────────────────────────
+            if !state.progress_message.is_empty() {
+                ui.add_space(4.0);
+                let color = match &state.status {
+                    crate::models::structs::CsvImportStatus::Failed(_) => egui::Color32::RED,
+                    crate::models::structs::CsvImportStatus::Done(_) => egui::Color32::from_rgb(80, 200, 80),
+                    _ => egui::Color32::GRAY,
+                };
+                ui.label(egui::RichText::new(&state.progress_message).color(color));
+            }
+
+            // ── Buttons ────────────────────────────────────────────────────────
+            ui.add_space(8.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                let can_import = state.file_path.is_some()
+                    && !state.column_mappings.is_empty()
+                    && state.status != crate::models::structs::CsvImportStatus::Importing;
+                if ui.add_enabled(can_import, egui::Button::new("📥 Import")).clicked() {
+                    trigger_import = true;
+                }
+                if ui.button("Close").clicked() {
+                    should_close = true;
+                }
+            });
+        });
+
+    // ── File pick (outside closure) ────────────────────────────────────────
+    if redelimit {
+        let state = tabular.csv_import_state.as_mut().unwrap();
+        let path = state.file_path.clone().unwrap();
+        let delim = state.delimiter;
+        let has_hdr = state.has_header_row;
+        if let Ok((headers, preview)) = parse_csv_preview(&path, delim, has_hdr) {
+            let table_cols = state.table_columns.clone();
+            let mappings = build_auto_mappings(&headers, &preview, has_hdr, &table_cols);
+            state.preview_headers = headers;
+            state.preview_rows = preview;
+            state.column_mappings = mappings;
+        }
+    }
+
+    if trigger_file_pick {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV / TSV", &["csv", "tsv", "txt"])
+            .pick_file()
+        {
+            let state = tabular.csv_import_state.as_mut().unwrap();
+            let delim = state.delimiter;
+            let has_hdr = state.has_header_row;
+            match parse_csv_preview(&path, delim, has_hdr) {
+                Ok((headers, preview)) => {
+                    let table_cols = state.table_columns.clone();
+                    let mappings = build_auto_mappings(&headers, &preview, has_hdr, &table_cols);
+                    state.preview_headers = headers;
+                    state.preview_rows = preview;
+                    state.column_mappings = mappings;
+                    state.file_path = Some(path);
+                    state.status = crate::models::structs::CsvImportStatus::Idle;
+                    state.progress_message = String::new();
+                }
+                Err(e) => {
+                    state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
+                    state.progress_message = format!("Parse error: {}", e);
+                }
+            }
+        }
+    }
+
+    if trigger_import {
+        let state = tabular.csv_import_state.as_ref().unwrap();
+        let path = state.file_path.clone().unwrap();
+        let delim = state.delimiter;
+        let has_hdr = state.has_header_row;
+        let null_value = state.null_value.clone();
+        let table_name2 = state.table_name.clone();
+        let database_name = state.database_name.clone();
+        let db_type = state.db_type.clone();
+        let mappings = state.column_mappings.clone();
+        let connection_id = state.connection_id;
+
+        match parse_csv_all(&path, delim, has_hdr) {
+            Ok(all_rows) => {
+                let total_rows = all_rows.len();
+                let batches = build_csv_insert_batches(
+                    &table_name2,
+                    database_name.as_deref(),
+                    &db_type,
+                    &mappings,
+                    &all_rows,
+                    &null_value,
+                );
+                if batches.is_empty() {
+                    let state = tabular.csv_import_state.as_mut().unwrap();
+                    state.status = crate::models::structs::CsvImportStatus::Failed("No data or all columns skipped.".into());
+                    state.progress_message = "No data or all columns skipped.".into();
+                } else {
+                    let batch_count = batches.len();
+                    let mut jobs = Vec::new();
+                    let mut all_ok = true;
+                    for (i, sql) in batches.into_iter().enumerate() {
+                        let job_id = tabular.next_query_job_id;
+                        tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+                        match crate::connection::prepare_query_job(tabular, connection_id, sql, job_id) {
+                            Ok(job) => {
+                                let preview = format!("CSV import batch {}/{}", i + 1, batch_count);
+                                tabular.active_query_jobs.insert(
+                                    job_id,
+                                    crate::connection::QueryJobStatus {
+                                        job_id,
+                                        connection_id,
+                                        query_preview: preview,
+                                        started_at: std::time::Instant::now(),
+                                        completed: false,
+                                    },
+                                );
+                                jobs.push(job);
+                            }
+                            Err(e) => {
+                                let state = tabular.csv_import_state.as_mut().unwrap();
+                                state.status = crate::models::structs::CsvImportStatus::Failed(format!("{:?}", e));
+                                state.progress_message = format!("Failed to prepare batch: {:?}", e);
+                                all_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if all_ok && !jobs.is_empty() {
+                        let sender = tabular.query_result_sender.clone();
+                        match crate::connection::spawn_query_job_batch(tabular, jobs, sender) {
+                            Ok(_) => {
+                                let state = tabular.csv_import_state.as_mut().unwrap();
+                                state.status = crate::models::structs::CsvImportStatus::Importing;
+                                state.progress_message = format!(
+                                    "Importing {} rows in {} batch(es) of up to 100...",
+                                    total_rows, batch_count
+                                );
+                            }
+                            Err(e) => {
+                                let state = tabular.csv_import_state.as_mut().unwrap();
+                                state.status = crate::models::structs::CsvImportStatus::Failed(format!("{:?}", e));
+                                state.progress_message = format!("Failed to start import: {:?}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let state = tabular.csv_import_state.as_mut().unwrap();
+                state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
+                state.progress_message = format!("Failed to read CSV: {}", e);
+            }
+        }
+    }
+
+    if !open_flag || should_close {
+        tabular.show_csv_import_dialog = false;
+        tabular.csv_import_state = None;
+    }
+}
+
+fn build_auto_mappings(
+    headers: &[String],
+    preview: &[Vec<String>],
+    has_header_row: bool,
+    table_cols: &[String],
+) -> Vec<crate::models::structs::CsvColumnMapping> {
+    if has_header_row {
+        headers.iter().map(|h| {
+            let target = table_cols.iter()
+                .find(|c| c.to_lowercase() == h.to_lowercase())
+                .cloned()
+                .unwrap_or_else(|| "__skip__".to_string());
+            crate::models::structs::CsvColumnMapping { csv_header: h.clone(), target_column: target }
+        }).collect()
+    } else {
+        let ncols = preview.first().map(|r| r.len()).unwrap_or(0);
+        (0..ncols).map(|i| {
+            let target = table_cols.get(i).cloned().unwrap_or_else(|| "__skip__".to_string());
+            crate::models::structs::CsvColumnMapping { csv_header: format!("col_{}", i + 1), target_column: target }
+        }).collect()
+    }
+}

@@ -84,6 +84,7 @@ impl super::Tabular {
         let mut custom_view_click_requests: Vec<(i64, String, String)> = Vec::new();
         let mut delete_custom_view_requests: Vec<(i64, String)> = Vec::new();
         let mut edit_custom_view_requests: Vec<(i64, String, String)> = Vec::new();
+        let mut csv_import_requests: Vec<(i64, Option<String>, String)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -111,6 +112,7 @@ impl super::Tabular {
                 custom_view_click_request,
                 delete_custom_view_request,
                 edit_custom_view_request,
+                csv_import_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -206,6 +208,44 @@ impl super::Tabular {
             }
             if let Some(req) = edit_custom_view_request {
                 edit_custom_view_requests.push(req);
+            }
+            if let Some(req) = csv_import_request {
+                csv_import_requests.push(req);
+            }
+        }
+
+        // Process collected CSV import requests OUTSIDE the loop
+        for (conn_id, db_name, table_name) in csv_import_requests {
+            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
+                let db_type = conn.connection_type.clone();
+                let table_cols: Vec<String> = if let Some(db) = db_name.as_deref() {
+                    crate::cache_data::get_columns_from_cache(self, conn_id, db, &table_name)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .collect()
+                } else {
+                    vec![]
+                };
+                // Auto-map by position (will be refined in the dialog)
+                let column_mappings = vec![];
+                self.csv_import_state = Some(crate::models::structs::CsvImportState {
+                    connection_id: conn_id,
+                    database_name: db_name,
+                    table_name,
+                    db_type,
+                    file_path: None,
+                    delimiter: ',',
+                    has_header_row: true,
+                    null_value: String::new(),
+                    preview_headers: vec![],
+                    preview_rows: vec![],
+                    table_columns: table_cols,
+                    column_mappings,
+                    status: crate::models::structs::CsvImportStatus::Idle,
+                    progress_message: String::new(),
+                });
+                self.show_csv_import_dialog = true;
             }
         }
 
@@ -1807,6 +1847,7 @@ impl super::Tabular {
         let mut delete_custom_view_request: Option<(i64, String)> = None;
         let mut edit_custom_view_request: Option<(i64, String, String)> = None;
         let mut request_add_replication_dialog: Option<i64> = None;
+        let mut csv_import_request: Option<(i64, Option<String>, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -2628,6 +2669,20 @@ impl super::Tabular {
                                 ui.close();
                             }
                         }
+                        if !is_mongodb {
+                            if ui.button("📥 Import CSV...").clicked() {
+                                if let Some(conn_id) = node.connection_id {
+                                    let actual_table_name =
+                                        node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                    csv_import_request = Some((
+                                        conn_id,
+                                        node.database_name.clone(),
+                                        actual_table_name,
+                                    ));
+                                }
+                                ui.close();
+                            }
+                        }
                         ui.separator();
                         if !is_mongodb {
                             if ui.button("🗑 Drop Table").clicked() {
@@ -2794,6 +2849,7 @@ impl super::Tabular {
                             child_custom_view_click_request,
                             child_delete_custom_view,
                             child_edit_custom_view,
+                            _child_csv_import_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -2878,6 +2934,7 @@ impl super::Tabular {
                         if let Some(child_req) = child_edit_custom_view {
                              edit_custom_view_request = Some(child_req);
                         }
+                        let _ = _child_csv_import_request;
                     }
                 } else {
                     ui.indent(id, |ui| {
@@ -2907,6 +2964,7 @@ impl super::Tabular {
                                 child_custom_view_click_request,
                                 child_delete_custom_view_request,
                                 child_edit_custom_view_request,
+                                child_csv_import_request,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -2998,6 +3056,9 @@ impl super::Tabular {
                             }
                             if let Some(child_req) = child_request_add_replication_dialog {
                                 request_add_replication_dialog = Some(child_req);
+                            }
+                            if let Some(v) = child_csv_import_request {
+                                csv_import_request = Some(v);
                             }
 
                             // Handle child folder removal - propagate to parent
@@ -3400,6 +3461,7 @@ impl super::Tabular {
             custom_view_click_request,
             delete_custom_view_request,
             edit_custom_view_request,
+            csv_import_request,
         )
     }
 

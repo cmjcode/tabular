@@ -1666,6 +1666,71 @@ impl Tabular {
                                         }
                                     }
                                 });
+
+                            // Manual-commit (transaction) controls — inline, left of connection selector
+                            let tx_supported = tab_conn_id
+                                .and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)))
+                                .map(|c| crate::connection::session::supports_transactions(&c.connection_type))
+                                .unwrap_or(false);
+                            if tx_supported {
+                                let (tx_mode, tx_active) = self
+                                    .query_tabs
+                                    .get(self.active_tab_index)
+                                    .map(|t| (t.tx_mode, t.tx_active))
+                                    .unwrap_or((false, false));
+                                let mut toggle_changed = false;
+                                let mut commit_clicked = false;
+                                let mut rollback_clicked = false;
+
+                                ui.separator();
+                                let mut mode = tx_mode;
+                                if ui
+                                    .checkbox(&mut mode, "Manual commit")
+                                    .on_hover_text(
+                                        "Run statements in a transaction on a dedicated \
+                                         connection; nothing is committed until you press Commit",
+                                    )
+                                    .changed()
+                                {
+                                    toggle_changed = true;
+                                }
+                                if tx_mode {
+                                    if tx_active {
+                                        ui.colored_label(egui::Color32::from_rgb(255, 165, 0), "●")
+                                            .on_hover_text("Transaction open (uncommitted)");
+                                    }
+                                    if ui
+                                        .add_enabled(tx_active, egui::Button::new("Commit").small())
+                                        .clicked()
+                                    {
+                                        commit_clicked = true;
+                                    }
+                                    if ui
+                                        .add_enabled(tx_active, egui::Button::new("Rollback").small())
+                                        .clicked()
+                                    {
+                                        rollback_clicked = true;
+                                    }
+                                }
+
+                                if toggle_changed {
+                                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                        tab.tx_mode = !tab.tx_mode;
+                                        if !tab.tx_mode {
+                                            if let Some(s) = tab.session.take() {
+                                                s.close();
+                                            }
+                                            tab.tx_active = false;
+                                        }
+                                    }
+                                }
+                                if commit_clicked {
+                                    editor::send_session_tx_command(self, true);
+                                }
+                                if rollback_clicked {
+                                    editor::send_session_tx_command(self, false);
+                                }
+                            }
                         },
                     );
 
@@ -3576,6 +3641,7 @@ impl App for Tabular {
         // Index create/edit dialog
         dialog::render_index_dialog(self, ctx);
         dialog::render_create_table_dialog(self, ctx);
+        dialog::render_csv_import_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
         // Update dialog
