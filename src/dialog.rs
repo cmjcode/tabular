@@ -1400,7 +1400,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
     }
 
     let table_name = tabular.csv_import_state.as_ref().unwrap().table_name.clone();
-    let title = format!("Import CSV \u{2192} {}", table_name);
+    let title = format!("Import CSV  ->  \"{}\"", table_name);
     let mut open_flag = tabular.show_csv_import_dialog;
     let mut should_close = false;
     let mut trigger_file_pick = false;
@@ -1411,158 +1411,233 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         .collapsible(false)
         .resizable(true)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .default_width(660.0)
-        .max_height(540.0)
+        .default_width(680.0)
+        .min_width(480.0)
+        .max_height(600.0)
         .open(&mut open_flag)
         .show(ctx, |ui| {
             let state = tabular.csv_import_state.as_mut().unwrap();
+            let accent = egui::Color32::from_rgb(86, 156, 214);
+            let muted = ui.visuals().weak_text_color();
 
-            // ── Settings ─────────────────────────────────────────────────────
-            ui.horizontal(|ui| {
-                ui.label("Delimiter:");
-                for (ch, label) in [(',', "Comma"), (';', "Semicolon"), ('\t', "Tab"), ('|', "Pipe")] {
-                    if ui.selectable_label(state.delimiter == ch, label).clicked()
-                        && state.delimiter != ch
-                    {
-                        state.delimiter = ch;
-                        if state.file_path.is_some() {
-                            redelimit = true;
+            // ── Source file ───────────────────────────────────────────────────
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Vec2::new(12.0, 10.0))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("Source file").strong());
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let btn_label = if state.file_path.is_some() { "Change..." } else { "Browse..." };
+                        if ui.button(btn_label).clicked() {
+                            trigger_file_pick = true;
                         }
-                    }
-                }
-                ui.separator();
-                if ui.checkbox(&mut state.has_header_row, "First row = header").changed()
-                    && state.file_path.is_some()
-                {
-                    redelimit = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Treat as NULL:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.null_value)
-                        .desired_width(120.0)
-                        .hint_text("empty = empty string"),
-                );
-            });
-            ui.add_space(4.0);
-
-            // ── File picker ───────────────────────────────────────────────────
-            ui.horizontal(|ui| {
-                let btn_label = if state.file_path.is_some() { "🔄 Change File..." } else { "📂 Pick CSV File..." };
-                if ui.button(btn_label).clicked() {
-                    trigger_file_pick = true;
-                }
-                if let Some(path) = &state.file_path {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                    ui.label(egui::RichText::new(name).color(egui::Color32::from_rgb(100, 200, 100)));
-                } else {
-                    ui.label(egui::RichText::new("No file selected").color(egui::Color32::GRAY).italics());
-                }
-            });
-
-            // ── Column mapping + preview ──────────────────────────────────────
-            if !state.column_mappings.is_empty() {
-                ui.add_space(6.0);
-                ui.separator();
-                ui.label(egui::RichText::new("Column Mapping").strong());
-                ui.label(
-                    egui::RichText::new("Map each CSV column to a target table column. Choose '(skip)' to ignore.")
-                        .small()
-                        .color(egui::Color32::GRAY),
-                );
-                ui.add_space(4.0);
-
-                let scroll_h = (state.column_mappings.len().min(10) as f32 * 28.0 + 32.0).max(60.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("csv_map_scroll")
-                    .max_height(scroll_h)
-                    .show(ui, |ui| {
-                        egui::Grid::new("csv_mapping_grid")
-                            .num_columns(3)
-                            .spacing([8.0, 4.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.label(egui::RichText::new("CSV Column").strong());
-                                ui.label(egui::RichText::new("Table Column").strong());
-                                ui.label(egui::RichText::new("Preview").strong());
-                                ui.end_row();
-
-                                for (i, mapping) in state.column_mappings.iter_mut().enumerate() {
-                                    ui.label(&mapping.csv_header);
-                                    let mut sel = mapping.target_column.clone();
-                                    egui::ComboBox::from_id_salt(egui::Id::new(("csv_map", i)))
-                                        .selected_text(if sel == "__skip__" { "(skip)" } else { sel.as_str() })
-                                        .width(180.0)
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut sel, "__skip__".to_string(), "(skip)");
-                                            for col in &state.table_columns {
-                                                ui.selectable_value(&mut sel, col.clone(), col.as_str());
-                                            }
-                                        });
-                                    mapping.target_column = sel;
-
-                                    let preview_val = state.preview_rows.first()
-                                        .and_then(|r| r.get(i))
-                                        .map(String::as_str)
-                                        .unwrap_or("");
-                                    ui.label(
-                                        egui::RichText::new(if preview_val.is_empty() { "(empty)" } else { preview_val })
-                                            .small()
-                                            .color(egui::Color32::GRAY),
-                                    );
-                                    ui.end_row();
-                                }
-                            });
-                    });
-
-                ui.add_space(4.0);
-                ui.collapsing("Data Preview (first 5 rows)", |ui| {
-                    egui::ScrollArea::horizontal().show(ui, |ui| {
-                        egui::Grid::new("csv_preview_grid")
-                            .spacing([4.0, 2.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                for h in &state.preview_headers {
-                                    ui.label(egui::RichText::new(h).strong().small());
-                                }
-                                if !state.preview_headers.is_empty() { ui.end_row(); }
-                                for row in &state.preview_rows {
-                                    for cell in row {
-                                        ui.label(egui::RichText::new(cell).small());
-                                    }
-                                    ui.end_row();
-                                }
-                            });
+                        ui.add_space(4.0);
+                        if let Some(path) = &state.file_path {
+                            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                            let row_hint = if !state.preview_rows.is_empty() {
+                                format!("  ({} rows previewed)", state.preview_rows.len())
+                            } else {
+                                String::new()
+                            };
+                            ui.label(egui::RichText::new(name).color(accent).strong());
+                            if !row_hint.is_empty() {
+                                ui.label(egui::RichText::new(row_hint).color(muted).small());
+                            }
+                        } else {
+                            ui.label(egui::RichText::new("No file selected").color(muted).italics());
+                        }
                     });
                 });
-            }
+            ui.add_space(6.0);
 
-            // ── Status message ─────────────────────────────────────────────────
-            if !state.progress_message.is_empty() {
+            // ── Import options ────────────────────────────────────────────────
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Vec2::new(12.0, 10.0))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("Options").strong());
+                    ui.add_space(6.0);
+                    egui::Grid::new("csv_options_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Delimiter").color(muted));
+                            ui.horizontal(|ui| {
+                                for (ch, label) in [(',', "Comma"), (';', "Semicolon"), ('\t', "Tab"), ('|', "Pipe")] {
+                                    if ui.selectable_label(state.delimiter == ch, label).clicked()
+                                        && state.delimiter != ch
+                                    {
+                                        state.delimiter = ch;
+                                        if state.file_path.is_some() {
+                                            redelimit = true;
+                                        }
+                                    }
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Header row").color(muted));
+                            if ui.checkbox(&mut state.has_header_row, "First row contains column names")
+                                .changed() && state.file_path.is_some()
+                            {
+                                redelimit = true;
+                            }
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("NULL value").color(muted));
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.null_value)
+                                        .desired_width(120.0)
+                                        .hint_text("leave empty to keep as string"),
+                                );
+                            });
+                            ui.end_row();
+                        });
+                });
+            ui.add_space(6.0);
+
+            // ── Column mapping ────────────────────────────────────────────────
+            if !state.column_mappings.is_empty() {
+                egui::Frame::group(ui.style())
+                    .inner_margin(egui::Vec2::new(12.0, 10.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Column mapping").strong());
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("Choose '(skip)' to ignore a column.")
+                                    .small()
+                                    .color(muted),
+                            );
+                        });
+                        ui.add_space(6.0);
+
+                        let scroll_h = (state.column_mappings.len().min(8) as f32 * 28.0 + 8.0).max(56.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("csv_map_scroll")
+                            .max_height(scroll_h)
+                            .show(ui, |ui| {
+                                egui::Grid::new("csv_mapping_grid")
+                                    .num_columns(4)
+                                    .spacing([8.0, 4.0])
+                                    .striped(true)
+                                    .min_col_width(80.0)
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new("CSV column").strong().small().color(muted));
+                                        ui.label(egui::RichText::new("").small());
+                                        ui.label(egui::RichText::new("Table column").strong().small().color(muted));
+                                        ui.label(egui::RichText::new("Sample value").strong().small().color(muted));
+                                        ui.end_row();
+
+                                        for (i, mapping) in state.column_mappings.iter_mut().enumerate() {
+                                            ui.label(
+                                                egui::RichText::new(&mapping.csv_header)
+                                                    .monospace()
+                                                    .small(),
+                                            );
+                                            ui.label(egui::RichText::new("->").color(muted).small());
+                                            let mut sel = mapping.target_column.clone();
+                                            let display = if sel == "__skip__" { "(skip)" } else { sel.as_str() };
+                                            let combo_color = if sel == "__skip__" { muted } else { ui.visuals().text_color() };
+                                            egui::ComboBox::from_id_salt(egui::Id::new(("csv_map", i)))
+                                                .selected_text(egui::RichText::new(display).color(combo_color))
+                                                .width(170.0)
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut sel, "__skip__".to_string(),
+                                                        egui::RichText::new("(skip)").color(muted));
+                                                    for col in &state.table_columns {
+                                                        ui.selectable_value(&mut sel, col.clone(), col.as_str());
+                                                    }
+                                                });
+                                            mapping.target_column = sel;
+
+                                            let preview_val = state.preview_rows.first()
+                                                .and_then(|r| r.get(i))
+                                                .map(String::as_str)
+                                                .unwrap_or("");
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    if preview_val.is_empty() { "(empty)" } else { preview_val }
+                                                )
+                                                .small()
+                                                .italics()
+                                                .color(muted),
+                                            );
+                                            ui.end_row();
+                                        }
+                                    });
+                            });
+                    });
                 ui.add_space(4.0);
-                let color = match &state.status {
-                    crate::models::structs::CsvImportStatus::Failed(_) => egui::Color32::RED,
-                    crate::models::structs::CsvImportStatus::Done(_) => egui::Color32::from_rgb(80, 200, 80),
-                    _ => egui::Color32::GRAY,
-                };
-                ui.label(egui::RichText::new(&state.progress_message).color(color));
+
+                // ── Data preview ──────────────────────────────────────────────
+                ui.collapsing(
+                    egui::RichText::new(format!("Data preview  ({} rows shown)", state.preview_rows.len())).small(),
+                    |ui| {
+                        egui::ScrollArea::horizontal()
+                            .id_salt("csv_preview_hscroll")
+                            .show(ui, |ui| {
+                                egui::Grid::new("csv_preview_grid")
+                                    .spacing([12.0, 2.0])
+                                    .striped(true)
+                                    .show(ui, |ui| {
+                                        for h in &state.preview_headers {
+                                            ui.label(egui::RichText::new(h).strong().small().monospace());
+                                        }
+                                        if !state.preview_headers.is_empty() { ui.end_row(); }
+                                        for row in &state.preview_rows {
+                                            for cell in row {
+                                                ui.label(egui::RichText::new(cell).small());
+                                            }
+                                            ui.end_row();
+                                        }
+                                    });
+                            });
+                    },
+                );
+                ui.add_space(4.0);
             }
 
-            // ── Buttons ────────────────────────────────────────────────────────
-            ui.add_space(8.0);
+            // ── Status bar + buttons ──────────────────────────────────────────
             ui.separator();
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let can_import = state.file_path.is_some()
-                    && !state.column_mappings.is_empty()
-                    && state.status != crate::models::structs::CsvImportStatus::Importing;
-                if ui.add_enabled(can_import, egui::Button::new("📥 Import")).clicked() {
-                    trigger_import = true;
+                // Status on the left
+                if !state.progress_message.is_empty() {
+                    let (icon, color) = match &state.status {
+                        crate::models::structs::CsvImportStatus::Failed(_) =>
+                            ("x ", egui::Color32::from_rgb(220, 80, 80)),
+                        crate::models::structs::CsvImportStatus::Done(_) =>
+                            ("ok ", egui::Color32::from_rgb(80, 190, 100)),
+                        crate::models::structs::CsvImportStatus::Importing =>
+                            ("... ", egui::Color32::from_rgb(86, 156, 214)),
+                        _ => ("", muted),
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{}{}", icon, state.progress_message))
+                            .small()
+                            .color(color),
+                    );
                 }
-                if ui.button("Close").clicked() {
-                    should_close = true;
-                }
+
+                // Buttons right-aligned
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("  Close  ").clicked() {
+                        should_close = true;
+                    }
+                    ui.add_space(4.0);
+                    let can_import = state.file_path.is_some()
+                        && !state.column_mappings.is_empty()
+                        && state.status != crate::models::structs::CsvImportStatus::Importing;
+                    let import_btn = egui::Button::new(
+                        egui::RichText::new("  Import  ").strong()
+                    );
+                    if ui.add_enabled(can_import, import_btn).clicked() {
+                        trigger_import = true;
+                    }
+                });
             });
+            ui.add_space(2.0);
         });
 
     // ── File pick (outside closure) ────────────────────────────────────────
