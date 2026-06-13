@@ -186,6 +186,63 @@ pub(crate) fn load_postgresql_structure(
     node.children = main_children;
 }
 
+/// Fetch all FK constraints across all non-system schemas.
+pub(crate) async fn fetch_postgres_foreign_keys(
+    pool: &PgPool,
+) -> Result<Vec<models::structs::ForeignKey>, sqlx::Error> {
+    let query = r#"
+        SELECT
+            tc.constraint_name,
+            kcu.table_name,
+            kcu.column_name,
+            ccu.table_name  AS referenced_table_name,
+            ccu.column_name AS referenced_column_name
+        FROM information_schema.table_constraints AS tc
+        JOIN information_schema.key_column_usage AS kcu
+            ON tc.constraint_name = kcu.constraint_name
+           AND tc.table_schema   = kcu.table_schema
+        JOIN information_schema.constraint_column_usage AS ccu
+            ON ccu.constraint_name = tc.constraint_name
+           AND ccu.table_schema    = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+          AND tc.table_schema NOT IN ('pg_catalog','information_schema')
+        ORDER BY kcu.table_name, kcu.column_name
+    "#;
+
+    let rows = sqlx::query(query).fetch_all(pool).await?;
+    let mut keys = Vec::new();
+    for row in rows {
+        keys.push(models::structs::ForeignKey {
+            constraint_name:        row.try_get::<String, _>("constraint_name").unwrap_or_default(),
+            table_name:             row.try_get::<String, _>("table_name").unwrap_or_default(),
+            column_name:            row.try_get::<String, _>("column_name").unwrap_or_default(),
+            referenced_table_name:  row.try_get::<String, _>("referenced_table_name").unwrap_or_default(),
+            referenced_column_name: row.try_get::<String, _>("referenced_column_name").unwrap_or_default(),
+        });
+    }
+    Ok(keys)
+}
+
+/// Fetch all columns for every user table: table_name → [col1, col2, …]
+pub(crate) async fn fetch_postgres_columns(
+    pool: &PgPool,
+) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+    let query = r#"
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema NOT IN ('pg_catalog','information_schema')
+        ORDER BY table_name, ordinal_position
+    "#;
+    let rows = sqlx::query(query).fetch_all(pool).await?;
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for row in rows {
+        let tbl: String = row.try_get("table_name").unwrap_or_default();
+        let col: String = row.try_get("column_name").unwrap_or_default();
+        map.entry(tbl).or_default().push(col);
+    }
+    Ok(map)
+}
+
 // Fetch tables/views from a PostgreSQL database (schema: public)
 pub(crate) fn fetch_tables_from_postgres_connection(
     tabular: &mut window_egui::Tabular,

@@ -3099,9 +3099,23 @@ impl App for Tabular {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
 
-            // CMD+SHIFT+P to open command palette (on macOS)
-            if i.modifiers.mac_cmd && i.modifiers.shift && i.key_pressed(egui::Key::P) {
+            // CMD+SHIFT+P or CMD/CTRL+K to open command palette
+            if (i.modifiers.mac_cmd && i.modifiers.shift && i.key_pressed(egui::Key::P))
+                || ((i.modifiers.mac_cmd || i.modifiers.ctrl)
+                    && i.key_pressed(egui::Key::K)
+                    && !self.show_command_palette)
+            {
                 editor::open_command_palette(self);
+            }
+
+            // F12 — Go to definition (navigate sidebar to table under cursor)
+            if i.key_pressed(egui::Key::F12) && !self.show_command_palette {
+                editor::go_to_definition(self);
+            }
+
+            // F2 — Rename symbol under cursor
+            if i.key_pressed(egui::Key::F2) && !self.show_command_palette {
+                editor::begin_rename_symbol(self);
             }
 
             // CMD/CTRL+R to refresh current view
@@ -3314,6 +3328,10 @@ impl App for Tabular {
                     self.show_settings_window = false;
                 } else if self.show_theme_selector {
                     self.show_theme_selector = false;
+                } else if self.rename_symbol_active {
+                    self.rename_symbol_active = false;
+                    self.rename_symbol_old.clear();
+                    self.rename_symbol_new.clear();
                 } else if self.show_command_palette {
                     self.show_command_palette = false;
                     self.command_palette_input.clear();
@@ -3408,9 +3426,24 @@ impl App for Tabular {
             editor::render_theme_selector(self, ctx);
         }
 
+        // Render rename symbol dialog if active
+        if self.rename_symbol_active {
+            editor::render_rename_symbol_dialog(self, ctx);
+        }
+
+        // Flush pending clipboard text (set during sidebar processing, not render)
+        if let Some(text) = self.pending_clipboard_text.take() {
+            ctx.copy_text(text);
+        }
+
+        // Schema Diff dialog
+        if self.show_schema_diff_dialog {
+            crate::window_egui::render_dialogs::render_schema_diff_dialog(self, ctx);
+        }
+
         // Show cache miss dialog (topmost)
         self.render_cache_miss_dialog(ctx);
-        
+
         // Settings window with higher z-order
         self.render_settings_dialog(ctx);
 

@@ -21,7 +21,10 @@
       "Bash(security find-generic-password *)",
       "Read(//Users/jayuda/Library/CloudStorage/GoogleDrive-yulius.jayuda@gmail.com/My Drive/KEYPRO/TABULAR/**)",
       "Bash(cargo run *)",
-      "Bash(kill %1)"
+      "Bash(kill %1)",
+      "Bash(grep \"egui\" /Users/jawuda/Documents/PROJECT/TABULAR/tabular/Cargo.toml 2>/dev/null || grep -A2 \"egui\" /Users/jayuda/Documents/PROJECT/TABULAR/tabular/Cargo.toml | head -20)",
+      "Read(//Users/jawuda/Documents/PROJECT/TABULAR/tabular/**)",
+      "Bash(git -C /Users/jayuda/Documents/PROJECT/TABULAR/tabular diff HEAD -- src/connection/metadata/ddl.rs)"
     ],
     "deny": [
       "Bash(rm -rf /*)",

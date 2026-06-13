@@ -425,6 +425,18 @@ pub struct Tabular {
     // CSV Import wizard
     pub show_csv_import_dialog: bool,
     pub csv_import_state: Option<models::structs::CsvImportState>,
+    // Rename symbol dialog (F2 in editor)
+    pub rename_symbol_active: bool,
+    pub rename_symbol_old: String,
+    pub rename_symbol_new: String,
+    // Horizontal scroll offset synced between sticky header and data grid
+    pub data_scroll_x: f32,
+    // Pending clipboard text (written to egui clipboard on next frame)
+    pub pending_clipboard_text: Option<String>,
+    // Schema Diff dialog
+    pub show_schema_diff_dialog: bool,
+    pub schema_diff_state: Option<models::structs::SchemaDiffState>,
+    pub schema_diff_receiver: Option<std::sync::mpsc::Receiver<models::structs::SchemaDiffResult>>,
 }
 
 // Preference tabs enumeration

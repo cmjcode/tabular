@@ -252,6 +252,67 @@ pub(crate) fn load_sqlite_structure(
     node.children = main_children;
 }
 
+/// Fetch FK constraints across all user tables via PRAGMA foreign_key_list.
+pub(crate) async fn fetch_sqlite_foreign_keys(
+    pool: &SqlitePool,
+) -> Result<Vec<models::structs::ForeignKey>, sqlx::Error> {
+    let tables: Vec<String> = sqlx::query_as::<_, (String,)>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|(n,)| n)
+    .collect();
+
+    let mut keys = Vec::new();
+    for table in tables {
+        let pragma = format!("PRAGMA foreign_key_list('{}')", table.replace('\'', "''"));
+        if let Ok(rows) = sqlx::query(&pragma).fetch_all(pool).await {
+            for row in rows {
+                let referenced_table: String = row.try_get("table").unwrap_or_default();
+                let from_col: String = row.try_get("from").unwrap_or_default();
+                let to_col: String = row.try_get("to").unwrap_or_default();
+                let id: i64 = row.try_get("id").unwrap_or(0);
+                keys.push(models::structs::ForeignKey {
+                    constraint_name:        format!("fk_{}_{}", table, id),
+                    table_name:             table.clone(),
+                    column_name:            from_col,
+                    referenced_table_name:  referenced_table,
+                    referenced_column_name: to_col,
+                });
+            }
+        }
+    }
+    Ok(keys)
+}
+
+/// Fetch all columns for every user table: table_name → [col1, col2, …]
+pub(crate) async fn fetch_sqlite_columns(
+    pool: &SqlitePool,
+) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+    let tables: Vec<String> = sqlx::query_as::<_, (String,)>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|(n,)| n)
+    .collect();
+
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for table in tables {
+        let pragma = format!("PRAGMA table_info('{}')", table.replace('\'', "''"));
+        if let Ok(rows) = sqlx::query(&pragma).fetch_all(pool).await {
+            for row in rows {
+                let col: String = row.try_get("name").unwrap_or_default();
+                map.entry(table.clone()).or_default().push(col);
+            }
+        }
+    }
+    Ok(map)
+}
+
 pub(crate) fn fetch_tables_from_sqlite_connection(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,

@@ -45,6 +45,7 @@ pub(crate) use execute::{
 pub use metadata::fetch_databases_background_task; // fully pub in original
 #[allow(deprecated)]
 pub(crate) use metadata::{
+    compute_schema_diff,
     fetch_columns_from_database,
     fetch_databases_from_connection_async, fetch_databases_from_connection_blocking,
     fetch_procedure_definition, fetch_table_definition, fetch_view_definition, get_foreign_keys,

@@ -4620,12 +4620,30 @@ pub(crate) fn open_command_palette(tabular: &mut window_egui::Tabular) {
     tabular.show_theme_selector = false;
     tabular.command_palette_selected_index = 0;
 
-    // Initialize command palette items
+    // Initialize command palette items with shortcut hints
     tabular.command_palette_items = vec![
+        "Query: Run                    ⌘ Enter".to_string(),
+        "Query: Format SQL             ⌘ Shift+F".to_string(),
+        "Query: Explain                ⌘ Shift+E".to_string(),
+        "Query: New Tab                ⌘T".to_string(),
+        "Query: Close Tab              ⌘W".to_string(),
+        "Query: Save Tab               ⌘S".to_string(),
+        "Editor: Go to Definition      F12".to_string(),
+        "Editor: Rename Symbol         F2".to_string(),
+        "Editor: Toggle Find & Replace ⌘F".to_string(),
+        "Editor: Toggle Word Wrap".to_string(),
+        "Editor: Toggle Line Numbers".to_string(),
+        "Data: Export CSV".to_string(),
+        "Data: Export JSON".to_string(),
+        "Data: Export SQL Inserts".to_string(),
+        "Data: Export Markdown".to_string(),
+        "Data: Import CSV".to_string(),
+        "Transaction: Begin / Toggle   ⌘ Shift+T".to_string(),
+        "Transaction: Commit".to_string(),
+        "Transaction: Rollback".to_string(),
+        "View: Refresh                 ⌘R".to_string(),
         "Preferences: Color Theme".to_string(),
-        "View: Toggle Word Wrap".to_string(),
-        "View: Toggle Line Numbers".to_string(),
-        "View: Toggle Find and Replace".to_string(),
+        "Preferences: Settings         ⌘,".to_string(),
     ];
 }
 
@@ -4804,29 +4822,328 @@ pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &e
 }
 
 pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str) {
-    match command {
-        "Preferences: Color Theme" => {
-            tabular.show_command_palette = false;
-            // Instead of directly setting show_theme_selector, use a flag
-            tabular.request_theme_selector = true;
-            tabular.theme_selector_selected_index = 0; // Reset to first theme
+    // Strip trailing shortcut hint (everything after first "  " sequence of spaces) for matching
+    let cmd = command.trim_end();
+    let key = if let Some(pos) = cmd.find("  ") { cmd[..pos].trim() } else { cmd };
+
+    tabular.show_command_palette = false;
+    tabular.command_palette_input.clear();
+    tabular.command_palette_selected_index = 0;
+
+    match key {
+        "Query: Run" => {
+            execute_query(tabular);
         }
-        "View: Toggle Word Wrap" => {
-            tabular.advanced_editor.word_wrap = !tabular.advanced_editor.word_wrap;
-            tabular.show_command_palette = false;
+        "Query: Format SQL" => {
+            // reformat_current_sql requires a Ui reference; hint shown, user uses ⌘⇧F keyboard shortcut
         }
-        "View: Toggle Line Numbers" => {
-            tabular.advanced_editor.show_line_numbers = !tabular.advanced_editor.show_line_numbers;
-            tabular.show_command_palette = false;
+        "Query: Explain" => {
+            let text = tabular.editor.text.clone();
+            explain_current_query(tabular, text);
         }
-        "View: Toggle Find and Replace" => {
+        "Query: New Tab" => {
+            create_new_tab(tabular, String::new(), String::new());
+        }
+        "Query: Close Tab" => {
+            if !tabular.query_tabs.is_empty() {
+                let idx = tabular.active_tab_index;
+                close_tab(tabular, idx);
+            }
+        }
+        "Query: Save Tab" => {
+            let _ = save_current_tab(tabular);
+        }
+        "Editor: Go to Definition" => {
+            go_to_definition(tabular);
+        }
+        "Editor: Rename Symbol" => {
+            begin_rename_symbol(tabular);
+        }
+        "Editor: Toggle Find & Replace" => {
             tabular.advanced_editor.show_find_replace = !tabular.advanced_editor.show_find_replace;
-            tabular.show_command_palette = false;
+        }
+        "Editor: Toggle Word Wrap" => {
+            tabular.advanced_editor.word_wrap = !tabular.advanced_editor.word_wrap;
+        }
+        "Editor: Toggle Line Numbers" => {
+            tabular.advanced_editor.show_line_numbers = !tabular.advanced_editor.show_line_numbers;
+        }
+        "Data: Export CSV" => {
+            crate::export::export_to_csv(
+                &tabular.all_table_data,
+                &tabular.current_table_headers,
+                &tabular.current_table_name,
+            );
+        }
+        "Data: Export JSON" => {
+            crate::export::export_to_json(
+                &tabular.all_table_data,
+                &tabular.current_table_headers,
+                &tabular.current_table_name,
+            );
+        }
+        "Data: Export SQL Inserts" => {
+            let db_type = tabular.current_connection_id
+                .and_then(|id| tabular.connections.iter().find(|c| c.id == Some(id)))
+                .map(|c| c.connection_type.clone());
+            crate::export::export_to_sql_inserts(
+                &tabular.all_table_data,
+                &tabular.current_table_headers,
+                &tabular.current_table_name,
+                db_type.as_ref(),
+            );
+        }
+        "Data: Export Markdown" => {
+            crate::export::export_to_markdown(
+                &tabular.all_table_data,
+                &tabular.current_table_headers,
+                &tabular.current_table_name,
+            );
+        }
+        "Data: Import CSV" => {
+            if let Some(conn_id) = tabular.current_connection_id {
+                let db_type = tabular.connections.iter()
+                    .find(|c| c.id == Some(conn_id))
+                    .map(|c| c.connection_type.clone())
+                    .unwrap_or(crate::models::enums::DatabaseType::MySQL);
+                tabular.show_csv_import_dialog = true;
+                tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
+                    connection_id: conn_id,
+                    database_name: None,
+                    table_name: tabular.current_table_name.clone(),
+                    db_type,
+                    file_path: None,
+                    delimiter: ',',
+                    has_header_row: true,
+                    null_value: String::new(),
+                    preview_headers: Vec::new(),
+                    preview_rows: Vec::new(),
+                    table_columns: tabular.current_table_headers.clone(),
+                    column_mappings: Vec::new(),
+                    status: crate::models::structs::CsvImportStatus::Idle,
+                    progress_message: String::new(),
+                });
+            }
+        }
+        "Transaction: Begin / Toggle" => {
+            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                tab.tx_mode = !tab.tx_mode;
+            }
+        }
+        "Transaction: Commit" => {
+            send_session_tx_command(tabular, true);
+        }
+        "Transaction: Rollback" => {
+            send_session_tx_command(tabular, false);
+        }
+        "View: Refresh" => {
+            crate::data_table::refresh_current_table_data(tabular);
+        }
+        "Preferences: Color Theme" => {
+            tabular.request_theme_selector = true;
+            tabular.theme_selector_selected_index = 0;
+        }
+        "Preferences: Settings" => {
+            tabular.show_settings_window = true;
         }
         _ => {
-            debug!("Unknown command: {}", command);
-            tabular.show_command_palette = false;
+            debug!("Unknown command: {}", key);
         }
+    }
+}
+
+/// Extract the identifier word at `pos` in `text` (SQL identifier chars: alphanumeric + _).
+fn word_at_cursor(text: &str, pos: usize) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    if len == 0 || pos > len {
+        return None;
+    }
+    // Clamp to last char if pos == len
+    let p = pos.min(len.saturating_sub(1));
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    if !is_ident(bytes[p]) {
+        return None;
+    }
+    let start = (0..=p).rev().take_while(|&i| is_ident(bytes[i])).last()?;
+    let end = (p..len).take_while(|&i| is_ident(bytes[i])).last().map(|i| i + 1).unwrap_or(p + 1);
+    Some(&text[start..end])
+}
+
+/// Find first tree node whose name (case-insensitive) matches `name` and is a table/view.
+fn find_table_in_tree<'a>(
+    nodes: &'a [crate::models::structs::TreeNode],
+    name: &str,
+) -> Option<&'a crate::models::structs::TreeNode> {
+    use crate::models::enums::NodeType;
+    for node in nodes {
+        if matches!(node.node_type, NodeType::Table | NodeType::View)
+            && node.name.to_lowercase() == name.to_lowercase()
+        {
+            return Some(node);
+        }
+        if let Some(found) = find_table_in_tree(&node.children, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Go-to-definition: finds the word under the editor cursor and navigates the sidebar
+/// to the matching table/view. Shows a toast if nothing is found.
+pub(crate) fn go_to_definition(tabular: &mut window_egui::Tabular) {
+    let cursor = tabular.cursor_position;
+    let text = tabular.editor.text.clone();
+    let word = match word_at_cursor(&text, cursor) {
+        Some(w) => w.to_string(),
+        None => {
+            tabular.toasts.info("Go to definition: no identifier at cursor");
+            return;
+        }
+    };
+
+    // Search sidebar tree for a matching table/view
+    let tree = tabular.items_tree.clone();
+    if let Some(node) = find_table_in_tree(&tree, &word) {
+        // Navigate: set the connection from the node's context
+        if let Some(conn_id) = node.connection_id {
+            tabular.current_connection_id = Some(conn_id);
+        }
+        tabular.current_table_name = node.name.clone();
+        // Expand the tree to reveal the node
+        expand_tree_to_table(&mut tabular.items_tree, &word);
+        tabular.toasts.info(format!("Go to definition: navigated to '{}'", word));
+    } else {
+        tabular.toasts.info(format!("Go to definition: '{}' not found in schema", word));
+    }
+}
+
+/// Recursively expand tree nodes until a Table/View named `target` is found.
+fn expand_tree_to_table(nodes: &mut Vec<crate::models::structs::TreeNode>, target: &str) -> bool {
+    use crate::models::enums::NodeType;
+    for node in nodes.iter_mut() {
+        if matches!(node.node_type, NodeType::Table | NodeType::View)
+            && node.name.to_lowercase() == target.to_lowercase()
+        {
+            node.is_expanded = true;
+            return true;
+        }
+        if expand_tree_to_table(&mut node.children, target) {
+            node.is_expanded = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Begin rename: extract word at cursor and open the rename dialog.
+pub(crate) fn begin_rename_symbol(tabular: &mut window_egui::Tabular) {
+    let cursor = tabular.cursor_position;
+    let text = tabular.editor.text.clone();
+    match word_at_cursor(&text, cursor) {
+        Some(w) => {
+            tabular.rename_symbol_old = w.to_string();
+            tabular.rename_symbol_new = w.to_string();
+            tabular.rename_symbol_active = true;
+        }
+        None => {
+            tabular.toasts.info("Rename: no identifier at cursor");
+        }
+    }
+}
+
+/// Apply the rename: replace all whole-word occurrences of `old` with `new` in the current tab.
+pub(crate) fn commit_rename_symbol(tabular: &mut window_egui::Tabular) {
+    let old = tabular.rename_symbol_old.clone();
+    let new = tabular.rename_symbol_new.clone();
+    tabular.rename_symbol_active = false;
+
+    if old.is_empty() || new.is_empty() || old == new {
+        return;
+    }
+
+    // Replace whole-word occurrences (not inside longer identifiers)
+    let text = tabular.editor.text.clone();
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut result = String::with_capacity(text.len());
+    let mut i = 0;
+    let chars: Vec<char> = text.chars().collect();
+    let old_chars: Vec<char> = old.chars().collect();
+    let olen = old_chars.len();
+
+    while i < chars.len() {
+        if chars[i..].starts_with(&old_chars) {
+            let before_ok = i == 0 || !is_ident(chars[i - 1]);
+            let after_ok = (i + olen) >= chars.len() || !is_ident(chars[i + olen]);
+            if before_ok && after_ok {
+                result.push_str(&new);
+                i += olen;
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    tabular.editor.text = result;
+    tabular.toasts.info(format!("Renamed '{}' → '{}'", old, new));
+}
+
+/// Render the floating rename-symbol dialog.
+pub(crate) fn render_rename_symbol_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    let mut commit = false;
+    let mut cancel = false;
+
+    egui::Area::new(egui::Id::new("rename_symbol_dialog"))
+        .fixed_pos(egui::pos2(
+            ctx.screen_rect().center().x - 200.0,
+            ctx.screen_rect().center().y - 60.0,
+        ))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::default()
+                .fill(ui.style().visuals.window_fill)
+                .stroke(ui.style().visuals.window_stroke)
+                .shadow(egui::epaint::Shadow::default())
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    ui.set_min_width(400.0);
+                    ui.label(egui::RichText::new(format!("Rename '{}'", tabular.rename_symbol_old)).strong());
+                    ui.add_space(8.0);
+                    let resp = ui.add_sized(
+                        [380.0, 24.0],
+                        egui::TextEdit::singleline(&mut tabular.rename_symbol_new)
+                            .hint_text("New name…"),
+                    );
+                    resp.request_focus();
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Rename").clicked() {
+                            commit = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+        });
+
+    // Check Enter/Escape outside the closure (no borrow conflict)
+    ctx.input(|i| {
+        if i.key_pressed(egui::Key::Enter) {
+            commit = true;
+        }
+        if i.key_pressed(egui::Key::Escape) {
+            cancel = true;
+        }
+    });
+
+    if commit {
+        commit_rename_symbol(tabular);
+    } else if cancel {
+        tabular.rename_symbol_active = false;
+        tabular.rename_symbol_old.clear();
+        tabular.rename_symbol_new.clear();
     }
 }
 

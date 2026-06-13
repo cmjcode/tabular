@@ -79,7 +79,9 @@ impl super::Tabular {
         let mut create_table_requests: Vec<(i64, Option<String>)> = Vec::new();
         let mut stored_procedure_click_requests: Vec<(i64, Option<String>, String)> = Vec::new();
         let mut generate_ddl_requests: Vec<(i64, Option<String>, String)> = Vec::new();
+        let mut copy_ddl_requests: Vec<(i64, Option<String>, String)> = Vec::new();
         let mut open_diagram_requests: Vec<(i64, String)> = Vec::new();
+        let mut schema_diff_requests: Vec<(i64, String)> = Vec::new();
         let mut add_view_requests: Vec<i64> = Vec::new();
         let mut custom_view_click_requests: Vec<(i64, String, String)> = Vec::new();
         let mut delete_custom_view_requests: Vec<(i64, String)> = Vec::new();
@@ -113,6 +115,8 @@ impl super::Tabular {
                 delete_custom_view_request,
                 edit_custom_view_request,
                 csv_import_request,
+                copy_ddl_request,
+                schema_diff_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -191,8 +195,14 @@ impl super::Tabular {
             if let Some((conn_id, db_name, table_name)) = generate_ddl_request {
                 generate_ddl_requests.push((conn_id, db_name, table_name));
             }
+            if let Some((conn_id, db_name, table_name)) = copy_ddl_request {
+                copy_ddl_requests.push((conn_id, db_name, table_name));
+            }
             if let Some((conn_id, db_name)) = open_diagram_request {
                 open_diagram_requests.push((conn_id, db_name));
+            }
+            if let Some((conn_id, db_name)) = schema_diff_request {
+                schema_diff_requests.push((conn_id, db_name));
             }
 
             if let Some(conn_id) = request_add_view_dialog {
@@ -349,12 +359,27 @@ impl super::Tabular {
                     let _ = crate::connection::get_or_create_connection_pool(self, conn_id).await;
                     fks = crate::connection::get_foreign_keys(self, conn_id, &db_name).await;
                     
-                    // Fetch all columns for diagram (MySQL optimization)
-                    if let Some(pool_enum) = self.connection_pools.get(&conn_id)
-                         && let models::enums::DatabasePool::MySQL(p) = pool_enum
-                             && let Ok(cols) = crate::driver_mysql::fetch_mysql_columns(p, &db_name).await {
-                                 columns_map = cols;
-                             }
+                    // Fetch all columns for diagram (all supported engines)
+                    if let Some(pool_enum) = self.connection_pools.get(&conn_id).cloned() {
+                        match pool_enum {
+                            models::enums::DatabasePool::MySQL(p) => {
+                                if let Ok(cols) = crate::driver_mysql::fetch_mysql_columns(&p, &db_name).await {
+                                    columns_map = cols;
+                                }
+                            }
+                            models::enums::DatabasePool::PostgreSQL(p) => {
+                                if let Ok(cols) = crate::driver_postgres::fetch_postgres_columns(&p).await {
+                                    columns_map = cols;
+                                }
+                            }
+                            models::enums::DatabasePool::SQLite(p) => {
+                                if let Ok(cols) = crate::driver_sqlite::fetch_sqlite_columns(&p).await {
+                                    columns_map = cols;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 });
             }
 
@@ -550,6 +575,28 @@ impl super::Tabular {
                     self.show_error_message = true;
                 }
             }
+        }
+
+        for (conn_id, db_name, table_name) in copy_ddl_requests {
+            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
+                match crate::connection::fetch_table_definition(&conn, db_name.as_deref(), &table_name) {
+                    Some(sql) => {
+                        self.toasts.success(format!("DDL for '{}' copied to clipboard", table_name));
+                        // egui clipboard write happens next frame via ctx; store in a field
+                        self.pending_clipboard_text = Some(sql);
+                    }
+                    None => {
+                        self.toasts.error(format!("Could not generate DDL for '{}'", table_name));
+                    }
+                }
+            }
+        }
+
+        for (conn_id, db_name) in schema_diff_requests {
+            self.show_schema_diff_dialog = true;
+            self.schema_diff_state = Some(crate::models::structs::SchemaDiffState::new(
+                conn_id, db_name, &self.connections,
+            ));
         }
 
         for (connection_id, database_name, table_name) in alter_table_requests {
@@ -1848,6 +1895,8 @@ impl super::Tabular {
         let mut edit_custom_view_request: Option<(i64, String, String)> = None;
         let mut request_add_replication_dialog: Option<i64> = None;
         let mut csv_import_request: Option<(i64, Option<String>, String)> = None;
+        let mut copy_ddl_request: Option<(i64, Option<String>, String)> = None;
+        let mut schema_diff_request: Option<(i64, String)> = None;
 
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
@@ -2537,6 +2586,15 @@ impl super::Tabular {
                                     open_diagram_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
+                                if ui.button("🔀 Schema Diff...").clicked() {
+                                    let database_name = node
+                                        .database_name
+                                        .clone()
+                                        .or_else(|| Some(node.name.clone()))
+                                        .unwrap_or_default();
+                                    schema_diff_request = Some((conn_id, database_name));
+                                    ui.close();
+                                }
                             } else {
                                 ui.label("Create table not supported for this database");
                             }
@@ -2639,6 +2697,18 @@ impl super::Tabular {
                                     let actual_table_name =
                                         node.table_name.as_ref().unwrap_or(&node.name).clone();
                                     generate_ddl_request = Some((
+                                        conn_id,
+                                        node.database_name.clone(),
+                                        actual_table_name,
+                                    ));
+                                }
+                                ui.close();
+                            }
+                            if ui.button("📋 Copy Table DDL").clicked() {
+                                if let Some(conn_id) = node.connection_id {
+                                    let actual_table_name =
+                                        node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                    copy_ddl_request = Some((
                                         conn_id,
                                         node.database_name.clone(),
                                         actual_table_name,
@@ -2850,6 +2920,8 @@ impl super::Tabular {
                             child_delete_custom_view,
                             child_edit_custom_view,
                             _child_csv_import_request,
+                            child_copy_ddl_request,
+                            child_schema_diff_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -2912,13 +2984,18 @@ impl super::Tabular {
                         if let Some(v) = child_generate_ddl_request {
                             generate_ddl_request = Some(v);
                         }
+                        if let Some(v) = child_copy_ddl_request {
+                            copy_ddl_request = Some(v);
+                        }
+                        if let Some(v) = child_schema_diff_request {
+                            schema_diff_request = Some(v);
+                        }
                         if let Some(v) = child_open_diagram_request {
                             open_diagram_request = Some(v);
                         }
                         if let Some(child_context_id) = child_context {
                             context_menu_request = Some(child_context_id);
                         }
-                        // Propagate child query file open requests (History) to parent
                         if let Some(child_query_file) = _child_query_file {
                             query_file_to_open = Some(child_query_file);
                         }
@@ -2965,6 +3042,8 @@ impl super::Tabular {
                                 child_delete_custom_view_request,
                                 child_edit_custom_view_request,
                                 child_csv_import_request,
+                                child_copy_ddl_request2,
+                                child_schema_diff_request2,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -3038,6 +3117,12 @@ impl super::Tabular {
                             }
                             if let Some(v) = child_generate_ddl_request {
                                 generate_ddl_request = Some(v);
+                            }
+                            if let Some(v) = child_copy_ddl_request2 {
+                                copy_ddl_request = Some(v);
+                            }
+                            if let Some(v) = child_schema_diff_request2 {
+                                schema_diff_request = Some(v);
                             }
                             if let Some(v) = child_open_diagram_request {
                                 open_diagram_request = Some(v);
@@ -3462,6 +3547,8 @@ impl super::Tabular {
             delete_custom_view_request,
             edit_custom_view_request,
             csv_import_request,
+            copy_ddl_request,
+            schema_diff_request,
         )
     }
 

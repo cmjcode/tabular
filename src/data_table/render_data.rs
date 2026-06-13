@@ -108,24 +108,264 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 }
             }
 
-            // Tata letak: sisakan ruang khusus pagination supaya tidak tertimpa / tersembunyi walau data kosong.
-            // Pendekatan: alokasikan area scroll dengan tinggi pasti (avail - pagination_est) lalu render bar di bawahnya.
+            // Tata letak: sticky header (32px) + data scroll + pagination bar.
             let avail_h = ui.available_height();
             let pagination_height_est = ui.text_style_height(&egui::TextStyle::Body) + 14.0;
-            let scroll_h = (avail_h - pagination_height_est).max(50.0);
-            let (scroll_rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), scroll_h),
+            let total_h = (avail_h - pagination_height_est).max(50.0);
+            let header_h = 32.0_f32;
+            let data_h = (total_h - header_h).max(20.0);
+
+            // ── Sticky header row ──────────────────────────────────────────────────
+            let header_w = ui.available_width();
+            let (header_alloc_rect, _) = ui.allocate_exact_size(
+                egui::vec2(header_w, header_h),
+                egui::Sense::hover(),
+            );
+            {
+                let total_content_w: f32 = 60.0
+                    + headers.iter().enumerate().map(|(i, _)| {
+                        get_column_width(tabular, i).max(30.0)
+                    }).sum::<f32>();
+                let content_rect = egui::Rect::from_min_size(
+                    egui::pos2(
+                        header_alloc_rect.min.x - tabular.data_scroll_x,
+                        header_alloc_rect.min.y,
+                    ),
+                    egui::vec2(total_content_w.max(header_w), header_h),
+                );
+                let mut hdr_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(content_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                hdr_ui.set_clip_rect(header_alloc_rect);
+                hdr_ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
+                // "No" header cell
+                hdr_ui.allocate_ui_with_layout(
+                    [60.0, header_h].into(),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        let rect = ui.available_rect_before_wrap();
+                        let border_color = if ui.visuals().dark_mode {
+                            egui::Color32::from_gray(60)
+                        } else {
+                            egui::Color32::from_gray(200)
+                        };
+                        let thin_stroke = egui::Stroke::new(0.5, border_color);
+                        let hdr_fill = if ui.visuals().dark_mode {
+                            egui::Color32::from_gray(40)
+                        } else {
+                            egui::Color32::from_gray(240)
+                        };
+                        ui.painter().rect_filled(rect, 0.0, hdr_fill);
+                        ui.painter().line_segment([rect.left_top(), rect.right_top()], thin_stroke);
+                        ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
+                        ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
+                        ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
+                        let text_color = if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(220, 220, 255)
+                        } else {
+                            egui::Color32::from_rgb(60, 60, 120)
+                        };
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "No",
+                            egui::FontId::proportional(14.0),
+                            text_color,
+                        );
+                        let resp = ui.allocate_response(rect.size(), egui::Sense::click());
+                        if resp.clicked() {
+                            select_all_rows_request = true;
+                        }
+                    },
+                );
+
+                // Column header cells
+                for (col_index, header) in headers.iter().enumerate() {
+                    let column_width = if Some(col_index) == error_column_index {
+                        if get_column_width(tabular, col_index) <= 180.0 {
+                            set_column_width(tabular, col_index, 600.0);
+                        }
+                        get_column_width(tabular, col_index).max(100.0)
+                    } else {
+                        get_column_width(tabular, col_index).max(30.0)
+                    };
+                    hdr_ui.allocate_ui_with_layout(
+                        [column_width, header_h].into(),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            let rect = ui.available_rect_before_wrap();
+                            let border_color = if ui.visuals().dark_mode {
+                                egui::Color32::from_gray(60)
+                            } else {
+                                egui::Color32::from_gray(200)
+                            };
+                            let thin_stroke = egui::Stroke::new(0.5, border_color);
+                            let hdr_fill = if ui.visuals().dark_mode {
+                                egui::Color32::from_gray(40)
+                            } else {
+                                egui::Color32::from_gray(240)
+                            };
+                            ui.painter().rect_filled(rect, 0.0, hdr_fill);
+                            ui.painter().line_segment([rect.left_top(), rect.right_top()], thin_stroke);
+                            ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
+                            ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
+                            ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                let sort_button_width = 45.0;
+                                let text_area_width = ui.available_width() - sort_button_width;
+                                ui.allocate_ui_with_layout(
+                                    [text_area_width, ui.available_height()].into(),
+                                    egui::Layout::top_down(egui::Align::Center),
+                                    |ui| {
+                                        ui.add(egui::Label::new(
+                                            egui::RichText::new(header)
+                                                .strong()
+                                                .size(14.0)
+                                                .color(if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgb(220, 220, 255)
+                                                } else {
+                                                    egui::Color32::from_rgb(60, 60, 120)
+                                                }),
+                                        ));
+                                    },
+                                );
+                                let (is_sorted_column, is_asc) =
+                                    if current_sort_column == Some(col_index) {
+                                        (true, current_sort_ascending)
+                                    } else {
+                                        (false, false)
+                                    };
+                                let icon_size = ui.available_height().min(sort_button_width) * 0.6;
+                                let (response, painter) = ui.allocate_painter(
+                                    egui::vec2(sort_button_width, ui.available_height()),
+                                    egui::Sense::click(),
+                                );
+                                if response.hovered() {
+                                    painter.rect_filled(
+                                        response.rect.shrink(2.0),
+                                        4.0,
+                                        if ui.visuals().dark_mode {
+                                            egui::Color32::from_white_alpha(10)
+                                        } else {
+                                            egui::Color32::from_black_alpha(10)
+                                        },
+                                    );
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                let icon_color = if is_sorted_column {
+                                    egui::Color32::from_rgb(255, 0, 0)
+                                } else if response.hovered() {
+                                    ui.visuals().text_color()
+                                } else {
+                                    ui.visuals().text_color().gamma_multiply(0.3)
+                                };
+                                let center = response.rect.center();
+                                let half_sz = icon_size * 0.35;
+                                if is_sorted_column {
+                                    if is_asc {
+                                        painter.add(egui::Shape::convex_polygon(
+                                            vec![
+                                                center + egui::vec2(0.0, -half_sz),
+                                                center + egui::vec2(-half_sz, half_sz),
+                                                center + egui::vec2(half_sz, half_sz),
+                                            ],
+                                            icon_color,
+                                            egui::Stroke::NONE,
+                                        ));
+                                    } else {
+                                        painter.add(egui::Shape::convex_polygon(
+                                            vec![
+                                                center + egui::vec2(0.0, half_sz),
+                                                center + egui::vec2(-half_sz, -half_sz),
+                                                center + egui::vec2(half_sz, -half_sz),
+                                            ],
+                                            icon_color,
+                                            egui::Stroke::NONE,
+                                        ));
+                                    }
+                                } else {
+                                    let dash_rect = egui::Rect::from_center_size(
+                                        center,
+                                        egui::vec2(icon_size * 0.6, icon_size * 0.15),
+                                    );
+                                    painter.rect_filled(dash_rect, 1.0, icon_color);
+                                }
+                                if response.clicked() {
+                                    let new_ascending = if current_sort_column == Some(col_index) {
+                                        !current_sort_ascending
+                                    } else {
+                                        true
+                                    };
+                                    sort_requests.push((col_index, new_ascending));
+                                }
+                                let header_click_rect = egui::Rect::from_min_max(
+                                    rect.min,
+                                    egui::pos2(
+                                        (rect.max.x - sort_button_width).max(rect.min.x),
+                                        rect.max.y,
+                                    ),
+                                );
+                                let header_click_resp = ui.interact(
+                                    header_click_rect,
+                                    egui::Id::new(("col_hdr_s", col_index)),
+                                    egui::Sense::click(),
+                                );
+                                if header_click_resp.clicked() {
+                                    let modifiers = ui.input(|i| i.modifiers);
+                                    col_sel_requests.push((col_index, modifiers));
+                                }
+                            });
+                            // Resize handle
+                            let handle_x = ui.max_rect().max.x;
+                            let handle_y = ui.max_rect().min.y;
+                            let resize_handle_rect = egui::Rect::from_min_size(
+                                egui::pos2(handle_x - 8.0, handle_y),
+                                egui::vec2(8.0, header_h),
+                            );
+                            let resize_response =
+                                ui.allocate_rect(resize_handle_rect, egui::Sense::drag());
+                            if resize_response.hovered() || resize_response.dragged() {
+                                let indicator_color = egui::Color32::from_rgb(255, 0, 0);
+                                let dot_size = 1.5;
+                                let dot_spacing = 2.0_f32;
+                                let start_y = handle_y + 2.0;
+                                let end_y = handle_y + header_h - 2.0;
+                                for y in (start_y as i32..end_y as i32).step_by(dot_spacing as usize) {
+                                    ui.painter().circle_filled(
+                                        egui::pos2(handle_x, y as f32),
+                                        dot_size,
+                                        indicator_color,
+                                    );
+                                }
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                            }
+                            if resize_response.dragged() {
+                                let new_width = column_width + resize_response.drag_delta().x;
+                                deferred_width_updates.push((col_index, new_width));
+                            }
+                        },
+                    );
+                }
+            }
+            // ── Data scroll area ────────────────────────────────────────────────────
+            let (data_rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), data_h),
                 egui::Sense::hover(),
             );
             let mut scroll_child = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(scroll_rect)
+                    .max_rect(data_rect)
                     .layout(egui::Layout::top_down(egui::Align::LEFT)),
             );
             // Defer refresh action to avoid mutable borrow inside UI closures
             let mut refresh_request_data = false;
-            let _scroll_area_response = egui::ScrollArea::both()
+            let scroll_out = egui::ScrollArea::both()
                 .id_salt("table_data_scroll")
+                .horizontal_scroll_offset(tabular.data_scroll_x)
                 .auto_shrink([false, false])
                 .show(&mut scroll_child, |ui| {
                     // Capture target rect of the selected cell during layout
@@ -136,270 +376,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         .min_col_width(0.0)
                         .max_col_width(f32::INFINITY)
                         .show(ui, |ui| {
-                            // Render No column header first (centered) - clicking here selects all rows
-                            ui.allocate_ui_with_layout(
-                                [60.0, ui.available_height().max(30.0)].into(),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    let rect = ui.available_rect_before_wrap();
-                                    let border_color = if ui.visuals().dark_mode {
-                                        egui::Color32::from_gray(60)
-                                    } else {
-                                        egui::Color32::from_gray(200)
-                                    };
-                                    let thin_stroke = egui::Stroke::new(0.5, border_color);
-                                    ui.painter().line_segment(
-                                        [rect.left_top(), rect.right_top()],
-                                        thin_stroke,
-                                    );
-                                    ui.painter().line_segment(
-                                        [rect.right_top(), rect.right_bottom()],
-                                        thin_stroke,
-                                    );
-                                    ui.painter().line_segment(
-                                        [rect.right_bottom(), rect.left_bottom()],
-                                        thin_stroke,
-                                    );
-                                    ui.painter().line_segment(
-                                        [rect.left_bottom(), rect.left_top()],
-                                        thin_stroke,
-                                    );
-                                    // Draw text
-                                    let text_color = if ui.visuals().dark_mode {
-                                        egui::Color32::from_rgb(220, 220, 255)
-                                    } else {
-                                        egui::Color32::from_rgb(60, 60, 120)
-                                    };
-                                    ui.painter().text(
-                                        rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        "No",
-                                        egui::FontId::proportional(14.0),
-                                        text_color,
-                                    );
-                                    // Clickable overlay
-                                    let resp =
-                                        ui.allocate_response(rect.size(), egui::Sense::click());
-                                    if resp.clicked() {
-                                        select_all_rows_request = true;
-                                    }
-                                },
-                            );
-
-                            // Render enhanced headers with sort buttons and resize handles
-                            for (col_index, header) in headers.iter().enumerate() {
-                                // For error columns, use a larger default width but still allow resizing
-                                let column_width = if Some(col_index) == error_column_index {
-                                    // If this is the first time we see an error column, set a larger default width
-                                    if get_column_width(tabular, col_index) <= 180.0 {
-                                        // Default width
-                                        set_column_width(tabular, col_index, 600.0); // Set larger default for error columns
-                                    }
-                                    get_column_width(tabular, col_index).max(100.0)
-                                } else {
-                                    get_column_width(tabular, col_index).max(30.0)
-                                };
-                                let available_height = ui.available_height().max(30.0);
-
-                                ui.allocate_ui_with_layout(
-                                    [column_width, available_height].into(),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        let rect = ui.available_rect_before_wrap();
-                                        let border_color = if ui.visuals().dark_mode {
-                                            egui::Color32::from_gray(60)
-                                        } else {
-                                            egui::Color32::from_gray(200)
-                                        };
-                                        let thin_stroke = egui::Stroke::new(0.5, border_color);
-                                        ui.painter().line_segment(
-                                            [rect.left_top(), rect.right_top()],
-                                            thin_stroke,
-                                        );
-                                        ui.painter().line_segment(
-                                            [rect.right_top(), rect.right_bottom()],
-                                            thin_stroke,
-                                        );
-                                        ui.painter().line_segment(
-                                            [rect.right_bottom(), rect.left_bottom()],
-                                            thin_stroke,
-                                        );
-                                        ui.painter().line_segment(
-                                            [rect.left_bottom(), rect.left_top()],
-                                            thin_stroke,
-                                        );
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 0.0;
-                                            let sort_button_width = 45.0;
-                                            let text_area_width =
-                                                ui.available_width() - sort_button_width;
-                                            ui.allocate_ui_with_layout(
-                                                [text_area_width, ui.available_height()].into(),
-                                                egui::Layout::top_down(egui::Align::Center),
-                                                |ui| {
-                                                    ui.add(egui::Label::new(
-                                                        egui::RichText::new(header)
-                                                            .strong()
-                                                            .size(14.0)
-                                                            .color(if ui.visuals().dark_mode {
-                                                                egui::Color32::from_rgb(
-                                                                    220, 220, 255,
-                                                                )
-                                                            } else {
-                                                                egui::Color32::from_rgb(60, 60, 120)
-                                                            }),
-                                                    ));
-                                                },
-                                            );
-                                            // Custom professional sort icon implementation
-                                            let (is_sorted_column, is_asc) =
-                                                if current_sort_column == Some(col_index) {
-                                                    (true, current_sort_ascending)
-                                                } else {
-                                                    (false, false)
-                                                };
-
-                                            let icon_size = ui.available_height().min(sort_button_width) * 0.6; // Scale icon relative to space
-                                            let (response, painter) = ui.allocate_painter(
-                                                egui::vec2(sort_button_width, ui.available_height()),
-                                                egui::Sense::click()
-                                            );
-                                            
-                                            // Visualize interaction
-                                            if response.hovered() {
-                                                painter.rect_filled(
-                                                    response.rect.shrink(2.0),
-                                                    4.0,
-                                                    if ui.visuals().dark_mode {
-                                                        egui::Color32::from_white_alpha(10)
-                                                    } else {
-                                                        egui::Color32::from_black_alpha(10)
-                                                    }
-                                                );
-                                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                            }
-
-                                            // Determine colors
-                                            let icon_color = if is_sorted_column {
-                                                egui::Color32::from_rgb(255, 0, 0) // Active Red
-                                            } else if response.hovered() {
-                                                ui.visuals().text_color() // Darker/Lighter on hover
-                                            } else {
-                                                ui.visuals().text_color().gamma_multiply(0.3) // Faint when inactive
-                                            };
-
-                                            let center = response.rect.center();
-                                            let half_sz = icon_size * 0.35;
-
-                                            // Draw shapes
-                                            if is_sorted_column {
-                                                if is_asc {
-                                                    // Up Triangle
-                                                    painter.add(egui::Shape::convex_polygon(
-                                                        vec![
-                                                            center + egui::vec2(0.0, -half_sz),
-                                                            center + egui::vec2(-half_sz, half_sz),
-                                                            center + egui::vec2(half_sz, half_sz),
-                                                        ],
-                                                        icon_color,
-                                                        egui::Stroke::NONE,
-                                                    ));
-                                                } else {
-                                                    // Down Triangle
-                                                    painter.add(egui::Shape::convex_polygon(
-                                                        vec![
-                                                            center + egui::vec2(0.0, half_sz),
-                                                            center + egui::vec2(-half_sz, -half_sz),
-                                                            center + egui::vec2(half_sz, -half_sz),
-                                                        ],
-                                                        icon_color,
-                                                        egui::Stroke::NONE,
-                                                    ));
-                                                }
-                                            } else {
-                                                // Normal / Unsorted: A nice rounded dash
-                                                let dash_rect = egui::Rect::from_center_size(
-                                                    center,
-                                                    egui::vec2(icon_size * 0.6, icon_size * 0.15)
-                                                );
-                                                painter.rect_filled(dash_rect, 1.0, icon_color);
-                                            }
-
-                                            // Handle clicks using the custom response
-                                            let sort_button = response; // Alias for compatibility with existing click logic
-                                            if sort_button.clicked() {
-                                                let new_ascending =
-                                                    if current_sort_column == Some(col_index) {
-                                                        !current_sort_ascending
-                                                    } else {
-                                                        true
-                                                    };
-                                                sort_requests.push((col_index, new_ascending));
-                                            }
-                                            // Click on empty header area (excluding sort button) to multi-select columns
-                                            // Avoid overlapping the sort button so it remains clickable even when selecting columns
-                                            let header_click_rect = egui::Rect::from_min_max(
-                                                rect.min,
-                                                egui::pos2(
-                                                    (rect.max.x - sort_button_width)
-                                                        .max(rect.min.x),
-                                                    rect.max.y,
-                                                ),
-                                            );
-                                            let header_click_resp = ui.interact(
-                                                header_click_rect,
-                                                egui::Id::new(("col_hdr", col_index)),
-                                                egui::Sense::click(),
-                                            );
-                                            if header_click_resp.clicked() {
-                                                let modifiers = ui.input(|i| i.modifiers);
-                                                col_sel_requests.push((col_index, modifiers));
-                                            }
-                                        });
-                                        // Resize handle: sits entirely within the column's right edge
-                                        // (no extra allocation beyond max_rect) so it doesn't add a
-                                        // visible gap between columns. Only draws when hovered/dragged.
-                                        let handle_x = ui.max_rect().max.x;
-                                        let handle_y = ui.max_rect().min.y;
-                                        let handle_height = available_height;
-                                        // 8px wide hit zone, fully inside the column's right side
-                                        let resize_handle_rect = egui::Rect::from_min_size(
-                                            egui::pos2(handle_x - 8.0, handle_y),
-                                            egui::vec2(8.0, handle_height),
-                                        );
-                                        let resize_response = ui
-                                            .allocate_rect(resize_handle_rect, egui::Sense::drag());
-
-                                        // Only draw indicator while actively hovering or dragging
-                                        if resize_response.hovered() || resize_response.dragged() {
-                                            let indicator_color = egui::Color32::from_rgb(255, 0, 0);
-                                            // let center_x = handle_x;
-                                            let dot_size = 1.5;
-                                            let dot_spacing = 2.0;
-                                            let start_y = handle_y + 2.0;
-                                            let end_y = handle_y + handle_height - 2.0;
-                                            for y in (start_y as i32..end_y as i32)
-                                                .step_by(dot_spacing as usize)
-                                            {
-                                                ui.painter().circle_filled(
-                                                    egui::pos2(handle_x, y as f32),
-                                                    dot_size,
-                                                    indicator_color,
-                                                );
-                                            }
-                                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                                        }
-
-                                        if resize_response.dragged() {
-                                            let delta_x = resize_response.drag_delta().x;
-                                            let new_width = column_width + delta_x;
-                                            deferred_width_updates.push((col_index, new_width));
-                                        }
-                                    },
-                                );
-                            }
-                            ui.end_row();
-
                             // Render data rows with row numbers
                             let current_table_data = tabular.current_table_data.clone();
                             let selected_rows = tabular.selected_rows.clone();
@@ -1103,6 +1079,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         }
                     }
                 });
+            // Sync horizontal scroll offset to keep sticky header aligned
+            tabular.data_scroll_x = scroll_out.state.offset.x;
             // Execute deferred refresh after UI borrows are released
             if refresh_request_data {
                 refresh_current_table_data(tabular);

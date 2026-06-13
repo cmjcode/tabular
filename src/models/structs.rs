@@ -918,6 +918,10 @@ pub type RenderTreeNodeResult = (
     Option<(i64, String, String)>,
     // New: request to open Import CSV wizard (connection_id, database_name, table_name)
     Option<(i64, Option<String>, String)>,
+    // New: request to copy table DDL to clipboard (connection_id, database_name, table_name)
+    Option<(i64, Option<String>, String)>,
+    // New: request to open Schema Diff dialog prefilled with (connection_id, database_name)
+    Option<(i64, String)>,
 );
 
 // ── CSV Import Wizard ─────────────────────────────────────────────────────────
@@ -953,6 +957,83 @@ pub struct CsvImportState {
     pub column_mappings: Vec<CsvColumnMapping>,
     pub status: CsvImportStatus,
     pub progress_message: String,
+}
+
+// ── Schema Diff ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum SchemaDiffStatus {
+    #[default]
+    Idle,
+    Running,
+    Done,
+    Error(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct ColumnDiff {
+    pub name: String,
+    pub left_type: Option<String>,
+    pub right_type: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TableDiff {
+    pub table_name: String,
+    pub status: DiffStatus,
+    pub column_diffs: Vec<ColumnDiff>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DiffStatus {
+    Added,
+    Removed,
+    Modified,
+    Same,
+}
+
+#[derive(Clone, Debug)]
+pub struct SchemaDiffResult {
+    pub diffs: Vec<TableDiff>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SchemaDiffState {
+    pub left_conn_id: i64,
+    pub left_db: String,
+    pub right_conn_id: i64,
+    pub right_db: String,
+    pub status: SchemaDiffStatus,
+    pub result: Option<SchemaDiffResult>,
+    pub show_same: bool,
+    pub filter_text: String,
+}
+
+impl SchemaDiffState {
+    pub fn new(
+        conn_id: i64,
+        db_name: String,
+        connections: &[crate::models::structs::ConnectionConfig],
+    ) -> Self {
+        let right_conn_id = connections.iter()
+            .find(|c| c.id != Some(conn_id))
+            .and_then(|c| c.id)
+            .unwrap_or(conn_id);
+        let right_db = connections.iter()
+            .find(|c| c.id == Some(right_conn_id))
+            .map(|c| c.database.clone())
+            .unwrap_or_default();
+        Self {
+            left_conn_id: conn_id,
+            left_db: db_name,
+            right_conn_id,
+            right_db,
+            status: SchemaDiffStatus::Idle,
+            result: None,
+            show_same: false,
+            filter_text: String::new(),
+        }
+    }
 }
 
 mod serde_color {

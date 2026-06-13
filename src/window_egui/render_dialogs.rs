@@ -1042,3 +1042,175 @@ impl super::Tabular {
             });
     }
 }
+
+pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Context) {
+    use crate::models::structs::{DiffStatus, SchemaDiffStatus};
+
+    // Collect values needed outside closure upfront to avoid borrow conflicts.
+    let conn_labels: Vec<(i64, String)> = tabular.connections.iter()
+        .filter_map(|c| c.id.map(|id| (id, c.name.clone())))
+        .collect();
+
+    // Variables set inside the window closure and used after.
+    let mut run_diff: Option<(i64, String, i64, String)> = None;
+    let mut open = tabular.show_schema_diff_dialog;
+
+    egui::Window::new("Schema Diff")
+        .open(&mut open)
+        .default_size(egui::vec2(820.0, 560.0))
+        .resizable(true)
+        .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            if let Some(state) = &mut tabular.schema_diff_state {
+                // ── Connection pickers ────────────────────────────────────
+                ui.horizontal(|ui| {
+                    ui.label("Left:");
+                    egui::ComboBox::from_id_salt("schema_diff_left_conn")
+                        .selected_text(
+                            conn_labels.iter()
+                                .find(|(id, _)| *id == state.left_conn_id)
+                                .map(|(_, n)| n.as_str())
+                                .unwrap_or("—")
+                        )
+                        .show_ui(ui, |ui| {
+                            for (id, name) in &conn_labels {
+                                ui.selectable_value(&mut state.left_conn_id, *id, name);
+                            }
+                        });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.left_db)
+                            .hint_text("database")
+                            .desired_width(120.0),
+                    );
+                    ui.add_space(16.0);
+                    ui.label("Right:");
+                    egui::ComboBox::from_id_salt("schema_diff_right_conn")
+                        .selected_text(
+                            conn_labels.iter()
+                                .find(|(id, _)| *id == state.right_conn_id)
+                                .map(|(_, n)| n.as_str())
+                                .unwrap_or("—")
+                        )
+                        .show_ui(ui, |ui| {
+                            for (id, name) in &conn_labels {
+                                ui.selectable_value(&mut state.right_conn_id, *id, name);
+                            }
+                        });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.right_db)
+                            .hint_text("database")
+                            .desired_width(120.0),
+                    );
+                });
+
+                ui.add_space(6.0);
+
+                // ── Action bar ────────────────────────────────────────────
+                let running = state.status == SchemaDiffStatus::Running;
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(
+                        !running,
+                        egui::Button::new(if running { "⏳ Running…" } else { "▶ Compare" }),
+                    ).clicked() {
+                        run_diff = Some((
+                            state.left_conn_id, state.left_db.clone(),
+                            state.right_conn_id, state.right_db.clone(),
+                        ));
+                        state.status = SchemaDiffStatus::Running;
+                    }
+                    ui.checkbox(&mut state.show_same, "Show identical tables");
+                    ui.add_space(10.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.filter_text)
+                            .hint_text("Filter tables…")
+                            .desired_width(160.0),
+                    );
+                });
+
+                ui.separator();
+
+                // ── Results ───────────────────────────────────────────────
+                if let Some(result) = &state.result {
+                    let filter = state.filter_text.to_lowercase();
+                    let show_same = state.show_same;
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let diffs: Vec<_> = result.diffs.iter()
+                            .filter(|d| show_same || d.status != DiffStatus::Same)
+                            .filter(|d| filter.is_empty() || d.table_name.to_lowercase().contains(&filter))
+                            .collect();
+
+                        if diffs.is_empty() {
+                            ui.label("No differences found.");
+                            return;
+                        }
+
+                        egui::Grid::new("schema_diff_grid")
+                            .striped(true)
+                            .min_col_width(60.0)
+                            .show(ui, |ui| {
+                                ui.strong("Table");
+                                ui.strong("Status");
+                                ui.strong("Column changes");
+                                ui.end_row();
+
+                                for diff in diffs {
+                                    let (status_label, color) = match diff.status {
+                                        DiffStatus::Added    => ("+ Added",    egui::Color32::from_rgb(80, 180, 80)),
+                                        DiffStatus::Removed  => ("- Removed",  egui::Color32::from_rgb(220, 70, 70)),
+                                        DiffStatus::Modified => ("~ Modified", egui::Color32::from_rgb(220, 165, 30)),
+                                        DiffStatus::Same     => ("= Same",     egui::Color32::GRAY),
+                                    };
+
+                                    ui.label(&diff.table_name);
+                                    ui.colored_label(color, status_label);
+
+                                    if diff.column_diffs.is_empty() {
+                                        ui.label("—");
+                                    } else {
+                                        let summary: Vec<String> = diff.column_diffs.iter().map(|cd| {
+                                            match (&cd.left_type, &cd.right_type) {
+                                                (None, Some(rt))     => format!("+{} ({})", cd.name, rt),
+                                                (Some(_), None)      => format!("-{}", cd.name),
+                                                (Some(lt), Some(rt)) => format!("{}: {}→{}", cd.name, lt, rt),
+                                                _                    => cd.name.clone(),
+                                            }
+                                        }).collect();
+                                        ui.label(summary.join(", "))
+                                            .on_hover_text(summary.join("\n"));
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                } else if state.status == SchemaDiffStatus::Running {
+                    ui.centered_and_justified(|ui| {
+                        ui.spinner();
+                        ui.label("Comparing schemas…");
+                    });
+                } else if state.status == SchemaDiffStatus::Idle {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Select connections/databases and click ▶ Compare");
+                    });
+                }
+            }
+        });
+
+    // Process diff run outside the window closure so we can freely borrow tabular.
+    if let Some((left_conn_id, left_db, right_conn_id, right_db)) = run_diff {
+        let result = crate::connection::compute_schema_diff(
+            tabular,
+            left_conn_id, &left_db,
+            right_conn_id, &right_db,
+        );
+        if let Some(s) = &mut tabular.schema_diff_state {
+            s.result = Some(result);
+            s.status = SchemaDiffStatus::Done;
+        }
+    }
+
+    if !open {
+        tabular.show_schema_diff_dialog = false;
+    }
+}

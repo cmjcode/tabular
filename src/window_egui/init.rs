@@ -479,6 +479,14 @@ impl super::Tabular {
             toasts: crate::window_egui::notifications::ToastManager::default(),
             show_csv_import_dialog: false,
             csv_import_state: None,
+            rename_symbol_active: false,
+            rename_symbol_old: String::new(),
+            rename_symbol_new: String::new(),
+            data_scroll_x: 0.0,
+            pending_clipboard_text: None,
+            show_schema_diff_dialog: false,
+            schema_diff_state: None,
+            schema_diff_receiver: None,
         };
 
         // Clear any old cached pools

@@ -25,5 +25,6 @@ pub(crate) use databases::{
 pub(crate) use columns::fetch_columns_from_database;
 
 pub(crate) use ddl::{
+    compute_schema_diff,
     fetch_procedure_definition, fetch_table_definition, fetch_view_definition, get_foreign_keys,
 };
