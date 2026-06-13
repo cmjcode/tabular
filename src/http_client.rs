@@ -12,8 +12,24 @@ pub fn save_http_state(connection_id: i64, state: &HttpClientState) {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
+
+    // Store auth secrets in the encrypted store; replace with sentinel in JSON.
+    let mut persisted = state.clone();
+    persisted.bearer_token = crate::secrets::store_or_keep(
+        &crate::secrets::http_secret_name(connection_id, "bearer_token"),
+        &state.bearer_token,
+    );
+    persisted.basic_pass = crate::secrets::store_or_keep(
+        &crate::secrets::http_secret_name(connection_id, "basic_pass"),
+        &state.basic_pass,
+    );
+    persisted.api_key_value = crate::secrets::store_or_keep(
+        &crate::secrets::http_secret_name(connection_id, "api_key_value"),
+        &state.api_key_value,
+    );
+
     let path = dir.join(format!("{}.json", connection_id));
-    if let Ok(json) = serde_json::to_string_pretty(state) {
+    if let Ok(json) = serde_json::to_string_pretty(&persisted) {
         let _ = std::fs::write(path, json);
     }
 }
@@ -23,7 +39,33 @@ pub fn load_http_state(connection_id: i64) -> Option<HttpClientState> {
         .join("http_state")
         .join(format!("{}.json", connection_id));
     let json = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&json).ok()
+    let mut state: HttpClientState = serde_json::from_str(&json).ok()?;
+
+    // Resolve secrets (handles sentinel values and migrates legacy plaintext).
+    let (bt, bt_rewrite) = crate::secrets::resolve_stored(
+        &crate::secrets::http_secret_name(connection_id, "bearer_token"),
+        &state.bearer_token,
+    );
+    state.bearer_token = bt;
+
+    let (bp, bp_rewrite) = crate::secrets::resolve_stored(
+        &crate::secrets::http_secret_name(connection_id, "basic_pass"),
+        &state.basic_pass,
+    );
+    state.basic_pass = bp;
+
+    let (akv, akv_rewrite) = crate::secrets::resolve_stored(
+        &crate::secrets::http_secret_name(connection_id, "api_key_value"),
+        &state.api_key_value,
+    );
+    state.api_key_value = akv;
+
+    // If any field was legacy plaintext, rewrite the JSON file with sentinels.
+    if bt_rewrite.is_some() || bp_rewrite.is_some() || akv_rewrite.is_some() {
+        save_http_state(connection_id, &state);
+    }
+
+    Some(state)
 }
 
 // ─── Public entry-point called from window_egui ─────────────────────────────

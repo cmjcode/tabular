@@ -37,6 +37,19 @@ pub fn connection_secret_name(connection_id: i64, field: &str) -> String {
     format!("conn:{}:{}", connection_id, field)
 }
 
+/// Stable secret-store name for an HTTP client auth field
+/// (`field` is one of `bearer_token`, `basic_pass`, `api_key_value`).
+pub fn http_secret_name(connection_id: i64, field: &str) -> String {
+    format!("http:{}:{}", connection_id, field)
+}
+
+/// Remove all HTTP auth secrets for a connection (call when deleting a connection).
+pub fn delete_http_secrets(connection_id: i64) {
+    for field in ["bearer_token", "basic_pass", "api_key_value"] {
+        delete_secret(&http_secret_name(connection_id, field));
+    }
+}
+
 /// Store `value` under `name` and return the string to persist in the
 /// database column: the sentinel when stored externally, or the raw value
 /// when no secret backend succeeded (so credentials are never lost).

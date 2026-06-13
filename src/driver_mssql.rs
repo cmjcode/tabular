@@ -246,7 +246,7 @@ pub(crate) async fn execute_query(
     run_query(&mut client, query).await
 }
 
-async fn run_query(
+pub(crate) async fn run_query(
     client: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
     query: &str,
 ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {

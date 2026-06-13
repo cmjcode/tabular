@@ -44,13 +44,14 @@ impl SessionHandle {
     }
 }
 
-/// Engines the session task supports (uniform sqlx `PoolConnection` API).
+/// Engines the session task supports.
 pub fn supports_transactions(db: &models::enums::DatabaseType) -> bool {
     matches!(
         db,
         models::enums::DatabaseType::MySQL
             | models::enums::DatabaseType::PostgreSQL
             | models::enums::DatabaseType::SQLite
+            | models::enums::DatabaseType::MsSQL
     )
 }
 
@@ -58,6 +59,7 @@ enum SessionConn {
     MySql(sqlx::pool::PoolConnection<sqlx::MySql>),
     Postgres(sqlx::pool::PoolConnection<sqlx::Postgres>),
     Sqlite(sqlx::pool::PoolConnection<sqlx::Sqlite>),
+    MsSQL(deadpool::managed::Object<deadpool_tiberius::Manager>),
 }
 
 /// Spawn a session task for the active tab's connection. Returns `None`
@@ -140,6 +142,7 @@ async fn run_session(
                 if !tx_open {
                     let begin = match connection_type {
                         models::enums::DatabaseType::MySQL => "START TRANSACTION",
+                        models::enums::DatabaseType::MsSQL => "BEGIN TRANSACTION",
                         _ => "BEGIN",
                     };
                     if let Err(e) = run_simple(c, begin).await {
@@ -243,6 +246,21 @@ async fn acquire(
         models::enums::DatabasePool::SQLite(p) => Ok(SessionConn::Sqlite(
             p.acquire().await.map_err(|e| e.to_string())?,
         )),
+        models::enums::DatabasePool::MsSQL(p) => {
+            let mut conn = p.get().await.map_err(|e| e.to_string())?;
+            if let Some(db) = database_name.filter(|d| !d.trim().is_empty()) {
+                let use_sql = format!("USE [{}]", db.replace(']', "]]"));
+                {
+                    use futures_util::TryStreamExt;
+                    let mut stream = conn
+                        .simple_query(use_sql.as_str())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    while stream.try_next().await.map_err(|e| e.to_string())?.is_some() {}
+                }
+            }
+            Ok(SessionConn::MsSQL(conn))
+        }
         _ => Err(format!(
             "Transactions are not supported for {:?}",
             connection_type
@@ -267,6 +285,12 @@ async fn run_simple(conn: &mut SessionConn, sql: &str) -> Result<(), String> {
             .await
             .map(|_| ())
             .map_err(|e| e.to_string()),
+        SessionConn::MsSQL(c) => {
+            use futures_util::TryStreamExt;
+            let mut stream = c.simple_query(sql).await.map_err(|e| e.to_string())?;
+            while stream.try_next().await.map_err(|e| e.to_string())?.is_some() {}
+            Ok(())
+        }
     }
 }
 
@@ -335,6 +359,9 @@ async fn run_query(
                 headers,
                 crate::driver_sqlite::convert_sqlite_rows_to_table_data(rows),
             ))
+        }
+        SessionConn::MsSQL(c) => {
+            crate::driver_mssql::run_query(&mut **c, sql).await
         }
     }
 }
