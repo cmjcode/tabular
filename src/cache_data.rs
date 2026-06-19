@@ -37,18 +37,13 @@ pub(crate) fn get_tables_from_cache(
                     .map(|(name,)| name)
                     .filter(|n| seen.insert(n.clone()))
                     .collect();
-                eprintln!(
-                    "[TABULAR-DEBUG] get_tables_from_cache: conn={} db={:?} type={:?} => {} rows, panen_found={}",
-                    connection_id,
-                    database_name,
-                    table_type,
-                    deduped.len(),
-                    deduped.iter().any(|n| n.to_lowercase().contains("panen"))
-                );
                 Some(deduped)
             }
             Err(e) => {
-                eprintln!("[TABULAR-DEBUG] get_tables_from_cache ERROR: conn={} db={:?} type={:?} err={}", connection_id, database_name, table_type, e);
+                debug!(
+                    "get_tables_from_cache error: conn={} db={:?} type={:?} err={}",
+                    connection_id, database_name, table_type, e
+                );
                 None
             }
         }
@@ -84,6 +79,32 @@ pub(crate) fn get_tables_for_connection_any_db(
     result.ok().map(|rows| rows.into_iter().map(|(n,)| n).collect())
 }
 
+/// Resolve which database a cached table belongs to (first match). Used so the
+/// autocomplete can lazily fetch a table's columns with the right database when
+/// the editor tab isn't pinned to one.
+pub(crate) fn get_table_database_from_cache(
+    tabular: &Tabular,
+    connection_id: i64,
+    table_name: &str,
+) -> Option<String> {
+    let pool = tabular.db_pool.as_ref()?.clone();
+    let fut = async {
+        sqlx::query_as::<_, (String,)>(
+            "SELECT database_name FROM table_cache WHERE connection_id = ? AND table_name = ? COLLATE NOCASE LIMIT 1",
+        )
+        .bind(connection_id)
+        .bind(table_name)
+        .fetch_optional(pool.as_ref())
+        .await
+    };
+    let result = if let Some(rt) = tabular.runtime.clone() {
+        rt.block_on(fut)
+    } else {
+        tokio::runtime::Runtime::new().unwrap().block_on(fut)
+    };
+    result.ok().flatten().map(|(d,)| d)
+}
+
 /// Every cached table/view name across ALL connections and databases. Last-ditch
 /// autocomplete fallback when neither the tab's connection nor the database can
 /// be resolved but `table_cache` does hold data.
@@ -114,7 +135,7 @@ pub(crate) fn get_columns_for_connection_any_db(
     let pool = tabular.db_pool.as_ref()?.clone();
     let fut = async {
         sqlx::query_as::<_, (String, String)>(
-            "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND table_name = ? ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND table_name = ? COLLATE NOCASE ORDER BY ordinal_position",
         )
         .bind(connection_id)
         .bind(table_name)
@@ -649,7 +670,7 @@ pub(crate) fn get_columns_from_cache(
 ) -> Option<Vec<(String, String)>> {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
-        let query_sql = "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? ORDER BY ordinal_position";
+        let query_sql = "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND database_name = ? COLLATE NOCASE AND table_name = ? COLLATE NOCASE ORDER BY ordinal_position";
         debug!("📋 Executing cache query for columns: {}", query_sql);
         debug!(
             "   Parameters: connection_id={}, database={}, table={}",

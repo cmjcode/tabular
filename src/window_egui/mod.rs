@@ -243,6 +243,14 @@ pub struct Tabular {
     // Connections whose foreign-key cache has been warmed this session (lazy,
     // one-shot) so SQL-editor JOIN-ON autocomplete works without an open ERD.
     pub fk_cache_warmed: std::collections::HashSet<i64>,
+    // (connection_id, table_lowercase) pairs whose columns have been lazily
+    // fetched+cached this session for autocomplete, so we fetch each at most once.
+    pub autocomplete_cols_warmed: std::collections::HashSet<(i64, String)>,
+    // In-memory column list per (connection_id, table_lowercase). Once resolved
+    // (from cache or a live warm-fetch) columns are served from here, so they
+    // never "disappear" due to a later SQLite cache-read miss or db-scope
+    // mismatch, and we avoid repeated blocking lookups on the UI thread.
+    pub autocomplete_cols_mem: std::collections::HashMap<(i64, String), Vec<String>>,
     // Ensure selection is cleared on the next frame after a destructive action (e.g., Delete)
     pub selection_force_clear: bool,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)

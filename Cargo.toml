@@ -33,9 +33,9 @@ sqlx = { version = "0.8.6", features = [
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 sqlparser = { version = "0.50", optional = true }
 sqlformat = "0.5.0"
-redis = { version = "1.2.0", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.2.3", features = ["tokio-comp", "connection-manager"] }
 bson = { version = "3", features = ["uuid-1"] }
-mongodb = { version = "3.5.2", features = ["zlib-compression"] }
+mongodb = { version = "3.7.0", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = { version = "0.32.3", features = ["datepicker"] }
@@ -49,7 +49,7 @@ csv = "1.4"
 xlsxwriter = "0.6"
 rfd = "0.15" # For file dialog
 hex = "0.4.3"
-rust_decimal = "1.41.0"
+rust_decimal = "1.42.1"
 log = "0.4"
 env_logger = "0.11"
 dotenv = "0.15.0"
@@ -86,7 +86,7 @@ anyhow = { version = "1", optional = true }
 once_cell = "1"
 thiserror = "1"
 async-trait = "0.1.89"
-cargo-deb = "3.6.3"
+cargo-deb = "3.7.0"
 deadpool = "0.12.3"
 deadpool-tiberius = "0.1.9"
 # Cipher for the encrypted-file secret store fallback (src/secrets.rs);

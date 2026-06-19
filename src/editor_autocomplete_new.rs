@@ -472,17 +472,102 @@ fn get_cached_columns(
     }
     let mut out = Vec::new();
     for t in tables {
-        // Prefer the db-scoped cache; fall back to any-database lookup for the
-        // same reason as get_cached_tables (editor tabs aren't always pinned).
-        let cols = get_columns_from_cache(app, cid, db, &t)
-            .filter(|c| !c.is_empty())
-            .or_else(|| crate::cache_data::get_columns_for_connection_any_db(app, cid, &t));
-        if let Some(cols) = cols {
-            for (c, _) in cols {
-                if !out.contains(&c) {
-                    out.push(c);
+        let key = (cid, t.to_ascii_lowercase());
+
+        // 1) In-memory fast path: once a table's columns are resolved they live
+        // here for the session, so suggestions never vanish on a later cache
+        // miss and we don't re-run blocking lookups on every keystroke.
+        if let Some(cols) = app.autocomplete_cols_mem.get(&key) {
+            for c in cols {
+                if !out.contains(c) {
+                    out.push(c.clone());
                 }
             }
+            continue;
+        }
+
+        // 2) SQLite cache: db-scoped first, then any-database (editor tabs
+        // aren't always pinned to the table's real database).
+        let mut cols = get_columns_from_cache(app, cid, db, &t)
+            .filter(|c| !c.is_empty())
+            .or_else(|| crate::cache_data::get_columns_for_connection_any_db(app, cid, &t));
+
+        // 3) Lazy warm: columns are only cached when a table is expanded in the
+        // tree. If still nothing, fetch them live once and persist, so column
+        // autocomplete works without manually opening each table first.
+        if cols.is_none() && !app.autocomplete_cols_warmed.contains(&key) {
+            // Build an ordered list of databases to try. Prefer the database the
+            // table is actually cached under (the editor tab's `database_name`
+            // is often empty or stale), then the tab's db, then every database
+            // known for this connection.
+            let mut cand_dbs: Vec<String> = Vec::new();
+            let push_db = |d: String, v: &mut Vec<String>| {
+                if !d.is_empty() && !v.iter().any(|e| e.eq_ignore_ascii_case(&d)) {
+                    v.push(d);
+                }
+            };
+            if let Some(d) = crate::cache_data::get_table_database_from_cache(app, cid, &t) {
+                push_db(d, &mut cand_dbs);
+            }
+            push_db(db.to_string(), &mut cand_dbs);
+            if let Some(dbs) = app.database_cache.get(&cid).cloned() {
+                for d in dbs {
+                    push_db(d, &mut cand_dbs);
+                }
+            }
+
+            // Fallback: query the SQLite database_cache directly. This covers the
+            // common case where the user opens the editor before expanding the tree —
+            // database_cache (in-memory) is empty but the SQLite table was populated
+            // when the connection was first established.
+            if cand_dbs.is_empty() {
+                if let (Some(pool), Some(rt)) = (app.db_pool.as_ref().cloned(), app.runtime.clone()) {
+                    let fut = async {
+                        sqlx::query_as::<_, (String,)>(
+                            "SELECT DISTINCT database_name FROM database_cache WHERE connection_id = ? AND database_name != '' LIMIT 10",
+                        )
+                        .bind(cid)
+                        .fetch_all(pool.as_ref())
+                        .await
+                    };
+                    if let Ok(rows) = rt.block_on(fut) {
+                        for (d,) in rows {
+                            push_db(d, &mut cand_dbs);
+                        }
+                    }
+                }
+            }
+
+            // Only attempt the live fetch (and blacklist on miss) when we have at
+            // least one candidate database. If cand_dbs is still empty the user
+            // hasn't connected yet — skip blacklisting so we retry next keystroke.
+            if !cand_dbs.is_empty() {
+                if let Some(conn) = app.connections.iter().find(|c| c.id == Some(cid)).cloned() {
+                    for table_db in &cand_dbs {
+                        if let Some(fetched) =
+                            crate::connection::fetch_columns_from_database(cid, table_db, &t, &conn)
+                            && !fetched.is_empty()
+                        {
+                            crate::cache_data::save_columns_to_cache(app, cid, table_db, &t, &fetched);
+                            cols = Some(fetched);
+                            break;
+                        }
+                    }
+                }
+                // Blacklist only after a genuine fetch attempt (success or definitive miss).
+                app.autocomplete_cols_warmed.insert(key.clone());
+            }
+        }
+
+        // Promote whatever we resolved into the in-memory map and the output.
+        if let Some(cols) = cols {
+            let names: Vec<String> = cols.into_iter().map(|(c, _)| c).collect();
+            for c in &names {
+                if !out.contains(c) {
+                    out.push(c.clone());
+                }
+            }
+            app.autocomplete_cols_mem.insert(key, names);
         }
     }
     out.sort_unstable();
@@ -1188,7 +1273,12 @@ pub fn update_autocomplete(app: &mut Tabular) {
                 std::collections::HashSet::new();
             if cid != 0 {
                 for t in tables_near_cursor(&editor_text, cursor) {
-                    if let Some(cols) = get_columns_from_cache(app, cid, &db, &t) {
+                    let cols = get_columns_from_cache(app, cid, &db, &t)
+                        .filter(|c| !c.is_empty())
+                        .or_else(|| {
+                            crate::cache_data::get_columns_for_connection_any_db(app, cid, &t)
+                        });
+                    if let Some(cols) = cols {
                         for (cn, ct) in cols {
                             let key = cn.to_ascii_lowercase();
                             match col_meta.get(&key) {

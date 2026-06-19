@@ -329,6 +329,8 @@ impl super::Tabular {
             autocomplete_last_update: None,
             autocomplete_debounce_ms: 120,
             fk_cache_warmed: std::collections::HashSet::new(),
+            autocomplete_cols_warmed: std::collections::HashSet::new(),
+            autocomplete_cols_mem: std::collections::HashMap::new(),
             selection_force_clear: false,
             // Index dialog defaults
             show_index_dialog: false,
