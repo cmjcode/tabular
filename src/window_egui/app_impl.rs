@@ -553,54 +553,57 @@ impl Tabular {
                                     connection_id
                                 );
 
-                                // Extract expansion state before borrowing items_tree mutably
+                                // Extract expansion state — only present when refresh_connection
+                                // cleared the tree (user-triggered refresh). For background-only
+                                // auto-syncs the tree is untouched and no reload is needed.
                                 let expansion_state =
                                     self.pending_expansion_restore.remove(&connection_id);
+                                let is_full_refresh = expansion_state.is_some();
 
-                                // Re-expand connection node to show fresh data (search recursively
-                                // through folder nodes since connections are nested inside folders)
-                                let node_found = if let Some(conn_node) =
-                                    Self::find_connection_node_recursive(
-                                        &mut self.items_tree,
-                                        connection_id,
-                                    )
-                                {
-                                    debug!("   ✅ Found connection node: {}", conn_node.name);
-                                    if let Some(state) = expansion_state {
-                                        debug!(
-                                            "🔄 Restoring {} expansion states for connection {}",
-                                            state.len(),
-                                            connection_id
-                                        );
-                                        conn_node.is_loaded = false;
-                                        Self::restore_expansion_state(conn_node, &state);
-                                        debug!("   ✅ Expansion state restored");
-                                        Self::mark_expanded_nodes_loaded(conn_node);
-                                        debug!("   ✅ Expanded nodes marked for loading");
+                                if is_full_refresh {
+                                    // Re-expand connection node to show fresh data
+                                    let node_found = if let Some(conn_node) =
+                                        Self::find_connection_node_recursive(
+                                            &mut self.items_tree,
+                                            connection_id,
+                                        )
+                                    {
+                                        debug!("   ✅ Found connection node: {}", conn_node.name);
+                                        if let Some(state) = expansion_state {
+                                            debug!(
+                                                "🔄 Restoring {} expansion states for connection {}",
+                                                state.len(),
+                                                connection_id
+                                            );
+                                            conn_node.is_loaded = false;
+                                            Self::restore_expansion_state(conn_node, &state);
+                                            debug!("   ✅ Expansion state restored");
+                                            Self::mark_expanded_nodes_loaded(conn_node);
+                                            debug!("   ✅ Expanded nodes marked for loading");
+                                        }
+                                        true
                                     } else {
-                                        debug!("   ⚠️  No expansion state to restore");
-                                        conn_node.is_loaded = false;
+                                        false
+                                    };
+
+                                    if !node_found {
+                                        debug!("   ❌ Connection node {} not found in tree!", connection_id);
                                     }
-                                    true
+
+                                    // Mark for auto-load only when the tree was actually cleared
+                                    self.pending_auto_load.insert(connection_id);
+                                    debug!(
+                                        "📂 Marked connection {} for auto-load after restore",
+                                        connection_id
+                                    );
                                 } else {
-                                    false
-                                };
-
-                                if !node_found {
-                                    debug!("   ❌ Connection node {} not found in tree!", connection_id);
+                                    // Background-only auto-sync: tree is intact, no reload needed.
+                                    // The SQLite cache is now warm for autocomplete.
+                                    debug!(
+                                        "✅ Background auto-sync complete for connection {} — tree preserved",
+                                        connection_id
+                                    );
                                 }
-
-                                // Mark this connection as needing auto-load
-                                // Will be processed in the sidebar render where we have proper borrow access
-                                self.pending_auto_load.insert(connection_id);
-                                debug!(
-                                    "📂 Marked connection {} for auto-load after restore",
-                                    connection_id
-                                );
-                                debug!(
-                                    "   pending_auto_load size: {}",
-                                    self.pending_auto_load.len()
-                                );
 
                                 // Request UI repaint to show updated data
                                 ctx.request_repaint();

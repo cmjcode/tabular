@@ -269,10 +269,28 @@ impl super::Tabular {
             return;
         }
         autosync_log(&format!(
-            "[AUTO-SYNC] triggering refresh_connection for id={} (badge should show)",
+            "[AUTO-SYNC] triggering background cache sync for id={} (badge should show)",
             connection_id
         ));
-        self.refresh_connection(connection_id);
+        // Warm the schema cache in the background WITHOUT clearing the visual tree.
+        // Clearing children here (as full refresh_connection does) causes an immediate
+        // visible collapse that the user has to undo by re-expanding everything.
+        self.clear_connection_cache(connection_id);
+        self.database_cache.remove(&connection_id);
+        self.database_cache_time.remove(&connection_id);
+        self.refreshing_connections.insert(connection_id);
+        if let Some(sender) = &self.background_sender {
+            if let Err(e) =
+                sender.send(models::enums::BackgroundTask::RefreshConnection { connection_id })
+            {
+                debug!("Failed to send background auto-sync task: {}", e);
+                self.refreshing_connections.remove(&connection_id);
+                cache_data::fetch_and_cache_connection_data(self, connection_id);
+            }
+        } else {
+            self.refreshing_connections.remove(&connection_id);
+            cache_data::fetch_and_cache_connection_data(self, connection_id);
+        }
     }
 
     pub fn refresh_connection(&mut self, connection_id: i64) {
@@ -297,6 +315,11 @@ impl super::Tabular {
         if let Some(conn_node) =
             Self::find_connection_node_recursive(&mut self.items_tree, connection_id)
         {
+            // Save expansion state before clearing so it can be restored after refresh
+            let mut expansion_state = std::collections::HashMap::new();
+            Self::save_expansion_state(conn_node, &mut expansion_state);
+            self.pending_expansion_restore.insert(connection_id, expansion_state);
+
             conn_node.is_loaded = false;
             // Keep current expansion state so it doesn't visually disappear; we'll repopulate on next expand
             let was_expanded = conn_node.is_expanded;
@@ -315,6 +338,10 @@ impl super::Tabular {
             if let Some(conn_node) =
                 Self::find_connection_node_recursive(&mut self.filtered_items_tree, connection_id)
             {
+                let mut expansion_state = std::collections::HashMap::new();
+                Self::save_expansion_state(conn_node, &mut expansion_state);
+                self.pending_expansion_restore.insert(connection_id, expansion_state);
+
                 let was_expanded = conn_node.is_expanded;
                 conn_node.children.clear();
                 conn_node.is_loaded = false;
@@ -329,6 +356,10 @@ impl super::Tabular {
                 if let Some(conn_node2) =
                     Self::find_connection_node_recursive(&mut self.items_tree, connection_id)
                 {
+                    let mut expansion_state = std::collections::HashMap::new();
+                    Self::save_expansion_state(conn_node2, &mut expansion_state);
+                    self.pending_expansion_restore.insert(connection_id, expansion_state);
+
                     let was_expanded = conn_node2.is_expanded;
                     conn_node2.children.clear();
                     conn_node2.is_loaded = false;
@@ -434,6 +465,24 @@ impl super::Tabular {
         }
     }
 
+    pub fn save_expansion_state(
+        node: &models::structs::TreeNode,
+        state_map: &mut std::collections::HashMap<String, bool>,
+    ) {
+        let node_type_str = format!("{:?}", node.node_type);
+        let key = format!(
+            "{}:{}:{}:{}",
+            node.connection_id.unwrap_or(0),
+            node.database_name.as_ref().unwrap_or(&String::new()),
+            node_type_str,
+            node.name
+        );
+        state_map.insert(key, node.is_expanded);
+        for child in &node.children {
+            Self::save_expansion_state(child, state_map);
+        }
+    }
+
     pub fn mark_expanded_nodes_loaded(node: &mut models::structs::TreeNode) {
         use log::debug;
 
@@ -521,6 +570,11 @@ impl super::Tabular {
                 _ => {
                     debug!("   ⏭️  Skipping {:?} node (no loader)", node.node_type);
                 }
+            }
+            // After populating children, apply any saved expansion state so the recursive
+            // descent below will expand and load the correct child nodes.
+            if let Some(state) = self.pending_expansion_restore.get(&connection_id).cloned() {
+                Self::restore_expansion_state(node, &state);
             }
         } else if node.is_expanded {
             debug!("   ⏭️  Node already loaded, skipping");
