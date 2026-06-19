@@ -1,6 +1,20 @@
 use log::debug;
 use crate::{models, cache_data, data_table, editor, directory, sidebar_query};
 
+/// Temporary diagnostic logger for the auto-sync feature. Writes to both stderr
+/// and /tmp/tabular-autosync.log so the log can be inspected without a terminal.
+pub(crate) fn autosync_log(msg: &str) {
+    use std::io::Write;
+    eprintln!("{}", msg);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/tabular-autosync.log")
+    {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
+
 impl super::Tabular {
     pub fn handle_alter_table_request(
         &mut self,
@@ -235,6 +249,32 @@ impl super::Tabular {
         }
         None
     }
+    /// Trigger a background schema-cache sync the first time a connection is added or
+    /// opened, so autocomplete suggestions become available without a manual refresh.
+    /// Runs at most once per connection per session and skips API-HTTP (no schema).
+    pub fn maybe_auto_sync_connection(&mut self, connection_id: i64) {
+        let is_http = self
+            .connections
+            .iter()
+            .find(|c| c.id == Some(connection_id))
+            .map(|c| c.connection_type == models::enums::DatabaseType::ApiHttp)
+            .unwrap_or(true);
+        // insert() returns false if it was already present → already synced this session
+        let already = self.auto_synced_connections.contains(&connection_id);
+        autosync_log(&format!(
+            "[AUTO-SYNC] maybe_auto_sync_connection id={} is_http={} already_synced={} background_sender={}",
+            connection_id, is_http, already, self.background_sender.is_some()
+        ));
+        if is_http || !self.auto_synced_connections.insert(connection_id) {
+            return;
+        }
+        autosync_log(&format!(
+            "[AUTO-SYNC] triggering refresh_connection for id={} (badge should show)",
+            connection_id
+        ));
+        self.refresh_connection(connection_id);
+    }
+
     pub fn refresh_connection(&mut self, connection_id: i64) {
         // Clear all cached data for this connection (SQLite tables)
         self.clear_connection_cache(connection_id);

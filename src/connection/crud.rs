@@ -468,6 +468,17 @@ async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
             subpartition_type TEXT NULL,\
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
             UNIQUE(connection_id, database_name, table_name, partition_name))",
+        "CREATE TABLE IF NOT EXISTS foreign_key_cache (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            connection_id INTEGER NOT NULL,\
+            database_name TEXT NOT NULL,\
+            table_name TEXT NOT NULL,\
+            column_name TEXT NOT NULL,\
+            referenced_table_name TEXT NOT NULL,\
+            referenced_column_name TEXT NOT NULL,\
+            constraint_name TEXT NOT NULL DEFAULT '',\
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
+            UNIQUE(connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name))",
     ];
     let mut all_ok = true;
     for stmt in &creates {

@@ -206,6 +206,47 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_ctx_comma_separated_select() {
+        // `SELECT id,name FROM` must still read as column context, not be
+        // glued into one token by whitespace splitting.
+        let sql = "SELECT id,name  FROM users";
+        assert_eq!(detect_ctx(sql, 14), SqlContext::AfterSelect);
+        // After FROM → table context
+        assert_eq!(detect_ctx(sql, sql.len()), SqlContext::AfterFrom);
+    }
+
+    #[test]
+    fn test_detect_ctx_subquery_scope() {
+        // Cursor inside the inner SELECT-list should be AfterSelect; the outer
+        // FROM context is restored after the closing paren.
+        let sql = "SELECT * FROM (SELECT x  FROM t) sub WHERE ";
+        let inner = sql.find("x ").unwrap() + 2;
+        assert_eq!(detect_ctx(sql, inner), SqlContext::AfterSelect);
+        assert_eq!(detect_ctx(sql, sql.len()), SqlContext::AfterWhere);
+    }
+
+    #[test]
+    fn test_detect_ctx_ignores_string_and_comment() {
+        let sql = "SELECT * FROM t WHERE name = 'SELECT' -- FROM x\n AND ";
+        // Keyword inside a string literal / comment must not flip context.
+        assert_eq!(detect_ctx(sql, sql.len()), SqlContext::AfterWhere);
+    }
+
+    #[test]
+    fn test_fuzzy_match_camelhump_and_subsequence() {
+        // Prefix match wins (high score) over a scattered subsequence.
+        let prefix = fuzzy_match("cust", "customer_name").unwrap();
+        let subseq = fuzzy_match("cnm", "customer_name").unwrap();
+        assert!(prefix > subseq);
+        // CamelHump: cnm matches the c/n/m word-boundary letters.
+        assert!(fuzzy_match("cnm", "customer_name").is_some());
+        // Non-subsequence → no match.
+        assert!(fuzzy_match("zzz", "customer_name").is_none());
+        // Empty prefix matches anything.
+        assert_eq!(fuzzy_match("", "anything"), Some(0));
+    }
+
+    #[test]
     fn test_tables_near_cursor_isolation() {
         let sql = "SELECT * FROM users; SELECT * FROM orders WHERE user_id = 1";
         
@@ -237,32 +278,133 @@ enum SqlContext {
     AfterJoinOn,
     General,
 }
+/// Determine the clause context at `cursor` using a small SQL-aware scanner.
+///
+/// Unlike a naive `split_whitespace`, this:
+/// - tokenizes on word boundaries, so `select id,name from` is read correctly;
+/// - skips string/quoted-identifier literals and `--` / `/* */` comments;
+/// - tracks parenthesis depth so a subquery `(SELECT ... )` scopes its own
+///   context and restores the outer clause on `)`.
 fn detect_ctx(sql: &str, cursor: usize) -> SqlContext {
     let slice = &sql[..cursor.min(sql.len())];
-    let mut last: Option<SqlContext> = None;
-    for tok in slice.split_whitespace() {
-        match tok.to_ascii_uppercase().as_str() {
-            "SELECT" => last = Some(SqlContext::AfterSelect),
-            "FROM" | "JOIN" | "LEFT" | "RIGHT" | "INNER" | "OUTER" | "CROSS" | "NATURAL" => {
-                last = Some(SqlContext::AfterFrom)
+    let bytes = slice.as_bytes();
+    let n = bytes.len();
+    let mut last = SqlContext::General;
+    let mut stack: Vec<SqlContext> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let b = bytes[i];
+        // line comment
+        if b == b'-' && i + 1 < n && bytes[i + 1] == b'-' {
+            while i < n && bytes[i] != b'\n' {
+                i += 1;
             }
-            "WHERE" | "HAVING" => last = Some(SqlContext::AfterWhere),
-            "AND" | "OR" => {
-                // AND/OR inside a JOIN ON condition stays in AfterJoinOn context
-                if last != Some(SqlContext::AfterJoinOn) {
-                    last = Some(SqlContext::AfterWhere);
+            continue;
+        }
+        // block comment
+        if b == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < n && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+            continue;
+        }
+        // string / quoted identifier (quotes are ASCII, safe to scan by byte)
+        if b == b'\'' || b == b'"' || b == b'`' {
+            i += 1;
+            while i < n && bytes[i] != b {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'(' {
+            stack.push(last);
+            last = SqlContext::General;
+            i += 1;
+            continue;
+        }
+        if b == b')' {
+            if let Some(prev) = stack.pop() {
+                last = prev;
+            }
+            i += 1;
+            continue;
+        }
+        if b.is_ascii_alphanumeric() || b == b'_' {
+            let start = i;
+            while i < n && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            match slice[start..i].to_ascii_uppercase().as_str() {
+                "SELECT" => last = SqlContext::AfterSelect,
+                "FROM" | "JOIN" | "LEFT" | "RIGHT" | "INNER" | "OUTER" | "CROSS" | "NATURAL" => {
+                    last = SqlContext::AfterFrom
                 }
-            }
-            "ON" => {
-                // ON after a JOIN (AfterFrom) is a join condition clause
-                if last == Some(SqlContext::AfterFrom) {
-                    last = Some(SqlContext::AfterJoinOn);
+                "WHERE" | "HAVING" => last = SqlContext::AfterWhere,
+                "AND" | "OR" => {
+                    // AND/OR inside a JOIN ON condition stays in AfterJoinOn context
+                    if last != SqlContext::AfterJoinOn {
+                        last = SqlContext::AfterWhere;
+                    }
                 }
+                "ON" => {
+                    // ON after a JOIN (AfterFrom) is a join condition clause
+                    if last == SqlContext::AfterFrom {
+                        last = SqlContext::AfterJoinOn;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
+            continue;
+        }
+        i += 1;
+    }
+    last
+}
+
+/// CamelHump + subsequence fuzzy match (DataGrip-style). Returns `Some(score)`
+/// when every char of `pref` appears in order within `cand`; higher score is a
+/// better match. An exact case-insensitive prefix wins big; matches landing on
+/// word boundaries (start, after `_`/`.`, or a CamelCase hump) score higher.
+/// An empty `pref` matches everything with score 0.
+fn fuzzy_match(pref: &str, cand: &str) -> Option<i32> {
+    let p: Vec<char> = pref
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    if p.is_empty() {
+        return Some(0);
+    }
+    let orig: Vec<char> = cand.chars().collect();
+    let lower: Vec<char> = orig.iter().flat_map(|c| c.to_lowercase()).collect();
+
+    // Exact prefix → strong bonus, shorter candidates preferred.
+    let pref_str: String = p.iter().collect();
+    let lower_str: String = lower.iter().collect();
+    if lower_str.starts_with(&pref_str) {
+        return Some(1000 - orig.len() as i32);
+    }
+
+    let mut pi = 0usize;
+    let mut score = 0i32;
+    for (idx, &ch) in lower.iter().enumerate() {
+        if pi >= p.len() {
+            break;
+        }
+        if ch == p[pi] {
+            let prev_sep = idx == 0
+                || orig
+                    .get(idx - 1)
+                    .map_or(false, |&c| c == '_' || c == '.' || c == ' ');
+            let hump = orig.get(idx).map_or(false, |&c| c.is_uppercase());
+            score += if prev_sep || hump { 10 } else { 1 };
+            pi += 1;
         }
     }
-    last.unwrap_or(SqlContext::General)
+    if pi == p.len() { Some(score) } else { None }
 }
 fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
     let dbs = if db.is_empty() {
@@ -274,6 +416,17 @@ fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
     for d in dbs {
         for tt in ["table", "view"] {
             if let Some(mut ls) = get_tables_from_cache(app, cid, &d, tt) {
+                all.append(&mut ls);
+            }
+        }
+    }
+    // Fallback: editor tabs are often not pinned to a specific database, so the
+    // scoped lookup above can return nothing even when the connection has cached
+    // tables. Query the whole connection (any database) before giving up.
+    if all.is_empty() {
+        for tt in ["table", "view"] {
+            if let Some(mut ls) = crate::cache_data::get_tables_for_connection_any_db(app, cid, tt)
+            {
                 all.append(&mut ls);
             }
         }
@@ -297,6 +450,13 @@ fn get_all_tables(app: &Tabular) -> Vec<String> {
             }
         }
     }
+    // `database_cache` may be empty even when `table_cache` is populated (tree
+    // expanded but the db-list map not built). Query the cache table directly.
+    if all.is_empty()
+        && let Some(mut ls) = crate::cache_data::get_all_cached_tables_global(app)
+    {
+        all.append(&mut ls);
+    }
     all.sort_unstable();
     all.dedup();
     all
@@ -312,7 +472,12 @@ fn get_cached_columns(
     }
     let mut out = Vec::new();
     for t in tables {
-        if let Some(cols) = get_columns_from_cache(app, cid, db, &t) {
+        // Prefer the db-scoped cache; fall back to any-database lookup for the
+        // same reason as get_cached_tables (editor tabs aren't always pinned).
+        let cols = get_columns_from_cache(app, cid, db, &t)
+            .filter(|c| !c.is_empty())
+            .or_else(|| crate::cache_data::get_columns_for_connection_any_db(app, cid, &t));
+        if let Some(cols) = cols {
             for (c, _) in cols {
                 if !out.contains(&c) {
                     out.push(c);
@@ -324,6 +489,11 @@ fn get_cached_columns(
     if out.is_empty() { None } else { Some(out) }
 }
 fn add_keywords(out: &mut Vec<String>, pref: &str) {
+    // With no prefix yet (e.g. right after `FROM `), don't flood the popup with
+    // every keyword — let tables/columns lead. Keywords return once the user types.
+    if pref.is_empty() {
+        return;
+    }
     for kw in SQL_KEYWORDS {
         if kw.to_ascii_lowercase().starts_with(pref) {
             out.push((*kw).to_string());
@@ -331,8 +501,31 @@ fn add_keywords(out: &mut Vec<String>, pref: &str) {
     }
 }
 
-/// Collect all ForeignKey instances from any loaded diagram state in the app.
-fn collect_loaded_fks(app: &Tabular) -> Vec<crate::models::structs::ForeignKey> {
+/// Collect ForeignKey metadata for autocomplete. Prefers the persistent
+/// `foreign_key_cache` for the active connection (works even with no ERD open);
+/// lazily warms that cache once per connection per session; finally falls back
+/// to any FK data already loaded into an open ERD diagram.
+fn collect_loaded_fks(app: &mut Tabular) -> Vec<crate::models::structs::ForeignKey> {
+    if let Some((cid, db)) = active_connection_and_db(app) {
+        if let Some(fks) = crate::cache_data::get_foreign_keys_from_cache(app, cid, &db)
+            && !fks.is_empty()
+        {
+            return fks;
+        }
+        // Lazy one-shot warm: fetch live FKs (which also persists them), re-read.
+        if !app.fk_cache_warmed.contains(&cid) {
+            app.fk_cache_warmed.insert(cid);
+            if let Some(rt) = app.runtime.clone() {
+                let _ = rt.block_on(crate::connection::get_foreign_keys(app, cid, &db));
+            }
+            if let Some(fks) = crate::cache_data::get_foreign_keys_from_cache(app, cid, &db)
+                && !fks.is_empty()
+            {
+                return fks;
+            }
+        }
+    }
+    // Fallback: FKs from any open diagram state.
     app.query_tabs
         .iter()
         .filter_map(|tab| tab.diagram_state.as_ref())
@@ -667,7 +860,7 @@ pub fn build_suggestions(
                 let mut fk_sugg: Vec<String> = Vec::new();
                 let mut reg_sugg: Vec<String> = Vec::new();
                 for c in &all_cols {
-                    if !c.to_ascii_lowercase().starts_with(col_part) {
+                    if fuzzy_match(col_part, c).is_none() {
                         continue;
                     }
                     let suggestion = format!("{}.{}", display_prefix, c);
@@ -692,10 +885,13 @@ pub fn build_suggestions(
     if tables_in_scope.is_empty() {
         tables_in_scope = tables_all.clone();
     }
+    // Resolve the connection: prefer the active tab's binding, but fall back to
+    // the app-wide active connection (editor tabs aren't always bound to one).
     let conn_id = app
         .query_tabs
         .get(app.active_tab_index)
-        .and_then(|t| t.connection_id);
+        .and_then(|t| t.connection_id)
+        .or(app.current_connection_id);
     let db = active_connection_and_db(app)
         .map(|(_, d)| d)
         .unwrap_or_default();
@@ -706,7 +902,7 @@ pub fn build_suggestions(
                 && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
             {
                 for c in cols {
-                    if c.to_ascii_lowercase().starts_with(&pl) {
+                    if fuzzy_match(&pl, &c).is_some() {
                         out.push(c);
                     }
                 }
@@ -717,19 +913,15 @@ pub fn build_suggestions(
         }
         SqlContext::AfterFrom => {
             add_keywords(&mut out, &pl);
-            if let Some(cid) = conn_id {
-                if let Some(ts) = get_cached_tables(app, cid, &db) {
-                    for t in ts {
-                        if t.to_ascii_lowercase().starts_with(&pl) {
-                            out.push(t);
-                        }
-                    }
-                }
-            } else {
-                for t in get_all_tables(app) {
-                    if t.to_ascii_lowercase().starts_with(&pl) {
-                        out.push(t);
-                    }
+            // Prefer the resolved connection's tables; if that yields nothing
+            // (unbound tab, empty db_name, stale cache), fall back to every
+            // cached table so suggestions still appear.
+            let tables = conn_id
+                .and_then(|cid| get_cached_tables(app, cid, &db))
+                .unwrap_or_else(|| get_all_tables(app));
+            for t in tables {
+                if fuzzy_match(&pl, &t).is_some() {
+                    out.push(t);
                 }
             }
         }
@@ -739,7 +931,7 @@ pub fn build_suggestions(
                 && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
             {
                 for c in cols {
-                    if c.to_ascii_lowercase().starts_with(&pl) {
+                    if fuzzy_match(&pl, &c).is_some() {
                         out.push(c);
                     }
                 }
@@ -772,8 +964,8 @@ pub fn build_suggestions(
                     if let Some(cols) = get_cached_columns(app, cid, &db, vec![table.clone()]) {
                         for col in &cols {
                             let qualified = format!("{}.{}", display, col);
-                            if qualified.to_ascii_lowercase().starts_with(&pl)
-                                || col.to_ascii_lowercase().starts_with(&pl)
+                            if fuzzy_match(&pl, &qualified).is_some()
+                                || fuzzy_match(&pl, col).is_some()
                             {
                                 out.push(qualified);
                             }
@@ -795,28 +987,34 @@ pub fn build_suggestions(
             if let Some(cid) = conn_id {
                 if let Some(ts) = get_cached_tables(app, cid, &db) {
                     for t in ts {
-                        if t.to_ascii_lowercase().starts_with(&pl) {
+                        if fuzzy_match(&pl, &t).is_some() {
                             out.push(t);
                         }
                     }
                 }
                 if let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone()) {
                     for c in cols {
-                        if c.to_ascii_lowercase().starts_with(&pl) {
+                        if fuzzy_match(&pl, &c).is_some() {
                             out.push(c);
                         }
                     }
                 }
             } else {
                 for t in get_all_tables(app) {
-                    if t.to_ascii_lowercase().starts_with(&pl) {
+                    if fuzzy_match(&pl, &t).is_some() {
                         out.push(t);
                     }
                 }
             }
         }
     }
-    out.sort_unstable();
+    // Order by fuzzy-match quality (best first), then alphabetically for ties so
+    // identical strings stay adjacent for dedup.
+    out.sort_by(|a, b| {
+        let sa = fuzzy_match(&pl, a).unwrap_or(i32::MIN);
+        let sb = fuzzy_match(&pl, b).unwrap_or(i32::MIN);
+        sb.cmp(&sa).then_with(|| a.cmp(b))
+    });
     out.dedup();
     out
 }
@@ -852,14 +1050,30 @@ pub fn update_autocomplete(app: &mut Tabular) {
     }
 
     if pref.is_empty() {
-        app.show_autocomplete = false;
-        app.autocomplete_suggestions.clear();
-        app.autocomplete_kinds.clear();
-        app.autocomplete_notes.clear();
-        app.autocomplete_payloads.clear();
-        app.autocomplete_prefix.clear();
-        app.last_autocomplete_trigger_len = 0;
-        return;
+        // After a clause keyword followed by whitespace (e.g. "SELECT * FROM |"),
+        // show the full candidate list even with no prefix yet — this is how
+        // DataGrip surfaces tables right after FROM/JOIN (and columns after
+        // SELECT/WHERE/ON). Otherwise, bail.
+        let ctx_empty = detect_ctx(&editor_text, cursor);
+        let after_space = matches!(prev_char, Some(c) if c.is_whitespace());
+        let show_on_empty = after_space
+            && matches!(
+                ctx_empty,
+                SqlContext::AfterFrom
+                    | SqlContext::AfterSelect
+                    | SqlContext::AfterWhere
+                    | SqlContext::AfterJoinOn
+            );
+        if !show_on_empty {
+            app.show_autocomplete = false;
+            app.autocomplete_suggestions.clear();
+            app.autocomplete_kinds.clear();
+            app.autocomplete_notes.clear();
+            app.autocomplete_payloads.clear();
+            app.autocomplete_prefix.clear();
+            app.last_autocomplete_trigger_len = 0;
+            return;
+        }
     }
 
     let pre_prefix_char = if pref.len() <= cursor {
@@ -953,12 +1167,43 @@ pub fn update_autocomplete(app: &mut Tabular) {
                     }
                 }
             }
-            tables.sort_unstable();
-            tables.dedup();
-            columns.sort_unstable();
-            columns.dedup();
+            let pl = pref.to_ascii_lowercase();
+            let score_sort = |v: &mut Vec<String>| {
+                v.sort_by(|a, b| {
+                    let sa = fuzzy_match(&pl, a).unwrap_or(i32::MIN);
+                    let sb = fuzzy_match(&pl, b).unwrap_or(i32::MIN);
+                    sb.cmp(&sa).then_with(|| a.cmp(b))
+                });
+                v.dedup();
+            };
+            score_sort(&mut tables);
+            score_sort(&mut columns);
             syntax.sort_unstable();
             syntax.dedup();
+
+            // Phase 3: column type + owning-table metadata for richer notes.
+            let mut col_meta: std::collections::HashMap<String, (String, String)> =
+                std::collections::HashMap::new();
+            let mut col_ambiguous: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            if cid != 0 {
+                for t in tables_near_cursor(&editor_text, cursor) {
+                    if let Some(cols) = get_columns_from_cache(app, cid, &db, &t) {
+                        for (cn, ct) in cols {
+                            let key = cn.to_ascii_lowercase();
+                            match col_meta.get(&key) {
+                                Some((_, owner)) if owner != &t => {
+                                    col_ambiguous.insert(key);
+                                }
+                                Some(_) => {}
+                                None => {
+                                    col_meta.insert(key, (ct, t.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             let mut ordered = Vec::new();
             let mut kinds = Vec::new();
@@ -992,7 +1237,16 @@ pub fn update_autocomplete(app: &mut Tabular) {
                 let (kind, note) = if context == SqlContext::AfterJoinOn && c.contains('=') {
                     (crate::models::enums::AutocompleteKind::Column, Some("join".to_string()))
                 } else {
-                    (crate::models::enums::AutocompleteKind::Column, Some("column".to_string()))
+                    // Show type + owning table (strip any `alias.` qualifier first).
+                    let bare = c.rsplit('.').next().unwrap_or(&c).to_ascii_lowercase();
+                    let note = match col_meta.get(&bare) {
+                        Some((ty, _)) if col_ambiguous.contains(&bare) => {
+                            Some(format!("{} · ambiguous", ty))
+                        }
+                        Some((ty, owner)) => Some(format!("{} · {}", ty, owner)),
+                        None => Some("column".to_string()),
+                    };
+                    (crate::models::enums::AutocompleteKind::Column, note)
                 };
                 push_suggestion(c, kind, note, None);
             }

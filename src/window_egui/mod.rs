@@ -105,6 +105,8 @@ pub struct Tabular {
         std::collections::HashMap<i64, std::collections::HashMap<String, bool>>,
     // Connections that need their expanded nodes loaded after state restore
     pub pending_auto_load: std::collections::HashSet<i64>,
+    // Connections already auto-synced (schema cache) this session, so we don't re-sync on every open
+    pub auto_synced_connections: std::collections::HashSet<i64>,
     // Query tab system
     pub query_tabs: Vec<models::structs::QueryTab>,
     pub active_tab_index: usize,
@@ -238,6 +240,9 @@ pub struct Tabular {
     // Autocomplete throttle
     pub autocomplete_last_update: Option<std::time::Instant>,
     pub autocomplete_debounce_ms: u64,
+    // Connections whose foreign-key cache has been warmed this session (lazy,
+    // one-shot) so SQL-editor JOIN-ON autocomplete works without an open ERD.
+    pub fk_cache_warmed: std::collections::HashSet<i64>,
     // Ensure selection is cleared on the next frame after a destructive action (e.g., Delete)
     pub selection_force_clear: bool,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)

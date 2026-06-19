@@ -594,23 +594,24 @@ pub(crate) async fn get_foreign_keys(
     connection_id: i64,
     database_name: &str,
 ) -> Vec<models::structs::ForeignKey> {
+    let mut keys: Vec<models::structs::ForeignKey> = Vec::new();
     if let Some(pool) = tabular.connection_pools.get(&connection_id).cloned() {
         match pool {
             models::enums::DatabasePool::MySQL(p) => {
                 match driver_mysql::fetch_mysql_foreign_keys(&p, database_name).await {
-                    Ok(keys) => return keys,
+                    Ok(k) => keys = k,
                     Err(e) => debug!("Failed to fetch MySQL foreign keys: {}", e),
                 }
             }
             models::enums::DatabasePool::PostgreSQL(p) => {
                 match crate::driver_postgres::fetch_postgres_foreign_keys(&p).await {
-                    Ok(keys) => return keys,
+                    Ok(k) => keys = k,
                     Err(e) => debug!("Failed to fetch PostgreSQL foreign keys: {}", e),
                 }
             }
             models::enums::DatabasePool::SQLite(p) => {
                 match crate::driver_sqlite::fetch_sqlite_foreign_keys(&p).await {
-                    Ok(keys) => return keys,
+                    Ok(k) => keys = k,
                     Err(e) => debug!("Failed to fetch SQLite foreign keys: {}", e),
                 }
             }
@@ -621,12 +622,42 @@ pub(crate) async fn get_foreign_keys(
         let conn_opt = tabular.connections.iter().find(|c| c.id == Some(connection_id)).cloned();
         if let Some(conn) = conn_opt {
             if conn.connection_type == models::enums::DatabaseType::MsSQL {
-                return fetch_mssql_foreign_keys(&conn, database_name).await;
+                keys = fetch_mssql_foreign_keys(&conn, database_name).await;
             }
+        } else {
+            debug!("Pool not found for connection {}", connection_id);
         }
-        debug!("Pool not found for connection {}", connection_id);
     }
-    Vec::new()
+
+    // Write-through to the persistent FK cache so SQL-editor autocomplete can
+    // suggest `JOIN ... ON fk = pk` later without re-fetching (or an open ERD).
+    if !keys.is_empty()
+        && let Some(cache_pool) = tabular.db_pool.clone()
+    {
+        let _ = sqlx::query(
+            "DELETE FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
+        )
+        .bind(connection_id)
+        .bind(database_name)
+        .execute(cache_pool.as_ref())
+        .await;
+        for fk in &keys {
+            let _ = sqlx::query(
+                "INSERT OR REPLACE INTO foreign_key_cache (connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name, constraint_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(connection_id)
+            .bind(database_name)
+            .bind(&fk.table_name)
+            .bind(&fk.column_name)
+            .bind(&fk.referenced_table_name)
+            .bind(&fk.referenced_column_name)
+            .bind(&fk.constraint_name)
+            .execute(cache_pool.as_ref())
+            .await;
+        }
+    }
+
+    keys
 }
 
 async fn fetch_mssql_foreign_keys(

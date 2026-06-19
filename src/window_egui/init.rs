@@ -237,6 +237,7 @@ impl super::Tabular {
             fetching_databases: std::collections::HashSet::new(),
             pending_expansion_restore: std::collections::HashMap::new(),
             pending_auto_load: std::collections::HashSet::new(),
+            auto_synced_connections: std::collections::HashSet::new(),
             query_tabs: Vec::new(),
             active_tab_index: 0,
             next_tab_id: 1,
@@ -327,6 +328,7 @@ impl super::Tabular {
             autocomplete_navigated: false,
             autocomplete_last_update: None,
             autocomplete_debounce_ms: 120,
+            fk_cache_warmed: std::collections::HashSet::new(),
             selection_force_clear: false,
             // Index dialog defaults
             show_index_dialog: false,
@@ -745,6 +747,11 @@ impl super::Tabular {
                         }
                     }
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
+                        eprintln!(
+                            "[AUTO-SYNC] bg RefreshConnection id={} cache_pool_present={}",
+                            connection_id,
+                            cache_pool.is_some()
+                        );
                         // Perform actual refresh and cache preload on a lightweight runtime
                         let success = if let Some(cache_pool_arc) = &cache_pool {
                             match tokio::runtime::Runtime::new() {
@@ -759,6 +766,10 @@ impl super::Tabular {
                         } else {
                             false
                         };
+                        eprintln!(
+                            "[AUTO-SYNC] bg RefreshConnection id={} finished success={}",
+                            connection_id, success
+                        );
                         let _ =
                             result_sender.send(models::enums::BackgroundResult::RefreshComplete {
                                 connection_id,

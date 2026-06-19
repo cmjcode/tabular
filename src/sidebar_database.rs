@@ -633,6 +633,17 @@ pub(crate) fn render_connection_dialog(
                             tabular.test_connection_in_progress = false;
                             tabular.show_add_connection = false;
 
+                            // Kick off a background schema-cache sync so autocomplete works
+                            // immediately. Shows a loading badge on the connection name and
+                            // skips API-HTTP connections (no schema to cache).
+                            eprintln!(
+                                "[AUTO-SYNC] Add Connection done: new_conn_id={:?} is_api_http={}",
+                                new_conn_id, is_api_http
+                            );
+                            if let Some(id) = new_conn_id {
+                                tabular.maybe_auto_sync_connection(id);
+                            }
+
                             // Open HTTP client tab for API-HTTP connections
                             if is_api_http {
                                 crate::editor::create_new_tab_with_connection(
@@ -1427,14 +1438,51 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     .execute(&pool)
                     .await;
 
-                    match (create_connections_result, create_db_cache_result, create_table_cache_result, create_column_cache_result, create_history_result, create_row_cache_result, create_index_cache_result, create_partition_cache_result) {
-                        (Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_)) => {
-                            Some(pool)
-                        },
-                        _ => {
-                            warn!("Error creating some tables");
-                            None
+                    // Create foreign key cache table for SQL-editor autocomplete (JOIN ON suggestions)
+                    let create_fk_cache_result = sqlx::query(
+                        r#"
+                        CREATE TABLE IF NOT EXISTS foreign_key_cache (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            connection_id INTEGER NOT NULL,
+                            database_name TEXT NOT NULL,
+                            table_name TEXT NOT NULL,
+                            column_name TEXT NOT NULL,
+                            referenced_table_name TEXT NOT NULL,
+                            referenced_column_name TEXT NOT NULL,
+                            constraint_name TEXT NOT NULL DEFAULT '',
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE,
+                            UNIQUE(connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name)
+                        )
+                        "#
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    // Log exactly which table(s) failed instead of a vague message.
+                    for (name, res) in [
+                        ("connections", &create_connections_result),
+                        ("database_cache", &create_db_cache_result),
+                        ("table_cache", &create_table_cache_result),
+                        ("column_cache", &create_column_cache_result),
+                        ("query_history", &create_history_result),
+                        ("row_cache", &create_row_cache_result),
+                        ("index_cache", &create_index_cache_result),
+                        ("partition_cache", &create_partition_cache_result),
+                        ("fk_cache", &create_fk_cache_result),
+                    ] {
+                        if let Err(e) = res {
+                            warn!("Failed to create/verify table '{}': {}", name, e);
                         }
+                    }
+                    // The pool is usable as long as the essential `connections` table exists.
+                    // A failure in an auxiliary cache table must NOT null the whole pool —
+                    // otherwise caching (and autocomplete) is disabled app-wide.
+                    if create_connections_result.is_ok() {
+                        Some(pool)
+                    } else {
+                        error!("Essential 'connections' table could not be created — cache disabled");
+                        None
                     }
                 },
                 Err(e) => {

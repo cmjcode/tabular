@@ -57,6 +57,81 @@ pub(crate) fn get_tables_from_cache(
     }
 }
 
+/// Like `get_tables_from_cache` but NOT scoped to a database — returns every
+/// cached table/view of `table_type` for the connection across all databases.
+/// Used as an autocomplete fallback when the active editor tab isn't pinned to a
+/// specific database (so `database_name` is empty or doesn't match the cache).
+pub(crate) fn get_tables_for_connection_any_db(
+    tabular: &Tabular,
+    connection_id: i64,
+    table_type: &str,
+) -> Option<Vec<String>> {
+    let pool = tabular.db_pool.as_ref()?.clone();
+    let fut = async {
+        sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT table_name FROM table_cache WHERE connection_id = ? AND table_type = ? ORDER BY table_name",
+        )
+        .bind(connection_id)
+        .bind(table_type)
+        .fetch_all(pool.as_ref())
+        .await
+    };
+    let result = if let Some(rt) = tabular.runtime.clone() {
+        rt.block_on(fut)
+    } else {
+        tokio::runtime::Runtime::new().unwrap().block_on(fut)
+    };
+    result.ok().map(|rows| rows.into_iter().map(|(n,)| n).collect())
+}
+
+/// Every cached table/view name across ALL connections and databases. Last-ditch
+/// autocomplete fallback when neither the tab's connection nor the database can
+/// be resolved but `table_cache` does hold data.
+pub(crate) fn get_all_cached_tables_global(tabular: &Tabular) -> Option<Vec<String>> {
+    let pool = tabular.db_pool.as_ref()?.clone();
+    let fut = async {
+        sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT table_name FROM table_cache WHERE table_type IN ('table','view') ORDER BY table_name",
+        )
+        .fetch_all(pool.as_ref())
+        .await
+    };
+    let result = if let Some(rt) = tabular.runtime.clone() {
+        rt.block_on(fut)
+    } else {
+        tokio::runtime::Runtime::new().unwrap().block_on(fut)
+    };
+    result.ok().map(|rows| rows.into_iter().map(|(n,)| n).collect())
+}
+
+/// Like `get_columns_from_cache` but NOT scoped to a database. Returns the first
+/// cached column set found for `table_name` under the connection (any database).
+pub(crate) fn get_columns_for_connection_any_db(
+    tabular: &Tabular,
+    connection_id: i64,
+    table_name: &str,
+) -> Option<Vec<(String, String)>> {
+    let pool = tabular.db_pool.as_ref()?.clone();
+    let fut = async {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND table_name = ? ORDER BY ordinal_position",
+        )
+        .bind(connection_id)
+        .bind(table_name)
+        .fetch_all(pool.as_ref())
+        .await
+    };
+    let result = if let Some(rt) = tabular.runtime.clone() {
+        rt.block_on(fut)
+    } else {
+        tokio::runtime::Runtime::new().unwrap().block_on(fut)
+    };
+    match result {
+        Ok(rows) if !rows.is_empty() => Some(rows),
+        _ => None,
+    }
+}
+
 pub(crate) fn get_databases_from_cache(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,
@@ -509,6 +584,60 @@ pub(crate) fn save_columns_to_cache(
         } else {
             tokio::runtime::Runtime::new().unwrap().block_on(fut)
         };
+    }
+}
+
+/// Read cached foreign keys for a connection. When `database_name` is empty,
+/// returns FKs across all cached databases for that connection (autocomplete
+/// often doesn't have an explicit active database).
+pub(crate) fn get_foreign_keys_from_cache(
+    tabular: &window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+) -> Option<Vec<models::structs::ForeignKey>> {
+    let pool = tabular.db_pool.as_ref()?.clone();
+    let database_name = database_name.to_string();
+    let fut = async {
+        if database_name.is_empty() {
+            sqlx::query_as::<_, (String, String, String, String, String)>(
+                "SELECT table_name, column_name, referenced_table_name, referenced_column_name, constraint_name FROM foreign_key_cache WHERE connection_id = ?",
+            )
+            .bind(connection_id)
+            .fetch_all(pool.as_ref())
+            .await
+        } else {
+            sqlx::query_as::<_, (String, String, String, String, String)>(
+                "SELECT table_name, column_name, referenced_table_name, referenced_column_name, constraint_name FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
+            )
+            .bind(connection_id)
+            .bind(&database_name)
+            .fetch_all(pool.as_ref())
+            .await
+        }
+    };
+    let result = if let Some(rt) = tabular.runtime.clone() {
+        rt.block_on(fut)
+    } else {
+        tokio::runtime::Runtime::new().unwrap().block_on(fut)
+    };
+    match result {
+        Ok(rows) => Some(
+            rows.into_iter()
+                .map(|(table_name, column_name, referenced_table_name, referenced_column_name, constraint_name)| {
+                    models::structs::ForeignKey {
+                        constraint_name,
+                        table_name,
+                        column_name,
+                        referenced_table_name,
+                        referenced_column_name,
+                    }
+                })
+                .collect(),
+        ),
+        Err(e) => {
+            debug!("❌ Error retrieving foreign keys from cache: {}", e);
+            None
+        }
     }
 }
 

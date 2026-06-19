@@ -24,7 +24,19 @@
       "Bash(kill %1)",
       "Bash(grep \"egui\" /Users/jawuda/Documents/PROJECT/TABULAR/tabular/Cargo.toml 2>/dev/null || grep -A2 \"egui\" /Users/jayuda/Documents/PROJECT/TABULAR/tabular/Cargo.toml | head -20)",
       "Read(//Users/jawuda/Documents/PROJECT/TABULAR/tabular/**)",
-      "Bash(git -C /Users/jayuda/Documents/PROJECT/TABULAR/tabular diff HEAD -- src/connection/metadata/ddl.rs)"
+      "Bash(git -C /Users/jayuda/Documents/PROJECT/TABULAR/tabular diff HEAD -- src/connection/metadata/ddl.rs)",
+      "Bash(mkdir -p /Users/jayuda/Documents/PROJECT/TABULAR/tabular/.claude/plans)",
+      "Bash(find /Users/jayuda/.claude -name \"*.json\" -o -name \"*.toml\" | xargs grep -l \"redact\\\\|credit_card\\\\|REDACTED\" 2>/dev/null | head -10)",
+      "Read(//Users/jayuda/.claude/**)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(k,':', json.dumps\\(v\\)[:200]\\) for k,v in d.items\\(\\)]\")",
+      "Bash(grep -n \"REDACTED\\\\|credit_card\\\\|imei\\\\|[0-9]\\\\{15,16\\\\}\" /Users/jayuda/.claude/plugins/marketplaces/ecc/scripts/hooks/post-bash-command-log.js)",
+      "Bash(awk 'NR>=380 && NR<=414 && /fn /{print NR\": \"$0}' src/connection/crud.rs)",
+      "Bash(awk 'NR>=1250 && NR<=1300 && \\(/fn /||/impl /\\){print NR\": \"$0}' src/sidebar_database.rs)",
+      "Bash(sed -n '/enum BackgroundTask/,/^}/p' src/models/enums.rs)",
+      "Bash(sed -n '/enum BackgroundResult/,/^}/p' src/models/enums.rs)",
+      "Bash(awk 'NR>=200 && NR<=255 && /pub fn|fn refresh/' src/window_egui/connection_mgr.rs)",
+      "Bash(awk 'NR>=740 && NR<=900 && /for expansion_req|^        }|^            }|return |tables_to_expand|^        for /{print NR\": \"$0}' src/window_egui/sidebar_tree.rs)"
     ],
     "deny": [
       "Bash(rm -rf /*)",
@@ -43,6 +55,9 @@
       "Read(**/secrets/**)",
       "Read(**/*.pem)",
       "Read(**/id_rsa*)"
+    ],
+    "additionalDirectories": [
+      "/Users/jayuda/Documents/PROJECT/TABULAR/tabular/.claude"
     ]
   }
 }
