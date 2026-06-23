@@ -115,12 +115,12 @@ bundle-macos: build-macos
 	cp $(BUILD_DIR)/$(MACOS_UNIVERSAL_TARGET)/release/tabular $(MACOS_DIR)/$(APP_NAME).app/Contents/MacOS/tabular
 	@if [ -n "$$APPLE_APP_IDENTITY" ]; then \
 		echo "🔏 Codesign with App Store entitlements (binary + app)..."; \
-		codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements -s "$$APPLE_APP_IDENTITY" $(MACOS_DIR)/$(APP_NAME).app/Contents/MacOS/tabular; \
-		codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements -s "$$APPLE_APP_IDENTITY" -v $(MACOS_DIR)/$(APP_NAME).app; \
+		codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APPLE_APP_IDENTITY" $(MACOS_DIR)/$(APP_NAME).app/Contents/MacOS/tabular; \
+		codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APPLE_APP_IDENTITY" -v $(MACOS_DIR)/$(APP_NAME).app; \
 	elif [ -n "$$APPLE_IDENTITY" ]; then \
 		echo "🔏 Codesign with Developer ID entitlements (binary + app)..."; \
-		codesign --force --timestamp --options runtime --entitlements macos/Tabular-DeveloperID.entitlements -s "$$APPLE_IDENTITY" $(MACOS_DIR)/$(APP_NAME).app/Contents/MacOS/tabular; \
-		codesign --force --timestamp --options runtime --entitlements macos/Tabular-DeveloperID.entitlements -s "$$APPLE_IDENTITY" -v $(MACOS_DIR)/$(APP_NAME).app; \
+		codesign --force --timestamp --options runtime --entitlements macos/Tabular-DeveloperID.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APPLE_IDENTITY" $(MACOS_DIR)/$(APP_NAME).app/Contents/MacOS/tabular; \
+		codesign --force --timestamp --options runtime --entitlements macos/Tabular-DeveloperID.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APPLE_IDENTITY" -v $(MACOS_DIR)/$(APP_NAME).app; \
 	else \
 		echo "⚠️  Skipping codesign (set APPLE_IDENTITY)."; \
 	fi
@@ -130,7 +130,7 @@ bundle-macos: build-macos
 		hdiutil create -volname "$(APP_NAME)" -srcfolder $(MACOS_DIR)/$(APP_NAME).app -ov -format UDZO $(MACOS_DIR)/$(APP_NAME)-$(VERSION).dmg; \
 		if [ -n "$$APPLE_IDENTITY" ]; then \
 			echo "🔏 Sign DMG with Developer ID"; \
-			codesign --force --timestamp --sign "$$APPLE_IDENTITY" $(MACOS_DIR)/$(APP_NAME)-$(VERSION).dmg; \
+			codesign --force --timestamp --keychain "$$HOME/Library/Keychains/login.keychain-db" --sign "$$APPLE_IDENTITY" $(MACOS_DIR)/$(APP_NAME)-$(VERSION).dmg; \
 		fi; \
 	fi
 	@if [ -n "$$NOTARIZE" ] && [ -n "$$APPLE_ID" ] && [ -n "$$APPLE_PASSWORD" ] && [ -n "$$APPLE_TEAM_ID" ]; then \
@@ -167,8 +167,8 @@ pkg-macos-store: bundle-macos
 		echo "🔗 Embed provisioning profile"; cp "$$PROVISIONING_PROFILE" $$APP_PATH/Contents/embedded.provisionprofile; \
 	else echo "ℹ️  No provisioning profile (set PROVISIONING_PROFILE)"; fi; \
 	echo "🔏 Re-codesign with Mac App Store entitlements"; \
-	codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements -s "$$APP_IDENTITY" $$APP_PATH/Contents/MacOS/tabular; \
-	codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements -s "$$APP_IDENTITY" -v $$APP_PATH; \
+	codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APP_IDENTITY" $$APP_PATH/Contents/MacOS/tabular; \
+	codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APP_IDENTITY" -v $$APP_PATH; \
 	echo "📦 Create installer package"; \
 	productbuild --component $$APP_PATH /Applications $(MACOS_DIR)/$(APP_NAME)-$(VERSION).pkg --sign "$$APPLE_IDENTITY_INS" --identifier $$APPLE_BUNDLE_ID; \
 	if [ -n "$$NOTARIZE" ] && [ -n "$$APPLE_ID" ] && [ -n "$$APPLE_PASSWORD" ] && [ -n "$$APPLE_TEAM_ID" ]; then \

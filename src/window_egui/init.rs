@@ -487,6 +487,8 @@ impl super::Tabular {
             rename_symbol_old: String::new(),
             rename_symbol_new: String::new(),
             data_scroll_x: 0.0,
+            data_scroll_y: 0.0,
+            cached_connection_types: std::collections::HashMap::new(),
             pending_clipboard_text: None,
             show_schema_diff_dialog: false,
             schema_diff_state: None,

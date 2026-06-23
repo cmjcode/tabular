@@ -363,55 +363,91 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             );
             // Defer refresh action to avoid mutable borrow inside UI closures
             let mut refresh_request_data = false;
+
+            // Virtual scroll: only render rows visible in the viewport.
+            // Previous frame's scroll offset drives row range — 1-frame lag is imperceptible.
+            const ROW_HEIGHT: f32 = 25.0;
+            let total_rows = tabular.current_table_data.len();
+            let prev_scroll_y = tabular.data_scroll_y;
+            let first_row = ((prev_scroll_y / ROW_HEIGHT) as usize).saturating_sub(3);
+            let last_row = (((prev_scroll_y + data_h) / ROW_HEIGHT).ceil() as usize + 4).min(total_rows);
+
+            // Pre-compute total content width (matches sticky header formula)
+            let total_content_w: f32 = 60.0
+                + headers.iter().enumerate()
+                    .map(|(i, _)| get_column_width(tabular, i).max(30.0))
+                    .sum::<f32>();
+
             let scroll_out = egui::ScrollArea::both()
                 .id_salt("table_data_scroll")
                 .horizontal_scroll_offset(tabular.data_scroll_x)
                 .auto_shrink([false, false])
                 .show(&mut scroll_child, |ui| {
-                    // Capture target rect of the selected cell during layout
-                    let mut target_cell_rect: Option<egui::Rect> = None;
-                    let grid_response = egui::Grid::new("table_data_grid")
-                        .striped(true)
-                        .spacing([0.0, 0.0])
-                        .min_col_width(0.0)
-                        .max_col_width(f32::INFINITY)
-                        .show(ui, |ui| {
-                            // Render data rows with row numbers
-                            let current_table_data = tabular.current_table_data.clone();
-                            let selected_rows = tabular.selected_rows.clone();
-                            let selected_row = tabular.selected_row;
-                            let error_column_index = error_column_index;
-                            let newly_created_rows = tabular.newly_created_rows.clone();
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                    // Establish full content width so horizontal scrollbar is correct
+                    ui.set_min_width(total_content_w);
 
-                            for (row_index, row) in current_table_data.iter().enumerate() {
-                                let is_selected_row = selected_rows.contains(&row_index)
-                                    || selected_row == Some(row_index);
-                                let is_newly_created = newly_created_rows.contains(&row_index);
+                    // Clone data (borrow checker: tabular fields mutated inside loop)
+                    let current_table_data = tabular.current_table_data.clone();
+                    let selected_rows = tabular.selected_rows.clone();
+                    let selected_row = tabular.selected_row;
+                    let newly_created_rows = tabular.newly_created_rows.clone();
 
-                                let row_color = if is_newly_created {
-                                    // Green highlight for newly created/duplicated rows
-                                    if ui.visuals().dark_mode {
-                                        egui::Color32::from_rgba_unmultiplied(50, 200, 100, 40)
+                    // Top spacer: allocate space for rows above the viewport
+                    if first_row > 0 {
+                        ui.add_space(first_row as f32 * ROW_HEIGHT);
+                    }
+
+                    for row_index in first_row..last_row {
+                        let row = &current_table_data[row_index];
+                        let is_selected_row = selected_rows.contains(&row_index)
+                            || selected_row == Some(row_index);
+                        let is_newly_created = newly_created_rows.contains(&row_index);
+
+                        let row_color = if is_newly_created {
+                            if ui.visuals().dark_mode {
+                                egui::Color32::from_rgba_unmultiplied(50, 200, 100, 40)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(150, 255, 180, 100)
+                            }
+                        } else if is_selected_row {
+                            if ui.visuals().dark_mode {
+                                egui::Color32::from_rgba_unmultiplied(100, 150, 255, 30)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(200, 220, 255, 80)
+                            }
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+
+                        // Each row is a horizontal strip of fixed height
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(total_content_w, ROW_HEIGHT),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                                let row_rect = ui.max_rect();
+
+                                // Alternating stripe background
+                                if row_index % 2 == 1 {
+                                    let stripe = if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 8)
                                     } else {
-                                        egui::Color32::from_rgba_unmultiplied(150, 255, 180, 100)
-                                    }
-                                } else if is_selected_row {
-                                    if ui.visuals().dark_mode {
-                                        egui::Color32::from_rgba_unmultiplied(100, 150, 255, 30)
-                                    } else {
-                                        egui::Color32::from_rgba_unmultiplied(200, 220, 255, 80)
-                                    }
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                };
+                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 8)
+                                    };
+                                    ui.painter().rect_filled(row_rect, 0.0, stripe);
+                                }
+                                // Selection / new-row highlight
+                                if row_color != egui::Color32::TRANSPARENT {
+                                    ui.painter().rect_filled(row_rect, 3.0, row_color);
+                                }
+
+                                // ── Row number cell ──────────────────────────────────
                                 ui.allocate_ui_with_layout(
-                                    [60.0, ui.available_height().max(25.0)].into(),
+                                    [60.0, ROW_HEIGHT].into(),
                                     egui::Layout::top_down(egui::Align::Center),
                                     |ui| {
                                         let rect = ui.available_rect_before_wrap();
-                                        if row_color != egui::Color32::TRANSPARENT {
-                                            ui.painter().rect_filled(rect, 3.0, row_color);
-                                        }
                                         let border_color = if ui.visuals().dark_mode {
                                             egui::Color32::from_gray(60)
                                         } else {
@@ -462,28 +498,23 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     } else {
                                         get_column_width(tabular, col_index).max(50.0)
                                     };
-                                    let cell_height = ui.available_height().max(25.0);
                                     ui.allocate_ui_with_layout(
-                                        [column_width, cell_height].into(),
+                                        [column_width, ROW_HEIGHT].into(),
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
                                             let rect = ui.available_rect_before_wrap();
-                                            if row_color != egui::Color32::TRANSPARENT
-                                                || is_selected_col
-                                            {
-                                                ui.painter().rect_filled(rect, 3.0, row_color);
-                                                if is_selected_col {
-                                                    let overlay = if ui.visuals().dark_mode {
-                                                        egui::Color32::from_rgba_unmultiplied(
-                                                            100, 255, 150, 20,
-                                                        )
-                                                    } else {
-                                                        egui::Color32::from_rgba_unmultiplied(
-                                                            100, 200, 150, 40,
-                                                        )
-                                                    };
-                                                    ui.painter().rect_filled(rect, 0.0, overlay);
-                                                }
+                                            // Column-selection overlay (row highlight already on row_rect)
+                                            if is_selected_col {
+                                                let overlay = if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgba_unmultiplied(
+                                                        100, 255, 150, 20,
+                                                    )
+                                                } else {
+                                                    egui::Color32::from_rgba_unmultiplied(
+                                                        100, 200, 150, 40,
+                                                    )
+                                                };
+                                                ui.painter().rect_filled(rect, 0.0, overlay);
                                             }
                                             // Multi-cell block overlay (between anchor and current selected cell)
                                             if let (Some((ar, ac)), Some((br, bc))) =
@@ -561,11 +592,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     stroke,
                                                 );
                                             }
-                                            // If this is the selected cell and a scroll has been requested,
-                                            // remember the exact rect so we can scroll to it after the grid is laid out.
-                                            if is_selected_cell && tabular.scroll_to_selected_cell {
-                                                target_cell_rect = Some(rect);
-                                            }
                                             let max_chars =
                                                 ((column_width / 8.0).floor() as usize).max(10);
                                             let display_text = if cell.chars().count() > max_chars {
@@ -588,22 +614,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             
                                             // DETACHED double click check
                                             if cell_response.double_clicked() {
-                                                log::debug!("🔥 Double click detected on row {}, col {}", row_index, col_index);
-                                                log::debug!("🔥 is_table_browse_mode: {}", tabular.is_table_browse_mode);
-                                                log::debug!("🔥 current_column_metadata.is_some(): {}", tabular.current_column_metadata.is_some());
+
                                             }
 
                                             // ALLOW EDITING ALWAYS (for custom queries too)
                                             if cell_response.double_clicked() {
                                                 // queue edit start to avoid mutable borrow inside iteration
-                                                log::debug!("🔥 Setting start_edit_request");
+
                                                 start_edit_request = Some((row_index, col_index));
                                             } else if cell_response.clicked() {
-                                                // log::debug!("🔥 Single click detected on row {}, col {}", row_index, col_index);
-                                                log::debug!("🔥 Flags check: browse_mode={}, metadata_some={}", 
-                                                    tabular.is_table_browse_mode, 
-                                                    tabular.current_column_metadata.is_some()
-                                                );
 
                                                 let shift = ui.input(|i| i.modifiers.shift);
                                                 if shift {
@@ -965,10 +984,22 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                         },
                                     );
                                 }
-                                ui.end_row();
-                            }
-                        });
-                    grid_response.response.context_menu(|ui| {
+                            }, // end row allocate_ui_with_layout
+                        ); // end row wrapper
+                    } // end for row_index in first_row..last_row
+
+                    // Bottom spacer: allocate space for rows below the viewport
+                    if last_row < total_rows {
+                        ui.add_space((total_rows - last_row) as f32 * ROW_HEIGHT);
+                    }
+
+                    // Context menu on the scroll area background
+                    let bg_resp = ui.interact(
+                        ui.min_rect(),
+                        egui::Id::new("table_data_bg"),
+                        egui::Sense::hover(),
+                    );
+                    bg_resp.context_menu(|ui| {
                         ui.set_min_width(150.0);
                         ui.vertical(|ui| {
                             if ui.button("🔄 Refresh Data").clicked() {
@@ -1060,27 +1091,26 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         });
                     });
 
-                    // After laying out the grid, perform the scroll to the selected cell (if requested)
+                    // Scroll to selected cell — computed geometrically so it works
+                    // even when the target cell is outside the rendered viewport.
                     if tabular.scroll_to_selected_cell {
-                        if let Some(rect) = target_cell_rect {
-                            log::debug!(
-                                "🔎 scroll_to_rect -> min=({:.1},{:.1}) max=({:.1},{:.1})",
-                                rect.min.x,
-                                rect.min.y,
-                                rect.max.x,
-                                rect.max.y
+                        if let Some((sel_row, sel_col)) = tabular.selected_cell {
+                            let col_x: f32 = 60.0
+                                + (0..sel_col)
+                                    .map(|i| get_column_width(tabular, i).max(50.0))
+                                    .sum::<f32>();
+                            let col_w = get_column_width(tabular, sel_col).max(50.0);
+                            let rect = egui::Rect::from_min_size(
+                                egui::pos2(col_x, sel_row as f32 * ROW_HEIGHT),
+                                egui::vec2(col_w, ROW_HEIGHT),
                             );
-                            // Center the cell in view for both axes
                             ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                        } else {
-                            log::debug!(
-                                "⚠️ scroll_to_selected_cell set but no target rect found this frame"
-                            );
                         }
                     }
                 });
-            // Sync horizontal scroll offset to keep sticky header aligned
+            // Sync scroll offsets: x for sticky header, y for next-frame virtual scroll
             tabular.data_scroll_x = scroll_out.state.offset.x;
+            tabular.data_scroll_y = scroll_out.state.offset.y;
             // Execute deferred refresh after UI borrows are released
             if refresh_request_data {
                 refresh_current_table_data(tabular);
@@ -1207,9 +1237,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.selected_cell = Some((r, c));
                 tabular.table_recently_clicked = true;
                 
-                log::debug!("🔥 Processing start_edit_request for row {}, col {}", r, c);
                 tabular.spreadsheet_start_cell_edit(r, c);
-                log::debug!("🔥 spreadsheet_start_cell_edit called. editing_cell is now: {:?}", tabular.spreadsheet_state.editing_cell);
 
                 // Fetch ENUM options if applicable
                 tabular.spreadsheet_state.enum_options = None;
@@ -1251,28 +1279,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                      // Actually `execute_mysql_query_job` populates it.
                      // Let's assume `type_might_be_enum` is the gate.
                      
-                     log::debug!("🔥 [debug] start_edit: table='{}', type_might_be_enum={}", table_name, type_might_be_enum);
-
-                     // If we are browsing a table, try to get cached columns
                      if !table_name.is_empty() && type_might_be_enum {
-                         // Clean table name (remove backticks/quotes)
                          let clean_table = table_name.trim_matches(|c| c == '`' || c == '"' || c == '\'');
-                         
-                         // We need the database name
                          let db_name = tabular.query_tabs.get(tabular.active_tab_index)
                                          .and_then(|t| t.database_name.clone())
                                          .unwrap_or_default();
-                         
-                         println!("🔥 [debug] lookup clean_table='{}' (orig='{}'), db='{}'", clean_table, table_name, db_name);
-
                          if let (Some(cols), Some(col_name)) = (crate::cache_data::get_columns_from_cache(tabular, conn_id, &db_name, clean_table), tabular.current_table_headers.get(c)) {
-                                 println!("🔥 [debug] Found {} cached columns", cols.len());
                                  if cols.is_empty() {
-                                     // CACHE MISS / EMPTY CACHE DETECTED -> Trigger Popup ONLY if strictly needed
-                                     println!("🔥 [debug] Cache empty! Requesting load...");
                                      tabular.cache_miss_request = Some((conn_id, db_name.clone(), clean_table.to_string()));
                                  } else {
-                                     // Proceed with normal generic enum check
                                      if let Some((_, type_str)) = cols.iter().find(|(name, _)| name == col_name) {
                                          let lower_type = type_str.to_lowercase();
                                          if lower_type.starts_with("enum") || lower_type.starts_with("set") {
@@ -1281,8 +1296,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                      }
                                  }
                          } else {
-                             // Cache lookup mismatch or initial miss
-                             println!("🔥 [debug] Cache lookup returned None. Requesting load...");
                              tabular.cache_miss_request = Some((conn_id, db_name.clone(), clean_table.to_string()));
                          }
                      }

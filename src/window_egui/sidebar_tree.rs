@@ -58,14 +58,16 @@ impl super::Tabular {
             }
         }
 
-        // Build quick lookup: connection_id -> DatabaseType
-        let mut connection_types: std::collections::HashMap<i64, models::enums::DatabaseType> =
-            std::collections::HashMap::new();
-        for c in &self.connections {
-            if let Some(id) = c.id {
-                connection_types.insert(id, c.connection_type.clone());
+        // Rebuild connection_type cache only when connections list length changes
+        if self.cached_connection_types.len() != self.connections.iter().filter(|c| c.id.is_some()).count() {
+            self.cached_connection_types.clear();
+            for c in &self.connections {
+                if let Some(id) = c.id {
+                    self.cached_connection_types.insert(id, c.connection_type.clone());
+                }
             }
         }
+        let connection_types = &self.cached_connection_types;
         let mut expansion_requests = Vec::new();
         let mut tables_to_expand = Vec::new();
         let mut context_menu_requests = Vec::new();
@@ -128,7 +130,7 @@ impl super::Tabular {
                     pending_connection_pools: &self.pending_connection_pools,
                     shared_connection_pools: &self.shared_connection_pools,
                     is_search_mode,
-                    connection_types: &connection_types,
+                    connection_types,
                     prefetch_progress: &self.prefetch_progress,
                     db_icon_textures: &self.db_icon_textures,
                 },

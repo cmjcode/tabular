@@ -174,7 +174,6 @@ pub(crate) fn get_databases_from_cache(
         match result {
             Ok(rows) => {
                 let databases: Vec<String> = rows.into_iter().map(|(name,)| name).collect();
-                eprintln!("[TABULAR-DEBUG] get_databases_from_cache: conn={} => {} databases: {:?}", connection_id, databases.len(), databases);
                 Some(databases)
             }
             Err(e) => {
@@ -256,11 +255,6 @@ pub(crate) fn clear_tables_from_cache_for_db(
     connection_id: i64,
     database_name: &str,
 ) {
-    eprintln!(
-        "[TABULAR-DEBUG] clear_tables_from_cache_for_db: clearing conn={} db={:?}",
-        connection_id,
-        database_name
-    );
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let db = database_name.to_string();
@@ -273,25 +267,13 @@ pub(crate) fn clear_tables_from_cache_for_db(
             .execute(pool_clone.as_ref())
             .await
             {
-                Ok(result) => eprintln!(
-                    "[TABULAR-DEBUG] clear_tables_from_cache_for_db: deleted {} rows for conn={} db={:?}",
-                    result.rows_affected(),
-                    connection_id,
-                    db
-                ),
+                Ok(_) => {},
                 Err(e) => {
-                    eprintln!(
-                        "[TABULAR-DEBUG] clear_tables_from_cache_for_db ERROR: conn={} db={:?} err={}",
-                        connection_id, db, e
-                    );
-                    // SQLite error code 11 = SQLITE_CORRUPT. Attempt recovery via VACUUM then retry.
                     let err_str = e.to_string();
                     if err_str.contains("code: 11") || err_str.contains("malformed") || err_str.contains("corrupt") {
-                        eprintln!("[TABULAR-DEBUG] Detected corrupt SQLite cache — attempting VACUUM to repair...");
                         let vacuum_result = sqlx::query("VACUUM").execute(pool_clone.as_ref()).await;
                         match vacuum_result {
                             Ok(_) => {
-                                eprintln!("[TABULAR-DEBUG] VACUUM succeeded — retrying DELETE");
                                 let _ = sqlx::query(
                                     "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
                                 )
@@ -300,9 +282,7 @@ pub(crate) fn clear_tables_from_cache_for_db(
                                 .execute(pool_clone.as_ref())
                                 .await;
                             }
-                            Err(vacuum_err) => {
-                                eprintln!("[TABULAR-DEBUG] VACUUM failed: {} — clearing ALL table_cache as fallback", vacuum_err);
-                                // Last resort: truncate the whole table_cache so no stale entries remain
+                            Err(_) => {
                                 let _ = sqlx::query("DELETE FROM table_cache")
                                     .execute(pool_clone.as_ref())
                                     .await;
@@ -317,8 +297,6 @@ pub(crate) fn clear_tables_from_cache_for_db(
         } else if let Ok(rt) = tokio::runtime::Runtime::new() {
             rt.block_on(fut);
         }
-    } else {
-        eprintln!("[TABULAR-DEBUG] clear_tables_from_cache_for_db: NO db_pool available!");
     }
 }
 

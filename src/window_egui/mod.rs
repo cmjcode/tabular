@@ -442,8 +442,11 @@ pub struct Tabular {
     pub rename_symbol_active: bool,
     pub rename_symbol_old: String,
     pub rename_symbol_new: String,
-    // Horizontal scroll offset synced between sticky header and data grid
+    // Scroll offsets synced between sticky header and data grid
     pub data_scroll_x: f32,
+    pub data_scroll_y: f32,
+    // Cached connection-type lookup rebuilt only when connections list changes
+    pub cached_connection_types: std::collections::HashMap<i64, models::enums::DatabaseType>,
     // Pending clipboard text (written to egui clipboard on next frame)
     pub pending_clipboard_text: Option<String>,
     // Schema Diff dialog
