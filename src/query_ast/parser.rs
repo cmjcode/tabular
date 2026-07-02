@@ -132,14 +132,16 @@ fn convert_select(
         };
         let kind = match join.join_operator {
             sq::JoinOperator::Inner(_) => JoinKind::Inner,
-            sq::JoinOperator::LeftOuter(_) => JoinKind::Left,
-            sq::JoinOperator::RightOuter(_) => JoinKind::Right,
+            sq::JoinOperator::Left(_) | sq::JoinOperator::LeftOuter(_) => JoinKind::Left,
+            sq::JoinOperator::Right(_) | sq::JoinOperator::RightOuter(_) => JoinKind::Right,
             sq::JoinOperator::FullOuter(_) => JoinKind::Full,
             _ => JoinKind::Inner,
         };
         let on_expr = match &join.join_operator {
             sq::JoinOperator::Inner(cond)
+            | sq::JoinOperator::Left(cond)
             | sq::JoinOperator::LeftOuter(cond)
+            | sq::JoinOperator::Right(cond)
             | sq::JoinOperator::RightOuter(cond)
             | sq::JoinOperator::FullOuter(cond) => match cond {
                 sq::JoinConstraint::On(e) => Some(convert_expr(e)),

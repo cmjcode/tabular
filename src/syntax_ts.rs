@@ -424,7 +424,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child(i as u32) {
                         stack.push(child);
                     }
                 }
@@ -536,7 +536,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child(i as u32) {
                         stack.push(child);
                     }
                 }
@@ -549,7 +549,7 @@ mod ts {
         fn collect_outline(root: Node, text: &str) -> Vec<SymbolNode> {
             let mut items = Vec::new();
             for i in 0..root.named_child_count() {
-                if let Some(child) = root.named_child(i) {
+                if let Some(child) = root.named_child(i as u32) {
                     append_symbol(child, text, &mut items);
                 }
             }
@@ -562,7 +562,7 @@ mod ts {
                 return;
             }
             for i in 0..node.named_child_count() {
-                if let Some(child) = node.named_child(i) {
+                if let Some(child) = node.named_child(i as u32) {
                     append_symbol(child, text, out);
                 }
             }
@@ -643,7 +643,7 @@ mod ts {
                     }
                 }
                 for i in (0..current.named_child_count()).rev() {
-                    if let Some(child) = current.named_child(i) {
+                    if let Some(child) = current.named_child(i as u32) {
                         stack.push(child);
                     }
                 }
@@ -671,7 +671,7 @@ mod ts {
                     continue;
                 }
                 for i in (0..current.named_child_count()).rev() {
-                    if let Some(child) = current.named_child(i) {
+                    if let Some(child) = current.named_child(i as u32) {
                         stack.push(child);
                     }
                 }
@@ -726,7 +726,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child(i as u32) {
                         stack.push(child);
                     }
                 }
@@ -790,7 +790,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child(i as u32) {
                         stack.push(child);
                     }
                 }
@@ -803,7 +803,7 @@ mod ts {
         fn collect_outline(root: Node, text: &str) -> Vec<SymbolNode> {
             let mut items = Vec::new();
             for i in 0..root.named_child_count() {
-                if let Some(child) = root.named_child(i) {
+                if let Some(child) = root.named_child(i as u32) {
                     append_symbol(child, text, &mut items);
                 }
             }
@@ -837,7 +837,7 @@ mod ts {
                 }
                 _ => {
                     for i in 0..node.named_child_count() {
-                        if let Some(child) = node.named_child(i) {
+                        if let Some(child) = node.named_child(i as u32) {
                             append_symbol(child, text, out);
                         }
                     }
@@ -848,7 +848,7 @@ mod ts {
         fn collect_properties(object: Node, text: &str) -> Vec<SymbolNode> {
             let mut props = Vec::new();
             for i in 0..object.named_child_count() {
-                if let Some(child) = object.named_child(i)
+                if let Some(child) = object.named_child(i as u32)
                     && child.kind() == "pair"
                 {
                     props.push(build_property_symbol(child, text));
@@ -860,7 +860,7 @@ mod ts {
         fn collect_array_children(array: Node, text: &str) -> Vec<SymbolNode> {
             let mut result = Vec::new();
             for i in 0..array.named_child_count() {
-                if let Some(child) = array.named_child(i) {
+                if let Some(child) = array.named_child(i as u32) {
                     append_symbol(child, text, &mut result);
                 }
             }
@@ -942,7 +942,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child(i as u32) {
                         stack.push(child);
                     }
                 }
@@ -1029,7 +1029,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child(i as u32) {
                         stack.push(child);
                     }
                 }
@@ -1042,7 +1042,7 @@ mod ts {
         fn collect_outline(root: Node, text: &str) -> Vec<SymbolNode> {
             let mut items = Vec::new();
             for i in 0..root.named_child_count() {
-                if let Some(child) = root.named_child(i) {
+                if let Some(child) = root.named_child(i as u32) {
                     append_symbol(child, text, &mut items);
                 }
             }
@@ -1055,7 +1055,7 @@ mod ts {
                 return;
             }
             for i in 0..node.named_child_count() {
-                if let Some(child) = node.named_child(i) {
+                if let Some(child) = node.named_child(i as u32) {
                     append_symbol(child, text, out);
                 }
             }
@@ -1120,7 +1120,7 @@ mod ts {
                 "lexical_declaration" | "variable_declaration" => {
                     let mut names = Vec::new();
                     for i in 0..node.named_child_count() {
-                        if let Some(child) = node.named_child(i)
+                        if let Some(child) = node.named_child(i as u32)
                             && child.kind() == "variable_declarator"
                             && let Some(name_node) = child.child_by_field_name("name")
                             && let Ok(name) = name_node.utf8_text(text.as_bytes())
@@ -1147,7 +1147,7 @@ mod ts {
         fn collect_nested_symbols(node: Node, text: &str) -> Vec<SymbolNode> {
             let mut items = Vec::new();
             for i in 0..node.named_child_count() {
-                if let Some(child) = node.named_child(i) {
+                if let Some(child) = node.named_child(i as u32) {
                     if let Some(symbol) = build_symbol(child, text) {
                         items.push(symbol);
                     } else {

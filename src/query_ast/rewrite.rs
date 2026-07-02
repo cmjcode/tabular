@@ -731,7 +731,9 @@ fn collect_ident_roots_query(
             for j in &fw.joins {
                 match &j.join_operator {
                     sq::JoinOperator::Inner(constraint)
+                    | sq::JoinOperator::Left(constraint)
                     | sq::JoinOperator::LeftOuter(constraint)
+                    | sq::JoinOperator::Right(constraint)
                     | sq::JoinOperator::RightOuter(constraint)
                     | sq::JoinOperator::FullOuter(constraint) => {
                         if let sq::JoinConstraint::On(e) = constraint {

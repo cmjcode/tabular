@@ -264,11 +264,28 @@ pub fn compile_single_select(
         // Extract cte name
         let with_body = &working_sql[4..as_pos];
         let cte_name = with_body.trim().trim_matches(|c: char| c == ',');
-        if let Some(close_paren) = working_sql[as_pos..].find(')') {
-            let subquery_start = as_pos + 5; // len(" as (")
-            let subquery_sql = working_sql[subquery_start..as_pos + close_paren].trim();
+        let subquery_start = as_pos + 5; // len(" as (")
+        // Find the matching closing paren, respecting nesting (e.g. function calls
+        // like `now()` inside the CTE body) instead of grabbing the first `)`.
+        let mut depth = 1i32;
+        let mut close_paren_abs = None;
+        for (i, b) in working_sql.as_bytes()[subquery_start..].iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close_paren_abs = Some(subquery_start + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(close_paren_abs) = close_paren_abs {
+            let subquery_sql = working_sql[subquery_start..close_paren_abs].trim();
             // Remaining after )
-            let after = &working_sql[as_pos + close_paren + 1..];
+            let after = &working_sql[close_paren_abs + 1..];
             // Replace first occurrence of cte_name in FROM with (subquery) alias
             let lowered_after = after.to_ascii_lowercase();
             if lowered_after.contains(&format!(" {} ", cte_name.to_ascii_lowercase())) {
@@ -307,14 +324,15 @@ pub fn compile_single_select(
     let headers = infer_headers_from_plan(&plan);
     let sql = emit_sql(&plan, db_type)?;
     // (Optionally we could store remaining_ctes inside PlanEntry in future)
-    PlanCache::global().insert(
-        cache_key.clone(),
-        plan_cache::PlanEntry {
-            plan: std::sync::Arc::new(plan),
-            sql: sql.clone(),
-            headers: headers.clone(),
-        },
-    );
+    let entry = plan_cache::PlanEntry {
+        plan: std::sync::Arc::new(plan),
+        sql: sql.clone(),
+        headers: headers.clone(),
+    };
+    PlanCache::global().insert(cache_key.clone(), entry.clone());
+    // Also populate the cheap pre-parse tier so a repeat of the same raw SQL
+    // hits the cache before we re-parse it at all.
+    PlanCache::global().insert(pre_key.clone(), entry);
     // Hook: store debug info into thread-local so UI can pick it up (simple static slot)
     STORE_DEBUG.with(|slot| {
         *slot.borrow_mut() = Some((logical_fp, cache_key.clone(), remaining_ctes));
