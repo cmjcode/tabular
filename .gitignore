@@ -13,3 +13,4 @@ flatpak/.build-dir
 flatpak/dist
 flatpak/cargo-vendor
 flatpak/repo
+.claude
