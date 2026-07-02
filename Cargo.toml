@@ -31,7 +31,9 @@ sqlx = { version = "0.9", features = [
 ] }
 # Force bundled SQLite to avoid missing runtime symbols (e.g., sqlite3_db_config) in
 # Arch build chroot; ensures libsqlite3-sys builds its own recent SQLite.
-libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+# NOTE: capped at 0.37 — sqlx-sqlite 0.9 requires libsqlite3-sys <0.38 and the
+# `links = "sqlite3"` constraint allows only one version in the tree.
+libsqlite3-sys = { version = "0.37", features = ["bundled"] }
 sqlparser = { version = "0.62", optional = true }
 sqlformat = "0.5.0"
 redis = { version = "1.3.0", features = ["tokio-comp", "connection-manager"] }
@@ -89,7 +91,7 @@ deadpool = "0.12.3"
 deadpool-tiberius = "0.1.9"
 # Cipher for the encrypted-file secret store fallback (src/secrets.rs);
 # the primary OS-keychain backends are declared per-target below.
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 
 # OS keychain backends (see src/secrets.rs). Linux is opt-in via the
 # `linux-keyring` feature because Secret Service pulls a D-Bus build/runtime

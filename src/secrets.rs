@@ -256,8 +256,8 @@ mod backend_keyring {
 /// The master key lives in the OS keychain (one item, cached per process);
 /// without a keychain it falls back to `secrets.key` on disk (0600).
 mod backend_file {
-    use chacha20poly1305::aead::{Aead, OsRng};
-    use chacha20poly1305::{AeadCore, ChaCha20Poly1305, Key, KeyInit, Nonce};
+    use chacha20poly1305::aead::{Aead, Generate};
+    use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
     use log::warn;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -332,9 +332,7 @@ mod backend_file {
             return Some(key_bytes);
         }
 
-        let generated = ChaCha20Poly1305::generate_key(&mut OsRng);
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&generated);
+        let key_bytes = <[u8; 32]>::generate();
         if mode == super::KeyringMode::On
             && super::backend_keyring::set(MASTER_KEY_NAME, &hex::encode(key_bytes))
         {
@@ -408,7 +406,7 @@ mod backend_file {
             return false;
         };
         let cipher = ChaCha20Poly1305::new(&key);
-        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let nonce = Nonce::generate();
         let Ok(ciphertext) = cipher.encrypt(&nonce, value.as_bytes()) else {
             return false;
         };
@@ -424,5 +422,45 @@ mod backend_file {
         if entries.remove(name).is_some() {
             let _ = save_entries(&entries);
         }
+    }
+}
+
+/// Guards the on-disk `secrets.enc` format across chacha20poly1305 upgrades:
+/// blobs written by older crate versions must stay decryptable byte-for-byte.
+#[cfg(test)]
+mod crypto_compat_tests {
+    use chacha20poly1305::aead::Aead;
+    use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
+
+    const TEST_KEY: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+    const TEST_NONCE: [u8; 12] = [
+        0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+    ];
+    const PLAINTEXT: &str = "tabular-secret-compat-v1";
+    // Produced by chacha20poly1305 0.10.1 with the key/nonce above.
+    const V0_10_CIPHERTEXT_HEX: &str =
+        "8bb848cf25113cc188a120e59fc44390acce1f5f95a636e792c966a877c17b4d3ccc53f4922a2f89";
+
+    #[test]
+    fn decrypts_ciphertext_written_by_v0_10() {
+        let cipher = ChaCha20Poly1305::new(&Key::from(TEST_KEY));
+        let ciphertext = hex::decode(V0_10_CIPHERTEXT_HEX).unwrap();
+        let plain = cipher
+            .decrypt(&Nonce::from(TEST_NONCE), ciphertext.as_slice())
+            .expect("ciphertext from previous crate version must decrypt");
+        assert_eq!(plain, PLAINTEXT.as_bytes());
+    }
+
+    #[test]
+    fn encryption_output_is_stable() {
+        let cipher = ChaCha20Poly1305::new(&Key::from(TEST_KEY));
+        let ciphertext = cipher
+            .encrypt(&Nonce::from(TEST_NONCE), PLAINTEXT.as_bytes())
+            .unwrap();
+        assert_eq!(hex::encode(ciphertext), V0_10_CIPHERTEXT_HEX);
     }
 }
