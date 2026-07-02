@@ -1426,7 +1426,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     if !app.show_autocomplete || app.autocomplete_suggestions.is_empty() {
         return;
     }
-    let screen = ui.ctx().screen_rect();
+    let screen = ui.ctx().content_rect();
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
     let small_font_id = egui::TextStyle::Small.resolve(ui.style());
     let heading_font_id = egui::TextStyle::Body.resolve(ui.style());
@@ -1439,7 +1439,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     let mut note_count = 0usize;
     let mut group_count = 0usize;
     let mut last_kind: Option<crate::models::enums::AutocompleteKind> = None;
-    ui.ctx().fonts(|f| {
+    ui.ctx().fonts_mut(|f| {
         for (idx, s) in suggestions.iter().enumerate() {
             let g = f.layout_no_wrap(s.clone(), font_id.clone(), egui::Color32::WHITE);
             max_label_px = max_label_px.max(g.size().x);

@@ -2659,7 +2659,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         let mut job = crate::syntax_ts::highlight_text_cached(text.as_str(), lang, dark, cache);
         job.wrap.max_width = if word_wrap { wrap_width } else { f32::INFINITY };
-        ui.fonts(|f| f.layout_job(job))
+        ui.fonts_mut(|f| f.layout_job(job))
     };
 
     // Pre-compute line count — O(1) via cached line_starts, not O(n) text scan
@@ -2985,10 +2985,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Compute line/column based on painter metrics
         let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let char_w =
-            ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
+            ui.fonts_mut(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
         let gutter_width = if tabular.advanced_editor.show_line_numbers {
             let total_lines = tabular.editor.line_count().max(1);
-            ui.fonts(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0'))
+            ui.fonts_mut(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0'))
                 * (total_lines.to_string().len() as f32)
         } else {
             0.0
@@ -4760,8 +4760,8 @@ pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &e
     // Create a centered modal dialog
     egui::Area::new(egui::Id::new("command_palette"))
         .fixed_pos(egui::pos2(
-            ctx.screen_rect().center().x - 300.0,
-            ctx.screen_rect().center().y - 200.0,
+            ctx.content_rect().center().x - 300.0,
+            ctx.content_rect().center().y - 200.0,
         ))
         .show(ctx, |ui| {
             egui::Frame::default()
@@ -5115,8 +5115,8 @@ pub(crate) fn render_rename_symbol_dialog(tabular: &mut window_egui::Tabular, ct
 
     egui::Area::new(egui::Id::new("rename_symbol_dialog"))
         .fixed_pos(egui::pos2(
-            ctx.screen_rect().center().x - 200.0,
-            ctx.screen_rect().center().y - 60.0,
+            ctx.content_rect().center().x - 200.0,
+            ctx.content_rect().center().y - 60.0,
         ))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -5170,8 +5170,8 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
     // Create a centered modal dialog for theme selection
     egui::Area::new(egui::Id::new("theme_selector"))
         .fixed_pos(egui::pos2(
-            ctx.screen_rect().center().x - 200.0,
-            ctx.screen_rect().center().y - 150.0,
+            ctx.content_rect().center().x - 200.0,
+            ctx.content_rect().center().y - 150.0,
         ))
         .show(ctx, |ui| {
             egui::Frame::default()

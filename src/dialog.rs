@@ -23,7 +23,7 @@ fn paint_text_edit_cursor(
         };
 
         let font_id = egui::TextStyle::Body.resolve(ui.style());
-        let galley = ui.fonts(|f| {
+        let galley = ui.fonts_mut(|f| {
             f.layout_no_wrap(
                 text_before_cursor.to_string(),
                 font_id,

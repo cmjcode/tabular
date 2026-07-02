@@ -338,7 +338,7 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     }
                 };
                 job.wrap.max_width = wrap_width;
-                ui.fonts(|f| f.layout_job(job))
+                ui.fonts_mut(|f| f.layout_job(job))
             };
 
             let editor_resp = ui.add_sized(
@@ -648,7 +648,7 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     j
                 };
                 job.wrap.max_width = wrap_width;
-                ui.fonts(|f| f.layout_job(job))
+                ui.fonts_mut(|f| f.layout_job(job))
             };
 
             let h = ui.available_height().max(80.0);

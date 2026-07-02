@@ -2099,7 +2099,7 @@ impl Tabular {
                             let total_width = data_button_width + if !self.query_message.is_empty() { button_spacing + messages_button_width } else { 0.0 };
                         
                             // Position at bottom-right
-                            let screen_rect = ui.ctx().screen_rect();
+                            let screen_rect = ui.ctx().content_rect();
                             let button_pos = egui::pos2(
                                 screen_rect.max.x - total_width - margin,
                                 screen_rect.max.y - button_height - margin
