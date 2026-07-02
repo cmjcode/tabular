@@ -177,7 +177,7 @@ fn tables_near_cursor(sql: &str, cursor: usize) -> Vec<String> {
     above.sort_by_key(|(pos, _)| cursor - *pos);
     let mut seen = HashSet::new();
     let mut result = Vec::new();
-    for (_, name) in below.into_iter().chain(above.into_iter()) {
+    for (_, name) in below.into_iter().chain(above) {
         if seen.insert(name.clone()) {
             result.push(name);
         }
@@ -349,12 +349,11 @@ fn detect_ctx(sql: &str, cursor: usize) -> SqlContext {
                         last = SqlContext::AfterWhere;
                     }
                 }
-                "ON" => {
+                "ON"
                     // ON after a JOIN (AfterFrom) is a join condition clause
-                    if last == SqlContext::AfterFrom {
+                    if last == SqlContext::AfterFrom => {
                         last = SqlContext::AfterJoinOn;
                     }
-                }
                 _ => {}
             }
             continue;
@@ -398,8 +397,8 @@ fn fuzzy_match(pref: &str, cand: &str) -> Option<i32> {
             let prev_sep = idx == 0
                 || orig
                     .get(idx - 1)
-                    .map_or(false, |&c| c == '_' || c == '.' || c == ' ');
-            let hump = orig.get(idx).map_or(false, |&c| c.is_uppercase());
+                    .is_some_and(|&c| c == '_' || c == '.' || c == ' ');
+            let hump = orig.get(idx).is_some_and(|&c| c.is_uppercase());
             score += if prev_sep || hump { 10 } else { 1 };
             pi += 1;
         }
@@ -526,8 +525,8 @@ fn get_cached_columns(
             // common case where the user opens the editor before expanding the tree —
             // database_cache (in-memory) is empty but the SQLite table was populated
             // when the connection was first established.
-            if cand_dbs.is_empty() {
-                if let (Some(pool), Some(rt)) = (app.db_pool.as_ref().cloned(), app.runtime.clone()) {
+            if cand_dbs.is_empty()
+                && let (Some(pool), Some(rt)) = (app.db_pool.as_ref().cloned(), app.runtime.clone()) {
                     let fut = async {
                         sqlx::query_as::<_, (String,)>(
                             "SELECT DISTINCT database_name FROM database_cache WHERE connection_id = ? AND database_name != '' LIMIT 10",
@@ -542,7 +541,6 @@ fn get_cached_columns(
                         }
                     }
                 }
-            }
 
             // Only attempt the live fetch (and blacklist on miss) when we have at
             // least one candidate database. If cand_dbs is still empty the user

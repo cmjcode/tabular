@@ -824,11 +824,10 @@ fn execute_request(state: &mut HttpClientState) {
                 HttpAuthType::BasicAuth => {
                     req_builder = req_builder.basic_auth(&basic_user, Some(&basic_pass));
                 }
-                HttpAuthType::ApiKey => {
-                    if api_key_in_header && !api_key_name.is_empty() {
+                HttpAuthType::ApiKey
+                    if api_key_in_header && !api_key_name.is_empty() => {
                         req_builder = req_builder.header(api_key_name.as_str(), api_key_value.as_str());
                     }
-                }
                 _ => {}
             }
 

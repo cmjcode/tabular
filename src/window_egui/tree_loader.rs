@@ -1203,7 +1203,7 @@ impl super::Tabular {
                                 child
                             })
                             .collect();
-                        node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        node.children.sort_by_key(|a| a.name.to_lowercase());
                         return;
                     }
 
@@ -1238,7 +1238,7 @@ impl super::Tabular {
                                 child
                             })
                             .collect();
-                        node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        node.children.sort_by_key(|a| a.name.to_lowercase());
                     } else {
                         node.children = vec![models::structs::TreeNode::new(
                             "Failed to load collections".to_string(),
@@ -1320,7 +1320,7 @@ impl super::Tabular {
                 .collect();
 
             node.children = child_nodes;
-            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            node.children.sort_by_key(|a| a.name.to_lowercase());
             return;
         }
 
@@ -1374,7 +1374,7 @@ impl super::Tabular {
                 .collect();
 
             node.children = child_nodes;
-            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            node.children.sort_by_key(|a| a.name.to_lowercase());
         } else {
             // If database fetch fails, show an informative placeholder instead of confusing sample data
             debug!(
@@ -1451,7 +1451,7 @@ impl super::Tabular {
                     child
                 })
                 .collect();
-            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            node.children.sort_by_key(|a| a.name.to_lowercase());
             return;
         }
 
@@ -1488,7 +1488,7 @@ impl super::Tabular {
                     child
                 })
                 .collect();
-            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            node.children.sort_by_key(|a| a.name.to_lowercase());
         } else {
             node.children = vec![models::structs::TreeNode::new(
                 "Failed to load items".to_string(),
@@ -1549,7 +1549,7 @@ impl super::Tabular {
                 })
                 .collect();
 
-            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            node.children.sort_by_key(|a| a.name.to_lowercase());
             return;
         }
 
@@ -1594,7 +1594,7 @@ impl super::Tabular {
                 .collect();
 
             node.children = child_nodes;
-            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            node.children.sort_by_key(|a| a.name.to_lowercase());
         } else {
             // If database fetch fails, add sample data as fallback
             debug!(
@@ -1706,7 +1706,7 @@ impl super::Tabular {
                     child
                 })
                 .collect();
-            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            node.children.sort_by_key(|a| a.name.to_lowercase());
             return;
         }
 
@@ -1743,7 +1743,7 @@ impl super::Tabular {
                     child
                 })
                 .collect();
-            node.children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            node.children.sort_by_key(|a| a.name.to_lowercase());
         } else {
             // fallback sample
             let sample = match kind {

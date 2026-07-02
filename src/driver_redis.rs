@@ -1344,13 +1344,10 @@ pub(crate) async fn fetch_redis_data(
                 )
                 .await
                 {
-                    Ok(Ok(config_result)) => {
-                        if config_result.len() >= 2 {
+                    Ok(Ok(config_result))
+                        if config_result.len() >= 2 => {
                             config_result[1].parse::<i32>().unwrap_or(16)
-                        } else {
-                            16
                         }
-                    }
                     _ => 16,
                 };
 

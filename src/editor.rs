@@ -414,9 +414,9 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
             }
         }
 
-        if tab.file_path.is_some() {
+        if let Some(path) = &tab.file_path {
             // File already exists, save directly
-            let file_path = tab.file_path.as_ref().unwrap().clone();
+            let file_path = path.clone();
             std::fs::write(&file_path, &tab.content)
                 .map_err(|e| format!("Failed to save file: {}", e))?;
 
@@ -5038,7 +5038,7 @@ pub(crate) fn go_to_definition(tabular: &mut window_egui::Tabular) {
 }
 
 /// Recursively expand tree nodes until a Table/View named `target` is found.
-fn expand_tree_to_table(nodes: &mut Vec<crate::models::structs::TreeNode>, target: &str) -> bool {
+fn expand_tree_to_table(nodes: &mut [crate::models::structs::TreeNode], target: &str) -> bool {
     use crate::models::enums::NodeType;
     for node in nodes.iter_mut() {
         if matches!(node.node_type, NodeType::Table | NodeType::View)

@@ -398,8 +398,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         ui.add_space(first_row as f32 * ROW_HEIGHT);
                     }
 
-                    for row_index in first_row..last_row {
-                        let row = &current_table_data[row_index];
+                    for (row_index, row) in current_table_data
+                        .iter()
+                        .enumerate()
+                        .take(last_row)
+                        .skip(first_row)
+                    {
                         let is_selected_row = selected_rows.contains(&row_index)
                             || selected_row == Some(row_index);
                         let is_newly_created = newly_created_rows.contains(&row_index);
@@ -613,9 +617,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             // log::debug!("Rendering cell"); // Too spammy
                                             
                                             // DETACHED double click check
-                                            if cell_response.double_clicked() {
-
-                                            }
+                                            cell_response.double_clicked();
 
                                             // ALLOW EDITING ALWAYS (for custom queries too)
                                             if cell_response.double_clicked() {
@@ -1093,8 +1095,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                     // Scroll to selected cell — computed geometrically so it works
                     // even when the target cell is outside the rendered viewport.
-                    if tabular.scroll_to_selected_cell {
-                        if let Some((sel_row, sel_col)) = tabular.selected_cell {
+                    if tabular.scroll_to_selected_cell
+                        && let Some((sel_row, sel_col)) = tabular.selected_cell {
                             let col_x: f32 = 60.0
                                 + (0..sel_col)
                                     .map(|i| get_column_width(tabular, i).max(50.0))
@@ -1106,7 +1108,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             );
                             ui.scroll_to_rect(rect, Some(egui::Align::Center));
                         }
-                    }
                 });
             // Sync scroll offsets: x for sticky header, y for next-frame virtual scroll
             tabular.data_scroll_x = scroll_out.state.offset.x;
@@ -1304,9 +1305,9 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             // (Cell edit text updates already applied above before changing edit target)
 
             // Open CSV import dialog for the current table
-            if open_csv_import {
-                if let Some(conn_id) = tabular.current_connection_id {
-                    if let Some(conn) = tabular.connections.iter().find(|c| c.id == Some(conn_id)) {
+            if open_csv_import
+                && let Some(conn_id) = tabular.current_connection_id
+                    && let Some(conn) = tabular.connections.iter().find(|c| c.id == Some(conn_id)) {
                         let db_type = conn.connection_type.clone();
                         // Extract bare table name (strip "Table: " prefix if present)
                         let raw = tabular.current_table_name.trim();
@@ -1320,7 +1321,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         ) -> Option<String> {
                             for n in nodes {
                                 if n.connection_id == Some(conn_id)
-                                    && n.table_name.as_deref().map_or(false, |t| t.eq_ignore_ascii_case(table))
+                                    && n.table_name.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(table))
                                     && n.database_name.is_some()
                                 {
                                     return n.database_name.clone();
@@ -1357,8 +1358,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         });
                         tabular.show_csv_import_dialog = true;
                     }
-                }
-            }
 
             // Perform deferred delete after UI borrows are released
             if let Some(ri) = delete_row_index_request.take() {

@@ -1655,8 +1655,8 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         }
     }
 
-    if trigger_file_pick {
-        if let Some(path) = rfd::FileDialog::new()
+    if trigger_file_pick
+        && let Some(path) = rfd::FileDialog::new()
             .add_filter("CSV / TSV", &["csv", "tsv", "txt"])
             .pick_file()
         {
@@ -1680,7 +1680,6 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                 }
             }
         }
-    }
 
     if trigger_import {
         let state = tabular.csv_import_state.as_ref().unwrap();

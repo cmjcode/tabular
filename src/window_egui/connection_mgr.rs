@@ -450,12 +450,11 @@ impl super::Tabular {
                     node.is_expanded = true;
                 }
             }
-            models::enums::NodeType::TablesFolder => {
+            models::enums::NodeType::TablesFolder
                 // If TablesFolder was expanded, keep it expanded
-                if state_map.get(&key).copied().unwrap_or(false) {
+                if state_map.get(&key).copied().unwrap_or(false) => {
                     node.is_expanded = true;
                 }
-            }
             _ => {}
         }
 

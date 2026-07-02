@@ -1059,11 +1059,10 @@ async fn generate_mssql_ddl(
         client.simple_query(pk_q),
     ).await {
         while let Ok(Some(item)) = stream.try_next().await {
-            if let tiberius::QueryItem::Row(row) = item {
-                if let Some(n) = row.get::<&str, _>(0) {
+            if let tiberius::QueryItem::Row(row) = item
+                && let Some(n) = row.get::<&str, _>(0) {
                     pk_cols.push(format!("[{}]", n));
                 }
-            }
         }
     }
     if !pk_cols.is_empty() {

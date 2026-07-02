@@ -294,7 +294,7 @@ pub trait SpreadsheetOperations {
             // We need to collect first to avoid mutation issues
             let mut rows_to_shift = Vec::new();
             for &row_idx in self.get_newly_created_rows_mut().iter() {
-                if row_idx >= insert_index && row_idx != insert_index {
+                if row_idx > insert_index {
                     rows_to_shift.push(row_idx);
                 }
             }

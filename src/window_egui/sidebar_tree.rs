@@ -2806,8 +2806,8 @@ impl super::Tabular {
                                 ui.close();
                             }
                         }
-                        if !is_mongodb {
-                            if ui.button("📥 Import CSV...").clicked() {
+                        if !is_mongodb
+                            && ui.button("📥 Import CSV...").clicked() {
                                 if let Some(conn_id) = node.connection_id {
                                     let actual_table_name =
                                         node.table_name.as_ref().unwrap_or(&node.name).clone();
@@ -2819,7 +2819,6 @@ impl super::Tabular {
                                 }
                                 ui.close();
                             }
-                        }
                         ui.separator();
                         if !is_mongodb {
                             if ui.button("🗑 Drop Table").clicked() {

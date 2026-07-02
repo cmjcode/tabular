@@ -282,10 +282,8 @@ impl EditorBuffer {
                         ok = false;
                     } else {
                         // Insert in ascending order at position start_line+1
-                        let mut insert_pos = start_line + 1;
-                        for ns in new_starts {
+                        for (insert_pos, ns) in (start_line + 1..).zip(new_starts) {
                             self.line_starts.insert(insert_pos, ns);
-                            insert_pos += 1;
                         }
                     }
                 }

@@ -5,9 +5,11 @@ pub(super) fn parse_enum_values(type_str: &str) -> Option<Vec<String>> {
     }
 
     // Find content inside parentheses
-    if let Some((start_idx, end_idx)) = type_str.find('(').and_then(|start| 
-        type_str.rfind(')').filter(|&end| start < end).map(|end| (start, end))
-    ) {
+    if let Some((start_idx, end_idx)) = type_str
+        .find('(')
+        .zip(type_str.rfind(')'))
+        .filter(|&(start, end)| start < end)
+    {
                 let content = &type_str[start_idx + 1..end_idx];
                 let chars: Vec<char> = content.chars().collect();
                 let mut values = Vec::new();

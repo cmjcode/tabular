@@ -1716,8 +1716,8 @@ impl Tabular {
                                     }
                                 }
 
-                                if toggle_changed {
-                                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                if toggle_changed
+                                    && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                         tab.tx_mode = !tab.tx_mode;
                                         if !tab.tx_mode {
                                             if let Some(s) = tab.session.take() {
@@ -1726,7 +1726,6 @@ impl Tabular {
                                             tab.tx_active = false;
                                         }
                                     }
-                                }
                                 if commit_clicked {
                                     editor::send_session_tx_command(self, true);
                                 }

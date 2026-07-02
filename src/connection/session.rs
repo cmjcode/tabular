@@ -59,7 +59,7 @@ enum SessionConn {
     MySql(sqlx::pool::PoolConnection<sqlx::MySql>),
     Postgres(sqlx::pool::PoolConnection<sqlx::Postgres>),
     Sqlite(sqlx::pool::PoolConnection<sqlx::Sqlite>),
-    MsSQL(deadpool::managed::Object<deadpool_tiberius::Manager>),
+    MsSQL(Box<deadpool::managed::Object<deadpool_tiberius::Manager>>),
 }
 
 /// Spawn a session task for the active tab's connection. Returns `None`
@@ -259,7 +259,7 @@ async fn acquire(
                     while stream.try_next().await.map_err(|e| e.to_string())?.is_some() {}
                 }
             }
-            Ok(SessionConn::MsSQL(conn))
+            Ok(SessionConn::MsSQL(Box::new(conn)))
         }
         _ => Err(format!(
             "Transactions are not supported for {:?}",
@@ -361,7 +361,7 @@ async fn run_query(
             ))
         }
         SessionConn::MsSQL(c) => {
-            crate::driver_mssql::run_query(&mut **c, sql).await
+            crate::driver_mssql::run_query(c, sql).await
         }
     }
 }

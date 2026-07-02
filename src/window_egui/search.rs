@@ -58,12 +58,11 @@ impl super::Tabular {
             // For table nodes, preserve loaded state and children from main tree
             if (filtered_node.node_type == models::enums::NodeType::Table
                 || filtered_node.node_type == models::enums::NodeType::View)
-                && filtered_node.connection_id.is_some()
+                && let Some(connection_id) = filtered_node.connection_id
             {
-                if let Some(main_tree_node) = self.find_table_node_in_main_tree(
-                    &filtered_node.name,
-                    filtered_node.connection_id.unwrap(),
-                ) {
+                if let Some(main_tree_node) =
+                    self.find_table_node_in_main_tree(&filtered_node.name, connection_id)
+                {
                     filtered_node.is_loaded = main_tree_node.is_loaded;
                     filtered_node.is_expanded = main_tree_node.is_expanded;
                     if main_tree_node.is_loaded {
