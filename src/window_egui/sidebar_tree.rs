@@ -263,6 +263,19 @@ impl super::Tabular {
 
         // Process collected Custom View requests OUTSIDE the loop
         for (conn_id, view_name, query) in custom_view_click_requests {
+            // If this DBA/custom view is already open in a tab, just activate it
+            // instead of opening (and re-running) a duplicate tab.
+            if let Some(existing_index) =
+                editor::find_tab_for_target(self, &view_name, conn_id, None)
+            {
+                if existing_index != self.active_tab_index {
+                    editor::switch_to_tab(self, existing_index);
+                }
+                continue;
+            }
+
+             // Create (and switch to) the tab first so it's visible immediately,
+             // before any connection/query work happens.
              editor::create_new_tab_with_connection(
                 self,
                 view_name.clone(),
@@ -279,40 +292,62 @@ impl super::Tabular {
             } else {
                 None
             };
-            
+
             if let Some(mode) = special_mode
                 && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
             {
                 tab.dba_special_mode = Some(mode);
             }
-            
+
             self.current_connection_id = Some(conn_id);
-             // Ensure (or kick off) connection pool before executing
-            if let Some(rt) = self.runtime.clone() {
-                rt.block_on(async {
-                    let _ =
-                        crate::connection::get_or_create_connection_pool(self, conn_id)
-                            .await;
-                });
-            }
-            
-            // Auto run query
-             if let Some((headers, data)) =
-                    connection::execute_query_with_connection(self, conn_id, query.clone())
-                {
-                    self.current_table_headers = headers;
-                    self.current_table_data = data.clone();
-                    self.all_table_data = data;
-                    self.current_table_name = view_name;
-                    self.is_table_browse_mode = false;
-                    self.total_rows = self.all_table_data.len();
-                    self.current_page = 0;
-                    
-                    // Mark as executed
-                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                         tab.has_executed_query = true;
+            self.is_table_browse_mode = false;
+            self.current_table_name = view_name;
+
+            // Don't block the UI thread waiting for the pool/query. If the pool is
+            // already available, dispatch the query as a background job right away;
+            // otherwise queue it and let the per-frame pool-wait poller in
+            // app_impl.rs run it as soon as the pool becomes ready.
+            let pool_ready = self.connection_pools.contains_key(&conn_id)
+                || self
+                    .shared_connection_pools
+                    .lock()
+                    .map(|p| p.contains_key(&conn_id))
+                    .unwrap_or(false);
+
+            if pool_ready {
+                let job_id = self.next_query_job_id;
+                self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
+                match connection::prepare_query_job(self, conn_id, query.clone(), job_id) {
+                    Ok(job) => {
+                        match connection::spawn_query_job(self, job, self.query_result_sender.clone()) {
+                            Ok(handle) => {
+                                self.active_query_jobs.insert(job_id, connection::QueryJobStatus {
+                                    job_id,
+                                    connection_id: conn_id,
+                                    query_preview: query.chars().take(80).collect(),
+                                    started_at: std::time::Instant::now(),
+                                    completed: false,
+                                });
+                                self.active_query_handles.insert(job_id, handle);
+                                self.current_table_name = "Running query…".to_string();
+                            }
+                            Err(err) => {
+                                debug!("⚠️ Failed to spawn custom view query job: {:?}", err);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        debug!("⚠️ Failed to prepare custom view query job: {:?}", err);
                     }
                 }
+            } else {
+                crate::connection::ensure_background_pool_creation(self, conn_id);
+                self.pool_wait_in_progress = true;
+                self.pool_wait_connection_id = Some(conn_id);
+                self.pool_wait_query = query.clone();
+                self.pool_wait_started_at = Some(std::time::Instant::now());
+                self.current_table_name = "Connecting… waiting for pool".to_string();
+            }
         }
 
         // Process add view requests
@@ -1008,50 +1043,62 @@ impl super::Tabular {
                         if is_redis_key {
                             if let Some(k_type) = key_type {
                                 let keyspace = database_name.clone().unwrap_or_default();
-                                let preview_result = crate::driver_redis::fetch_redis_key_pretty_json(
-                                    self,
-                                    connection_id,
-                                    &keyspace,
-                                    &table_name,
-                                    &k_type,
-                                );
-
                                 let tab_title = format!("Redis Key: {} ({})", table_name, k_type);
-                                let tab_content = match preview_result {
-                                    Ok(pretty_json) => pretty_json,
-                                    Err(error) => serde_json::to_string_pretty(&serde_json::json!({
-                                        "key": table_name,
-                                        "type": k_type,
-                                        "database": keyspace,
-                                        "error": error,
-                                    }))
-                                    .unwrap_or_else(|_| "{\n  \"error\": \"Failed to build Redis preview\"\n}".to_string()),
-                                };
 
-                                editor::create_new_tab_with_connection_and_database(
+                                if let Some(existing_index) = editor::find_tab_for_target(
                                     self,
-                                    tab_title,
-                                    tab_content,
-                                    Some(connection_id),
-                                    database_name.clone(),
-                                );
+                                    &tab_title,
+                                    connection_id,
+                                    database_name.as_deref(),
+                                ) {
+                                    if existing_index != self.active_tab_index {
+                                        editor::switch_to_tab(self, existing_index);
+                                    }
+                                } else {
+                                    let preview_result = crate::driver_redis::fetch_redis_key_pretty_json(
+                                        self,
+                                        connection_id,
+                                        &keyspace,
+                                        &table_name,
+                                        &k_type,
+                                    );
 
-                                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                    active_tab.file_path = Some(crate::driver_redis::fetch_redis_key_preview_filename(&table_name));
-                                    active_tab.query_message = format!("Loaded Redis key '{}' as JSON preview", table_name);
-                                    active_tab.query_message_is_error = false;
+                                    let tab_content = match preview_result {
+                                        Ok(pretty_json) => pretty_json,
+                                        Err(error) => serde_json::to_string_pretty(&serde_json::json!({
+                                            "key": table_name,
+                                            "type": k_type,
+                                            "database": keyspace,
+                                            "error": error,
+                                        }))
+                                        .unwrap_or_else(|_| "{\n  \"error\": \"Failed to build Redis preview\"\n}".to_string()),
+                                    };
+
+                                    editor::create_new_tab_with_connection_and_database(
+                                        self,
+                                        tab_title,
+                                        tab_content,
+                                        Some(connection_id),
+                                        database_name.clone(),
+                                    );
+
+                                    if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                        active_tab.file_path = Some(crate::driver_redis::fetch_redis_key_preview_filename(&table_name));
+                                        active_tab.query_message = format!("Loaded Redis key '{}' as JSON preview", table_name);
+                                        active_tab.query_message_is_error = false;
+                                    }
+
+                                    self.current_connection_id = Some(connection_id);
+                                    self.query_message = format!("Loaded Redis key '{}' as JSON preview", table_name);
+                                    self.query_message_is_error = false;
+                                    self.current_table_headers.clear();
+                                    self.current_table_data.clear();
+                                    self.all_table_data.clear();
+                                    self.current_table_name.clear();
+                                    self.total_rows = 0;
+                                    self.current_page = 0;
+                                    self.is_table_browse_mode = false;
                                 }
-
-                                self.current_connection_id = Some(connection_id);
-                                self.query_message = format!("Loaded Redis key '{}' as JSON preview", table_name);
-                                self.query_message_is_error = false;
-                                self.current_table_headers.clear();
-                                self.current_table_data.clear();
-                                self.all_table_data.clear();
-                                self.current_table_name.clear();
-                                self.total_rows = 0;
-                                self.current_page = 0;
-                                self.is_table_browse_mode = false;
                             }
                         } else {
                             // This is a Redis folder/type - create a query tab for scanning keys
@@ -1070,40 +1117,52 @@ impl super::Tabular {
                                 }
                             };
                             let tab_title = format!("Redis {}", table_name);
-                            editor::create_new_tab_with_connection_and_database(
-                                self,
-                                tab_title,
-                                redis_command.clone(),
-                                Some(connection_id),
-                                database_name.clone(),
-                            );
 
-                            // Set database and auto-execute
-                            self.current_connection_id = Some(connection_id);
-                            // Reset spreadsheet editing state when opening a key browse
-                            self.reset_spreadsheet_state();
-                            if let Some((headers, data)) = connection::execute_query_with_connection(
+                            if let Some(existing_index) = editor::find_tab_for_target(
                                 self,
+                                &tab_title,
                                 connection_id,
-                                redis_command,
+                                database_name.as_deref(),
                             ) {
-                                self.current_table_headers = headers;
-                                self.current_table_data = data.clone();
-                                self.all_table_data = data;
-                                self.current_table_name = format!("Redis {}", table_name);
-                                self.total_rows = self.all_table_data.len();
-                                self.current_page = 0;
-                                if let Some(active_tab) =
-                                    self.query_tabs.get_mut(self.active_tab_index)
-                                {
-                                    active_tab.result_headers = self.current_table_headers.clone();
-                                    active_tab.result_rows = self.current_table_data.clone();
-                                    active_tab.result_all_rows = self.all_table_data.clone();
-                                    active_tab.result_table_name = self.current_table_name.clone();
-                                    active_tab.is_table_browse_mode = self.is_table_browse_mode;
-                                    active_tab.current_page = self.current_page;
-                                    active_tab.page_size = self.page_size;
-                                    active_tab.total_rows = self.total_rows;
+                                if existing_index != self.active_tab_index {
+                                    editor::switch_to_tab(self, existing_index);
+                                }
+                            } else {
+                                editor::create_new_tab_with_connection_and_database(
+                                    self,
+                                    tab_title,
+                                    redis_command.clone(),
+                                    Some(connection_id),
+                                    database_name.clone(),
+                                );
+
+                                // Set database and auto-execute
+                                self.current_connection_id = Some(connection_id);
+                                // Reset spreadsheet editing state when opening a key browse
+                                self.reset_spreadsheet_state();
+                                if let Some((headers, data)) = connection::execute_query_with_connection(
+                                    self,
+                                    connection_id,
+                                    redis_command,
+                                ) {
+                                    self.current_table_headers = headers;
+                                    self.current_table_data = data.clone();
+                                    self.all_table_data = data;
+                                    self.current_table_name = format!("Redis {}", table_name);
+                                    self.total_rows = self.all_table_data.len();
+                                    self.current_page = 0;
+                                    if let Some(active_tab) =
+                                        self.query_tabs.get_mut(self.active_tab_index)
+                                    {
+                                        active_tab.result_headers = self.current_table_headers.clone();
+                                        active_tab.result_rows = self.current_table_data.clone();
+                                        active_tab.result_all_rows = self.all_table_data.clone();
+                                        active_tab.result_table_name = self.current_table_name.clone();
+                                        active_tab.is_table_browse_mode = self.is_table_browse_mode;
+                                        active_tab.current_page = self.current_page;
+                                        active_tab.page_size = self.page_size;
+                                        active_tab.total_rows = self.total_rows;
+                                    }
                                 }
                             }
                         }
@@ -1112,6 +1171,17 @@ impl super::Tabular {
                         // For MongoDB, treat table_name as a collection; database_name must be present
                         if let Some(db_name) = &database_name {
                             let tab_title = format!("Collection: {}.{}", db_name, table_name);
+
+                            if let Some(existing_index) = editor::find_tab_for_target(
+                                self,
+                                &tab_title,
+                                connection_id,
+                                database_name.as_deref(),
+                            ) {
+                                if existing_index != self.active_tab_index {
+                                    editor::switch_to_tab(self, existing_index);
+                                }
+                            } else {
                             editor::create_new_tab_with_connection_and_database(
                                 self,
                                 tab_title.clone(),
@@ -1149,6 +1219,7 @@ impl super::Tabular {
                                     active_tab.page_size = self.page_size;
                                     active_tab.total_rows = self.total_rows;
                                 }
+                            }
                             }
                         } else {
                             self.error_message =
@@ -1215,6 +1286,18 @@ impl super::Tabular {
                         } else {
                             format!("Table: {}", table_name)
                         };
+
+                        if let Some(existing_index) = editor::find_tab_for_target(
+                            self,
+                            &tab_title,
+                            connection_id,
+                            database_name.as_deref(),
+                        ) {
+                            if existing_index != self.active_tab_index {
+                                editor::switch_to_tab(self, existing_index);
+                            }
+                            self.current_connection_id = Some(connection_id);
+                        } else {
                         editor::create_new_tab_with_connection_and_database(
                             self,
                             tab_title.clone(),
@@ -1358,36 +1441,21 @@ impl super::Tabular {
                                 // Set browse mode when opening table via sidebar click
                                 self.is_table_browse_mode = true;
                                 // If the pool is not ready, queue the first-page query; otherwise execute.
-                                let mut pool_ready = true;
-                                if self.pending_connection_pools.contains(&connection_id) {
-                                    pool_ready = false;
-                                } else if !self.connection_pools.contains_key(&connection_id) {
-                                    let created_now = if let Some(rt) = self.runtime.clone() {
-                                        rt.block_on(async {
-                                            crate::connection::try_get_connection_pool(
-                                                self,
-                                                connection_id,
-                                            )
-                                            .await
-                                            .is_some()
-                                        })
-                                    } else {
-                                        let rt = self.get_runtime();
-                                        rt.block_on(async {
-                                            crate::connection::try_get_connection_pool(
-                                                self,
-                                                connection_id,
-                                            )
-                                            .await
-                                            .is_some()
-                                        })
-                                    };
-                                    if !created_now {
-                                        pool_ready = false;
-                                    }
-                                }
+                                // Only ever check the cache here — never block the UI thread waiting
+                                // for a pool to be created; the pool-wait poller in app_impl.rs handles
+                                // running the query as soon as the pool becomes available.
+                                let pool_ready = self.connection_pools.contains_key(&connection_id)
+                                    || self
+                                        .shared_connection_pools
+                                        .lock()
+                                        .map(|p| p.contains_key(&connection_id))
+                                        .unwrap_or(false);
 
                                 if !pool_ready {
+                                    crate::connection::ensure_background_pool_creation(
+                                        self,
+                                        connection_id,
+                                    );
                                     // Prepare server pagination state but defer execution
                                     self.current_page = 0;
                                     if let Some(total) = self.execute_count_query() {
@@ -1432,37 +1500,22 @@ impl super::Tabular {
                                     };
                                 debug!("🔄 Client-side query after sanitization: {}", safe_query);
 
-                                // If pool not ready, queue and show loading; otherwise execute now
-                                let mut pool_ready = true;
-                                if self.pending_connection_pools.contains(&connection_id) {
-                                    pool_ready = false;
-                                } else if !self.connection_pools.contains_key(&connection_id) {
-                                    let created_now = if let Some(rt) = self.runtime.clone() {
-                                        rt.block_on(async {
-                                            crate::connection::try_get_connection_pool(
-                                                self,
-                                                connection_id,
-                                            )
-                                            .await
-                                            .is_some()
-                                        })
-                                    } else {
-                                        let rt = self.get_runtime();
-                                        rt.block_on(async {
-                                            crate::connection::try_get_connection_pool(
-                                                self,
-                                                connection_id,
-                                            )
-                                            .await
-                                            .is_some()
-                                        })
-                                    };
-                                    if !created_now {
-                                        pool_ready = false;
-                                    }
-                                }
+                                // If pool not ready, queue and show loading; otherwise execute now.
+                                // Only check the cache here — never block the UI thread waiting for
+                                // a pool to be created; the pool-wait poller in app_impl.rs handles
+                                // running the query as soon as the pool becomes available.
+                                let pool_ready = self.connection_pools.contains_key(&connection_id)
+                                    || self
+                                        .shared_connection_pools
+                                        .lock()
+                                        .map(|p| p.contains_key(&connection_id))
+                                        .unwrap_or(false);
 
                                 if !pool_ready {
+                                    crate::connection::ensure_background_pool_creation(
+                                        self,
+                                        connection_id,
+                                    );
                                     self.pool_wait_in_progress = true;
                                     self.pool_wait_connection_id = Some(connection_id);
                                     self.pool_wait_query = safe_query;
@@ -1523,6 +1576,7 @@ impl super::Tabular {
                                 );
                                 self.last_structure_target = None;
                             }
+                        }
                         }
                     }
                 };
@@ -3276,7 +3330,27 @@ impl super::Tabular {
                 .inner
             };
 
-            if response.clicked() {
+            // DBA quick views + custom views act as actions, so require an explicit
+            // double-click (like Table/View) instead of firing on the first click.
+            let is_dba_or_custom_view = matches!(
+                node.node_type,
+                models::enums::NodeType::UsersFolder
+                    | models::enums::NodeType::PrivilegesFolder
+                    | models::enums::NodeType::ProcessesFolder
+                    | models::enums::NodeType::StatusFolder
+                    | models::enums::NodeType::BlockedQueriesFolder
+                    | models::enums::NodeType::ReplicationStatusFolder
+                    | models::enums::NodeType::MasterStatusFolder
+                    | models::enums::NodeType::MetricsUserActiveFolder
+                    | models::enums::NodeType::CustomView
+            );
+            let activated = if is_dba_or_custom_view {
+                response.double_clicked()
+            } else {
+                response.clicked()
+            };
+
+            if activated {
                 debug!(
                     "🎯 CLICK DETECTED! Node type: {:?}, Name: {}",
                     node.node_type, node.name

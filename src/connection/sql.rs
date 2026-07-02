@@ -60,7 +60,8 @@ pub(crate) fn infer_column_origins(query: &str) -> (Option<Vec<Option<String>>>,
         for item in &select.projection {
             match item {
                 sqlparser::ast::SelectItem::UnnamedExpr(expr)
-                | sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } => match expr {
+                | sqlparser::ast::SelectItem::ExprWithAlias { expr, .. }
+                | sqlparser::ast::SelectItem::ExprWithAliases { expr, .. } => match expr {
                     sqlparser::ast::Expr::Identifier(_) => {
                         // Column without prefix. If only 1 table, assign it. Else ambiguous (None)
                         if table_map.len() == 1 {

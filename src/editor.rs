@@ -182,6 +182,25 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     }
 }
 
+/// Find an already-open tab representing the same title/connection/database,
+/// so callers can activate it instead of opening a duplicate tab.
+pub(crate) fn find_tab_for_target(
+    tabular: &window_egui::Tabular,
+    title: &str,
+    connection_id: i64,
+    database_name: Option<&str>,
+) -> Option<usize> {
+    tabular.query_tabs.iter().position(|tab| {
+        tab.title == title
+            && tab.connection_id == Some(connection_id)
+            && match (database_name, tab.database_name.as_deref()) {
+                (Some(expected), Some(existing)) => expected == existing,
+                (Some(_), None) => false,
+                _ => true,
+            }
+    })
+}
+
 pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     let mut need_connect: Option<i64> = None;
     if tab_index < tabular.query_tabs.len() {

@@ -661,6 +661,7 @@ fn collect_local_aliases_from_factor(
                 out.insert(
                     name.0
                         .last()
+                        .and_then(|id| id.as_ident())
                         .map(|id| id.value.to_ascii_lowercase())
                         .unwrap_or_default(),
                 );
@@ -701,10 +702,13 @@ fn collect_ident_roots_query(
                 sq::SelectItem::UnnamedExpr(e) => collect_ident_roots_expr(e, out),
                 sq::SelectItem::ExprWithAlias { expr, .. } => collect_ident_roots_expr(expr, out),
                 sq::SelectItem::QualifiedWildcard(obj, _) => {
-                    if let Some(id) = obj.0.first() {
+                    if let sq::SelectItemQualifiedWildcardKind::ObjectName(name) = obj
+                        && let Some(id) = name.0.first().and_then(|p| p.as_ident())
+                    {
                         out.insert(id.value.to_ascii_lowercase());
                     }
                 }
+                sq::SelectItem::ExprWithAliases { expr, .. } => collect_ident_roots_expr(expr, out),
                 sq::SelectItem::Wildcard(_) => {}
             }
         }
@@ -740,16 +744,27 @@ fn collect_ident_roots_query(
             }
         }
     }
-    if let Some(ob) = &q.order_by {
-        for obe in &ob.exprs {
+    if let Some(ob) = &q.order_by
+        && let sq::OrderByKind::Expressions(exprs) = &ob.kind
+    {
+        for obe in exprs {
             collect_ident_roots_expr(&obe.expr, out);
         }
     }
-    if let Some(limit) = &q.limit {
-        collect_ident_roots_expr(limit, out);
-    }
-    if let Some(offset) = &q.offset {
-        collect_ident_roots_expr(&offset.value, out);
+    match &q.limit_clause {
+        Some(sq::LimitClause::LimitOffset { limit, offset, .. }) => {
+            if let Some(limit) = limit {
+                collect_ident_roots_expr(limit, out);
+            }
+            if let Some(offset) = offset {
+                collect_ident_roots_expr(&offset.value, out);
+            }
+        }
+        Some(sq::LimitClause::OffsetCommaLimit { offset, limit }) => {
+            collect_ident_roots_expr(offset, out);
+            collect_ident_roots_expr(limit, out);
+        }
+        None => {}
     }
 }
 fn collect_ident_roots_factor(
@@ -819,17 +834,15 @@ fn collect_ident_roots_expr(e: &sqlparser::ast::Expr, out: &mut std::collections
         sq::Expr::Case {
             operand,
             conditions,
-            results,
             else_result,
+            ..
         } => {
             if let Some(o) = operand {
                 collect_ident_roots_expr(o, out);
             }
-            for c in conditions {
-                collect_ident_roots_expr(c, out);
-            }
-            for r in results {
-                collect_ident_roots_expr(r, out);
+            for cw in conditions {
+                collect_ident_roots_expr(&cw.condition, out);
+                collect_ident_roots_expr(&cw.result, out);
             }
             if let Some(er) = else_result {
                 collect_ident_roots_expr(er, out);

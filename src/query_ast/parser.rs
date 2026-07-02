@@ -293,13 +293,14 @@ fn convert_select(
 
     // ORDER BY
     if let Some(ob) = &q.order_by
-        && !ob.exprs.is_empty()
+        && let sq::OrderByKind::Expressions(exprs) = &ob.kind
+        && !exprs.is_empty()
     {
         let mut items = Vec::new();
-        for obe in &ob.exprs {
+        for obe in exprs {
             items.push(SortItem {
                 expr: convert_expr(&obe.expr),
-                asc: obe.asc.unwrap_or(true),
+                asc: obe.options.asc.unwrap_or(true),
             });
         }
         plan = LogicalQueryPlan::Sort {
@@ -326,21 +327,28 @@ fn convert_select(
 }
 
 fn extract_limit_offset(q: &sq::Query) -> Result<(Option<u64>, Option<u64>), QueryAstError> {
-    let limit = if let Some(l) = &q.limit {
-        match l {
-            sq::Expr::Value(sq::Value::Number(n, _)) => n.parse().ok(),
-            _ => None,
+    let (limit_expr, offset_expr) = match &q.limit_clause {
+        Some(sq::LimitClause::LimitOffset { limit, offset, .. }) => {
+            (limit.as_ref(), offset.as_ref().map(|o| &o.value))
         }
-    } else {
-        None
+        Some(sq::LimitClause::OffsetCommaLimit { offset, limit }) => {
+            (Some(limit), Some(offset))
+        }
+        None => (None, None),
     };
-    let offset = if let Some(o) = &q.offset {
-        match &o.value {
-            sq::Expr::Value(sq::Value::Number(n, _)) => n.parse().ok(),
+    let limit = match limit_expr {
+        Some(sq::Expr::Value(v)) => match &v.value {
+            sq::Value::Number(n, _) => n.parse().ok(),
             _ => None,
-        }
-    } else {
-        None
+        },
+        _ => None,
+    };
+    let offset = match offset_expr {
+        Some(sq::Expr::Value(v)) => match &v.value {
+            sq::Value::Number(n, _) => n.parse().ok(),
+            _ => None,
+        },
+        _ => None,
     };
     Ok((limit, offset))
 }
@@ -359,10 +367,13 @@ fn convert_expr(e: &sq::Expr) -> Expr {
                 .collect::<Vec<_>>()
                 .join("."),
         ),
-        sq::Expr::Value(sq::Value::Number(n, _)) => Expr::Number(n.clone()),
-        sq::Expr::Value(sq::Value::SingleQuotedString(s)) => Expr::StringLiteral(s.clone()),
-        sq::Expr::Value(sq::Value::Boolean(b)) => Expr::Boolean(*b),
-        sq::Expr::Value(sq::Value::Null) => Expr::Null,
+        sq::Expr::Value(v) => match &v.value {
+            sq::Value::Number(n, _) => Expr::Number(n.clone()),
+            sq::Value::SingleQuotedString(s) => Expr::StringLiteral(s.clone()),
+            sq::Value::Boolean(b) => Expr::Boolean(*b),
+            sq::Value::Null => Expr::Null,
+            _ => Expr::Raw(e.to_string()),
+        },
         sq::Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
             left: Box::new(convert_expr(left)),
             op: op.to_string(),
@@ -401,7 +412,7 @@ fn convert_expr(e: &sq::Expr) -> Expr {
                 let order_by = spec
                     .order_by
                     .iter()
-                    .map(|obe| (convert_expr(&obe.expr), obe.asc.unwrap_or(true)))
+                    .map(|obe| (convert_expr(&obe.expr), obe.options.asc.unwrap_or(true)))
                     .collect::<Vec<_>>();
                 let frame = spec.window_frame.as_ref().map(|wf| format!("{:?}", wf));
                 return Expr::WindowFunc {
@@ -468,13 +479,13 @@ fn convert_expr(e: &sq::Expr) -> Expr {
         sq::Expr::Case {
             operand,
             conditions,
-            results,
             else_result,
+            ..
         } => {
             let op = operand.as_ref().map(|o| Box::new(convert_expr(o)));
             let mut when_then = Vec::new();
-            for (c, r) in conditions.iter().zip(results.iter()) {
-                when_then.push((convert_expr(c), convert_expr(r)));
+            for cw in conditions {
+                when_then.push((convert_expr(&cw.condition), convert_expr(&cw.result)));
             }
             let else_expr = else_result.as_ref().map(|e2| Box::new(convert_expr(e2)));
             Expr::Case {
