@@ -17,7 +17,7 @@ copyright = "Copyright © 2025 Y.N Pamungkas Jayuda"
 info = "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient."
 
 [dependencies]
-eframe = "0.33"
+eframe = "0.34"
 image = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sqlx = { version = "0.9", features = [
@@ -41,7 +41,9 @@ bson = { version = "3", features = ["uuid-1"] }
 mongodb = { version = "3.7.0", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-egui_extras = { version = "0.33", features = ["datepicker"] }
+egui_extras = { version = "0.34", features = ["datepicker"] }
+# Date type consumed by egui_extras' DatePickerButton (chrono elsewhere).
+jiff = "0.2"
 colorful = "0.3.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

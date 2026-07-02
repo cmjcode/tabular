@@ -726,16 +726,17 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                             } else if is_date_type {
                                                                 // DATE Picker
                                                                 ui.horizontal(|ui| {
-                                                                    let mut date_val = chrono::NaiveDate::parse_from_str(&edit_text, "%Y-%m-%d")
-                                                                        .unwrap_or_else(|_| chrono::Local::now().naive_local().date());
-                                                                    
+                                                                    // jiff Date parses/prints ISO "%Y-%m-%d" natively
+                                                                    let mut date_val: jiff::civil::Date = edit_text.parse()
+                                                                        .unwrap_or_else(|_| jiff::Zoned::now().date());
+
                                                                     let changed = ui.add(
                                                                         egui_extras::DatePickerButton::new(&mut date_val)
                                                                             .id_salt("date_picker")
                                                                     ).changed();
 
                                                                     if changed {
-                                                                        edit_text = date_val.format("%Y-%m-%d").to_string();
+                                                                        edit_text = date_val.to_string();
                                                                     }
                                                                 });
                                                             } else if is_datetime_type {
@@ -748,12 +749,18 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                         .unwrap_or_else(|_| chrono::Local::now().naive_local());
                                                                     
                                                                     let mut date_part = dt_val.date();
+                                                                    // Bridge to jiff just for the picker; chrono stays the source of truth
+                                                                    let mut jiff_date: jiff::civil::Date = date_part.to_string().parse()
+                                                                        .unwrap_or_else(|_| jiff::Zoned::now().date());
                                                                     // Date Picker
                                                                     if ui.add(
-                                                                        egui_extras::DatePickerButton::new(&mut date_part)
+                                                                        egui_extras::DatePickerButton::new(&mut jiff_date)
                                                                             .id_salt("datetime_date_picker")
-                                                                    ).changed() 
+                                                                    ).changed()
+                                                                        && let Ok(new_date) =
+                                                                            chrono::NaiveDate::parse_from_str(&jiff_date.to_string(), "%Y-%m-%d")
                                                                     {
+                                                                        date_part = new_date;
                                                                         dt_val = chrono::NaiveDateTime::new(date_part, dt_val.time());
                                                                         edit_text = dt_val.format("%Y-%m-%d %H:%M:%S").to_string();
                                                                     }

@@ -2712,7 +2712,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         .desired_rows(rows)
         .desired_width(f32::INFINITY)
         .cursor_at_end(false) // Allow cursor to be positioned anywhere
-        .frame(false)
+        .frame(egui::Frame::NONE)
         .id(editor_id)
         .layouter(&mut layouter);
 
@@ -3142,7 +3142,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     let right_local = if row_idx == max_layout.row {
                         row.x_offset(max_layout.column)
                     } else {
-                        let newline_size = if row.ends_with_newline {
+                        let newline_size = if placed_row.ends_with_newline {
                             row.height() / 2.0
                         } else {
                             0.0

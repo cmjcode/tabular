@@ -2672,7 +2672,10 @@ impl Tabular {
 }
 
 impl App for Tabular {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut Frame) {
+        // egui 0.34: App::update(ctx) became App::ui(ui); the body below is
+        // ctx-based (panels via ctx), so rebind ctx from the root Ui.
+        let ctx = &root_ui.ctx().clone();
         
         // If Cmd+A was pressed, set a short-lived flag or state?
         // Actually, we need to know if "Select All" happened recently.

@@ -39,7 +39,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         }
 
         // Mouse Wheel Zoom
-        let scroll_delta = i.raw_scroll_delta.y;
+        let scroll_delta = i.smooth_scroll_delta.y;
         if scroll_delta != 0.0 {
             let zoom_factor = 1.0 + scroll_delta * 0.001;
             state.zoom *= zoom_factor;
@@ -192,7 +192,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
              let edit_rect = title_rect.shrink(2.0);
              let response = ui.scope_builder(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
                  ui.add(egui::TextEdit::singleline(&mut group.title)
-                    .frame(false)
+                    .frame(egui::Frame::NONE)
                     .text_color(egui::Color32::WHITE)
                     .font(egui::FontId::proportional(16.0 * scale)))
              }).inner;

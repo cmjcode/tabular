@@ -439,7 +439,7 @@ impl super::Tabular {
                         .desired_width(f32::INFINITY)
                         .text_color(text_color)
                         .font(egui::TextStyle::Body)
-                        .frame(false)
+                        .frame(egui::Frame::NONE)
                         .interactive(true)
                         .show(ui);
                     
