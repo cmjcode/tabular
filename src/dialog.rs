@@ -13,7 +13,7 @@ fn paint_text_edit_cursor(
     if let Some(text_state) = egui::TextEdit::load_state(ui.ctx(), text_edit_id)
         && let Some(cursor_range) = text_state.cursor.char_range()
     {
-        let cursor_pos = cursor_range.primary.index;
+        let cursor_pos = cursor_range.primary.index.0;
 
         // Calculate cursor X position from actual text width
         let text_before_cursor = if cursor_pos <= text.len() {

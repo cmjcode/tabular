@@ -18,8 +18,8 @@ impl EditorStateAdapter {
     pub fn get_range(ctx: &egui::Context, id: egui::Id) -> Option<AdapterCursorRange> {
         let state = TextEditState::load(ctx, id)?;
         let range = state.cursor.char_range()?;
-        let primary = range.primary.index;
-        let secondary = range.secondary.index;
+        let primary = range.primary.index.0;
+        let secondary = range.secondary.index.0;
         let start = primary.min(secondary);
         let end = primary.max(secondary);
         Some(AdapterCursorRange {

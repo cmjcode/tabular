@@ -3297,7 +3297,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Verify and re-assert if needed in the same frame
         if let Some(s2) = TextEditState::load(ui.ctx(), id)
             && let Some(rng) = s2.cursor.char_range()
-            && rng.primary.index != ci
+            && rng.primary.index.0 != ci
         {
             let mut s3 = s2;
             s3.cursor
@@ -3332,7 +3332,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             // Read current state
             if let Some(state) = TextEditState::load(ui.ctx(), id) {
                 if let Some(rng) = state.cursor.char_range() {
-                    let current = rng.primary.index;
+                    let current = rng.primary.index.0;
                     let exp_ci = to_char_index(&tabular.editor.text, expected);
                     if current != exp_ci {
                         let mut st = state;
@@ -3506,11 +3506,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // Also preserve pri_char_idx so cursor sync below doesn't need another O(n) to_char_index call
         let (post_cursor_b_for_diff, post_cursor_ci, post_sel_start_b, post_sel_end_b) = {
             if let Some(range) = cursor_range_after {
-                let primary_ci = range.primary.index; // already in char space
+                let primary_ci = range.primary.index.0; // already in char space
                 let primary_b = to_byte_index(&tabular.editor.text, primary_ci);
                 let [min_cursor, max_cursor] = range.sorted_cursors();
-                let start_b = to_byte_index(&tabular.editor.text, min_cursor.index);
-                let end_b = to_byte_index(&tabular.editor.text, max_cursor.index);
+                let start_b = to_byte_index(&tabular.editor.text, min_cursor.index.0);
+                let end_b = to_byte_index(&tabular.editor.text, max_cursor.index.0);
                 (primary_b, primary_ci, start_b, end_b)
             } else {
                 // Fallback: keep current cursor position (no diff scan needed)

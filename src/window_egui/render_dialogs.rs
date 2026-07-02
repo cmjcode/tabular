@@ -458,8 +458,8 @@ impl super::Tabular {
                                 // Get cursor range to find selected text
                                 if let Some(state) = egui::TextEdit::load_state(ui.ctx(), message_text_id)
                                     && let Some(cursor_range) = state.cursor.char_range() {
-                                    let start = cursor_range.primary.index;
-                                    let end = cursor_range.secondary.index;
+                                    let start = cursor_range.primary.index.0;
+                                    let end = cursor_range.secondary.index.0;
                                     let (min, max) = if start < end { (start, end) } else { (end, start) };
                                     
                                     if min < max && max <= self.query_message_display_buffer.len() {
@@ -946,7 +946,7 @@ impl super::Tabular {
             format!("{} running queries", count)
         };
 
-        let visuals = ctx.style().visuals.clone();
+        let visuals = ctx.global_style().visuals.clone();
         let frame_fill = if visuals.dark_mode {
             egui::Color32::from_rgb(40, 40, 40)
         } else {

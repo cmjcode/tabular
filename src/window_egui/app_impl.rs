@@ -913,24 +913,25 @@ impl Tabular {
 
     /// Render the resizable left sidebar (connections/queries/history tree).
     /// Extracted verbatim from `update()`.
-    fn render_left_sidebar(&mut self, ctx: &egui::Context) {
+    fn render_left_sidebar(&mut self, root_ui: &mut egui::Ui) {
+            let ctx = &root_ui.ctx().clone();
             if self.sidebar_visible {
-                egui::SidePanel::left("sidebar")
+                egui::Panel::left("sidebar")
                 .resizable(true)
-                .default_width(250.0)
-                .min_width(150.0)
-                .max_width(500.0)
+                .default_size(250.0)
+                .min_size(150.0)
+                .max_size(500.0)
                 // Reduce default inner padding so tree rows (connection/database/table) start closer to the left edge
                 .frame(
                     egui::Frame::default()
-                        .fill(if ctx.style().visuals.dark_mode {
+                        .fill(if ctx.global_style().visuals.dark_mode {
                             egui::Color32::from_rgb(20, 20, 20)
                         } else {
                             egui::Color32::from_rgb(245, 245, 245)
                         })
                         // .inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 6 }),
                 )
-                .show(ctx, |ui| {
+                .show(root_ui, |ui| {
                     ui.vertical(|ui| {
                         ui.add_space(-2.0);
                         // Top section with tabs
@@ -1270,23 +1271,24 @@ impl Tabular {
 
     /// Render the AI Assistant right side panel.
     /// Extracted verbatim from `update()`.
-    fn render_ai_right_panel(&mut self, ctx: &egui::Context) {
+    fn render_ai_right_panel(&mut self, root_ui: &mut egui::Ui) {
+            let ctx = &root_ui.ctx().clone();
             if self.show_ai_panel {
-                egui::SidePanel::right("ai_right_panel")
+                egui::Panel::right("ai_right_panel")
                     .resizable(true)
-                    .default_width(350.0)
-                    .min_width(280.0)
-                    .max_width(600.0)
+                    .default_size(350.0)
+                    .min_size(280.0)
+                    .max_size(600.0)
                     .frame(
                         egui::Frame::default()
-                            .fill(if ctx.style().visuals.dark_mode {
+                            .fill(if ctx.global_style().visuals.dark_mode {
                                 egui::Color32::from_rgb(22, 24, 34)
                             } else {
                                 egui::Color32::from_rgb(240, 242, 252)
                             })
                             .inner_margin(egui::Margin::ZERO),
                     )
-                    .show(ctx, |ui| {
+                    .show(root_ui, |ui| {
                         editor::render_ai_panel(self, ui);
                     });
             }
@@ -1294,18 +1296,19 @@ impl Tabular {
 
     /// Render the central panel (editor / data grid / structure).
     /// Extracted verbatim from `update()`.
-    fn render_central_panel(&mut self, ctx: &egui::Context) {
+    fn render_central_panel(&mut self, root_ui: &mut egui::Ui) {
+            let ctx = &root_ui.ctx().clone();
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::default()
-                        .fill(if ctx.style().visuals.dark_mode {
+                        .fill(if ctx.global_style().visuals.dark_mode {
                             egui::Color32::from_rgb(20, 20, 20)
                         } else {
                             egui::Color32::from_rgb(250, 250, 250)
                         })
                         .inner_margin(egui::Margin::ZERO),
                 )
-                .show(ctx, |ui| {
+                .show(root_ui, |ui| {
                     // Remove the full_table_tab logic - all tabs will now show query editor + results
                     // Table tabs will just have additional Data/Structure toggle in the bottom panel
 
@@ -3491,7 +3494,7 @@ impl App for Tabular {
                 .collapsible(false)
                 .resizable(false)
                 .title_bar(false)
-                .frame(egui::Frame::window(&ctx.style()))
+                .frame(egui::Frame::window(&ctx.global_style()))
                 .show(ctx, |ui| {
                     if let Some(info) = &info_clone {
                         if downloading {
@@ -3610,7 +3613,7 @@ impl App for Tabular {
         }
 
         // Disable visual indicators for active/focused elements (but keep text selection visible)
-        ctx.style_mut(|style| {
+        ctx.global_style_mut(|style| {
             // Keep text selection visible with a subtle highlight
             style.visuals.selection.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 30, 0, 60);
             style.visuals.selection.stroke.color = egui::Color32::BLACK;
@@ -3689,13 +3692,13 @@ impl App for Tabular {
         // Final attempt (in case any change slipped through)
         self.try_save_prefs();
 
-        self.render_left_sidebar(ctx);
+        self.render_left_sidebar(root_ui);
 
         // ─── AI Assistant Right Panel ───────────────────────────────────────────────
-        self.render_ai_right_panel(ctx);
+        self.render_ai_right_panel(root_ui);
 
         // Central panel (main editor / data / structure)
-        self.render_central_panel(ctx);
+        self.render_central_panel(root_ui);
 
         // Handle copy operations AFTER UI render (state already updated)
         // Note: We only reach here if table/structure has potential focus (not editor/message)

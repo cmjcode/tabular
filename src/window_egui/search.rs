@@ -579,7 +579,7 @@ impl super::Tabular {
                 // Entire line is a comment
                 job.sections.push(egui::text::LayoutSection {
                     leading_space: 0.0,
-                    byte_range: line_start_offset..line_start_offset + line.len(),
+                    byte_range: egui::text::ByteIndex(line_start_offset)..egui::text::ByteIndex(line_start_offset + line.len()),
                     format: egui::TextFormat {
                         color: comment_color,
                         font_id: egui::FontId::monospace(14.0),
@@ -603,7 +603,7 @@ impl super::Tabular {
                         if absolute_word_start > line_pos {
                             job.sections.push(egui::text::LayoutSection {
                                 leading_space: 0.0,
-                                byte_range: line_pos..absolute_word_start,
+                                byte_range: egui::text::ByteIndex(line_pos)..egui::text::ByteIndex(absolute_word_start),
                                 format: egui::TextFormat {
                                     color: text_color,
                                     font_id: egui::FontId::monospace(14.0),
@@ -638,7 +638,7 @@ impl super::Tabular {
                         // Add the word with appropriate color
                         job.sections.push(egui::text::LayoutSection {
                             leading_space: 0.0,
-                            byte_range: absolute_word_start..absolute_word_end,
+                            byte_range: egui::text::ByteIndex(absolute_word_start)..egui::text::ByteIndex(absolute_word_end),
                             format: egui::TextFormat {
                                 color: word_color,
                                 font_id: egui::FontId::monospace(14.0),
@@ -656,7 +656,7 @@ impl super::Tabular {
                 if line_pos < line_start_offset + line.len() {
                     job.sections.push(egui::text::LayoutSection {
                         leading_space: 0.0,
-                        byte_range: line_pos..line_start_offset + line.len(),
+                        byte_range: egui::text::ByteIndex(line_pos)..egui::text::ByteIndex(line_start_offset + line.len()),
                         format: egui::TextFormat {
                             color: text_color,
                             font_id: egui::FontId::monospace(14.0),
@@ -672,7 +672,7 @@ impl super::Tabular {
                 // Add the newline character
                 job.sections.push(egui::text::LayoutSection {
                     leading_space: 0.0,
-                    byte_range: byte_offset..byte_offset + 1,
+                    byte_range: egui::text::ByteIndex(byte_offset)..egui::text::ByteIndex(byte_offset + 1),
                     format: egui::TextFormat {
                         color: text_color,
                         font_id: egui::FontId::monospace(14.0),
