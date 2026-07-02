@@ -1,0 +1,26 @@
+name: Dependency Audit
+
+on:
+  schedule:
+    # 1st of every month, 03:00 UTC
+    - cron: "0 3 1 * *"
+  workflow_dispatch: {}
+
+jobs:
+  outdated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated --locked
+      - name: Check for outdated dependencies (direct + transitive)
+        run: cargo outdated --exit-code 0
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Check for known security advisories
+        run: cargo audit
