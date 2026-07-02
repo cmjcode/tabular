@@ -5,6 +5,7 @@ pub mod ai_assistant;
 pub mod cache_data;
 pub mod config;
 pub mod connection;
+pub mod curl_import;
 pub mod data_table;
 pub mod dialog;
 pub mod diagram_view;

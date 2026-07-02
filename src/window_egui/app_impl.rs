@@ -1947,7 +1947,7 @@ impl Tabular {
                             && tab.http_client_state.is_some()
                         {
                             if let Some(state) = &mut tab.http_client_state {
-                                crate::http_client::render_http_client(ui, state);
+                                crate::http_client::render_http_client(ui, state, &mut self.toasts);
                             }
                             rendered_http = true;
                         }

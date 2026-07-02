@@ -70,7 +70,11 @@ pub fn load_http_state(connection_id: i64) -> Option<HttpClientState> {
 
 // ─── Public entry-point called from window_egui ─────────────────────────────
 
-pub fn render_http_client(ui: &mut egui::Ui, state: &mut HttpClientState) {
+pub fn render_http_client(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
     // Default red accent: selected/active controls use rgb(255,0,0) with white text.
     ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
     ui.style_mut().visuals.selection.stroke.color = egui::Color32::WHITE;
@@ -88,7 +92,7 @@ pub fn render_http_client(ui: &mut egui::Ui, state: &mut HttpClientState) {
     }
 
     ui.vertical(|ui| {
-        render_url_bar(ui, state);
+        render_url_bar(ui, state, toasts);
         ui.add_space(4.0);
 
         // Horizontal split: request left, response right
@@ -116,7 +120,11 @@ pub fn render_http_client(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
 // ─── URL bar ────────────────────────────────────────────────────────────────
 
-fn render_url_bar(ui: &mut egui::Ui, state: &mut HttpClientState) {
+fn render_url_bar(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
     ui.horizontal(|ui| {
         let send_w = 88.0;
 
@@ -145,6 +153,24 @@ fn render_url_bar(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 .hint_text("https://api.example.com/endpoint")
                 .desired_width((ui.available_width() - send_w - 8.0).max(120.0)),
         );
+
+        // Pasting a full curl command directly into the URL field auto-converts
+        // it into the request form (method/headers/body/auth/params), instead
+        // of leaving the raw curl text sitting in the URL field.
+        if url_resp.changed() && crate::curl_import::looks_like_curl(&state.url) {
+            let raw = state.url.clone();
+            match crate::curl_import::apply_to_state(state, &raw) {
+                Ok(warnings) => {
+                    toasts.success("Imported request from cURL");
+                    for w in warnings {
+                        toasts.warning(w);
+                    }
+                }
+                Err(e) => {
+                    toasts.error(format!("cURL import failed: {e}"));
+                }
+            }
+        }
 
         // SEND button
         let send_label = if state.is_loading {

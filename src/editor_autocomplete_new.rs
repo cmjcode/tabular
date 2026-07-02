@@ -407,15 +407,21 @@ fn fuzzy_match(pref: &str, cand: &str) -> Option<i32> {
     if pi == p.len() { Some(score) } else { None }
 }
 fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
-    let dbs = if db.is_empty() {
-        app.database_cache.get(&cid).cloned().unwrap_or_default()
+    // Always enumerate ALL databases for this connection so tables that live in
+    // a sibling database (e.g. "datalogs" in a non-active schema) still appear
+    // in suggestions. Active database goes first so its tables sort to the top.
+    let all_dbs = app.database_cache.get(&cid).cloned().unwrap_or_default();
+    let ordered_dbs: Vec<String> = if db.is_empty() || all_dbs.is_empty() {
+        all_dbs
     } else {
-        vec![db.to_string()]
+        let mut v = vec![db.to_string()];
+        v.extend(all_dbs.into_iter().filter(|d| d != db));
+        v
     };
     let mut all = Vec::new();
-    for d in dbs {
+    for d in &ordered_dbs {
         for tt in ["table", "view"] {
-            if let Some(mut ls) = get_tables_from_cache(app, cid, &d, tt) {
+            if let Some(mut ls) = get_tables_from_cache(app, cid, d, tt) {
                 all.append(&mut ls);
             }
         }
@@ -1093,15 +1099,15 @@ pub fn build_suggestions(
             }
         }
     }
-    // Order by fuzzy-match quality (best first), then alphabetically for ties so
-    // identical strings stay adjacent for dedup.
-    out.sort_by(|a, b| {
-        let sa = fuzzy_match(&pl, a).unwrap_or(i32::MIN);
-        let sb = fuzzy_match(&pl, b).unwrap_or(i32::MIN);
-        sb.cmp(&sa).then_with(|| a.cmp(b))
-    });
-    out.dedup();
-    out
+    // Score each candidate once, sort by score (best first), then strip scores.
+    // This avoids the O(N log N) repeated fuzzy_match calls of sort_by.
+    let mut scored: Vec<(i32, String)> = out
+        .into_iter()
+        .map(|s| (fuzzy_match(&pl, &s).unwrap_or(i32::MIN), s))
+        .collect();
+    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.dedup_by_key(|x| x.1.clone());
+    scored.into_iter().map(|(_, s)| s).collect()
 }
 
 pub fn update_autocomplete(app: &mut Tabular) {
@@ -1210,59 +1216,39 @@ pub fn update_autocomplete(app: &mut Tabular) {
                 })
                 .unwrap_or((0, String::new()));
 
-            let tables_set: HashSet<String> = if cid != 0 {
-                get_cached_tables(app, cid, &db)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect()
-            } else {
-                get_all_tables(app).into_iter().collect()
-            };
-            // Reuse tables_in_scope from build_suggestions to avoid redundant cache lookups
-            let tables_for_cols = tables_near_cursor(&editor_text, cursor);
-            let cols_set: HashSet<String> = if cid != 0 && !tables_for_cols.is_empty() {
-                get_cached_columns(app, cid, &db, tables_for_cols)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect()
-            } else {
-                HashSet::new()
-            };
-            let syntax_set: HashSet<String> = SQL_KEYWORDS
-                .iter()
-                .map(|s| s.to_string())
-                .chain(std::iter::once("*".to_string()))
-                .collect();
+            // Classify suggestions by SQL context — build_suggestions() already
+            // returns them in fuzzy-score order, so no re-sort is needed here.
+            // Avoids two extra cache fetches (get_cached_tables + get_cached_columns).
+            let syntax_kw: HashSet<&str> =
+                SQL_KEYWORDS.iter().copied().chain(std::iter::once("*")).collect();
 
             let mut tables = Vec::new();
             let mut columns = Vec::new();
             let mut syntax = Vec::new();
             for s in suggestions.into_iter() {
-                if tables_set.contains(&s) {
-                    tables.push(s);
-                } else if cols_set.contains(&s) {
-                    columns.push(s);
-                } else if syntax_set.contains(&s) {
+                if syntax_kw.contains(s.as_str()) {
                     syntax.push(s);
                 } else {
                     match context {
                         SqlContext::AfterFrom => tables.push(s),
-                        SqlContext::AfterSelect | SqlContext::AfterWhere | SqlContext::AfterJoinOn => columns.push(s),
-                        SqlContext::General => syntax.push(s),
+                        SqlContext::AfterSelect | SqlContext::AfterWhere | SqlContext::AfterJoinOn => {
+                            columns.push(s)
+                        }
+                        SqlContext::General => {
+                            // Qualified names (alias.col) are columns; bare names are tables.
+                            if s.contains('.') {
+                                columns.push(s);
+                            } else {
+                                tables.push(s);
+                            }
+                        }
                     }
                 }
             }
-            let pl = pref.to_ascii_lowercase();
-            let score_sort = |v: &mut Vec<String>| {
-                v.sort_by(|a, b| {
-                    let sa = fuzzy_match(&pl, a).unwrap_or(i32::MIN);
-                    let sb = fuzzy_match(&pl, b).unwrap_or(i32::MIN);
-                    sb.cmp(&sa).then_with(|| a.cmp(b))
-                });
-                v.dedup();
-            };
-            score_sort(&mut tables);
-            score_sort(&mut columns);
+            // build_suggestions() already returns suggestions sorted by fuzzy score;
+            // preserving insertion order within each category is sufficient.
+            tables.dedup();
+            columns.dedup();
             syntax.sort_unstable();
             syntax.dedup();
 

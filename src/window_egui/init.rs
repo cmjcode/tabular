@@ -327,7 +327,7 @@ impl super::Tabular {
             autocomplete_protection_frames: 0,
             autocomplete_navigated: false,
             autocomplete_last_update: None,
-            autocomplete_debounce_ms: 120,
+            autocomplete_debounce_ms: 180,
             fk_cache_warmed: std::collections::HashSet::new(),
             autocomplete_cols_warmed: std::collections::HashSet::new(),
             autocomplete_cols_mem: std::collections::HashMap::new(),
