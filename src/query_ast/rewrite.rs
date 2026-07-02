@@ -54,12 +54,18 @@ pub fn apply_basic_rewrites(
         // small loop; rules idempotent
         let mut changed = false;
         if inject_auto_limit && !has_limit(plan) {
+            // Inject inside a root With wrapper: the emitter only renders the CTE
+            // list when With stays at the root of the plan.
+            let target = match &mut *plan {
+                LogicalQueryPlan::With { input, .. } => input.as_mut(),
+                other => other,
+            };
             let new = LogicalQueryPlan::Limit {
                 limit: 1000,
                 offset: 0,
-                input: Box::new(plan.clone()),
+                input: Box::new(target.clone()),
             };
-            *plan = new;
+            *target = new;
             applied.push(Rule::AutoLimit.name().into());
             changed = true;
         }
@@ -865,6 +871,33 @@ fn collect_ident_roots_expr(e: &sqlparser::ast::Expr, out: &mut std::collections
     }
 }
 
+/// A CTE body is "simple" when it is a bare projection over a single table
+/// (`SELECT <cols> FROM <table>`) with no extra clauses, literals, or nested
+/// expressions. Only such bodies are safe to inline textually; anything more
+/// complex is kept as a WITH clause so the emitted SQL stays faithful.
+pub(crate) fn is_simple_cte_body(body: &str) -> bool {
+    let lower = body.trim().to_ascii_lowercase();
+    if !lower.starts_with("select ") || !lower.contains(" from ") {
+        return false;
+    }
+    if lower.contains('(') || lower.contains('\'') || lower.contains('"') {
+        return false;
+    }
+    const COMPLEX_MARKERS: [&str; 10] = [
+        " where ",
+        " join ",
+        " group by ",
+        " order by ",
+        " having ",
+        " limit ",
+        " offset ",
+        " union ",
+        " intersect ",
+        " except ",
+    ];
+    !COMPLEX_MARKERS.iter().any(|m| lower.contains(m))
+}
+
 // Inline single-use CTEs: For With { ctes, input } count textual references of each CTE name (case-insensitive whole word) in emitted subtree SQL forms (approximation via Raw string occurrences in SubqueryScan sql + TableScan table). If count==1 -> replace occurrences by subquery SQL, drop from ctes list.
 fn inline_single_use_ctes(plan: &mut LogicalQueryPlan) -> bool {
     use LogicalQueryPlan as L;
@@ -880,7 +913,7 @@ fn inline_single_use_ctes(plan: &mut LogicalQueryPlan) -> bool {
             count_cte_refs(input, &names, &mut counts);
             let mut to_inline = Vec::new();
             for (idx, c) in counts.iter().enumerate() {
-                if *c == 1 {
+                if *c == 1 && is_simple_cte_body(&ctes[idx].1) {
                     to_inline.push(idx);
                 }
             }

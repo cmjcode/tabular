@@ -718,6 +718,14 @@ mod ts {
                     });
                 }
 
+                // "string" nodes are not leaves (they wrap the quote and
+                // string_content children), so classify the whole node here
+                // instead of descending into it.
+                if node.kind() == "string" {
+                    push_token(&mut tokens, node, SemanticTokenKind::String, text);
+                    continue;
+                }
+
                 if node.child_count() == 0 {
                     if let Some(kind) = classify_leaf(node, text) {
                         push_token(&mut tokens, node, kind, text);
@@ -932,6 +940,13 @@ mod ts {
                         message: "Parse error".to_string(),
                         range: node.start_byte()..node.end_byte().min(text.len()),
                     });
+                }
+
+                // "string" nodes wrap quote/string_fragment children, so they
+                // never reach the leaf check below; classify them wholesale.
+                if node.kind() == "string" {
+                    push_token(&mut tokens, node, SemanticTokenKind::String, text);
+                    continue;
                 }
 
                 if node.child_count() == 0 {

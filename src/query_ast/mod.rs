@@ -284,16 +284,21 @@ pub fn compile_single_select(
         }
         if let Some(close_paren_abs) = close_paren_abs {
             let subquery_sql = working_sql[subquery_start..close_paren_abs].trim();
-            // Remaining after )
-            let after = &working_sql[close_paren_abs + 1..];
-            // Replace first occurrence of cte_name in FROM with (subquery) alias
-            let lowered_after = after.to_ascii_lowercase();
-            if lowered_after.contains(&format!(" {} ", cte_name.to_ascii_lowercase())) {
-                let replaced_after = after.replacen(cte_name, &format!("({})", subquery_sql), 1);
-                working_sql = replaced_after;
-            } else {
-                // If not referenced, fallback to original SELECT after CTE list (strip WITH ...)
-                working_sql = after.to_string();
+            // Only inline trivially simple CTE bodies; complex ones are kept as-is
+            // so the parser builds a With node and the WITH clause passes through.
+            if rewrite::is_simple_cte_body(subquery_sql) {
+                // Remaining after )
+                let after = &working_sql[close_paren_abs + 1..];
+                // Replace first occurrence of cte_name in FROM with (subquery) alias
+                let lowered_after = after.to_ascii_lowercase();
+                if lowered_after.contains(&format!(" {} ", cte_name.to_ascii_lowercase())) {
+                    let replaced_after =
+                        after.replacen(cte_name, &format!("({})", subquery_sql), 1);
+                    working_sql = replaced_after;
+                } else {
+                    // If not referenced, fallback to original SELECT after CTE list (strip WITH ...)
+                    working_sql = after.to_string();
+                }
             }
         }
     }

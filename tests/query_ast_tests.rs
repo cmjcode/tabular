@@ -114,11 +114,12 @@ mod query_ast_tests {
         // Warm cache
         let sql = "select id, name from users limit 5";
         let _ = compile_single_select(sql, &DatabaseType::MySQL, None, true).unwrap();
-        let (h1, m1) = tabular::query_ast::cache_stats();
+        let (h1, _m1) = tabular::query_ast::cache_stats();
         let _ = compile_single_select(sql, &DatabaseType::MySQL, None, true).unwrap();
-        let (h2, m2) = tabular::query_ast::cache_stats();
+        let (h2, _m2) = tabular::query_ast::cache_stats();
         assert!(h2 > h1, "expected hit counter to increase");
-        assert!(m2 == m1);
+        // NOTE: no assertion on the miss counter — the plan cache is process-global
+        // and other tests running in parallel can add misses between the two reads.
     }
 
     #[test]
@@ -167,12 +168,34 @@ mod query_ast_tests {
         // Outer alias u referenced inside subquery => correlated => inner should not gain LIMIT injection beyond original
         let sql = "select * from users u where exists (select 1 from logs l where l.user_id = u.id) limit 5";
         let (out, _h) = compile_single_select(sql, &DatabaseType::PostgreSQL, None, true).unwrap();
-        // Ensure only one limit at end (no injected LIMIT into subquery text)
+        // Ensure no LIMIT was injected inside the EXISTS subquery body. Only look
+        // between the balanced parens so the legit outer LIMIT is not counted.
         let lower = out.to_ascii_lowercase();
-        let subq_segment = lower.split("where exists").nth(1).unwrap_or("");
+        let start = lower.find("exists (").expect("exists subquery present") + "exists (".len();
+        let mut depth = 1usize;
+        let mut end = lower.len();
+        for (i, b) in lower.as_bytes()[start..].iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let subq_segment = &lower[start..end];
         assert!(
-            !subq_segment.contains(" limit 5"),
+            !subq_segment.contains(" limit"),
             "unexpected limit pushdown inside correlated subquery: {out}"
+        );
+        // Outer LIMIT must survive untouched.
+        assert!(
+            lower.trim_end().ends_with("limit 5"),
+            "outer limit missing: {out}"
         );
     }
 }
