@@ -65,7 +65,7 @@ impl DatabaseExecutor for SqliteExecutor {
 
         // Execute the query
         let rows =
-            sqlx::query(sql)
+            sqlx::query(sqlx::AssertSqlSafe(sql))
                 .fetch_all(&*pool)
                 .await
                 .map_err(|e| QueryAstError::Execution {

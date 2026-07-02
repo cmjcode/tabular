@@ -2398,7 +2398,7 @@ impl super::Tabular {
                     {
                         let escaped = table_name.replace("'", "''");
                         let q = format!("PRAGMA index_list('{}')", escaped);
-                        match sqlx::query(&q).fetch_all(sqlite_pool.as_ref()).await {
+                        match sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(sqlite_pool.as_ref()).await {
                             Ok(rows) => {
                                 use sqlx::Row;
                                 let mut names = Vec::new();
@@ -2525,7 +2525,7 @@ impl super::Tabular {
                     {
                         let escaped = table_name.replace("'", "''");
                         let q = format!("PRAGMA table_info('{}')", escaped);
-                        match sqlx::query(&q).fetch_all(sqlite_pool.as_ref()).await {
+                        match sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(sqlite_pool.as_ref()).await {
                             Ok(rows) => {
                                 use sqlx::Row;
                                 let mut names = Vec::new();

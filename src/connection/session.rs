@@ -230,7 +230,7 @@ async fn acquire(
             let mut conn = p.acquire().await.map_err(|e| e.to_string())?;
             if let Some(db) = database_name.filter(|d| !d.trim().is_empty()) {
                 let use_stmt = format!("USE `{}`", db.replace('`', "``"));
-                sqlx::query(&use_stmt)
+                sqlx::query(sqlx::AssertSqlSafe(use_stmt.as_str()))
                     .execute(&mut *conn)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -270,17 +270,17 @@ async fn acquire(
 
 async fn run_simple(conn: &mut SessionConn, sql: &str) -> Result<(), String> {
     match conn {
-        SessionConn::MySql(c) => sqlx::query(sql)
+        SessionConn::MySql(c) => sqlx::query(sqlx::AssertSqlSafe(sql))
             .execute(&mut **c)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string()),
-        SessionConn::Postgres(c) => sqlx::query(sql)
+        SessionConn::Postgres(c) => sqlx::query(sqlx::AssertSqlSafe(sql))
             .execute(&mut **c)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string()),
-        SessionConn::Sqlite(c) => sqlx::query(sql)
+        SessionConn::Sqlite(c) => sqlx::query(sqlx::AssertSqlSafe(sql))
             .execute(&mut **c)
             .await
             .map(|_| ())
@@ -300,7 +300,7 @@ async fn run_query(
 ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     match conn {
         SessionConn::MySql(c) => {
-            let rows = sqlx::query(sql)
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
                 .fetch_all(&mut **c)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -314,7 +314,7 @@ async fn run_query(
             ))
         }
         SessionConn::Postgres(c) => {
-            let rows = sqlx::query(sql)
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
                 .fetch_all(&mut **c)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -347,7 +347,7 @@ async fn run_query(
             Ok((headers, data))
         }
         SessionConn::Sqlite(c) => {
-            let rows = sqlx::query(sql)
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
                 .fetch_all(&mut **c)
                 .await
                 .map_err(|e| e.to_string())?;

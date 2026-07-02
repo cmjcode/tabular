@@ -75,7 +75,7 @@ pub(crate) fn fetch_columns_from_database(
                                         database_name.replace('`', ""),
                                         table_name.replace('`', "")
                                     );
-                                    match sqlx::query(&show_q).fetch_all(&pool).await {
+                                    match sqlx::query(sqlx::AssertSqlSafe(show_q.as_str())).fetch_all(&pool).await {
                                         Ok(srows) => {
                                             use sqlx::Row;
                                             for r in srows {
@@ -109,7 +109,7 @@ pub(crate) fn fetch_columns_from_database(
                                     database_name.replace('`', ""),
                                     table_name.replace('`', "")
                                 );
-                                if let Ok(srows) = sqlx::query(&show_q).fetch_all(&pool).await {
+                                if let Ok(srows) = sqlx::query(sqlx::AssertSqlSafe(show_q.as_str())).fetch_all(&pool).await {
                                     use sqlx::Row;
                                     for r in srows {
                                         let name: Option<String> = r.try_get("Field").ok();
@@ -144,7 +144,7 @@ pub(crate) fn fetch_columns_from_database(
                     Ok(pool) => {
                         let escaped = table_name.replace("'", "''");
                         let query = format!("PRAGMA table_info('{}')", escaped);
-                        match sqlx::query(&query).fetch_all(&pool).await {
+                        match sqlx::query(sqlx::AssertSqlSafe(query.as_str())).fetch_all(&pool).await {
                             Ok(rows) => {
                                 use sqlx::Row;
                                 let mut columns: Vec<(String, String)> = Vec::new();

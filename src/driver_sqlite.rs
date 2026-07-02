@@ -35,7 +35,7 @@ pub async fn fetch_data(connection_id: i64, pool: &SqlitePool, cache_pool: &Sqli
 
                 // Fetch columns for this table
                 let col_query = format!("PRAGMA table_info({})", table_name);
-                if let Ok(col_rows) = sqlx::query(&col_query).fetch_all(pool).await {
+                if let Ok(col_rows) = sqlx::query(sqlx::AssertSqlSafe(col_query.as_str())).fetch_all(pool).await {
                     for col_row in col_rows {
                         if let (Ok(col_name), Ok(col_type)) = (
                             col_row.try_get::<String, _>("name"),
@@ -268,7 +268,7 @@ pub(crate) async fn fetch_sqlite_foreign_keys(
     let mut keys = Vec::new();
     for table in tables {
         let pragma = format!("PRAGMA foreign_key_list('{}')", table.replace('\'', "''"));
-        if let Ok(rows) = sqlx::query(&pragma).fetch_all(pool).await {
+        if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str())).fetch_all(pool).await {
             for row in rows {
                 let referenced_table: String = row.try_get("table").unwrap_or_default();
                 let from_col: String = row.try_get("from").unwrap_or_default();
@@ -303,7 +303,7 @@ pub(crate) async fn fetch_sqlite_columns(
     let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for table in tables {
         let pragma = format!("PRAGMA table_info('{}')", table.replace('\'', "''"));
-        if let Ok(rows) = sqlx::query(&pragma).fetch_all(pool).await {
+        if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str())).fetch_all(pool).await {
             for row in rows {
                 let col: String = row.try_get("name").unwrap_or_default();
                 map.entry(table.clone()).or_default().push(col);

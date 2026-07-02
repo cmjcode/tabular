@@ -313,7 +313,7 @@ pub fn fetch_partition_details_for_table(
                     
                     // Get partition type from SHOW CREATE TABLE
                     let show_q = format!("SHOW CREATE TABLE `{}`", table_name.replace("`", "``"));
-                    let partition_type = sqlx::query_as::<_, (String, String)>(&show_q)
+                    let partition_type = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(show_q.as_str()))
                         .fetch_optional(mysql_pool.as_ref())
                         .await
                         .ok()
@@ -543,7 +543,7 @@ fn fetch_index_details_for_table(
                     use sqlx::Row;
                     let list_query =
                         format!("PRAGMA index_list('{}')", table_name.replace("'", "''"));
-                    match sqlx::query(&list_query)
+                    match sqlx::query(sqlx::AssertSqlSafe(list_query.as_str()))
                         .fetch_all(sqlite_pool.as_ref())
                         .await
                     {
@@ -557,7 +557,7 @@ fn fetch_index_details_for_table(
                                         format!("PRAGMA index_info('{}')", nm.replace("'", "''"));
                                     let mut cols_vec = Vec::new();
                                     if let Ok(crows) =
-                                        sqlx::query(&info_q).fetch_all(sqlite_pool.as_ref()).await
+                                        sqlx::query(sqlx::AssertSqlSafe(info_q.as_str())).fetch_all(sqlite_pool.as_ref()).await
                                     {
                                         for cr in crows {
                                             if let Ok(Some(coln)) =

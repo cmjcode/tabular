@@ -845,7 +845,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
             for (id, field, value) in secret_rewrites {
                 // Field names are fixed identifiers above, never user input.
                 let _ = rt.block_on(async {
-                    sqlx::query(&format!("UPDATE connections SET {} = ? WHERE id = ?", field))
+                    sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE connections SET {} = ? WHERE id = ?", field)))
                         .bind(value)
                         .bind(id)
                         .execute(rewrite_pool.as_ref())

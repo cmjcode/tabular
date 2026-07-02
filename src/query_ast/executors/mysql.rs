@@ -59,7 +59,7 @@ impl DatabaseExecutor for MySqlExecutor {
         // Switch database if specified
         if let Some(db) = database_name {
             let use_sql = format!("USE `{}`", db.replace('`', "``"));
-            sqlx::query(&use_sql)
+            sqlx::query(sqlx::AssertSqlSafe(use_sql.as_str()))
                 .execute(&*pool)
                 .await
                 .map_err(|e| QueryAstError::Execution {
@@ -70,7 +70,7 @@ impl DatabaseExecutor for MySqlExecutor {
 
         // Execute the main query
         let rows =
-            sqlx::query(sql)
+            sqlx::query(sqlx::AssertSqlSafe(sql))
                 .fetch_all(&*pool)
                 .await
                 .map_err(|e| QueryAstError::Execution {

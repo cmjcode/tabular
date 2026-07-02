@@ -419,7 +419,7 @@ async fn execute_mysql_query_job(
                     .trim();
 
                 let use_stmt = format!("USE `{}`", db_name);
-                if sqlx::query(&use_stmt).execute(&mut conn).await.is_err() {
+                if sqlx::query(sqlx::AssertSqlSafe(use_stmt.as_str())).execute(&mut conn).await.is_err() {
                     let new_dsn = format!(
                         "mysql://{}:{}@{}:{}/{}",
                         encoded_username, encoded_password, target_host, target_port, db_name
@@ -459,7 +459,7 @@ async fn execute_mysql_query_job(
 
             let query_result = tokio::time::timeout(
                 std::time::Duration::from_secs(60),
-                sqlx::query(trimmed).fetch_all(&mut conn),
+                sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(&mut conn),
             )
             .await;
 
@@ -568,7 +568,7 @@ async fn execute_mysql_query_job(
                                 for table in &involved_tables {
                                     let col_query = format!("SHOW COLUMNS FROM {}", table);
                                     if let Ok(col_rows) =
-                                        sqlx::query(&col_query).fetch_all(&mut conn).await
+                                        sqlx::query(sqlx::AssertSqlSafe(col_query.as_str())).fetch_all(&mut conn).await
                                     {
                                         for row in col_rows {
                                             if let Ok(col_name) =
@@ -973,7 +973,7 @@ async fn execute_postgres_query_job(
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
-            sqlx::query(trimmed).fetch_all(pg_pool.as_ref()),
+            sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(pg_pool.as_ref()),
         )
         .await;
 
@@ -1133,7 +1133,7 @@ async fn execute_sqlite_query_job(
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            sqlx::query(trimmed).fetch_all(sqlite_pool.as_ref()),
+            sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(sqlite_pool.as_ref()),
         )
         .await;
 
@@ -1821,7 +1821,7 @@ pub(crate) fn execute_table_query_sync(
                                         .trim_matches(']')
                                         .trim();
 
-                                    match sqlx::query(&format!("USE `{}`", db_name))
+                                    match sqlx::query(sqlx::AssertSqlSafe(format!("USE `{}`", db_name)))
                                         .execute(&mut conn)
                                         .await
                                     {
@@ -1874,7 +1874,7 @@ pub(crate) fn execute_table_query_sync(
 
                                 let query_result = tokio::time::timeout(
                                     std::time::Duration::from_secs(60),
-                                    sqlx::query(trimmed).fetch_all(&mut conn),
+                                    sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(&mut conn),
                                 )
                                 .await;
 
@@ -1980,7 +1980,7 @@ pub(crate) fn execute_table_query_sync(
                                                             let describe_query = format!("DESCRIBE {}", table_name);
                                                             match tokio::time::timeout(
                                                                 std::time::Duration::from_secs(30),
-                                                                sqlx::query(&describe_query).fetch_all(&mut conn),
+                                                                sqlx::query(sqlx::AssertSqlSafe(describe_query.as_str())).fetch_all(&mut conn),
                                                             ).await {
                                                                 Ok(Ok(desc_rows)) => {
                                                                     if !desc_rows.is_empty() {
@@ -1993,7 +1993,7 @@ pub(crate) fn execute_table_query_sync(
                                                                     let info_query = format!("{} LIMIT 0", trimmed);
                                                                     match tokio::time::timeout(
                                                                         std::time::Duration::from_secs(30),
-                                                                        sqlx::query(&info_query).fetch_all(&mut conn),
+                                                                        sqlx::query(sqlx::AssertSqlSafe(info_query.as_str())).fetch_all(&mut conn),
                                                                     ).await {
                                                                         Ok(Ok(info_rows)) => {
                                                                             if !info_rows.is_empty() {
@@ -2115,7 +2115,7 @@ pub(crate) fn execute_table_query_sync(
                             }
                             match tokio::time::timeout(
                                 std::time::Duration::from_secs(10),
-                                sqlx::query(trimmed).fetch_all(pg_pool.as_ref()),
+                                sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(pg_pool.as_ref()),
                             )
                             .await
                             {
@@ -2154,7 +2154,7 @@ pub(crate) fn execute_table_query_sync(
                                                     );
                                                     match tokio::time::timeout(
                                                         std::time::Duration::from_secs(10),
-                                                        sqlx::query(&info_query).fetch_all(pg_pool.as_ref()),
+                                                        sqlx::query(sqlx::AssertSqlSafe(info_query.as_str())).fetch_all(pg_pool.as_ref()),
                                                     ).await {
                                                         Ok(Ok(info_rows)) => {
                                                             final_headers = info_rows.iter().map(|row| {
@@ -2168,7 +2168,7 @@ pub(crate) fn execute_table_query_sync(
                                                             let limit_query = format!("{} LIMIT 0", statement);
                                                             match tokio::time::timeout(
                                                                 std::time::Duration::from_secs(10),
-                                                                sqlx::query(&limit_query).fetch_all(pg_pool.as_ref()),
+                                                                sqlx::query(sqlx::AssertSqlSafe(limit_query.as_str())).fetch_all(pg_pool.as_ref()),
                                                             ).await {
                                                                 Ok(Ok(limit_rows)) => {
                                                                     if !limit_rows.is_empty() {
@@ -2260,7 +2260,7 @@ pub(crate) fn execute_table_query_sync(
                             }
                             match tokio::time::timeout(
                                 std::time::Duration::from_secs(10),
-                                sqlx::query(trimmed).fetch_all(sqlite_pool.as_ref()),
+                                sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(sqlite_pool.as_ref()),
                             )
                             .await
                             {
@@ -2290,7 +2290,7 @@ pub(crate) fn execute_table_query_sync(
                                                     let pragma_query = format!("PRAGMA table_info({})", clean_table);
                                                     match tokio::time::timeout(
                                                         std::time::Duration::from_secs(10),
-                                                        sqlx::query(&pragma_query).fetch_all(sqlite_pool.as_ref()),
+                                                        sqlx::query(sqlx::AssertSqlSafe(pragma_query.as_str())).fetch_all(sqlite_pool.as_ref()),
                                                     ).await {
                                                         Ok(Ok(pragma_rows)) => {
                                                             final_headers = pragma_rows.iter().map(|row| {
@@ -2304,7 +2304,7 @@ pub(crate) fn execute_table_query_sync(
                                                             let limit_query = format!("{} LIMIT 0", statement);
                                                             match tokio::time::timeout(
                                                                 std::time::Duration::from_secs(10),
-                                                                sqlx::query(&limit_query).fetch_all(sqlite_pool.as_ref()),
+                                                                sqlx::query(sqlx::AssertSqlSafe(limit_query.as_str())).fetch_all(sqlite_pool.as_ref()),
                                                             ).await {
                                                                 Ok(Ok(limit_rows)) => {
                                                                     if !limit_rows.is_empty() {

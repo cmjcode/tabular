@@ -424,7 +424,7 @@ pub(crate) fn fetch_procedure_definition(
                             proc_name.replace('`', "``")
                         );
                         let query = format!("SHOW CREATE PROCEDURE {}", qualified);
-                        match sqlx::query(&query).fetch_optional(&pool).await {
+                        match sqlx::query(sqlx::AssertSqlSafe(query.as_str())).fetch_optional(&pool).await {
                             Ok(Some(row)) => {
                                 use sqlx::Row;
                                 let def = row
@@ -779,7 +779,7 @@ pub(crate) fn fetch_table_definition(
                             tbl_name.replace('`', "``")
                         );
                         let query = format!("SHOW CREATE TABLE {}", qualified);
-                        match sqlx::query(&query).fetch_optional(&pool).await {
+                        match sqlx::query(sqlx::AssertSqlSafe(query.as_str())).fetch_optional(&pool).await {
                             Ok(Some(row)) => {
                                 use sqlx::Row;
                                 row.try_get::<String, _>(1).ok().or_else(|| {
@@ -1124,7 +1124,7 @@ async fn fetch_schema_columns(
             let mut map: HashMap<String, Vec<(String, String)>> = HashMap::new();
             for tbl in tables {
                 let pragma = format!("PRAGMA table_info('{}')", tbl.replace('\'', "''"));
-                if let Ok(rows) = sqlx::query(&pragma).fetch_all(p.as_ref()).await {
+                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str())).fetch_all(p.as_ref()).await {
                     for row in rows {
                         use sqlx::Row;
                         let c: String = row.try_get("name").unwrap_or_default();

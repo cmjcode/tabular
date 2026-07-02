@@ -917,10 +917,10 @@ pub(crate) async fn check_replication_status(
 
 // Helper to execute query with fallback for legacy syntax (REPLICA vs SLAVE)
 async fn execute_replication_query(pool: &MySqlPool, query: &str) -> Result<(), sqlx::Error> {
-    let res = sqlx::query(query).execute(pool).await;
+    let res = sqlx::query(sqlx::AssertSqlSafe(query)).execute(pool).await;
     if res.is_err() && query.contains("REPLICA") {
         let legacy_query = query.replace("REPLICA", "SLAVE");
-        return sqlx::query(&legacy_query).execute(pool).await.map(|_| ());
+        return sqlx::query(sqlx::AssertSqlSafe(legacy_query.as_str())).execute(pool).await.map(|_| ());
     }
     res.map(|_| ())
 }
@@ -973,7 +973,7 @@ pub async fn setup_replication(
     // CHANGE MASTER TO is supported widely, usually no need for fallback unless very new MySQL deprecates it entirely for CHANGE REPLICATION SOURCE
     // But sqlx might not support the new syntax if parsing is involved? No, it just passes query.
     // CHANGE MASTER TO is deprecated in 8.0.23+ but still works.
-    sqlx::query(&change_query).execute(target_pool).await.map_err(|e| format!("Failed to configure master: {}", e))?;
+    sqlx::query(sqlx::AssertSqlSafe(change_query.as_str())).execute(target_pool).await.map_err(|e| format!("Failed to configure master: {}", e))?;
     
     execute_replication_query(target_pool, "START REPLICA").await.map_err(|e| format!("Failed to start replica: {}", e))?;
     
@@ -1003,7 +1003,7 @@ pub async fn restart_replication(
         "CHANGE MASTER TO MASTER_LOG_FILE='{}', MASTER_LOG_POS={}",
         file, position
     );
-    sqlx::query(&change_query).execute(replica_pool).await.map_err(|e| format!("Failed to update master coordinates: {}", e))?;
+    sqlx::query(sqlx::AssertSqlSafe(change_query.as_str())).execute(replica_pool).await.map_err(|e| format!("Failed to update master coordinates: {}", e))?;
     
     execute_replication_query(replica_pool, "START REPLICA").await.map_err(|e| format!("Failed to start replica: {}", e))?;
     

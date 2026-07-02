@@ -404,7 +404,7 @@ async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
         "DROP TABLE IF EXISTS database_cache",
     ];
     for stmt in &drops {
-        if let Err(e) = sqlx::query(stmt).execute(cache_pool).await {
+        if let Err(e) = sqlx::query(*stmt).execute(cache_pool).await {
             warn!("[cache_recovery] failed to drop cache table: {}", e);
             // Continue — we still try to recreate below
         }
@@ -482,7 +482,7 @@ async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
     ];
     let mut all_ok = true;
     for stmt in &creates {
-        if let Err(e) = sqlx::query(stmt).execute(cache_pool).await {
+        if let Err(e) = sqlx::query(*stmt).execute(cache_pool).await {
             warn!("[cache_recovery] failed to recreate cache table: {}", e);
             all_ok = false;
         }

@@ -126,12 +126,12 @@ async fn prefetch_first_rows_for_all_tables(
                         );
                         if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
                             let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
-                            if let Ok(mysql_rows) = sqlx::query(&q).fetch_all(&mut conn).await {
+                            if let Ok(mysql_rows) = sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(&mut conn).await {
                                 let headers: Vec<String> = if let Some(r0) = mysql_rows.first() {
                                     r0.columns().iter().map(|c| c.name().to_string()).collect()
                                 } else {
                                     let dq = format!("DESCRIBE `{}`", tbn.replace('`', "``"));
-                                    match sqlx::query(&dq).fetch_all(&mut conn).await {
+                                    match sqlx::query(sqlx::AssertSqlSafe(dq.as_str())).fetch_all(&mut conn).await {
                                         Ok(desc_rows) => desc_rows
                                             .iter()
                                             .filter_map(|r| r.try_get::<String, _>(0).ok())
@@ -168,7 +168,7 @@ async fn prefetch_first_rows_for_all_tables(
                             "SELECT * FROM \"public\".\"{}\" LIMIT 100",
                             tbn.replace('"', "\\\"")
                         );
-                        if let Ok(pg_rows) = sqlx::query(&q).fetch_all(pool.as_ref()).await {
+                        if let Ok(pg_rows) = sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(pool.as_ref()).await {
                             let headers: Vec<String> = if let Some(r0) = pg_rows.first() {
                                 r0.columns().iter().map(|c| c.name().to_string()).collect()
                             } else {
@@ -176,7 +176,7 @@ async fn prefetch_first_rows_for_all_tables(
                                     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='{}' ORDER BY ordinal_position",
                                     tbn.replace("'", "''")
                                 );
-                                match sqlx::query(&iq).fetch_all(pool.as_ref()).await {
+                                match sqlx::query(sqlx::AssertSqlSafe(iq.as_str())).fetch_all(pool.as_ref()).await {
                                     Ok(infos) => infos
                                         .iter()
                                         .filter_map(|r| r.try_get::<String, _>(0).ok())
@@ -223,7 +223,7 @@ async fn prefetch_first_rows_for_all_tables(
                     async move {
                         let q =
                             format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
-                        if let Ok(sqlite_rows) = sqlx::query(&q).fetch_all(pool.as_ref()).await {
+                        if let Ok(sqlite_rows) = sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(pool.as_ref()).await {
                             let headers: Vec<String> = if let Some(r0) = sqlite_rows.first() {
                                 r0.columns().iter().map(|c| c.name().to_string()).collect()
                             } else {
@@ -231,7 +231,7 @@ async fn prefetch_first_rows_for_all_tables(
                                     "PRAGMA table_info(\"{}\")",
                                     tbn.replace('"', "\\\"")
                                 );
-                                match sqlx::query(&iq).fetch_all(pool.as_ref()).await {
+                                match sqlx::query(sqlx::AssertSqlSafe(iq.as_str())).fetch_all(pool.as_ref()).await {
                                     Ok(infos) => infos
                                         .iter()
                                         .filter_map(|r| r.try_get::<String, _>(1).ok())
