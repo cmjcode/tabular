@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Tabular MSI (WiX v4/v5). Dibangun oleh build_windows.ps1:
+     wix build wix\main.wxs -arch x64|arm64
+       -d Version=<x.y.z> -d ExePath=<path\tabular.exe> -d IconPath=<path\tabular.ico>
+       -o dist\windows\Tabular-<ver>-windows-<arch>.msi -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Tabular"
+           Manufacturer="PT. VNEU TEKNOLOGI INDONESIA"
+           Version="$(var.Version)"
+           UpgradeCode="4323C259-9F77-4E97-A339-2AA6D181D374"
+           Language="1033"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <SummaryInformation Description="Tabular - Database Client" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="TabularIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="TabularIcon" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Tabular">
+        <Component Id="MainExecutable">
+          <File Id="TabularExe" Source="$(var.ExePath)" Name="Tabular.exe" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="TabularStartMenuShortcut"
+                  Name="Tabular"
+                  Description="Tabular - Database Client"
+                  Target="[INSTALLFOLDER]Tabular.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="TabularIcon" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\Tabular\Tabular"
+                       Name="installed"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Tabular" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

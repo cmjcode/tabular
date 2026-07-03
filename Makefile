@@ -127,7 +127,8 @@ bundle-macos: build-macos
 	@if [ -n "$$APPLE_APP_IDENTITY" ]; then codesign --verify --deep --strict --verbose=2 $(MACOS_DIR)/$(APP_NAME).app || true; elif [ -n "$$APPLE_IDENTITY" ]; then codesign --verify --deep --strict --verbose=2 $(MACOS_DIR)/$(APP_NAME).app || true; fi
 	@if command -v hdiutil >/dev/null 2>&1; then \
 		echo "💿 Create DMG"; \
-		hdiutil create -volname "$(APP_NAME)" -srcfolder $(MACOS_DIR)/$(APP_NAME).app -ov -format UDZO $(MACOS_DIR)/$(APP_NAME)-$(VERSION).dmg; \
+		DMG_SIZE=$$(( $$(du -sm $(MACOS_DIR)/$(APP_NAME).app | cut -f1) + 100 )); \
+		hdiutil create -volname "$(APP_NAME)" -srcfolder $(MACOS_DIR)/$(APP_NAME).app -ov -format UDZO -size $${DMG_SIZE}m $(MACOS_DIR)/$(APP_NAME)-$(VERSION).dmg; \
 		if [ -n "$$APPLE_IDENTITY" ]; then \
 			echo "🔏 Sign DMG with Developer ID"; \
 			codesign --force --timestamp --keychain "$$HOME/Library/Keychains/login.keychain-db" --sign "$$APPLE_IDENTITY" $(MACOS_DIR)/$(APP_NAME)-$(VERSION).dmg; \
