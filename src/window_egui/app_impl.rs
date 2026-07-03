@@ -3673,7 +3673,22 @@ impl App for Tabular {
                 }
             }
         }
-        
+
+        if let Some(rx) = &self.custom_view_save_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            self.custom_view_save_receiver = None;
+            match result {
+                Ok(()) => self.toasts.success("Custom view saved"),
+                Err(e) => {
+                    // Roll back the optimistic in-memory update to disk state.
+                    sidebar_database::load_connections(self);
+                    sidebar_database::refresh_connections_tree(self);
+                    self.toasts.error(format!("Failed to save custom view: {e}"));
+                }
+            }
+        }
+
         self.render_replication_dialog(ctx);
         dialog::render_save_dialog(self, ctx);
         connection::render_connection_selector(self, ctx);

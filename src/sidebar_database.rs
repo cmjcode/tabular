@@ -1034,70 +1034,127 @@ pub(crate) fn save_connection_to_database(
       }
   }
   
+  // Externalize credentials to the secret store; columns get the
+  // sentinel (or plaintext when no backend is available).
+  fn externalize_credentials_for_update(
+      connection: &models::structs::ConnectionConfig,
+  ) -> (String, String, String) {
+      match connection.id {
+          Some(id) => (
+              crate::secrets::store_or_keep(
+                  &crate::secrets::connection_secret_name(id, "password"),
+                  &connection.password,
+              ),
+              crate::secrets::store_or_keep(
+                  &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                  &connection.ssh_private_key,
+              ),
+              crate::secrets::store_or_keep(
+                  &crate::secrets::connection_secret_name(id, "ssh_password"),
+                  &connection.ssh_password,
+              ),
+          ),
+          None => (
+              connection.password.clone(),
+              connection.ssh_private_key.clone(),
+              connection.ssh_password.clone(),
+          ),
+      }
+  }
+
+  async fn exec_update_connection(
+      pool: &SqlitePool,
+      connection: models::structs::ConnectionConfig,
+      password_stored: String,
+      ssh_key_stored: String,
+      ssh_password_stored: String,
+  ) -> Result<(), sqlx::Error> {
+      sqlx::query(
+          "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ? WHERE id = ?"
+      )
+      .bind(connection.name)
+      .bind(connection.host)
+      .bind(connection.port)
+      .bind(connection.username)
+      .bind(password_stored)
+      .bind(connection.database)
+      .bind(format!("{:?}", connection.connection_type))
+      .bind(connection.folder)
+      .bind(if connection.ssh_enabled { 1 } else { 0 })
+      .bind(connection.ssh_host)
+      .bind(connection.ssh_port)
+      .bind(connection.ssh_username)
+      .bind(connection.ssh_auth_method.as_db_value())
+      .bind(ssh_key_stored)
+      .bind(ssh_password_stored)
+      .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
+      .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
+      .bind(connection.replication_master_id)
+      .bind(connection.id)
+      .execute(pool)
+      .await
+      .map(|_| ())
+  }
+
   pub(crate) fn update_connection_in_database(
       tabular: &mut window_egui::Tabular,
       connection: &models::structs::ConnectionConfig,
   ) -> bool {
-      if let Some(ref pool) = tabular.db_pool {
-          let pool_clone = pool.clone();
-          let connection = connection.clone();
-          let rt = tokio::runtime::Runtime::new().unwrap();
+      let Some(pool_clone) = tabular.db_pool.clone() else {
+          return false;
+      };
+      let connection = connection.clone();
+      // Shared runtime: a fresh Runtime per call spawns new worker threads on
+      // every save and stalls the UI thread far longer than the query itself.
+      let rt = tabular.get_runtime();
 
-          // Externalize credentials to the secret store; columns get the
-          // sentinel (or plaintext when no backend is available).
-          let (password_stored, ssh_key_stored, ssh_password_stored) = match connection.id {
-              Some(id) => (
-                  crate::secrets::store_or_keep(
-                      &crate::secrets::connection_secret_name(id, "password"),
-                      &connection.password,
-                  ),
-                  crate::secrets::store_or_keep(
-                      &crate::secrets::connection_secret_name(id, "ssh_private_key"),
-                      &connection.ssh_private_key,
-                  ),
-                  crate::secrets::store_or_keep(
-                      &crate::secrets::connection_secret_name(id, "ssh_password"),
-                      &connection.ssh_password,
-                  ),
-              ),
-              None => (
-                  connection.password.clone(),
-                  connection.ssh_private_key.clone(),
-                  connection.ssh_password.clone(),
-              ),
-          };
+      let (password_stored, ssh_key_stored, ssh_password_stored) =
+          externalize_credentials_for_update(&connection);
 
-          let result = rt.block_on(async {
-              sqlx::query(
-                  "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ? WHERE id = ?"
-              )
-              .bind(connection.name)
-              .bind(connection.host)
-              .bind(connection.port)
-              .bind(connection.username)
-              .bind(password_stored)
-              .bind(connection.database)
-              .bind(format!("{:?}", connection.connection_type))
-              .bind(connection.folder)
-              .bind(if connection.ssh_enabled { 1 } else { 0 })
-              .bind(connection.ssh_host)
-              .bind(connection.ssh_port)
-              .bind(connection.ssh_username)
-              .bind(connection.ssh_auth_method.as_db_value())
-              .bind(ssh_key_stored)
-              .bind(ssh_password_stored)
-              .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
-              .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
-              .bind(connection.replication_master_id)
-              .bind(connection.id)
-              .execute(pool_clone.as_ref())
-              .await
-          });
-  
-          result.is_ok()
-      } else {
-          false
-      }
+      let result = rt.block_on(exec_update_connection(
+          pool_clone.as_ref(),
+          connection,
+          password_stored,
+          ssh_key_stored,
+          ssh_password_stored,
+      ));
+
+      result.is_ok()
+  }
+
+  /// Non-blocking variant of [`update_connection_in_database`]: the UPDATE runs
+  /// on the shared runtime and its result arrives via
+  /// `custom_view_save_receiver`, so the UI thread never waits on the pool.
+  pub(crate) fn update_connection_in_database_background(
+      tabular: &mut window_egui::Tabular,
+      connection: &models::structs::ConnectionConfig,
+  ) {
+      let Some(pool_clone) = tabular.db_pool.clone() else {
+          tabular
+              .toasts
+              .error("Cache database is not available; view not persisted");
+          return;
+      };
+      let connection = connection.clone();
+      let rt = tabular.get_runtime();
+
+      let (password_stored, ssh_key_stored, ssh_password_stored) =
+          externalize_credentials_for_update(&connection);
+
+      let (tx, rx) = std::sync::mpsc::channel();
+      tabular.custom_view_save_receiver = Some(rx);
+      rt.spawn(async move {
+          let result = exec_update_connection(
+              pool_clone.as_ref(),
+              connection,
+              password_stored,
+              ssh_key_stored,
+              ssh_password_stored,
+          )
+          .await
+          .map_err(|e| e.to_string());
+          let _ = tx.send(result);
+      });
   }
 
 pub(crate) fn start_edit_connection(tabular: &mut window_egui::Tabular, connection_id: i64) {

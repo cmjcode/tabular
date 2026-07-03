@@ -490,21 +490,8 @@ impl super::Tabular {
 
     pub fn render_add_view_dialog(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        let show_dialog = self.show_add_view_dialog;
-        
-        if show_dialog {
-            // Log raw input events
-            ctx.input(|i| {
-                if i.key_pressed(egui::Key::Backspace) {
-                    println!("🔍 [Dialog] Backspace key detected in raw input");
-                }
-                if !i.events.is_empty() {
-                    println!("🔍 [Dialog] Input events count: {}", i.events.len());
-                }
-            });
-                        
 
-
+        if self.show_add_view_dialog {
             let title = if self.edit_view_original_name.is_some() { "Edit Custom View" } else { "Add Custom View" };
             egui::Window::new(title)
                 .collapsible(false)
@@ -513,37 +500,23 @@ impl super::Tabular {
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.label("Name:");
-                    let before_len = self.new_view_name.len();
-                    let name_edit = egui::TextEdit::singleline(&mut self.new_view_name)
-                        .desired_width(f32::INFINITY);
-                    
-                    let name_response = ui.add(name_edit);
-                    let after_len = self.new_view_name.len();
-                    
-                    println!("🔍 [Name Field] Before len: {}, After len: {}", before_len, after_len);
-                    println!("🔍 [Name Field] Has focus: {}, changed: {}, lost_focus: {}", 
-                        name_response.has_focus(), name_response.changed(), name_response.lost_focus());
-                    
+                    let name_response = ui.add(
+                        egui::TextEdit::singleline(&mut self.new_view_name)
+                            .desired_width(f32::INFINITY),
+                    );
+
                     // Request focus on the name field when dialog first opens
                     if ui.memory(|mem| mem.focused().is_none()) {
-                        println!("🔍 [Name Field] Requesting focus (first open)");
                         name_response.request_focus();
                     }
 
                     ui.add_space(8.0);
                     ui.label("SQL Query:");
-                    
-                    let before_query_len = self.new_view_query.len();
-                    let query_edit = egui::TextEdit::multiline(&mut self.new_view_query)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(10);
-                    
-                    let query_response = ui.add(query_edit);
-                    let after_query_len = self.new_view_query.len();
-                    
-                    println!("🔍 [Query Field] Before len: {}, After len: {}", before_query_len, after_query_len);
-                    println!("🔍 [Query Field] Has focus: {}, changed: {}", 
-                        query_response.has_focus(), query_response.changed());
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.new_view_query)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(10),
+                    );
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -557,7 +530,7 @@ impl super::Tabular {
                                              name: self.new_view_name.clone(),
                                              query: self.new_view_query.clone(),
                                          };
-                                         
+
                                          if let Some(original_name) = &self.edit_view_original_name {
                                              // Edit mode: find and update
                                              if let Some(view_idx) = conn.custom_views.iter().position(|v| v.name == *original_name) {
@@ -570,18 +543,14 @@ impl super::Tabular {
                                              // Add mode: append
                                              conn.custom_views.push(new_view);
                                          }
-                                         
-                                         // Update database
-                                         if crate::sidebar_database::update_connection_in_database(self, &conn) {
-                                             // Update in-memory
-                                              self.connections[conn_idx] = conn;
-                                              // Trigger refresh
-                                              crate::sidebar_database::refresh_connections_tree(self);
-                                              self.show_add_view_dialog = false;
-                                         } else {
-                                             // Handle error (maybe show toast/log)
-                                             log::error!("Failed to save custom view to database");
-                                         }
+
+                                         // Optimistic: apply in memory right away and persist on
+                                         // the shared runtime; the result lands in
+                                         // custom_view_save_receiver (polled in app_impl).
+                                         self.connections[conn_idx] = conn.clone();
+                                         crate::sidebar_database::refresh_connections_tree(self);
+                                         crate::sidebar_database::update_connection_in_database_background(self, &conn);
+                                         self.show_add_view_dialog = false;
                                      }
                                  }
                         if ui.button("Cancel").clicked() {

@@ -455,6 +455,7 @@ impl super::Tabular {
             new_view_query: String::new(),
             new_view_connection_id: None,
             edit_view_original_name: None,
+            custom_view_save_receiver: None,
             global_backspace_pressed: false,
             sidebar_visible: true,
             show_add_replication_dialog: false,

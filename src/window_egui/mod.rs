@@ -393,6 +393,8 @@ pub struct Tabular {
     pub new_view_query: String,
     pub new_view_connection_id: Option<i64>,
     pub edit_view_original_name: Option<String>,
+    // Result of the background custom-view save (Ok = persisted, Err = message)
+    pub custom_view_save_receiver: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     
     pub global_backspace_pressed: bool,
     pub sidebar_visible: bool,
