@@ -244,6 +244,6 @@ pub enum DatabasePool {
     PostgreSQL(Arc<PgPool>),
     SQLite(Arc<SqlitePool>),
     Redis(Arc<ConnectionManager>),
-    MsSQL(deadpool_tiberius::Pool),
+    MsSQL(Arc<mssql_driver_pool::Pool>),
     MongoDB(Arc<MongoClient>),
 }

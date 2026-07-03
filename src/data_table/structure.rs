@@ -513,8 +513,6 @@ fn fetch_index_details_for_table(
                 })
         }
         models::enums::DatabaseType::MsSQL => {
-            use tiberius::{AuthMethod, Config};
-            use tokio_util::compat::TokioAsyncWriteCompatExt;
             let host = connection.host.clone();
             let port: u16 = connection.port.parse().unwrap_or(1433);
             let user = connection.username.clone();
@@ -522,14 +520,21 @@ fn fetch_index_details_for_table(
             let db = database_name.to_string();
             let tbl = table_name.to_string();
             let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
-                    let mut config = Config::new(); config.host(host.clone()); config.port(port); config.authentication(AuthMethod::sql_server(user.clone(), pass.clone())); config.trust_cert(); if !db.is_empty() { config.database(db.clone()); }
-                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?; tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-                    let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                    let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
                     let parse = |name: &str| -> (Option<String>, String) { if let Some((s,t)) = name.split_once('.') { (Some(s.trim_matches(['[',']']).to_string()), t.trim_matches(['[',']']).to_string()) } else { (None, name.trim_matches(['[',']']).to_string()) } };
                     let (_schema_opt, table_only) = parse(&tbl);
                     let q = format!("SELECT i.name AS index_name, i.is_unique, i.type_desc, STUFF((SELECT ','+c.name FROM sys.index_columns ic2 JOIN sys.columns c ON c.object_id=ic2.object_id AND c.column_id=ic2.column_id WHERE ic2.object_id=i.object_id AND ic2.index_id=i.index_id ORDER BY ic2.key_ordinal FOR XML PATH(''), TYPE).value('.','NVARCHAR(MAX)'),1,1,'') AS columns FROM sys.indexes i INNER JOIN sys.objects o ON o.object_id=i.object_id WHERE o.name='{}' AND i.name IS NOT NULL ORDER BY i.name", table_only.replace("'","''"));
-                    let mut stream = client.simple_query(q).await.map_err(|e| e.to_string())?; use futures_util::TryStreamExt; use tiberius::QueryItem; let mut list = Vec::new();
-                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let QueryItem::Row(r) = item { let name: Option<&str> = r.get(0); let is_unique: Option<bool> = r.get(1); let type_desc: Option<&str> = r.get(2); let cols: Option<&str> = r.get(3); if let Some(nm)=name { list.push(models::structs::IndexStructInfo { name: nm.to_string(), method: type_desc.map(|s| s.to_string()), unique: is_unique.unwrap_or(false), columns: cols.unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() }); } } }
+                    let stream = client.query(&q, &[]).await.map_err(|e| e.to_string())?;
+                    let mut list = Vec::new();
+                    for r in stream.collect_all().await.map_err(|e| e.to_string())? {
+                        let name = r.get_string(0);
+                        let is_unique: Option<bool> = r.try_get(1).ok().flatten();
+                        let type_desc = r.get_string(2);
+                        let cols = r.get_string(3);
+                        if let Some(nm) = name {
+                            list.push(models::structs::IndexStructInfo { name: nm, method: type_desc, unique: is_unique.unwrap_or(false), columns: cols.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() });
+                        }
+                    }
                     Ok::<_, String>(list)
                 });
             rt_res.unwrap_or_default()

@@ -312,7 +312,6 @@ pub(crate) fn test_database_connection(
                 }
             }
             models::enums::DatabaseType::MsSQL => {
-                use futures_util::TryStreamExt;
                 let (target_host, target_port) = match resolve_connection_target(connection) {
                     Ok(tuple) => tuple,
                     Err(err) => return (false, err),
@@ -323,32 +322,13 @@ pub(crate) fn test_database_connection(
                 let user = connection.username.clone();
                 let pass = connection.password.clone();
                 let res = async {
-                    use tiberius::{AuthMethod, Config};
-                    use tokio_util::compat::TokioAsyncWriteCompatExt;
-                    let mut config = Config::new();
-                    config.host(host.clone());
-                    config.port(port);
-                    config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-                    config.trust_cert();
-                    if !db.is_empty() {
-                        config.database(db.clone());
-                    }
-                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port))
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-                    let mut client = tiberius::Client::connect(config, tcp.compat_write())
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let mut s = client
+                    let mut client =
+                        crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db))
+                            .await?;
+                    client
                         .simple_query("SELECT 1")
                         .await
                         .map_err(|e| e.to_string())?;
-                    while let Some(item) = s.try_next().await.map_err(|e| e.to_string())? {
-                        if let tiberius::QueryItem::Row(_r) = item {
-                            break;
-                        }
-                    }
                     Ok::<_, String>(())
                 }
                 .await;

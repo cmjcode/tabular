@@ -59,7 +59,7 @@ enum SessionConn {
     MySql(sqlx::pool::PoolConnection<sqlx::MySql>),
     Postgres(sqlx::pool::PoolConnection<sqlx::Postgres>),
     Sqlite(sqlx::pool::PoolConnection<sqlx::Sqlite>),
-    MsSQL(Box<deadpool::managed::Object<deadpool_tiberius::Manager>>),
+    MsSQL(Box<mssql_driver_pool::PooledConnection>),
 }
 
 /// Spawn a session task for the active tab's connection. Returns `None`
@@ -250,14 +250,11 @@ async fn acquire(
             let mut conn = p.get().await.map_err(|e| e.to_string())?;
             if let Some(db) = database_name.filter(|d| !d.trim().is_empty()) {
                 let use_sql = format!("USE [{}]", db.replace(']', "]]"));
-                {
-                    use futures_util::TryStreamExt;
-                    let mut stream = conn
-                        .simple_query(use_sql.as_str())
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    while stream.try_next().await.map_err(|e| e.to_string())?.is_some() {}
-                }
+                conn.client_mut()
+                    .ok_or_else(|| "MsSQL pooled connection unavailable".to_string())?
+                    .simple_query(use_sql.as_str())
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
             Ok(SessionConn::MsSQL(Box::new(conn)))
         }
@@ -285,12 +282,12 @@ async fn run_simple(conn: &mut SessionConn, sql: &str) -> Result<(), String> {
             .await
             .map(|_| ())
             .map_err(|e| e.to_string()),
-        SessionConn::MsSQL(c) => {
-            use futures_util::TryStreamExt;
-            let mut stream = c.simple_query(sql).await.map_err(|e| e.to_string())?;
-            while stream.try_next().await.map_err(|e| e.to_string())?.is_some() {}
-            Ok(())
-        }
+        SessionConn::MsSQL(c) => c
+            .client_mut()
+            .ok_or_else(|| "MsSQL pooled connection unavailable".to_string())?
+            .simple_query(sql)
+            .await
+            .map_err(|e| e.to_string()),
     }
 }
 
@@ -361,7 +358,10 @@ async fn run_query(
             ))
         }
         SessionConn::MsSQL(c) => {
-            crate::driver_mssql::run_query(c, sql).await
+            let client = c
+                .client_mut()
+                .ok_or_else(|| "MsSQL pooled connection unavailable".to_string())?;
+            crate::driver_mssql::run_query(client, sql).await
         }
     }
 }

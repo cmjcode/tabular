@@ -2417,9 +2417,6 @@ impl super::Tabular {
                 })
             }
             models::enums::DatabaseType::MsSQL => {
-                // Use tiberius
-                use tiberius::{AuthMethod, Config};
-                use tokio_util::compat::TokioAsyncWriteCompatExt;
                 let host = connection.host.clone();
                 let port: u16 = connection.port.parse().unwrap_or(1433);
                 let user = connection.username.clone();
@@ -2427,15 +2424,7 @@ impl super::Tabular {
                 let db = database_name.to_string();
                 let tbl = table_name.to_string();
                 let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
-                    let mut config = Config::new();
-                    config.host(host.clone());
-                    config.port(port);
-                    config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-                    config.trust_cert();
-                    if !db.is_empty() { config.database(db.clone()); }
-                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
-                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-                    let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                    let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
                     // Parse schema-qualified name
                     let parse = |name: &str| -> (Option<String>, String) {
                         if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
@@ -2450,10 +2439,9 @@ impl super::Tabular {
                     let mut q = format!("SELECT i.name FROM sys.indexes i INNER JOIN sys.objects o ON i.object_id = o.object_id WHERE o.name = '{}' AND i.name IS NOT NULL", table_only.replace("'", "''"));
                     if let Some(s) = schema_opt { q.push_str(&format!(" AND SCHEMA_NAME(o.schema_id) = '{}'", s.replace("'", "''"))); }
                     q.push_str(" ORDER BY i.name");
-                    let mut stream = client.simple_query(q).await.map_err(|e| e.to_string())?;
+                    let stream = client.query(&q, &[]).await.map_err(|e| e.to_string())?;
                     let mut list = Vec::new();
-                    use futures_util::TryStreamExt;
-                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let n: Option<&str> = r.get(0); if let Some(nm) = n { list.push(nm.to_string()); } } }
+                    for r in stream.collect_all().await.map_err(|e| e.to_string())? { if let Some(nm) = r.get_string(0) { list.push(nm); } }
                     Ok::<_, String>(list)
                 });
                 rt_res.unwrap_or_default()
@@ -2547,9 +2535,6 @@ impl super::Tabular {
                 })
             }
             models::enums::DatabaseType::MsSQL => {
-                // Use tiberius
-                use tiberius::{AuthMethod, Config};
-                use tokio_util::compat::TokioAsyncWriteCompatExt;
                 let host = connection.host.clone();
                 let port: u16 = connection.port.parse().unwrap_or(1433);
                 let user = connection.username.clone();
@@ -2557,15 +2542,7 @@ impl super::Tabular {
                 let db = database_name.to_string();
                 let tbl = table_name.to_string();
                 let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
-                    let mut config = Config::new();
-                    config.host(host.clone());
-                    config.port(port);
-                    config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-                    config.trust_cert();
-                    if !db.is_empty() { config.database(db.clone()); }
-                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| e.to_string())?;
-                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-                    let mut client = tiberius::Client::connect(config, tcp.compat_write()).await.map_err(|e| e.to_string())?;
+                    let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
                     // Parse schema-qualified name
                     let parse = |name: &str| -> (Option<String>, String) {
                         if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
@@ -2581,10 +2558,9 @@ impl super::Tabular {
                     q.push_str(&format!(" AND o.name = '{}'", table_only.replace("'", "''")));
                     if let Some(s) = schema_opt { q.push_str(&format!(" AND SCHEMA_NAME(o.schema_id) = '{}'", s.replace("'", "''"))); }
                     q.push_str(" ORDER BY ic.key_ordinal");
-                    let mut stream = client.simple_query(q).await.map_err(|e| e.to_string())?;
+                    let stream = client.query(&q, &[]).await.map_err(|e| e.to_string())?;
                     let mut list = Vec::new();
-                    use futures_util::TryStreamExt;
-                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? { if let tiberius::QueryItem::Row(r) = item { let n: Option<&str> = r.get(0); if let Some(nm) = n { list.push(nm.to_string()); } } }
+                    for r in stream.collect_all().await.map_err(|e| e.to_string())? { if let Some(nm) = r.get_string(0) { list.push(nm); } }
                     Ok::<_, String>(list)
                 });
                 rt_res.unwrap_or_default()

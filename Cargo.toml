@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.8.5"
+version = "0.9.0"
 edition = "2024"
 
 [lib]
@@ -52,23 +52,17 @@ regex = "1.12"
 unicode-segmentation = "1.13"
 csv = "1.4"
 xlsxwriter = "0.6"
-rfd = "0.17" # For file dialog
+rfd = "0.17"                                       # For file dialog
 hex = "0.4.3"
 rust_decimal = "1.42.1"
 log = "0.4"
 env_logger = "0.11"
 dotenv = "0.15.0"
 md5 = "0.8"
-tiberius = { version = "0.12", default-features = false, features = [
-       "winauth",
-       "chrono",
-       "time",
-       "tds73",
-       "rust_decimal",
-       "bigdecimal",
-] }
+# Pinned exact: pre-1.0 API moves between minors (replaces tiberius + deadpool-tiberius)
+mssql-client = { version = "=0.20.0", features = ["chrono", "decimal", "uuid"] }
+mssql-driver-pool = "=0.20.0"
 futures-util = "0.3"
-tokio-util = { version = "0.7.18", features = ["compat"] }
 # Self-update dependencies
 reqwest = { version = "0.13", features = [
        "json",
@@ -89,8 +83,6 @@ once_cell = "1"
 thiserror = "2"
 async-trait = "0.1.89"
 cargo-deb = "3.7.0"
-deadpool = "0.12.3"
-deadpool-tiberius = "0.1.9"
 # Cipher for the encrypted-file secret store fallback (src/secrets.rs);
 # the primary OS-keychain backends are declared per-target below.
 chacha20poly1305 = "0.11"

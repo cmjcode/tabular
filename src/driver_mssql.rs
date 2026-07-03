@@ -1,17 +1,105 @@
 // MsSQL driver module now built unconditionally (feature flag removed)
 use crate::models;
 use crate::window_egui; // for Tabular type
-use futures_util::StreamExt;
-// use std::sync::Arc; // for next on tiberius QueryStream
 
-// We'll use tiberius for MsSQL. Tiberius uses async-std or tokio with the "rustls" feature.
-// For simplicity here we wrap the basic connection configuration and open connections per query.
+use mssql_client::{Client, Config, Credentials, Ready, SqlValue};
 
-// MssqlConfigWrapper removed as we now use deadpool_tiberius::Pool
+// MsSQL connectivity is provided by mssql-client (praxiomlabs rust-mssql-driver)
+// with pooling from mssql-driver-pool. The helpers below centralize config,
+// connection, and dynamic value-to-string conversion for the whole app.
+
+/// Build a Config for a direct (non-pooled) MsSQL connection.
+/// Mirrors the app-wide defaults: SQL auth + trusted server certificate.
+pub(crate) fn mssql_config(
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    database: Option<&str>,
+) -> Config {
+    let mut config = Config::new()
+        .host(host)
+        .port(port)
+        .credentials(Credentials::sql_server(
+            username.to_string(),
+            password.to_string(),
+        ))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .trust_server_certificate(true);
+    if let Some(db) = database
+        && !db.is_empty()
+    {
+        config = config.database(db.to_string());
+    }
+    config
+}
+
+/// Open a one-off MsSQL connection (no pool).
+pub(crate) async fn connect_mssql(
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    database: Option<&str>,
+) -> Result<Client<Ready>, String> {
+    Client::connect(mssql_config(host, port, username, password, database))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Convert a dynamic SqlValue into the display string used by the data grid.
+pub(crate) fn sql_value_to_string(value: &SqlValue) -> String {
+    match value {
+        SqlValue::Null => "NULL".to_string(),
+        SqlValue::Bool(v) => v.to_string(),
+        SqlValue::TinyInt(v) => v.to_string(),
+        SqlValue::SmallInt(v) => v.to_string(),
+        SqlValue::Int(v) => v.to_string(),
+        SqlValue::BigInt(v) => v.to_string(),
+        SqlValue::Float(v) => v.to_string(),
+        SqlValue::Double(v) => v.to_string(),
+        SqlValue::String(s) => s.clone(),
+        SqlValue::Binary(b) => format!("0x{}", hex::encode(b)),
+        SqlValue::Decimal(d) | SqlValue::Money(d) | SqlValue::SmallMoney(d) => d.to_string(),
+        SqlValue::Uuid(u) => u.to_string(),
+        SqlValue::Date(d) => d.format("%Y-%m-%d").to_string(),
+        SqlValue::Time(t) => t.format("%H:%M:%S%.f").to_string(),
+        SqlValue::DateTime(dt) | SqlValue::SmallDateTime(dt) => {
+            dt.format("%Y-%m-%d %H:%M:%S%.f").to_string()
+        }
+        SqlValue::DateTimeOffset(dto) => dto.format("%Y-%m-%d %H:%M:%S%.f %:z").to_string(),
+        SqlValue::Xml(x) => x.clone(),
+        // Tvp is send-only and SqlValue is #[non_exhaustive]
+        other => format!("{:?}", other),
+    }
+}
+
+/// Convert every column of a row into display strings.
+pub(crate) fn row_values_to_strings(row: &mssql_client::Row) -> Vec<String> {
+    (0..row.len())
+        .map(|i| match row.get_raw(i) {
+            Some(v) => sql_value_to_string(&v),
+            None => "NULL".to_string(),
+        })
+        .collect()
+}
+
+/// Run a single-statement query through the shared pool and collect all rows.
+pub(crate) async fn pooled_query(
+    pool: &mssql_driver_pool::Pool,
+    sql: &str,
+) -> Result<Vec<mssql_client::Row>, String> {
+    let mut conn = pool.get().await.map_err(|e| e.to_string())?;
+    let client = conn
+        .client_mut()
+        .ok_or_else(|| "MsSQL pooled connection unavailable".to_string())?;
+    let stream = client.query(sql, &[]).await.map_err(|e| e.to_string())?;
+    stream.collect_all().await.map_err(|e| e.to_string())
+}
 
 pub(crate) async fn fetch_mssql_data(
     _connection_id: i64,
-    _pool: deadpool::managed::Pool<deadpool_tiberius::Manager>,
+    _pool: std::sync::Arc<mssql_driver_pool::Pool>,
     _cache_pool: &sqlx::SqlitePool,
 ) -> bool {
     // TODO: implement metadata caching
@@ -79,29 +167,30 @@ pub(crate) fn fetch_tables_from_mssql_connection(
         };
         
         // Get a connection from the pool
-        let mut client = match pool.get().await {
+        let mut conn = match pool.get().await {
             Ok(c) => c,
             Err(e) => {
                 log::debug!("MsSQL pool get error: {}", e);
                 return None;
             }
         };
+        let client = conn.client_mut()?;
 
         // Choose query based on type (include schema for views)
         let query = match table_type {
             // Include schema for tables (some objects not in dbo)
-            "table" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME".to_string(),
+            "table" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME",
             // Include schema for views so we can build fully-qualified names
-            "view" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME".to_string(),
+            "view" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME",
             _ => {
                 log::debug!("Unsupported MsSQL table_type: {}", table_type);
                 return None;
             }
         };
 
-        let mut stream = match tokio::time::timeout(
+        let stream = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            client.simple_query(query),
+            client.query(query, &[]),
         )
         .await
         {
@@ -111,14 +200,11 @@ pub(crate) fn fetch_tables_from_mssql_connection(
         };
 
         let mut items = Vec::new();
-        use futures_util::TryStreamExt;
-        while let Some(item) = stream.try_next().await.ok()? {
-            if let tiberius::QueryItem::Row(r) = item {
-                let schema: Option<&str> = r.get(0);
-                let name: Option<&str> = r.get(1);
-                if let (Some(s), Some(n)) = (schema, name) {
-                    items.push(format!("[{}].[{}]", s, n));
-                }
+        for row in stream.collect_all().await.ok()? {
+            let schema = row.get_string(0);
+            let name = row.get_string(1);
+            if let (Some(s), Some(n)) = (schema, name) {
+                items.push(format!("[{}].[{}]", s, n));
             }
         }
         Some(items)
@@ -141,13 +227,14 @@ pub(crate) fn fetch_objects_from_mssql_connection(
              _ => return None,
         };
         
-        let mut client = match pool.get().await {
+        let mut conn = match pool.get().await {
             Ok(c) => c,
             Err(e) => {
                 log::debug!("MsSQL pool get error: {}", e);
                 return None;
             }
         };
+        let client = conn.client_mut()?;
 
         let query = match object_type {
             // Stored procedures
@@ -183,9 +270,9 @@ pub(crate) fn fetch_objects_from_mssql_connection(
             }
         };
 
-        let mut stream = match tokio::time::timeout(
+        let stream = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            client.simple_query(query),
+            client.query(&query, &[]),
         )
         .await
         {
@@ -201,118 +288,69 @@ pub(crate) fn fetch_objects_from_mssql_connection(
         };
 
         let mut items = Vec::new();
-        use futures_util::TryStreamExt;
-        while let Some(item) = stream.try_next().await.ok()? {
-            if let tiberius::QueryItem::Row(r) = item {
-                match object_type {
-                    "procedure" | "function" => {
-                        let schema: Option<&str> = r.get(0);
-                        let name: Option<&str> = r.get(1);
-                        if let (Some(s), Some(n)) = (schema, name) {
-                            items.push(format!("[{}].[{}]", s, n));
-                        }
+        for row in stream.collect_all().await.ok()? {
+            match object_type {
+                "procedure" | "function" => {
+                    let schema = row.get_string(0);
+                    let name = row.get_string(1);
+                    if let (Some(s), Some(n)) = (schema, name) {
+                        items.push(format!("[{}].[{}]", s, n));
                     }
-                    "trigger" => {
-                        let schema: Option<&str> = r.get(0);
-                        let table: Option<&str> = r.get(1);
-                        let trig: Option<&str> = r.get(2);
-                        if let (Some(s), Some(t), Some(tr)) = (schema, table, trig) {
-                            items.push(format!("[{}].[{}].[{}]", s, t, tr));
-                        }
-                    }
-                    _ => {}
                 }
+                "trigger" => {
+                    let schema = row.get_string(0);
+                    let table = row.get_string(1);
+                    let trig = row.get_string(2);
+                    if let (Some(s), Some(t), Some(tr)) = (schema, table, trig) {
+                        items.push(format!("[{}].[{}].[{}]", s, t, tr));
+                    }
+                }
+                _ => {}
             }
         }
         Some(items)
     })
 }
 
-// /// Execute a query using an existing client and return (headers, rows)
-// pub(crate) async fn execute_query_with_client(
-//     client: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
-//     query: &str,
-// ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
-//     run_query(client, query).await
-// }
-
-/// Execute a query using the shared connection pool (deadpool_tiberius)
+/// Execute a query using the shared connection pool (mssql-driver-pool)
 pub(crate) async fn execute_query(
-    pool: deadpool_tiberius::Pool,
+    pool: std::sync::Arc<mssql_driver_pool::Pool>,
     query: &str,
 ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     // Acquire a client from the pool and delegate to the common runner
-    let mut client = pool.get().await.map_err(|e| e.to_string())?;
-    run_query(&mut client, query).await
+    let mut conn = pool.get().await.map_err(|e| e.to_string())?;
+    let client = conn
+        .client_mut()
+        .ok_or_else(|| "MsSQL pooled connection unavailable".to_string())?;
+    run_query(client, query).await
 }
 
 pub(crate) async fn run_query(
-    client: &mut tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>,
+    client: &mut Client<Ready>,
     query: &str,
 ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
     let mut headers: Vec<String> = Vec::new();
     let mut data: Vec<Vec<String>> = Vec::new();
 
-    let mut stream = client.query(query, &[]).await.map_err(|e| e.to_string())?;
+    // query_multiple handles batches like "USE [db]; SELECT ..." — like the
+    // previous tiberius stream, headers follow the latest result set with
+    // columns while rows accumulate across result sets.
+    let mut stream = client
+        .query_multiple(query, &[])
+        .await
+        .map_err(|e| e.to_string())?;
 
-    while let Some(item_res) = stream.next().await {
-        let item = item_res.map_err(|e| e.to_string())?;
-        match item {
-            tiberius::QueryItem::Metadata(meta) => {
-                headers = meta
-                    .columns()
-                    .iter()
-                    .map(|c| c.name().to_string())
-                    .collect();
-            }
-            tiberius::QueryItem::Row(row) => {
-                use tiberius::ColumnData;
-                let mut row_vec: Vec<String> = Vec::new();
-                for col in row.into_iter() {
-                    let val = match col {
-                        ColumnData::Bit(Some(v)) => v.to_string(),
-                        ColumnData::U8(Some(v)) => v.to_string(),
-                        ColumnData::I16(Some(v)) => v.to_string(),
-                        ColumnData::I32(Some(v)) => v.to_string(),
-                        ColumnData::I64(Some(v)) => v.to_string(),
-                        ColumnData::F32(Some(v)) => v.to_string(),
-                        ColumnData::F64(Some(v)) => v.to_string(),
-                        ColumnData::String(Some(s)) => s.to_string(),
-                        ColumnData::Binary(Some(b)) => format!("0x{}", hex::encode(b)),
-                        ColumnData::Guid(Some(g)) => g.to_string(),
-                        ColumnData::Numeric(Some(n)) => format!("{}", n),
-                        ColumnData::DateTime(Some(dt)) => format!("{:?}", dt),
-                        ColumnData::SmallDateTime(Some(dt)) => format!("{:?}", dt),
-                        ColumnData::Xml(Some(x)) => x.to_string(),
-                        // Newer temporal types in recent tiberius versions
-                        ColumnData::Time(Some(t)) => format!("{:?}", t),
-                        ColumnData::Date(Some(d)) => format!("{:?}", d),
-                        ColumnData::DateTime2(Some(dt2)) => format!("{:?}", dt2),
-                        ColumnData::DateTimeOffset(Some(dto)) => format!("{:?}", dto),
-                        // NULL variants
-                        ColumnData::Bit(None)
-                        | ColumnData::U8(None)
-                        | ColumnData::I16(None)
-                        | ColumnData::I32(None)
-                        | ColumnData::I64(None)
-                        | ColumnData::F32(None)
-                        | ColumnData::F64(None)
-                        | ColumnData::String(None)
-                        | ColumnData::Binary(None)
-                        | ColumnData::Guid(None)
-                        | ColumnData::Numeric(None)
-                        | ColumnData::DateTime(None)
-                        | ColumnData::SmallDateTime(None)
-                        | ColumnData::Xml(None)
-                        | ColumnData::Time(None)
-                        | ColumnData::Date(None)
-                        | ColumnData::DateTime2(None)
-                        | ColumnData::DateTimeOffset(None) => "NULL".to_string(),
-                    };
-                    row_vec.push(val);
-                }
-                data.push(row_vec);
-            }
+    loop {
+        if let Some(cols) = stream.columns()
+            && !cols.is_empty()
+        {
+            headers = cols.iter().map(|c| c.name.clone()).collect();
+        }
+        while let Some(row) = stream.next_row().await.map_err(|e| e.to_string())? {
+            data.push(row_values_to_strings(&row));
+        }
+        if !stream.next_result().await.map_err(|e| e.to_string())? {
+            break;
         }
     }
     Ok((headers, data))

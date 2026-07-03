@@ -320,18 +320,21 @@ pub(crate) async fn create_connection_pool_for_config(
                 }
             };
 
-            let mut mgr = deadpool_tiberius::Manager::new()
-                .host(target_host)
-                .port(target_port.parse::<u16>().unwrap_or(1433))
-                .basic_authentication(connection.username.clone(), connection.password.clone());
+            let client_config = crate::driver_mssql::mssql_config(
+                &target_host,
+                target_port.parse::<u16>().unwrap_or(1433),
+                &connection.username,
+                &connection.password,
+                Some(&connection.database),
+            );
 
-            mgr = mgr.trust_cert();
-            if !connection.database.is_empty() {
-                mgr = mgr.database(connection.database.clone());
-            }
-
-            match deadpool_tiberius::Pool::builder(mgr).max_size(20).build() {
-                Ok(pool) => Some(models::enums::DatabasePool::MsSQL(pool)),
+            match mssql_driver_pool::Pool::builder()
+                .client_config(client_config)
+                .max_connections(20)
+                .build()
+                .await
+            {
+                Ok(pool) => Some(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
                 Err(e) => {
                     debug!("MsSQL pool creation failed: {}", e);
                     None
@@ -441,21 +444,21 @@ pub(crate) async fn create_database_pool(
                 }
             };
 
-            let mut mgr = deadpool_tiberius::Manager::new()
-                .host(target_host)
-                .port(target_port.parse::<u16>().unwrap_or(1433))
-                .basic_authentication(connection.username.clone(), connection.password.clone());
+            let client_config = crate::driver_mssql::mssql_config(
+                &target_host,
+                target_port.parse::<u16>().unwrap_or(1433),
+                &connection.username,
+                &connection.password,
+                Some(&connection.database),
+            );
 
-            mgr = mgr.trust_cert();
-            if !connection.database.is_empty() {
-                mgr = mgr.database(connection.database.clone());
-            }
-
-            match deadpool_tiberius::Pool::builder(mgr)
-                .max_size(5) // smaller size for temp/check connections
+            match mssql_driver_pool::Pool::builder()
+                .client_config(client_config)
+                .max_connections(5) // smaller size for temp/check connections
                 .build()
+                .await
             {
-                Ok(pool) => Some(models::enums::DatabasePool::MsSQL(pool)),
+                Ok(pool) => Some(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
                 Err(e) => {
                     debug!("MsSQL temp pool creation failed: {}", e);
                     None

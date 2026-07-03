@@ -1,5 +1,4 @@
 use crate::{driver_mysql, models, modules, window_egui};
-use futures_util::TryStreamExt;
 use log::debug;
 use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions};
 use std::collections::HashMap;
@@ -247,8 +246,6 @@ pub(crate) fn fetch_view_definition(
                 }
             }
             models::enums::DatabaseType::MsSQL => {
-                use tiberius::{AuthMethod, Config};
-                use tokio_util::compat::TokioAsyncWriteCompatExt;
                 let host = connection_clone.host.clone();
                 let port: u16 = connection_clone.port.parse().unwrap_or(1433);
                 let user = connection_clone.username.clone();
@@ -260,34 +257,9 @@ pub(crate) fn fetch_view_definition(
                 };
 
                 let rt_res: Result<Option<String>, String> = async {
-                    let mut config = Config::new();
-                    config.host(host.clone());
-                    config.port(port);
-                    config.authentication(AuthMethod::sql_server(
-                        user.clone(),
-                        pass.clone(),
-                    ));
-                    config.trust_cert();
-                    if !db.is_empty() {
-                        config.database(db.clone());
-                    }
-
-                    let tcp = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        tokio::net::TcpStream::connect((host.as_str(), port)),
-                    )
-                    .await
-                    .map_err(|_| "timeout".to_string())?
-                    .map_err(|e| e.to_string())?;
-                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-
-                    let mut client = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        tiberius::Client::connect(config, tcp.compat_write()),
-                    )
-                    .await
-                    .map_err(|_| "timeout".to_string())?
-                    .map_err(|e| e.to_string())?;
+                    let mut client =
+                        crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db))
+                            .await?;
 
                     let parse_qualified = |name: &str| -> (Option<String>, String) {
                         if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
@@ -321,39 +293,34 @@ pub(crate) fn fetch_view_definition(
                         ));
                     }
 
-                    let mut stream = tokio::time::timeout(
+                    let stream = tokio::time::timeout(
                         std::time::Duration::from_secs(10),
-                        client.simple_query(query),
+                        client.query(&query, &[]),
                     )
                     .await
                     .map_err(|_| "timeout".to_string())?
                     .map_err(|e| e.to_string())?;
 
-                    while let Some(item) =
-                        stream.try_next().await.map_err(|e| e.to_string())?
-                    {
-                        if let tiberius::QueryItem::Row(row) = item {
-                            let schema: Option<&str> = row.get(0);
-                            let definition: Option<&str> = row.get(1);
-                            if let Some(def) = definition {
-                                let schema_name = schema
-                                    .map(|s| s.to_string())
-                                    .or(schema_opt.clone())
-                                    .unwrap_or_else(|| "dbo".to_string());
-                                let mut body =
-                                    def.trim().trim_end_matches(';').to_string();
-                                if body.is_empty() {
-                                    body = format!(
-                                        "SELECT * FROM [{}].[{}]",
-                                        schema_name, view_only
-                                    );
-                                }
-                                let qualified =
-                                    format!("[{}].[{}]", schema_name, view_only);
-                                let script =
-                                    format!("ALTER VIEW {} AS\n{};", qualified, body);
-                                return Ok(Some(script));
+                    for row in stream.collect_all().await.map_err(|e| e.to_string())? {
+                        let schema = row.get_string(0);
+                        let definition = row.get_string(1);
+                        if let Some(def) = definition {
+                            let schema_name = schema
+                                .or(schema_opt.clone())
+                                .unwrap_or_else(|| "dbo".to_string());
+                            let mut body =
+                                def.trim().trim_end_matches(';').to_string();
+                            if body.is_empty() {
+                                body = format!(
+                                    "SELECT * FROM [{}].[{}]",
+                                    schema_name, view_only
+                                );
                             }
+                            let qualified =
+                                format!("[{}].[{}]", schema_name, view_only);
+                            let script =
+                                format!("ALTER VIEW {} AS\n{};", qualified, body);
+                            return Ok(Some(script));
                         }
                     }
                     Ok::<Option<String>, String>(None)
@@ -481,8 +448,6 @@ pub(crate) fn fetch_procedure_definition(
                 }
             }
             models::enums::DatabaseType::MsSQL => {
-                use tiberius::{AuthMethod, Config};
-                use tokio_util::compat::TokioAsyncWriteCompatExt;
                 let host = connection_clone.host.clone();
                 let port: u16 = connection_clone.port.parse().unwrap_or(1433);
                 let user = connection_clone.username.clone();
@@ -494,34 +459,9 @@ pub(crate) fn fetch_procedure_definition(
                 };
 
                 let rt_res: Result<Option<String>, String> = async {
-                    let mut config = Config::new();
-                    config.host(host.clone());
-                    config.port(port);
-                    config.authentication(AuthMethod::sql_server(
-                        user.clone(),
-                        pass.clone(),
-                    ));
-                    config.trust_cert();
-                    if !db.is_empty() {
-                        config.database(db.clone());
-                    }
-
-                    let tcp = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        tokio::net::TcpStream::connect((host.as_str(), port)),
-                    )
-                    .await
-                    .map_err(|_| "timeout".to_string())?
-                    .map_err(|e| e.to_string())?;
-                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
-
-                    let mut client = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        tiberius::Client::connect(config, tcp.compat_write()),
-                    )
-                    .await
-                    .map_err(|_| "timeout".to_string())?
-                    .map_err(|e| e.to_string())?;
+                    let mut client =
+                        crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db))
+                            .await?;
 
                     let parse_qualified = |name: &str| -> (Option<String>, String) {
                         if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
@@ -553,22 +493,17 @@ pub(crate) fn fetch_procedure_definition(
                         qualified.replace("'", "''")
                     );
 
-                    let mut stream = tokio::time::timeout(
+                    let stream = tokio::time::timeout(
                         std::time::Duration::from_secs(10),
-                        client.simple_query(q),
+                        client.query(&q, &[]),
                     )
                     .await
                     .map_err(|_| "timeout".to_string())?
                     .map_err(|e| e.to_string())?;
 
-                    while let Some(item) =
-                        stream.try_next().await.map_err(|e| e.to_string())?
-                    {
-                        if let tiberius::QueryItem::Row(row) = item {
-                            let def: Option<&str> = row.get(0);
-                            if let Some(create_stmt) = def.map(|s| s.to_string()) {
-                                return Ok(Some(create_stmt));
-                            }
+                    for row in stream.collect_all().await.map_err(|e| e.to_string())? {
+                        if let Some(create_stmt) = row.get_string(0) {
+                            return Ok(Some(create_stmt));
                         }
                     }
                     Ok::<Option<String>, String>(None)
@@ -618,7 +553,7 @@ pub(crate) async fn get_foreign_keys(
             _ => {}
         }
     } else {
-        // MSSQL uses tiberius (no sqlx pool) — fetch via one-off connection
+        // MSSQL uses mssql-client (no sqlx pool) — fetch via one-off connection
         let conn_opt = tabular.connections.iter().find(|c| c.id == Some(connection_id)).cloned();
         if let Some(conn) = conn_opt {
             if conn.connection_type == models::enums::DatabaseType::MsSQL {
@@ -664,36 +599,21 @@ async fn fetch_mssql_foreign_keys(
     conn: &models::structs::ConnectionConfig,
     database_name: &str,
 ) -> Vec<models::structs::ForeignKey> {
-    use tiberius::{AuthMethod, Config};
-    use tokio_util::compat::TokioAsyncWriteCompatExt;
-    use futures_util::TryStreamExt;
-
     let host = conn.host.clone();
     let port: u16 = conn.port.parse().unwrap_or(1433);
     let db = if !conn.database.is_empty() { conn.database.clone() } else { database_name.to_string() };
 
-    let mut config = Config::new();
-    config.host(&host);
-    config.port(port);
-    config.authentication(AuthMethod::sql_server(&conn.username, &conn.password));
-    config.trust_cert();
-    if !db.is_empty() { config.database(&db); }
-
-    let tcp = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio::net::TcpStream::connect((host.as_str(), port)),
-    ).await {
-        Ok(Ok(t)) => t,
-        _ => return Vec::new(),
-    };
-    let _ = tcp.set_nodelay(true);
-
-    let mut client = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tiberius::Client::connect(config, tcp.compat_write()),
-    ).await {
-        Ok(Ok(c)) => c,
-        _ => return Vec::new(),
+    let mut client = match crate::driver_mssql::connect_mssql(
+        &host,
+        port,
+        &conn.username,
+        &conn.password,
+        Some(&db),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
     };
 
     let q = r#"
@@ -711,23 +631,21 @@ async fn fetch_mssql_foreign_keys(
     "#;
 
     let mut keys = Vec::new();
-    if let Ok(Ok(mut stream)) = tokio::time::timeout(
+    if let Ok(Ok(stream)) = tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        client.simple_query(q),
-    ).await {
-        while let Ok(Some(item)) = stream.try_next().await {
-            if let tiberius::QueryItem::Row(row) = item {
-                let get = |i: usize| -> String {
-                    row.get::<&str, _>(i).unwrap_or("").to_string()
-                };
-                keys.push(models::structs::ForeignKey {
-                    constraint_name:        get(0),
-                    table_name:             get(1),
-                    column_name:            get(2),
-                    referenced_table_name:  get(3),
-                    referenced_column_name: get(4),
-                });
-            }
+        client.query(q, &[]),
+    ).await
+        && let Ok(rows) = stream.collect_all().await
+    {
+        for row in rows {
+            let get = |i: usize| -> String { row.get_string(i).unwrap_or_default() };
+            keys.push(models::structs::ForeignKey {
+                constraint_name:        get(0),
+                table_name:             get(1),
+                column_name:            get(2),
+                referenced_table_name:  get(3),
+                referenced_column_name: get(4),
+            });
         }
     }
     keys
@@ -969,33 +887,19 @@ async fn generate_mssql_ddl(
     db_name: &str,
     tbl_name: &str,
 ) -> Option<String> {
-    use tiberius::{AuthMethod, Config};
-    use tokio_util::compat::TokioAsyncWriteCompatExt;
-    use futures_util::TryStreamExt;
-
     let host = conn.host.clone();
     let port: u16 = conn.port.parse().unwrap_or(1433);
-    let mut config = Config::new();
-    config.host(&host);
-    config.port(port);
-    config.authentication(AuthMethod::sql_server(&conn.username, &conn.password));
-    config.trust_cert();
-    if !db_name.is_empty() { config.database(db_name); }
-
-    let tcp = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio::net::TcpStream::connect((host.as_str(), port)),
-    ).await {
-        Ok(Ok(t)) => t,
-        _ => return None,
-    };
-    let _ = tcp.set_nodelay(true);
-    let mut client = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tiberius::Client::connect(config, tcp.compat_write()),
-    ).await {
-        Ok(Ok(c)) => c,
-        _ => return None,
+    let mut client = match crate::driver_mssql::connect_mssql(
+        &host,
+        port,
+        &conn.username,
+        &conn.password,
+        Some(db_name),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(_) => return None,
     };
 
     let tbl_esc = tbl_name.replace("'", "''");
@@ -1010,36 +914,36 @@ async fn generate_mssql_ddl(
     );
 
     let mut col_lines: Vec<String> = Vec::new();
-    if let Ok(Ok(mut stream)) = tokio::time::timeout(
+    if let Ok(Ok(stream)) = tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        client.simple_query(q),
-    ).await {
-        while let Ok(Some(item)) = stream.try_next().await {
-            if let tiberius::QueryItem::Row(row) = item {
-                let col:      String = row.get::<&str, _>(0).unwrap_or("").to_string();
-                let typename: String = row.get::<&str, _>(1).unwrap_or("").to_string();
-                let max_len:  i16    = row.get::<i16, _>(2).unwrap_or(0);
-                let prec:     u8     = row.get::<u8,  _>(3).unwrap_or(0);
-                let scale:    u8     = row.get::<u8,  _>(4).unwrap_or(0);
-                let nullable: bool   = row.get::<bool,_>(5).unwrap_or(true);
-                let default:  Option<String> = row.get::<&str,_>(6).map(str::to_string);
-                let identity: bool   = row.get::<bool,_>(7).unwrap_or(false);
+        client.query(&q, &[]),
+    ).await
+        && let Ok(rows) = stream.collect_all().await
+    {
+        for row in rows {
+            let col:      String = row.get_string(0).unwrap_or_default();
+            let typename: String = row.get_string(1).unwrap_or_default();
+            let max_len:  i16    = row.try_get::<i16>(2).ok().flatten().unwrap_or(0);
+            let prec:     u8     = row.try_get::<u8>(3).ok().flatten().unwrap_or(0);
+            let scale:    u8     = row.try_get::<u8>(4).ok().flatten().unwrap_or(0);
+            let nullable: bool   = row.try_get::<bool>(5).ok().flatten().unwrap_or(true);
+            let default:  Option<String> = row.get_string(6);
+            let identity: bool   = row.try_get::<bool>(7).ok().flatten().unwrap_or(false);
 
-                let full_type = match typename.to_lowercase().as_str() {
-                    "nvarchar" | "varchar" | "nchar" | "char" | "binary" | "varbinary" => {
-                        if max_len == -1 { format!("{}(MAX)", typename) }
-                        else { format!("{}({})", typename, max_len) }
-                    }
-                    "decimal" | "numeric" => format!("{}({},{})", typename, prec, scale),
-                    _ => typename.clone(),
-                };
-                let esc_col = format!("[{}]", col);
-                let mut line = format!("  {} {}", esc_col, full_type.to_uppercase());
-                if identity { line.push_str(" IDENTITY(1,1)"); }
-                if !nullable { line.push_str(" NOT NULL"); }
-                if let Some(d) = default { line.push_str(&format!(" DEFAULT {}", d)); }
-                col_lines.push(line);
-            }
+            let full_type = match typename.to_lowercase().as_str() {
+                "nvarchar" | "varchar" | "nchar" | "char" | "binary" | "varbinary" => {
+                    if max_len == -1 { format!("{}(MAX)", typename) }
+                    else { format!("{}({})", typename, max_len) }
+                }
+                "decimal" | "numeric" => format!("{}({},{})", typename, prec, scale),
+                _ => typename.clone(),
+            };
+            let esc_col = format!("[{}]", col);
+            let mut line = format!("  {} {}", esc_col, full_type.to_uppercase());
+            if identity { line.push_str(" IDENTITY(1,1)"); }
+            if !nullable { line.push_str(" NOT NULL"); }
+            if let Some(d) = default { line.push_str(&format!(" DEFAULT {}", d)); }
+            col_lines.push(line);
         }
     }
 
@@ -1054,15 +958,16 @@ async fn generate_mssql_ddl(
          ORDER BY ic.key_ordinal", tbl_esc
     );
     let mut pk_cols: Vec<String> = Vec::new();
-    if let Ok(Ok(mut stream)) = tokio::time::timeout(
+    if let Ok(Ok(stream)) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        client.simple_query(pk_q),
-    ).await {
-        while let Ok(Some(item)) = stream.try_next().await {
-            if let tiberius::QueryItem::Row(row) = item
-                && let Some(n) = row.get::<&str, _>(0) {
-                    pk_cols.push(format!("[{}]", n));
-                }
+        client.query(&pk_q, &[]),
+    ).await
+        && let Ok(rows) = stream.collect_all().await
+    {
+        for row in rows {
+            if let Some(n) = row.get_string(0) {
+                pk_cols.push(format!("[{}]", n));
+            }
         }
     }
     if !pk_cols.is_empty() {

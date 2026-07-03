@@ -279,8 +279,6 @@ pub(crate) fn fetch_columns_from_database(
                 }
             }
             models::enums::DatabaseType::MsSQL => {
-                use tiberius::{AuthMethod, Config};
-                use tokio_util::compat::TokioAsyncWriteCompatExt;
                 let host = connection_clone.host.clone();
                 let port: u16 = connection_clone.port.parse().unwrap_or(1433);
                 let user = connection_clone.username.clone();
@@ -288,22 +286,9 @@ pub(crate) fn fetch_columns_from_database(
                 let db = database_name.clone();
                 let table = table_name.clone();
                 let rt_res = async move {
-                    let mut config = Config::new();
-                    config.host(host.clone());
-                    config.port(port);
-                    config.authentication(AuthMethod::sql_server(user.clone(), pass.clone()));
-                    config.trust_cert();
-                    if !db.is_empty() {
-                        config.database(db.clone());
-                    }
-                    let tcp = tokio::net::TcpStream::connect((host.as_str(), port))
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
                     let mut client =
-                        tiberius::Client::connect(config, tcp.compat_write())
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db))
+                            .await?;
 
                     let parse_qualified = |name: &str| -> (Option<String>, String) {
                         if name.starts_with('[') && name.contains("].[") && name.ends_with(']') {
@@ -333,15 +318,16 @@ pub(crate) fn fetch_columns_from_database(
                         query.push_str(&format!(" AND TABLE_SCHEMA = '{}'", schema_escaped));
                     }
                     query.push_str(" ORDER BY ORDINAL_POSITION");
-                    let mut stream = client.simple_query(query).await.map_err(|e| e.to_string())?;
+                    let stream = client
+                        .query(&query, &[])
+                        .await
+                        .map_err(|e| e.to_string())?;
                     let mut cols = Vec::new();
-                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
-                        if let tiberius::QueryItem::Row(r) = item {
-                            let name: Option<&str> = r.get(0);
-                            let dt: Option<&str> = r.get(1);
-                            if let (Some(n), Some(d)) = (name, dt) {
-                                cols.push((n.to_string(), d.to_string()));
-                            }
+                    for row in stream.collect_all().await.map_err(|e| e.to_string())? {
+                        let name = row.get_string(0);
+                        let dt = row.get_string(1);
+                        if let (Some(n), Some(d)) = (name, dt) {
+                            cols.push((n, d));
                         }
                     }
                     Ok::<_, String>(cols)

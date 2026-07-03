@@ -1,5 +1,4 @@
 use crate::{models, window_egui};
-use futures_util::TryStreamExt;
 use log::{debug, warn};
 use sqlx::SqlitePool;
 use crate::connection::pool::{create_database_pool, get_or_create_connection_pool};
@@ -132,18 +131,15 @@ pub(crate) fn fetch_databases_from_connection_blocking(
             }
             models::enums::DatabasePool::MsSQL(pool) => {
                 let rt_res = async move {
-                    let mut client = pool.get().await.map_err(|e| e.to_string())?;
                     let mut dbs = Vec::new();
-                    let mut stream = client
-                        .simple_query("SELECT name FROM sys.databases ORDER BY name")
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
-                        if let tiberius::QueryItem::Row(r) = item {
-                            let name: Option<&str> = r.get(0);
-                            if let Some(n) = name {
-                                dbs.push(n.to_string());
-                            }
+                    for row in crate::driver_mssql::pooled_query(
+                        &pool,
+                        "SELECT name FROM sys.databases ORDER BY name",
+                    )
+                    .await?
+                    {
+                        if let Some(n) = row.get_string(0) {
+                            dbs.push(n);
                         }
                     }
                     Ok::<_, String>(dbs)
@@ -355,18 +351,15 @@ pub(crate) async fn fetch_databases_from_connection_async(
         }
         models::enums::DatabasePool::MsSQL(pool) => {
             let rt_res = async move {
-                let mut client = pool.get().await.map_err(|e| e.to_string())?;
                 let mut dbs = Vec::new();
-                let mut stream = client
-                    .simple_query("SELECT name FROM sys.databases ORDER BY name")
-                    .await
-                    .map_err(|e| e.to_string())?;
-                while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
-                    if let tiberius::QueryItem::Row(r) = item {
-                        let name: Option<&str> = r.get(0);
-                        if let Some(n) = name {
-                            dbs.push(n.to_string());
-                        }
+                for row in crate::driver_mssql::pooled_query(
+                    &pool,
+                    "SELECT name FROM sys.databases ORDER BY name",
+                )
+                .await?
+                {
+                    if let Some(n) = row.get_string(0) {
+                        dbs.push(n);
                     }
                 }
                 Ok::<_, String>(dbs)
@@ -653,18 +646,15 @@ pub async fn fetch_databases_background_task(
         }
         models::enums::DatabasePool::MsSQL(pool) => {
             let rt_res = async move {
-                let mut client = pool.get().await.map_err(|e| e.to_string())?;
                 let mut dbs = Vec::new();
-                let mut stream = client
-                    .simple_query("SELECT name FROM sys.databases ORDER BY name")
-                    .await
-                    .map_err(|e| e.to_string())?;
-                while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
-                    if let tiberius::QueryItem::Row(r) = item {
-                        let name: Option<&str> = r.get(0);
-                        if let Some(n) = name {
-                            dbs.push(n.to_string());
-                        }
+                for row in crate::driver_mssql::pooled_query(
+                    &pool,
+                    "SELECT name FROM sys.databases ORDER BY name",
+                )
+                .await?
+                {
+                    if let Some(n) = row.get_string(0) {
+                        dbs.push(n);
                     }
                 }
                 Ok::<_, String>(dbs)
