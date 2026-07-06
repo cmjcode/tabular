@@ -74,16 +74,16 @@ fn write_xlsx_file(
     all_table_data: &[Vec<String>],
     current_table_headers: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let workbook = xlsxwriter::Workbook::new(path.to_str().unwrap())?;
-    let mut worksheet = workbook.add_worksheet(Some("Data"))?;
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("Data")?;
 
     // Create header format (bold)
-    let mut header_format = xlsxwriter::Format::new();
-    header_format.set_bold();
+    let header_format = rust_xlsxwriter::Format::new().set_bold();
 
     // Write headers
     for (col, header) in current_table_headers.iter().enumerate() {
-        worksheet.write_string(0, col as u16, header, Some(&header_format))?;
+        worksheet.write_string_with_format(0, col as u16, header, &header_format)?;
     }
 
     // Write data rows
@@ -91,19 +91,19 @@ fn write_xlsx_file(
         for (col_idx, cell) in row.iter().enumerate() {
             // Try to parse as number first, otherwise write as string
             if let Ok(number) = cell.parse::<f64>() {
-                worksheet.write_number((row_idx + 1) as u32, col_idx as u16, number, None)?;
+                worksheet.write_number((row_idx + 1) as u32, col_idx as u16, number)?;
             } else {
-                worksheet.write_string((row_idx + 1) as u32, col_idx as u16, cell, None)?;
+                worksheet.write_string((row_idx + 1) as u32, col_idx as u16, cell)?;
             }
         }
     }
 
-    // Auto-fit columns
+    // Set a consistent column width
     for col in 0..current_table_headers.len() {
-        worksheet.set_column(col as u16, col as u16, 15.0, None)?;
+        worksheet.set_column_width(col as u16, 15.0)?;
     }
 
-    workbook.close()?;
+    workbook.save(path)?;
     Ok(())
 }
 

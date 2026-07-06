@@ -1,4 +1,4 @@
-# Quick build script for Tabular (native Windows)
+﻿# Quick build script for Tabular (native Windows)
 # Usage: .\build_windows.ps1 [-Arch x64|arm64|all] [-Deps] [-Clean] [-NoMsi] [-Help]
 # Requires: Rust (rustup + cargo) with MSVC toolchain
 #           WiX Toolset v4+ for MSI: dotnet tool install --global wix
@@ -77,10 +77,10 @@ if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
     exit 1
 }
 if (-not $NoMsi -and -not (Get-Command wix -ErrorAction SilentlyContinue)) {
-    Write-Err "WiX CLI not found (needed for .msi). Install with:"
-    Write-Err "  dotnet tool install --global wix"
-    Write-Err "Or skip the installer with: .\build_windows.ps1 -NoMsi"
-    exit 1
+    Write-Warn "WiX CLI not found - skipping .msi installer (zip + exe only)."
+    Write-Warn "To build the installer, install WiX then re-run:"
+    Write-Warn "  dotnet tool install --global wix"
+    $NoMsi = $true
 }
 Write-Success "All dependencies are available!"
 
