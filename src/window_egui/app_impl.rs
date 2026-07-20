@@ -176,17 +176,17 @@ impl Tabular {
                                 ui.horizontal(|ui| {
                                     ui.label("Choose theme:");
                                     if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::Dark, "🌙 Dark").clicked() {
-                                        ctx.set_visuals(egui::Visuals::dark());
+                                        crate::window_egui::style::apply_theme(ctx, self.app_theme);
                                         if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubDark; }
                                         self.prefs_dirty = true; self.try_save_prefs();
                                     }
                                     if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::Light, "🔆 Light").clicked() {
-                                        ctx.set_visuals(egui::Visuals::light());
+                                        crate::window_egui::style::apply_theme(ctx, self.app_theme);
                                         if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
                                         self.prefs_dirty = true; self.try_save_prefs();
                                     }
                                     if ui.radio_value(&mut self.app_theme, crate::config::AppTheme::LightSoft, "⛅ Light Soft").clicked() {
-                                        ctx.set_visuals(light_soft_visuals());
+                                        crate::window_egui::style::apply_theme(ctx, self.app_theme);
                                         if self.link_editor_theme { self.advanced_editor.theme = crate::models::structs::EditorColorTheme::GithubLight; }
                                         self.prefs_dirty = true; self.try_save_prefs();
                                     }
@@ -2679,6 +2679,8 @@ impl App for Tabular {
         // egui 0.34: App::update(ctx) became App::ui(ui); the body below is
         // ctx-based (panels via ctx), so rebind ctx from the root Ui.
         let ctx = &root_ui.ctx().clone();
+        // Ensure theme/style is applied for current `app_theme` each frame (idempotent)
+        crate::window_egui::style::apply_theme(ctx, self.app_theme);
         
         // If Cmd+A was pressed, set a short-lived flag or state?
         // Actually, we need to know if "Select All" happened recently.

@@ -25,6 +25,7 @@ pub mod sidebar_tree;
 pub mod table_wizard;
 pub mod tree_loader;
 pub mod update;
+pub mod style;
 
 pub struct Tabular {
     pub editor: EditorBuffer,
