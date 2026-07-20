@@ -12,11 +12,12 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
     ui.add_space(4.0);
 
         ui.scope(|ui| {
+            let accent_col = window_egui::style::theme_accent(ui.ctx());
             let mut style = ui.style().as_ref().clone();
-            style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
-            style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 0, 0);
-            style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(255, 0, 0);
-            style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(255, 0, 0);
+            style.visuals.selection.bg_fill = accent_col;
+            style.visuals.selection.stroke.color = accent_col;
+            style.visuals.widgets.active.bg_fill = accent_col;
+            style.visuals.widgets.active.weak_bg_fill = accent_col;
             ui.set_style(style);
 
             ui.set_min_width(toggle_width);
@@ -35,7 +36,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                         ui.allocate_exact_size(button_size, egui::Sense::click());
 
                     let mut bg = if active {
-                        egui::Color32::from_rgb(255, 0, 0)
+                        window_egui::style::theme_accent(ui.ctx())
                     } else {
                         ui.visuals().widgets.inactive.bg_fill
                     };
@@ -44,7 +45,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                     }
 
                     let stroke_color = if active {
-                        egui::Color32::from_rgb(255, 0, 0)
+                        window_egui::style::theme_accent(ui.ctx())
                     } else {
                         ui.visuals().widgets.inactive.bg_stroke.color
                     };

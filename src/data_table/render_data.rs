@@ -62,7 +62,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     if tabular.spreadsheet_state.is_dirty {
                         ui.separator();
                         ui.colored_label(
-                            egui::Color32::from_rgb(255, 0, 0),
+                            crate::window_egui::style::theme_warning(ui.ctx()),
                             "Unsaved changes (⌘S)",
                         );
                     }
@@ -253,7 +253,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 }
                                 let icon_color = if is_sorted_column {
-                                    egui::Color32::from_rgb(255, 0, 0)
+                                    crate::window_egui::style::theme_accent(ui.ctx())
                                 } else if response.hovered() {
                                     ui.visuals().text_color()
                                 } else {
@@ -325,7 +325,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             let resize_response =
                                 ui.allocate_rect(resize_handle_rect, egui::Sense::drag());
                             if resize_response.hovered() || resize_response.dragged() {
-                                let indicator_color = egui::Color32::from_rgb(255, 0, 0);
+                                let indicator_color = crate::window_egui::style::theme_accent(ui.ctx());
                                 let dot_size = 1.5;
                                 let dot_spacing = 2.0_f32;
                                 let start_y = handle_y + 2.0;

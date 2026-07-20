@@ -576,7 +576,7 @@ impl super::Tabular {
                     egui::RichText::new("⏳").color(egui::Color32::WHITE).size(12.0)
                 } else {
                     egui::RichText::new("▶")
-                        .color(egui::Color32::from_rgb(0, 120, 40))
+                        .color(egui::Color32::WHITE)
                         .size(12.0)
                 };
                 let play_tooltip = if is_loading {
@@ -663,7 +663,7 @@ impl super::Tabular {
                                         .fill(if is_loading {
                                             egui::Color32::from_rgb(60, 60, 60)
                                         } else {
-                                            egui::Color32::from_rgb(214, 255, 214)
+                                            super::style::theme_accent(ui.ctx())
                                         })
                                         .stroke(egui::Stroke::new(1.0, base_border))
                                         .corner_radius(egui::CornerRadius::same(button_corner));

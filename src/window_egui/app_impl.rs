@@ -1,7 +1,7 @@
 use eframe::{App, Frame, egui};
 use log::{debug};
 use chrono::{DateTime, Duration, Utc};
-use super::{Tabular, PrefTab};
+use super::{Tabular, PrefTab, style};
 
 const TAB_BUTTON_HEIGHT: f32 = 36.0;
 use crate::{models, connection, editor, data_table, sidebar_database, sidebar_history,
@@ -107,8 +107,7 @@ impl Tabular {
                     .show(ctx, |ui| {
                         // Tab bar
                         ui.horizontal(|ui| {
-                            // Accent color (red)
-                            let accent = egui::Color32::from_rgb(255, 0, 0);
+                            let accent = style::theme_accent(ctx);
                             let inactive_fg = ui.visuals().text_color();
                             let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
                                 let selected = *current == me;
@@ -1147,7 +1146,7 @@ impl Tabular {
                                                             egui::RichText::new("⏹ STOP")
                                                                 .color(egui::Color32::WHITE),
                                                         )
-                                                        .fill(egui::Color32::from_rgb(255, 0, 0));
+                                                        .fill(style::theme_danger(ctx));
                                                         if ui.add(stop_button).clicked() {
                                                             self.stop_auto_refresh();
                                                         }
@@ -1264,15 +1263,10 @@ impl Tabular {
                                 ui.add_space(5.0); // Right spacing (goes before button since layout is right-aligned)
                                 match self.selected_menu.as_str() {
                                     "Database" => {
-                                        let plus_text_color = if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(30, 30, 30)
-                                        } else {
-                                            egui::Color32::WHITE
-                                        };
                                         if ui
                                             .add_sized(
                                                 [24.0, 24.0], // Small square button
-                                                egui::Button::new(egui::RichText::new("➕").color(plus_text_color)).fill(egui::Color32::from_rgb(255, 0, 0)),
+                                                egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE)).fill(style::theme_accent(ctx)),
                                             )
                                             .on_hover_text("Add New Database Connection")
                                             .clicked()
@@ -1584,7 +1578,7 @@ impl Tabular {
 
                             // AI Assistant button
                             let ai_btn_bg = if self.show_ai_panel {
-                                egui::Color32::from_rgb(99, 135, 255)
+                                style::theme_accent(ui.ctx())
                             } else if ui.visuals().dark_mode {
                                 egui::Color32::from_rgb(50, 50, 50)
                             } else {
@@ -1838,8 +1832,8 @@ impl Tabular {
                             ui.scope(|ui| {
                                 // Provide consistent active styling for the toggle buttons.
                                 let mut style = ui.style().as_ref().clone();
-                                style.visuals.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
-                                style.visuals.selection.stroke.color = egui::Color32::from_rgb(255, 0, 0);
+                                style.visuals.selection.bg_fill = style::theme_accent(ui.ctx());
+                                style.visuals.selection.stroke.color = style::theme_accent(ui.ctx());
                                 ui.set_style(style);
 
                                 ui.horizontal(|ui| {
@@ -2191,7 +2185,7 @@ impl Tabular {
                                     
                                         let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
                                         let data_bg = if is_data {
-                                            egui::Color32::from_rgb(255, 0, 0)
+                                            style::theme_accent(ui.ctx())
                                         } else if ui.visuals().dark_mode {
                                             egui::Color32::from_rgb(50, 50, 50)
                                         } else {
@@ -2215,7 +2209,7 @@ impl Tabular {
                                         if !self.query_message.is_empty() {
                                             let is_messages = self.table_bottom_view == models::structs::TableBottomView::Messages;
                                             let messages_bg = if is_messages {
-                                                egui::Color32::from_rgb(255, 0, 0)
+                                                style::theme_accent(ui.ctx())
                                             } else if ui.visuals().dark_mode {
                                                 egui::Color32::from_rgb(50, 50, 50)
                                             } else {

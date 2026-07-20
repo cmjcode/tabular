@@ -87,43 +87,39 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
 }
 
 // Theme-aware status & UI color helpers
-pub fn theme_accent(ctx: &egui::Context) -> egui::Color32 {
-    if ctx.global_style().visuals.dark_mode {
-        egui::Color32::from_rgb(86, 156, 214) // Modern IDE blue
-    } else {
-        egui::Color32::from_rgb(0, 102, 204)
-    }
+pub fn theme_accent(_ctx: &egui::Context) -> egui::Color32 {
+    egui::Color32::from_rgb(255, 0, 0)
 }
 
 pub fn theme_danger(ctx: &egui::Context) -> egui::Color32 {
     if ctx.global_style().visuals.dark_mode {
-        egui::Color32::from_rgb(220, 80, 80) // Soft ergonomic red
+        egui::Color32::from_rgb(220, 70, 70) // Soft ergonomic red
     } else {
-        egui::Color32::from_rgb(200, 50, 50)
+        egui::Color32::from_rgb(220, 38, 38)
     }
 }
 
 pub fn theme_success(ctx: &egui::Context) -> egui::Color32 {
     if ctx.global_style().visuals.dark_mode {
-        egui::Color32::from_rgb(80, 190, 100) // Soft green
+        egui::Color32::from_rgb(34, 197, 94) // Solid green
     } else {
-        egui::Color32::from_rgb(40, 160, 70)
+        egui::Color32::from_rgb(22, 163, 74)
     }
 }
 
 pub fn theme_warning(ctx: &egui::Context) -> egui::Color32 {
     if ctx.global_style().visuals.dark_mode {
-        egui::Color32::from_rgb(230, 170, 50) // Warm amber
+        egui::Color32::from_rgb(234, 179, 8) // Solid warm amber
     } else {
-        egui::Color32::from_rgb(210, 140, 20)
+        egui::Color32::from_rgb(202, 138, 4)
     }
 }
 
 pub fn theme_info(ctx: &egui::Context) -> egui::Color32 {
     if ctx.global_style().visuals.dark_mode {
-        egui::Color32::from_rgb(100, 180, 240)
+        egui::Color32::from_rgb(96, 165, 250)
     } else {
-        egui::Color32::from_rgb(30, 130, 210)
+        egui::Color32::from_rgb(37, 99, 235)
     }
 }
 
