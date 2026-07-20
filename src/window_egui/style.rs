@@ -37,15 +37,51 @@ pub fn light_soft_visuals() -> egui::Visuals {
     v
 }
 
-pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
-    // Base visuals
-    let visuals = match theme {
+fn theme_visuals(theme: AppTheme) -> egui::Visuals {
+    match theme {
         AppTheme::Dark => egui::Visuals::dark(),
         AppTheme::Light => egui::Visuals::light(),
         AppTheme::LightSoft => light_soft_visuals(),
-    };
+    }
+}
 
-    // Apply visuals via context. Keep other style changes minimal to
-    // maintain compatibility with the project's egui version.
-    ctx.set_visuals(visuals);
+pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
+    let visuals = theme_visuals(theme);
+
+    ctx.all_styles_mut(|style| {
+        style.visuals = visuals.clone();
+
+        // Global spacing and padding for a more modern layout.
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.window_margin = egui::Margin::same(10);
+        style.spacing.button_padding = egui::vec2(12.0, 8.0);
+        style.spacing.menu_margin = egui::Margin::same(8);
+        style.spacing.indent = 16.0;
+        style.spacing.interact_size = egui::vec2(44.0, 22.0);
+
+        // Rounded widgets across the app.
+        style.visuals.widgets.inactive.corner_radius = 8.0.into();
+        style.visuals.widgets.hovered.corner_radius = 8.0.into();
+        style.visuals.widgets.active.corner_radius = 8.0.into();
+        style.visuals.widgets.open.corner_radius = 8.0.into();
+
+        // Use a consistent app font / body size.
+        style.override_font_id = Some(egui::FontId::new(14.0, egui::FontFamily::Proportional));
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::new(13.0, egui::FontFamily::Monospace),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(18.0, egui::FontFamily::Proportional),
+        );
+    });
 }

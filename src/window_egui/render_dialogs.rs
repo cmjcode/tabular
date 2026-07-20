@@ -2,59 +2,6 @@ use eframe::egui;
 use log::debug;
 use crate::{models, connection, query_tools, editor, data_table};
 
-fn draw_format_sql_button(
-    ctx: &egui::Context,
-    area_id: egui::Id,
-    pos: egui::Pos2,
-    size: egui::Vec2,
-    corner: u8,
-) -> bool {
-    let mut clicked = false;
-    let format_text = egui::RichText::new("</>").size(16.0);
-    egui::Area::new(area_id)
-        .order(egui::Order::Foreground)
-        .fixed_pos(pos)
-        .show(ctx, |area_ui| {
-            let button = egui::Button::new(format_text.clone())
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.5, egui::Color32::TRANSPARENT))
-                .corner_radius(egui::CornerRadius::same(corner));
-            let response = area_ui
-                .add_sized(size, button)
-                .on_hover_text("Format SQL (Cmd+Shift+F)");
-            if response.clicked() {
-                clicked = true;
-            }
-        });
-    clicked
-}
-
-fn draw_explain_button(
-    ctx: &egui::Context,
-    area_id: egui::Id,
-    pos: egui::Pos2,
-    size: egui::Vec2,
-    corner: u8,
-) -> bool {
-    let mut clicked = false;
-    let explain_text = egui::RichText::new("🔍").size(15.0);
-    egui::Area::new(area_id)
-        .order(egui::Order::Foreground)
-        .fixed_pos(pos)
-        .show(ctx, |area_ui| {
-            let button = egui::Button::new(explain_text.clone())
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.5, egui::Color32::TRANSPARENT))
-                .corner_radius(egui::CornerRadius::same(corner));
-            let response = area_ui
-                .add_sized(size, button)
-                .on_hover_text("Explain query plan (EXPLAIN)");
-            if response.clicked() {
-                clicked = true;
-            }
-        });
-    clicked
-}
 
 
 impl super::Tabular {
@@ -622,95 +569,148 @@ impl super::Tabular {
                         editor::render_advanced_editor(self, ui);
                     });
 
-                // Floating execute button
-                let button_margin = 4.0;
-                let button_size = egui::vec2(32.0, 32.0);
-                let button_pos = egui::pos2(
-                    rect.max.x - button_size.x - button_margin,
-                    rect.min.y + button_margin,
+                // Floating query action cluster (Explain, Format, Execute)
+                let button_margin = 5.0;
+                let button_size = egui::vec2(28.0, 28.0);
+                let button_spacing = 4.0;
+                let button_corner = (button_size.y / 2.0).round().clamp(4.0, u8::MAX as f32) as u8;
+                let cluster_width = button_size.x * 3.0 + button_spacing * 2.0;
+                let cluster_pos = egui::pos2(
+                    rect.max.x - cluster_width - button_margin,
+                    rect.min.y + button_margin + 2.0,
                 );
-                let play_fill = egui::Color32::TRANSPARENT;
                 let is_loading = self.query_execution_in_progress || self.pool_wait_in_progress;
-                let (play_icon, play_color, play_border, tooltip_text) = if is_loading {
-                    ("⏳", egui::Color32::WHITE, egui::Color32::TRANSPARENT, "Executing query…")
+                let play_text = if is_loading {
+                    egui::RichText::new("⏳").color(egui::Color32::WHITE).size(14.0)
                 } else {
-                    ("▶", egui::Color32::from_rgb(50,205,50), egui::Color32::TRANSPARENT, "CMD+Enter to execute")
+                    egui::RichText::new("▶")
+                        .color(egui::Color32::from_rgb(0, 120, 40))
+                        .size(14.0)
                 };
-                let play_text = egui::RichText::new(play_icon).color(play_color).size(18.0);
-                let button_corner = (button_size.y / 2.0).round().clamp(2.0, u8::MAX as f32) as u8;
+                let play_tooltip = if is_loading {
+                    "Executing query…"
+                } else {
+                    "CMD+Enter to execute"
+                };
 
                 let mut execute_clicked = false;
+                let mut format_clicked = false;
+                let mut explain_clicked = false;
                 let mut captured_selection_text = String::new();
 
                 // Auto-execute if requested by the tab (e.g. Custom View opened)
                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
-                    && tab.should_run_on_open {
-                        execute_clicked = true;
-                        tab.should_run_on_open = false;
-                        self.query_execution_in_progress = true;
-                    }
+                    && tab.should_run_on_open
+                {
+                    execute_clicked = true;
+                    tab.should_run_on_open = false;
+                    self.query_execution_in_progress = true;
+                }
 
-                egui::Area::new(egui::Id::new((format!("floating_execute_button_{}", context_id), self.active_tab_index)))
+                egui::Area::new(egui::Id::new((format!("floating_query_actions_{}", context_id), self.active_tab_index)))
                     .order(egui::Order::Foreground)
-                    .fixed_pos(button_pos)
+                    .fixed_pos(cluster_pos)
                     .show(ui.ctx(), |area_ui| {
-                        let mut button = egui::Button::new(play_text.clone())
-                            .fill(play_fill)
-                            .stroke(egui::Stroke::new(1.5, play_border))
-                            .corner_radius(egui::CornerRadius::same(button_corner));
-                        if is_loading {
-                            button = button.sense(egui::Sense::hover());
-                        }
-                        let response = area_ui.add_sized(button_size, button).on_hover_text(tooltip_text);
-                        if !is_loading && response.clicked() {
-                            let id = egui::Id::new("sql_editor");
-                            let mut direct_selected = String::new();
-                            if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(area_ui.ctx(), id) {
-                                let to_byte_index = |s: &str, char_idx: usize| -> usize {
-                                    s.char_indices().map(|(b, _)| b).chain(std::iter::once(s.len())).nth(char_idx).unwrap_or(s.len())
-                                };
-                                let start_b = to_byte_index(&self.editor.text, range.start);
-                                let end_b = to_byte_index(&self.editor.text, range.end);
-                                if start_b < end_b && end_b <= self.editor.text.len() {
-                                    direct_selected = self.editor.text[start_b..end_b].to_string();
-                                }
-                            }
-                            self.query_execution_in_progress = true;
-                            execute_clicked = true;
-                            captured_selection_text = if !direct_selected.is_empty() {
-                                direct_selected
-                            } else {
-                                self.selected_text.clone()
-                            };
-                        }
+                        let ctx = area_ui.ctx().clone();
+                        let cluster_bg = if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(25, 25, 25)
+                        } else {
+                            egui::Color32::from_rgb(248, 248, 248)
+                        };
+                        let cluster_border = if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(80, 80, 80)
+                        } else {
+                            egui::Color32::from_rgb(200, 200, 200)
+                        };
+
+                        egui::Frame::new()
+                            .fill(cluster_bg)
+                            .stroke(egui::Stroke::new(1.0, cluster_border))
+                            .corner_radius(egui::CornerRadius::same(10u8))
+                            .inner_margin(egui::Margin::same(4))
+                            .show(area_ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = button_spacing;
+
+                                    let base_fill = if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(36, 36, 36)
+                                    } else {
+                                        egui::Color32::from_rgb(245, 245, 245)
+                                    };
+                                    let base_border = if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(90, 90, 90)
+                                    } else {
+                                        egui::Color32::from_rgb(190, 190, 190)
+                                    };
+
+                                    let format_button = egui::Button::new(egui::RichText::new("</>").size(16.0))
+                                        .fill(base_fill)
+                                        .stroke(egui::Stroke::new(1.0, base_border))
+                                        .corner_radius(egui::CornerRadius::same(button_corner));
+                                    if ui
+                                        .add_sized(button_size, format_button)
+                                        .on_hover_text("Format SQL (Cmd+Shift+F)")
+                                        .clicked()
+                                    {
+                                        format_clicked = true;
+                                    }
+
+                                    let explain_button = egui::Button::new(egui::RichText::new("🔍").size(16.0))
+                                        .fill(base_fill)
+                                        .stroke(egui::Stroke::new(1.0, base_border))
+                                        .corner_radius(egui::CornerRadius::same(button_corner));
+                                    if ui
+                                        .add_sized(button_size, explain_button)
+                                        .on_hover_text("Explain query plan (EXPLAIN)")
+                                        .clicked()
+                                    {
+                                        explain_clicked = true;
+                                    }
+
+                                    let execute_button = egui::Button::new(play_text.clone())
+                                        .fill(if is_loading {
+                                            egui::Color32::from_rgb(60, 60, 60)
+                                        } else {
+                                            egui::Color32::from_rgb(214, 255, 214)
+                                        })
+                                        .stroke(egui::Stroke::new(1.0, base_border))
+                                        .corner_radius(egui::CornerRadius::same(button_corner));
+                                    if ui
+                                        .add_sized(button_size, execute_button)
+                                        .on_hover_text(play_tooltip)
+                                        .clicked()
+                                    {
+                                        if !is_loading {
+                                            let id = egui::Id::new("sql_editor");
+                                            let mut direct_selected = String::new();
+                                            if let Some(range) =
+                                                crate::editor_state_adapter::EditorStateAdapter::get_range(&ctx, id)
+                                            {
+                                                let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                                                    s.char_indices()
+                                                        .map(|(b, _)| b)
+                                                        .chain(std::iter::once(s.len()))
+                                                        .nth(char_idx)
+                                                        .unwrap_or(s.len())
+                                                };
+                                                let start_b = to_byte_index(&self.editor.text, range.start);
+                                                let end_b = to_byte_index(&self.editor.text, range.end);
+                                                if start_b < end_b && end_b <= self.editor.text.len() {
+                                                    direct_selected = self.editor.text[start_b..end_b].to_string();
+                                                }
+                                            }
+                                            self.query_execution_in_progress = true;
+                                            execute_clicked = true;
+                                            captured_selection_text = if !direct_selected.is_empty() {
+                                                direct_selected
+                                            } else {
+                                                self.selected_text.clone()
+                                            };
+                                        }
+                                    }
+                                });
+                            });
                     });
-
-                // Floating format button
-                let format_spacing = 6.0;
-                let format_button_pos = egui::pos2(
-                    button_pos.x - button_size.x - format_spacing,
-                    button_pos.y,
-                );
-                let format_clicked = draw_format_sql_button(
-                    ui.ctx(),
-                    egui::Id::new((format!("floating_format_button_{}", context_id), self.active_tab_index)),
-                    format_button_pos,
-                    button_size,
-                    button_corner,
-                );
-
-                // Floating EXPLAIN button (left of the format button)
-                let explain_button_pos = egui::pos2(
-                    format_button_pos.x - button_size.x - format_spacing,
-                    button_pos.y,
-                );
-                let explain_clicked = draw_explain_button(
-                    ui.ctx(),
-                    egui::Id::new((format!("floating_explain_button_{}", context_id), self.active_tab_index)),
-                    explain_button_pos,
-                    button_size,
-                    button_corner,
-                );
 
                 if execute_clicked {
                     self.is_table_browse_mode = false;
@@ -757,24 +757,24 @@ impl super::Tabular {
                 // Inline AI loading indicator (shown below the format/run buttons while AI is working)
                 if self.ai_inline_receiver.is_some() {
                     let ai_indicator_pos = egui::pos2(
-                        explain_button_pos.x - button_size.x - format_spacing,
-                        button_pos.y,
+                        cluster_pos.x + (cluster_width - 120.0),
+                        cluster_pos.y + button_size.y + 4.0,
                     );
                     egui::Area::new(egui::Id::new((format!("ai_inline_loading_{}", context_id), self.active_tab_index)))
                         .order(egui::Order::Foreground)
                         .fixed_pos(ai_indicator_pos)
                         .show(ui.ctx(), |area_ui| {
                             egui::Frame::new()
-                                .fill(egui::Color32::from_rgba_unmultiplied(30, 20, 60, 220))
+                                .fill(egui::Color32::from_rgba_unmultiplied(20, 18, 40, 220))
                                 .corner_radius(egui::CornerRadius::same(6))
-                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                .inner_margin(egui::Margin::symmetric(4, 2))
                                 .show(area_ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.spinner();
                                         ui.label(
                                             egui::RichText::new("AI thinking…")
-                                                .color(egui::Color32::from_rgb(180, 130, 255))
-                                                .size(12.0),
+                                                .color(egui::Color32::from_rgb(190, 170, 255))
+                                                .size(10.0),
                                         );
                                     });
                                 });

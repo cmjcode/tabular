@@ -2,6 +2,8 @@ use eframe::{App, Frame, egui};
 use log::{debug};
 use chrono::{DateTime, Duration, Utc};
 use super::{Tabular, PrefTab};
+
+const TAB_BUTTON_HEIGHT: f32 = 36.0;
 use crate::{models, connection, editor, data_table, sidebar_database, sidebar_history,
             sidebar_query, spreadsheet::SpreadsheetOperations, dialog,
             cache_data};
@@ -935,89 +937,27 @@ impl Tabular {
                         } else {
                             egui::Color32::from_rgb(245, 245, 245)
                         })
-                        // .inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 6 }),
+                        .inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 6 }),
                 )
                 .show(root_ui, |ui| {
                     ui.vertical(|ui| {
-                        ui.add_space(-2.0);
-                        // Top section with tabs
-                        ui.horizontal(|ui| {
-                            let available_width = ui.available_width();
-                            let button_spacing = ui.spacing().item_spacing.x;
-                            let button_width = (available_width - (button_spacing * 2.0)) / 3.0; // Add extra width to account for padding and make buttons more clickable
-                            let button_height = 28.0;
-
-                            // Database tab
-                            let database_button = if self.selected_menu == "Database" {
-                                egui::Button::new(
-                                    egui::RichText::new("Database")
-                                        .color(egui::Color32::WHITE)
-                                        .text_style(egui::TextStyle::Body),
-                                )
-                                .fill(egui::Color32::from_rgb(255, 0, 0))
-                                .corner_radius(0.0)
-                            } else {
-                                egui::Button::new("Database").fill(egui::Color32::TRANSPARENT).corner_radius(0.0)
-                            };
-                            if ui
-                                .add_sized([button_width, button_height], database_button)
-                                .clicked()
-                            {
-                                self.selected_menu = "Database".to_string();
-                            }
-
-                            // Queries tab
-                            let queries_button = if self.selected_menu == "Queries" {
-                                egui::Button::new(
-                                    egui::RichText::new("Queries")
-                                        .color(egui::Color32::WHITE)
-                                        .text_style(egui::TextStyle::Body),
-                                )
-                                .fill(egui::Color32::from_rgb(255, 0, 0))
-                                .corner_radius(0.0)
-                            } else {
-                                egui::Button::new("Queries").fill(egui::Color32::TRANSPARENT).corner_radius(0.0)
-                            };
-                            if ui
-                                .add_sized([button_width, button_height], queries_button)
-                                .clicked()
-                            {
-                                self.selected_menu = "Queries".to_string();
-                            }
-
-                            // History tab
-                            let history_button = if self.selected_menu == "History" {
-                                egui::Button::new(
-                                    egui::RichText::new("History")
-                                        .color(egui::Color32::WHITE)
-                                        .text_style(egui::TextStyle::Body),
-                                )
-                                .fill(egui::Color32::from_rgb(255, 0, 0)) // Orange fill for active
-                            } else {
-                                egui::Button::new("History").fill(egui::Color32::TRANSPARENT)
-                            };
-                            if ui
-                                .add_sized([button_width, button_height], history_button)
-                                .clicked()
-                            {
-                                self.selected_menu = "History".to_string();
-                            }
-                        });
-
-                        // Paint a 1px border line flush under the buttons — zero height allocation,
-                        // matching the editor tab bar's bottom border so they align as one continuous line.
-                        let line_width = ui.available_width();
-                        let (line_rect, _) = ui.allocate_exact_size(
-                            egui::vec2(line_width, 1.0),
+                        // Top bar for sidebar tabs matching query tab bar height and alignment
+                        let top_bar_height = TAB_BUTTON_HEIGHT;
+                        let available_width = ui.available_width();
+                        let (bar_rect, _) = ui.allocate_exact_size(
+                            egui::vec2(available_width, top_bar_height),
                             egui::Sense::hover(),
                         );
-
-                        // ===============================================================
-                        // Draw line across entire width of sidebar (ignoring padding)
-                        let full_x = ui.clip_rect().x_range();
+                        let bar_bg = if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(25, 25, 25)
+                        } else {
+                            egui::Color32::from_rgb(245, 245, 245)
+                        };
+                        ui.painter().rect_filled(bar_rect, 0.0, bar_bg);
+                        let bottom_y = bar_rect.bottom();
                         ui.painter().hline(
-                            full_x, // Align with button padding
-                            line_rect.top() - 3.5, // Position line flush under buttons
+                            bar_rect.x_range(),
+                            bottom_y - 0.5,
                             egui::Stroke::new(
                                 1.0,
                                 if ui.visuals().dark_mode {
@@ -1027,6 +967,85 @@ impl Tabular {
                                 },
                             ),
                         );
+
+                        let mut top_bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
+                        top_bar_ui.allocate_ui_with_layout(
+                            bar_rect.size(),
+                            egui::Layout::left_to_right(egui::Align::TOP),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                let btn_avail_width = ui.available_width();
+                                let button_width = ((btn_avail_width - 8.0) / 3.0).clamp(50.0, 130.0);
+                                let button_height = TAB_BUTTON_HEIGHT - 6.0;
+                                let active_fill = ui.visuals().widgets.active.bg_fill;
+                                let inactive_fill = egui::Color32::TRANSPARENT;
+                                let active_text = egui::Color32::WHITE;
+                                let inactive_text = ui.visuals().text_color();
+                                let button_radius = 6.0;
+
+                                let database_button = egui::Button::new(
+                                    egui::RichText::new("Database")
+                                        .color(if self.selected_menu == "Database" {
+                                            active_text
+                                        } else {
+                                            inactive_text
+                                        })
+                                        .text_style(egui::TextStyle::Body),
+                                )
+                                .fill(if self.selected_menu == "Database" {
+                                    active_fill
+                                } else {
+                                    inactive_fill
+                                })
+                                .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
+                                .corner_radius(button_radius);
+                                if ui.add_sized([button_width, button_height], database_button).clicked() {
+                                    self.selected_menu = "Database".to_string();
+                                }
+
+                                let queries_button = egui::Button::new(
+                                    egui::RichText::new("Queries")
+                                        .color(if self.selected_menu == "Queries" {
+                                            active_text
+                                        } else {
+                                            inactive_text
+                                        })
+                                        .text_style(egui::TextStyle::Body),
+                                )
+                                .fill(if self.selected_menu == "Queries" {
+                                    active_fill
+                                } else {
+                                    inactive_fill
+                                })
+                                .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
+                                .corner_radius(button_radius);
+                                if ui.add_sized([button_width, button_height], queries_button).clicked() {
+                                    self.selected_menu = "Queries".to_string();
+                                }
+
+                                let history_button = egui::Button::new(
+                                    egui::RichText::new("History")
+                                        .color(if self.selected_menu == "History" {
+                                            active_text
+                                        } else {
+                                            inactive_text
+                                        })
+                                        .text_style(egui::TextStyle::Body),
+                                )
+                                .fill(if self.selected_menu == "History" {
+                                    active_fill
+                                } else {
+                                    inactive_fill
+                                })
+                                .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
+                                .corner_radius(button_radius);
+                                if ui.add_sized([button_width, button_height], history_button).clicked() {
+                                    self.selected_menu = "History".to_string();
+                                }
+                            },
+                        );
+
+                        ui.add_space(2.0);
 
                         // Middle section with scrollable content
                         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1319,9 +1338,16 @@ impl Tabular {
                     // Table tabs will just have additional Data/Structure toggle in the bottom panel
 
                     // Normal query tab: tab bar, editor, toggle, content
-                    // Compact top bar: tabs on left, selectors on right, single row
-                    let top_bar_height = 26.0;
+                    // Compact top bar: tabs on left, selectors on right, single row.
+                    let top_bar_height = TAB_BUTTON_HEIGHT;
                     let available_width = ui.available_width();
+                    let mut selectors_width = (available_width * 0.40).clamp(220.0, 320.0);
+                    let mut left_width = (available_width - selectors_width).max(220.0);
+                    if left_width + selectors_width > available_width {
+                        selectors_width = (available_width - 220.0).max(180.0);
+                        left_width = available_width - selectors_width;
+                    }
+                    selectors_width = selectors_width.clamp(180.0, available_width - 220.0);
                     let (bar_rect, _resp) = ui.allocate_exact_size(
                         egui::vec2(available_width, top_bar_height),
                         egui::Sense::hover(),
@@ -1336,7 +1362,6 @@ impl Tabular {
                     ui.painter().rect_filled(bar_rect, 0.0, bar_bg);
                     // Garis bawah tipis sebagai pemisah dari area editor.
                     let bottom_y = bar_rect.bottom();
-                    // Single subtle bottom border (avoid double-thick dark line in light mode)
                     ui.painter().hline(
                         bar_rect.x_range(),
                         bottom_y - 0.5,
@@ -1349,18 +1374,22 @@ impl Tabular {
                             },
                         ),
                     );
-                    let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
+                    let left_rect = egui::Rect::from_min_size(
+                        bar_rect.left_top(),
+                        egui::vec2(left_width, top_bar_height),
+                    );
+                    let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(left_rect));
                     left_ui.allocate_ui_with_layout(
-                        bar_rect.size(),
-                        egui::Layout::left_to_right(egui::Align::Center),
+                        left_rect.size(),
+                        egui::Layout::left_to_right(egui::Align::TOP),
                         |ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                        
+                            ui.spacing_mut().item_spacing.x = 8.0;
+
                             // Sidebar Toggle
                             let toggle_icon = if self.sidebar_visible { "◀" } else { "▶" };
                             if ui
                                 .add_sized(
-                                    [20.0, 20.0],
+                                    [26.0, 26.0],
                                     egui::Button::new(toggle_icon)
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::NONE),
@@ -1374,20 +1403,25 @@ impl Tabular {
                             {
                                 self.sidebar_visible = !self.sidebar_visible;
                             }
-                        
+
                             let mut to_close = None;
                             let mut to_switch = None;
                             for (i, tab) in self.query_tabs.iter().enumerate() {
                                 let active = i == self.active_tab_index;
                                 let inactive_bg = if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(28, 28, 28)
+                                    egui::Color32::from_rgb(35, 35, 35)
                                 } else {
-                                    egui::Color32::from_rgb(230, 230, 230)
+                                    egui::Color32::from_rgb(240, 240, 240)
                                 };
                                 let tab_bg = if active {
-                                    egui::Color32::from_rgb(255, 0, 0)
+                                    ui.visuals().widgets.active.bg_fill
                                 } else {
                                     inactive_bg
+                                };
+                                let border_color = if active {
+                                    ui.visuals().widgets.active.bg_stroke.color
+                                } else {
+                                    ui.visuals().widgets.inactive.bg_stroke.color
                                 };
                                 let text_color = if active {
                                     egui::Color32::WHITE
@@ -1400,91 +1434,104 @@ impl Tabular {
                                 {
                                     title = format!("{} [{}]", title, n);
                                 }
-                                // Render tab as one unified rect: [  label  ×  ]
                                 let close_size = 16.0;
-                                let tab_width = 150.0; // total width including close button
-                                let tab_height = 26.0;
+                                let tab_width = (title.len() as f32 * 8.0 + 72.0).clamp(130.0, 260.0);
+                                let menu_tab_height = TAB_BUTTON_HEIGHT - 6.0;
                                 let (tab_rect, tab_resp) = ui.allocate_exact_size(
-                                    egui::vec2(tab_width, tab_height),
+                                    egui::vec2(tab_width, menu_tab_height),
                                     egui::Sense::click(),
                                 );
-                                // Background for whole tab
-                                ui.painter().rect_filled(tab_rect, 0.0, tab_bg);
-                                // Bottom indicator line for inactive tabs
-                                if !active {
-                                    ui.painter().hline(
-                                        tab_rect.x_range(),
-                                        tab_rect.bottom() - 1.0,
-                                        egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)),
+                                let tab_radius: egui::CornerRadius = 8.0.into();
+                                ui.painter().rect_filled(tab_rect, tab_radius, tab_bg);
+                                ui.painter().rect_stroke(
+                                    tab_rect,
+                                    tab_radius,
+                                    egui::Stroke::new(1.0, border_color),
+                                    egui::StrokeKind::Outside,
+                                );
+                                if active {
+                                    let accent_rect = egui::Rect::from_min_size(
+                                        tab_rect.left_top(),
+                                        egui::vec2(tab_rect.width(), 3.0),
+                                    );
+                                    ui.painter().rect_filled(
+                                        accent_rect,
+                                        0.0,
+                                        ui.visuals().selection.stroke.color,
                                     );
                                 }
-                                // Close button rect on the right side of the tab
                                 let close_rect = egui::Rect::from_min_size(
-                                    egui::pos2(tab_rect.right() - close_size - 2.0, tab_rect.center().y - close_size / 2.0),
+                                    egui::pos2(
+                                        tab_rect.right() - close_size - 6.0,
+                                        tab_rect.center().y - close_size / 2.0,
+                                    ),
                                     egui::vec2(close_size, close_size),
                                 );
-                                // Label centered in the area left of the close button
-                                let label_max_width = tab_rect.width() - close_size - 8.0;
+                                let label_max_width = tab_rect.width() - close_size - 18.0;
                                 let label_area = egui::Rect::from_min_size(
-                                    egui::pos2(tab_rect.left() + 2.0, tab_rect.top()),
+                                    egui::pos2(tab_rect.left() + 10.0, tab_rect.top()),
                                     egui::vec2(label_max_width, tab_rect.height()),
                                 );
-                                let label_area_center = label_area.left_center();
-                                ui.painter().with_clip_rect(label_area).text(
-                                    label_area_center,
-                                    egui::Align2::LEFT_CENTER,
-                                    &title,
-                                    egui::FontId::proportional(12.0),
-                                    text_color,
-                                );
-                                // Paint close "×" inside the tab
+                                ui.painter()
+                                    .with_clip_rect(label_area)
+                                    .text(
+                                        label_area.left_center(),
+                                        egui::Align2::LEFT_CENTER,
+                                        &title,
+                                        egui::FontId::proportional(12.0),
+                                        text_color,
+                                    );
+
                                 let show_close = self.query_tabs.len() > 1 || !active;
                                 if show_close {
-                                    // Hover effect on close button
                                     let close_resp = ui.interact(close_rect, ui.id().with(("tab_close", i)), egui::Sense::click());
                                     if close_resp.hovered() {
                                         let hover_color = if active {
-                                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60)
+                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
                                         } else {
-                                            egui::Color32::from_rgba_unmultiplied(128, 128, 128, 60)
+                                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
                                         };
                                         ui.painter().rect_filled(close_rect, 4.0, hover_color);
                                     }
-                                    let x_color = if active {
-                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
-                                    } else {
-                                        egui::Color32::from_rgba_unmultiplied(180, 180, 180, 220)
-                                    };
                                     ui.painter().text(
                                         close_rect.center(),
                                         egui::Align2::CENTER_CENTER,
                                         "×",
-                                        egui::FontId::proportional(14.0),
-                                        x_color,
+                                        egui::FontId::proportional(13.0),
+                                        text_color,
                                     );
                                     if close_resp.clicked() {
                                         to_close = Some(i);
                                     }
                                 }
-                                // Switch tab on click (but not on the close button)
-                                if tab_resp.clicked() && !active && !close_rect.contains(tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO)) {
+
+                                if tab_resp.clicked()
+                                    && !active
+                                    && !close_rect.contains(
+                                        tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO),
+                                    )
+                                {
                                     to_switch = Some(i);
                                 }
                             }
+
                             let plus_bg = if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(50, 50, 50)
+                                egui::Color32::from_rgb(55, 55, 55)
                             } else {
-                                egui::Color32::from_rgb(220, 220, 220)
+                                egui::Color32::from_rgb(230, 230, 230)
                             };
                             if ui
-                                .add_sized([20.0, 20.0], egui::Button::new("+").fill(plus_bg))
+                                .add_sized(
+                                    [28.0, 28.0],
+                                    egui::Button::new("+")
+                                        .fill(plus_bg)
+                                        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
+                                        .corner_radius(6.0),
+                                )
+                                .on_hover_text("New query tab")
                                 .clicked()
                             {
-                                editor::create_new_tab(
-                                    self,
-                                    "Untitled Query".to_string(),
-                                    String::new(),
-                                );
+                                editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
                             }
                             if let Some(i) = to_close {
                                 editor::close_tab(self, i);
@@ -1495,7 +1542,6 @@ impl Tabular {
                         },
                     );
                     // Right side overlay for selectors
-                    let selectors_width = 400.0; // widened to fit gear + combos
                     let selectors_rect = egui::Rect::from_min_size(
                         egui::pos2(bar_rect.right() - selectors_width, bar_rect.top()),
                         egui::vec2(selectors_width, top_bar_height),
@@ -1503,32 +1549,37 @@ impl Tabular {
                     let mut right_ui = ui.new_child(egui::UiBuilder::new().max_rect(selectors_rect));
                     right_ui.allocate_ui_with_layout(
                         selectors_rect.size(),
-                        egui::Layout::right_to_left(egui::Align::Center),
+                        egui::Layout::right_to_left(egui::Align::TOP),
                         |ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
 
-                            // Settings (gear) button on far right with left-click context menu
+                            // Gear menu button
                             let gear_bg = if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(40, 40, 40)
+                                egui::Color32::from_rgb(50, 50, 50)
                             } else {
-                                egui::Color32::from_rgb(220, 220, 220)
+                                egui::Color32::from_rgb(230, 230, 230)
                             };
-                            let gear_btn = egui::Button::new("⚙").fill(gear_bg);
                             let gear_response = ui
-                                .add_sized([24.0, 20.0], gear_btn)
+                                .add_sized(
+                                    [28.0, 28.0],
+                                    egui::Button::new("⚙")
+                                        .fill(gear_bg)
+                                        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
+                                        .corner_radius(6.0),
+                                )
                                 .on_hover_text("Settings");
                             if gear_response.clicked() {
                                 gear_response.request_focus();
                                 self.show_settings_menu = !self.show_settings_menu;
                             }
 
-                            // AI Assistant toggle button (✨)
+                            // AI Assistant button
                             let ai_btn_bg = if self.show_ai_panel {
                                 egui::Color32::from_rgb(99, 135, 255)
                             } else if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(40, 40, 40)
+                                egui::Color32::from_rgb(50, 50, 50)
                             } else {
-                                egui::Color32::from_rgb(220, 220, 220)
+                                egui::Color32::from_rgb(230, 230, 230)
                             };
                             let ai_btn_label = egui::RichText::new("✨")
                                 .color(if self.show_ai_panel {
@@ -1537,21 +1588,31 @@ impl Tabular {
                                     ui.visuals().text_color()
                                 });
                             if ui
-                                .add_sized([24.0, 20.0], egui::Button::new(ai_btn_label).fill(ai_btn_bg))
-                                .on_hover_text(if self.show_ai_panel { "Close AI Assistant (Cmd+Shift+A)" } else { "Open AI Assistant (Cmd+Shift+A)" })
+                                .add_sized(
+                                    [28.0, 28.0],
+                                    egui::Button::new(ai_btn_label)
+                                        .fill(ai_btn_bg)
+                                        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)),
+                                )
+                                .on_hover_text(if self.show_ai_panel {
+                                    "Close AI Assistant (Cmd+Shift+A)"
+                                } else {
+                                    "Open AI Assistant (Cmd+Shift+A)"
+                                })
                                 .clicked()
                             {
                                 self.show_ai_panel = !self.show_ai_panel;
                             }
+
                             if self.show_settings_menu {
                                 let pos = gear_response.rect.left_bottom();
                                 let mut menu_rect: Option<egui::Rect> = None;
                                 egui::Area::new(egui::Id::new("settings_menu"))
                                     .order(egui::Order::Foreground)
-                                    .fixed_pos(pos + egui::vec2(0.0, 4.0))
+                                    .fixed_pos(pos + egui::vec2(0.0, 6.0))
                                     .show(ui.ctx(), |ui| {
                                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                            ui.set_min_width(180.0);
+                                            ui.set_min_width(200.0);
                                             if ui
                                                 .add(
                                                     egui::Button::new("Preferences")
@@ -1589,7 +1650,6 @@ impl Tabular {
                                             menu_rect = Some(ui.min_rect());
                                         });
                                     });
-                                // Close when clicking outside (after drawing)
                                 if self.show_settings_menu {
                                     let clicked_outside = ui.ctx().input(|i| i.pointer.any_click())
                                         && menu_rect
@@ -1606,8 +1666,7 @@ impl Tabular {
                                 }
                             }
 
-                            // Small gap between gear and selectors
-                            ui.add_space(4.0);
+                            ui.add_space(8.0);
 
                             let conn_list: Vec<(i64, String)> = self
                                 .connections
@@ -1637,7 +1696,7 @@ impl Tabular {
                                     .clone()
                                     .unwrap_or_else(|| "(default)".to_string());
                                 egui::ComboBox::from_id_salt("query_db_select")
-                                    .width(140.0)
+                                    .width(90.0)
                                     .selected_text(active_db.clone())
                                     .show_ui(ui, |ui| {
                                         for db in &dbs {
@@ -1661,7 +1720,7 @@ impl Tabular {
 
                             // Connection selector
                             egui::ComboBox::from_id_salt("query_conn_select")
-                                .width(150.0)
+                                .width(110.0)
                                 .selected_text(current_conn_name)
                                 .show_ui(ui, |ui| {
                                     for (cid, name) in &conn_list {
