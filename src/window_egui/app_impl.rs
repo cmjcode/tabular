@@ -155,49 +155,55 @@ impl Tabular {
                                 ];
 
                                 ui.horizontal(|ui| {
-                                    for (theme, title, caption) in theme_cards {
-                                        let selected = self.app_theme == *theme;
-                                        let mut frame = egui::Frame::default();
-                                        frame.fill = if selected {
-                                            ui.visuals().widgets.active.bg_fill
-                                        } else {
-                                            ui.visuals().widgets.inactive.bg_fill
-                                        };
-                                        frame.stroke = if selected {
-                                            egui::Stroke::new(1.5, ui.visuals().selection.stroke.color)
-                                        } else {
-                                            egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)
-                                        };
-                                        frame.corner_radius = 10.0.into();
-                                        frame.inner_margin = 12.into();
-                                        frame.show(ui, |ui| {
-                                            ui.vertical(|ui| {
-                                                ui.horizontal(|ui| {
-                                                    ui.label(egui::RichText::new(*title).heading());
-                                                    if selected {
-                                                        ui.label(egui::RichText::new("Selected").small().weak());
-                                                    }
-                                                });
-                                                ui.add_space(4.0);
-                                                ui.label(egui::RichText::new(*caption).small().color(egui::Color32::from_gray(120)));
-                                                ui.add_space(6.0);
-                                                if ui.add_sized([120.0, 28.0], egui::Button::new(if selected { "Current" } else { "Select" })).clicked() {
-                                                    self.app_theme = *theme;
-                                                    crate::window_egui::style::apply_theme(ctx, self.app_theme);
-                                                    if self.link_editor_theme {
-                                                        self.advanced_editor.theme = match self.app_theme {
-                                                            crate::config::AppTheme::Dark => crate::models::structs::EditorColorTheme::GithubDark,
-                                                            _ => crate::models::structs::EditorColorTheme::GithubLight,
-                                                        };
-                                                    }
-                                                    self.prefs_dirty = true;
-                                                    self.try_save_prefs();
-                                                }
-                                            });
-                                        });
-                                        ui.add_space(8.0);
-                                    }
-                                });
+                                     ui.spacing_mut().item_spacing.x = 10.0;
+                                     let card_size = egui::vec2(205.0, 135.0);
+
+                                     for (theme, title, caption) in theme_cards {
+                                         let selected = self.app_theme == *theme;
+                                         let mut frame = egui::Frame::default();
+                                         frame.fill = if selected {
+                                             ui.visuals().widgets.active.bg_fill
+                                         } else {
+                                             ui.visuals().widgets.inactive.bg_fill
+                                         };
+                                         frame.stroke = if selected {
+                                             egui::Stroke::new(1.5, ui.visuals().selection.stroke.color)
+                                         } else {
+                                             egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)
+                                         };
+                                         frame.corner_radius = 10.0.into();
+                                         frame.inner_margin = 12.into();
+                                         frame.show(ui, |ui| {
+                                             ui.set_min_size(card_size);
+                                             ui.set_max_size(card_size);
+                                             ui.vertical(|ui| {
+                                                 ui.horizontal(|ui| {
+                                                     ui.label(egui::RichText::new(*title).heading());
+                                                     if selected {
+                                                         ui.label(egui::RichText::new("Selected").small().weak());
+                                                     }
+                                                 });
+                                                 ui.add_space(4.0);
+                                                 ui.label(egui::RichText::new(*caption).small().color(egui::Color32::from_gray(120)));
+
+                                                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                                                     if ui.add_sized([130.0, 28.0], egui::Button::new(if selected { "Current" } else { "Select" })).clicked() {
+                                                         self.app_theme = *theme;
+                                                         crate::window_egui::style::apply_theme(ctx, self.app_theme);
+                                                         if self.link_editor_theme {
+                                                             self.advanced_editor.theme = match self.app_theme {
+                                                                 crate::config::AppTheme::Dark => crate::models::structs::EditorColorTheme::GithubDark,
+                                                                 _ => crate::models::structs::EditorColorTheme::GithubLight,
+                                                             };
+                                                         }
+                                                         self.prefs_dirty = true;
+                                                         self.try_save_prefs();
+                                                     }
+                                                 });
+                                             });
+                                         });
+                                     }
+                                 });
                                 ui.add_space(8.0);
                                 ui.label(egui::RichText::new(match self.app_theme {
                                     crate::config::AppTheme::Dark => "Classic dark theme with strong contrast and calm focus.",
