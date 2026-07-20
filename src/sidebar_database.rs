@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use eframe::egui;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use sqlx::{Row, SqlitePool};
 
 use crate::{connection, directory, models, modules, sidebar_history, window_egui};
@@ -2218,5 +2218,114 @@ pub(crate) fn render_create_subfolder_dialog(
     if !open {
         tabular.show_create_subfolder_dialog = false;
         tabular.new_subfolder_name.clear();
+    }
+}
+
+pub(crate) fn is_sqlite_corrupt(e: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db_err) = e {
+        if db_err.code().is_some_and(|c| c.as_ref() == "11") {
+            return true;
+        }
+        let msg = db_err.message().to_lowercase();
+        return msg.contains("malformed") || msg.contains("disk image is malformed") || msg.contains("corrupt");
+    }
+    false
+}
+
+pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> bool {
+    warn!("⚠️ [reset_sqlite] Corruption (code 11) detected on connections.db! Recreating fresh database file while preserving all connections and history in memory...");
+
+    let data_dir = directory::get_data_dir();
+    let db_path = data_dir.join("connections.db");
+
+    // Preserve existing in-memory state
+    let preserved_connections = tabular.connections.clone();
+    let preserved_history = tabular.history_items.clone();
+
+    // Clear active pool so file handle is released
+    tabular.db_pool = None;
+
+    // Backup & delete corrupted SQLite file
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let backup_path = data_dir.join(format!("connections.db.corrupt_{}.bak", timestamp));
+    if db_path.exists() {
+        if let Err(e) = std::fs::rename(&db_path, &backup_path) {
+            warn!("Failed to rename corrupt connections.db (attempting remove): {}", e);
+            let _ = std::fs::remove_file(&db_path);
+        } else {
+            info!("📦 Corrupted connections.db backed up to {:?}", backup_path);
+        }
+    }
+
+    // Re-initialize a fresh connections.db with clean tables
+    initialize_database(tabular);
+
+    // If new pool was initialized, restore preserved data back into fresh SQLite DB
+    if let Some(pool) = tabular.db_pool.clone() {
+        let conns_to_insert = preserved_connections.clone();
+        let hist_to_insert = preserved_history.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let _ = sqlx::query("PRAGMA foreign_keys = OFF").execute(pool.as_ref()).await;
+
+            // Restore connections
+            for conn in &conns_to_insert {
+                let _ = sqlx::query(
+                    r#"
+                    INSERT OR REPLACE INTO connections (
+                        id, name, host, port, username, password, database_name, connection_type,
+                        folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method,
+                        ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views, replication_master_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    "#
+                )
+                .bind(conn.id)
+                .bind(&conn.name)
+                .bind(&conn.host)
+                .bind(&conn.port)
+                .bind(&conn.username)
+                .bind(&conn.password)
+                .bind(&conn.database)
+                .bind(format!("{:?}", conn.connection_type))
+                .bind(&conn.folder)
+                .bind(if conn.ssh_enabled { 1 } else { 0 })
+                .bind(&conn.ssh_host)
+                .bind(&conn.ssh_port)
+                .bind(&conn.ssh_username)
+                .bind(conn.ssh_auth_method.as_db_value())
+                .bind(&conn.ssh_private_key)
+                .bind(&conn.ssh_password)
+                .bind(if conn.ssh_accept_unknown_host_keys { 1 } else { 0 })
+                .bind(serde_json::to_string(&conn.custom_views).unwrap_or_else(|_| "[]".to_string()))
+                .bind(conn.replication_master_id)
+                .execute(pool.as_ref())
+                .await;
+            }
+
+            // Restore query history
+            for hist in &hist_to_insert {
+                let _ = sqlx::query(
+                    "INSERT INTO query_history (query_text, connection_id, connection_name, executed_at) VALUES (?, ?, ?, ?)"
+                )
+                .bind(&hist.query)
+                .bind(hist.connection_id)
+                .bind(&hist.connection_name)
+                .bind(&hist.executed_at)
+                .execute(pool.as_ref())
+                .await;
+            }
+
+            let _ = sqlx::query("PRAGMA foreign_keys = ON").execute(pool.as_ref()).await;
+        });
+
+        // Restore connections & history back into Tabular state
+        tabular.connections = preserved_connections;
+        tabular.history_items = preserved_history;
+        sidebar_history::load_query_history(tabular);
+        info!("✅ [reset_sqlite] Successfully recreated clean connections.db and restored all memory connections and query history!");
+        true
+    } else {
+        error!("❌ [reset_sqlite] Failed to initialize new connections.db pool after corruption reset");
+        false
     }
 }

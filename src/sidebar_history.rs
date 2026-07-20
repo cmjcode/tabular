@@ -1,6 +1,6 @@
 use log::{debug, error, info, warn};
 
-use crate::{models, window_egui};
+use crate::{models, sidebar_database, window_egui};
 
 /// Format query text for display in the sidebar history
 fn format_query_for_sidebar(query: &str, _connection_name: &str) -> String {
@@ -43,17 +43,6 @@ fn format_date_for_display(date_str: &str) -> String {
     }
 }
 
-fn is_sqlite_corrupt(e: &sqlx::Error) -> bool {
-    if let sqlx::Error::Database(db_err) = e {
-        if db_err.code().is_some_and(|c| c.as_ref() == "11") {
-            return true;
-        }
-        let msg = db_err.message().to_lowercase();
-        return msg.contains("malformed") || msg.contains("disk image is malformed") || msg.contains("corrupt");
-    }
-    false
-}
-
 pub(crate) fn load_query_history(tabular: &mut window_egui::Tabular) {
     if let Some(pool) = &tabular.db_pool {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -76,92 +65,30 @@ pub(crate) fn load_query_history(tabular: &mut window_egui::Tabular) {
                                 executed_at: row.4,
                             });
                         }
-                        history_items
+                        Some(history_items)
                     }
                     Err(e) => {
-                        if is_sqlite_corrupt(&e) {
-                            warn!("⚠️ [load_query_history] SQLite corruption detected when loading history — attempting table repair");
-                            let _ = sqlx::query("VACUUM").execute(pool.as_ref()).await;
-                            let _ = sqlx::query(
-                                r#"
-                                CREATE TABLE IF NOT EXISTS query_history (
-                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                    query_text TEXT NOT NULL,
-                                    connection_id INTEGER NOT NULL,
-                                    connection_name TEXT NOT NULL,
-                                    executed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                                    FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE
-                                )
-                                "#
-                            )
-                            .execute(pool.as_ref())
-                            .await;
+                        if sidebar_database::is_sqlite_corrupt(&e) {
+                            warn!("⚠️ [load_query_history] SQLite corruption detected when loading history");
                         } else {
                             debug!("Failed to load query history: {}", e);
                         }
-                        Vec::new()
+                        None
                     }
                 }
             });
 
-        tabular.history_items = result;
-        refresh_history_tree(tabular);
-    }
-}
-
-async fn recover_and_retry_insert(
-    pool: &sqlx::SqlitePool,
-    query_text: &str,
-    connection_id: i64,
-    conn_name: &str,
-) {
-    warn!("⚠️ [save_query_to_history] SQLite database corruption detected — attempting recovery");
-
-    // 1. Try VACUUM first to repair corrupted WAL / pages
-    if sqlx::query("VACUUM").execute(pool).await.is_ok() {
-        debug!("[save_query_to_history] VACUUM completed successfully");
-    }
-
-    // 2. Drop and recreate query_history table to repair corrupt table structure/indexes
-    warn!("[save_query_to_history] Recreating query_history table to clear corrupted database image...");
-    let _ = sqlx::query("DROP TABLE IF EXISTS query_history").execute(pool).await;
-    let _ = sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS query_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            query_text TEXT NOT NULL,
-            connection_id INTEGER NOT NULL,
-            connection_name TEXT NOT NULL,
-            executed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE
-        )
-        "#
-    )
-    .execute(pool)
-    .await;
-
-    // 3. Retry inserting query into history
-    match sqlx::query(
-        "INSERT INTO query_history (query_text, connection_id, connection_name) VALUES (?, ?, ?)"
-    )
-    .bind(query_text)
-    .bind(connection_id)
-    .bind(conn_name)
-    .execute(pool)
-    .await
-    {
-        Ok(res) => {
-            info!(
-                "✅ [save_query_to_history] Recovery successful! Recorded query into SQLite (rows_affected={}): '{}'",
-                res.rows_affected(),
-                query_text
-            );
-        }
-        Err(e) => {
-            error!(
-                "❌ [save_query_to_history] Insert failed even after SQLite corruption recovery attempt: {}",
-                e
-            );
+        if let Some(items) = result {
+            tabular.history_items = items;
+            refresh_history_tree(tabular);
+        } else if let Some(ref pool) = tabular.db_pool {
+            // Test pool health; if corrupt, reset database file while preserving RAM
+            let check = rt.block_on(async {
+                sqlx::query("SELECT 1 FROM query_history LIMIT 1").execute(pool.as_ref()).await
+            });
+            if let Err(e) = check && sidebar_database::is_sqlite_corrupt(&e) {
+                sidebar_database::reset_corrupted_sqlite_db(tabular);
+            }
         }
     }
 }
@@ -184,53 +111,69 @@ pub(crate) fn save_query_to_history(
         .map(|c| c.name.clone())
         .unwrap_or_else(|| format!("Connection {}", connection_id));
 
+    // Ensure query is held in RAM history state
+    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let new_item = models::structs::HistoryItem {
+        id: None,
+        query: trimmed.to_string(),
+        connection_id,
+        connection_name: connection_name.clone(),
+        executed_at: now_str,
+    };
+    if !tabular.history_items.iter().any(|h| h.query == trimmed && h.connection_id == connection_id) {
+        tabular.history_items.insert(0, new_item);
+        refresh_history_tree(tabular);
+    }
+
     if let Some(pool) = &tabular.db_pool {
         let pool = pool.clone();
         let query_text = trimmed.to_string();
         let conn_name = connection_name.clone();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async move {
-            match sqlx::query(
+        let insert_res = rt.block_on(async move {
+            let res = sqlx::query(
                 "INSERT INTO query_history (query_text, connection_id, connection_name) VALUES (?, ?, ?)"
             )
             .bind(&query_text)
             .bind(connection_id)
             .bind(&conn_name)
             .execute(pool.as_ref())
-            .await
-            {
-                Ok(res) => {
-                    info!(
-                        "✅ [save_query_to_history] Successfully recorded query into SQLite (rows_affected={}): '{}'",
-                        res.rows_affected(),
-                        query_text
-                    );
-                }
-                Err(e) => {
-                    if is_sqlite_corrupt(&e) {
-                        recover_and_retry_insert(pool.as_ref(), &query_text, connection_id, &conn_name).await;
-                    } else {
-                        error!(
-                            "❌ [save_query_to_history] Failed to insert query into SQLite query_history: {}",
-                            e
-                        );
-                    }
-                }
-            }
-
-            // Clean up old history entries if we have more than 150 entries
-            let _ = sqlx::query(
-                "DELETE FROM query_history WHERE id NOT IN (
-                    SELECT id FROM query_history ORDER BY executed_at DESC LIMIT 150
-                )"
-            )
-            .execute(pool.as_ref())
             .await;
+
+            if res.is_ok() {
+                // Clean up old history entries if we have more than 150 entries
+                let _ = sqlx::query(
+                    "DELETE FROM query_history WHERE id NOT IN (
+                        SELECT id FROM query_history ORDER BY executed_at DESC LIMIT 150
+                    )"
+                )
+                .execute(pool.as_ref())
+                .await;
+            }
+            res
         });
 
-        // Reload history to update UI
-        load_query_history(tabular);
+        match insert_res {
+            Ok(res) => {
+                info!(
+                    "✅ [save_query_to_history] Successfully recorded query into SQLite (rows_affected={}): '{}'",
+                    res.rows_affected(),
+                    trimmed
+                );
+            }
+            Err(e) => {
+                if sidebar_database::is_sqlite_corrupt(&e) {
+                    warn!("⚠️ [save_query_to_history] SQLite corruption (code 11) detected — triggering DB reset & RAM restoration");
+                    sidebar_database::reset_corrupted_sqlite_db(tabular);
+                } else {
+                    error!(
+                        "❌ [save_query_to_history] Failed to insert query into SQLite query_history: {}",
+                        e
+                    );
+                }
+            }
+        }
     } else {
         warn!("⚠️ [save_query_to_history] Cannot save query history: db_pool is None");
     }
