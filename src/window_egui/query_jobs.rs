@@ -1,4 +1,4 @@
-use crate::{connection, editor, models};
+use crate::{connection, editor, models, sidebar_history};
 
 impl super::Tabular {
     pub fn handle_query_result_message(&mut self, message: connection::QueryResultMessage) {
@@ -112,16 +112,10 @@ impl super::Tabular {
                 active_tab.active_result_index = 0;
                 editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())), message.column_metadata.clone());
             } else {
-                 // Notification or just let it be there.
-                 // We DON'T call process_query_result which overwrites global view immediately if we are viewing result 1
-                 // BUT we actually want to see progress?
-                 // Let's decide: If 1 result -> show it. If > 1 -> users can click tabs.
-                 // We don't auto-switch if they are already viewing a valid result?
-                 // Actually, process_query_result updates `self.current_table_headers` etc.
-                 // We should only do that if we switch to this tab.
-                 // BUT current impl of process_query_result handles "messages" state logic too.
-                 // Let's refrain from calling process_query_result for background results
-                 // ensuring we sync the viewport if we decide to show this result.
+                // Save query to history for multi-statement execution results (new_index > 0)
+                if message.success {
+                    sidebar_history::save_query_to_history(self, &message.query, message.connection_id);
+                }
             }
         } else {
              // Fallback for no active tab? Should not happen.
