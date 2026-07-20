@@ -1227,6 +1227,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 }
             }
             if let Some((r, c)) = cell_sel_requests.last().copied() {
+                // If currently editing a different cell, commit and finish editing first
+                if let Some(editing) = tabular.spreadsheet_state.editing_cell {
+                    if editing != (r, c) {
+                        if let Some(new_text) = cell_edit_text_update.take() {
+                            tabular.spreadsheet_state.cell_edit_text = new_text;
+                        }
+                        tabular.spreadsheet_finish_cell_edit(true);
+                    }
+                }
                 tabular.selected_row = Some(r);
                 tabular.selected_cell = Some((r, c));
                 tabular.table_sel_anchor = None;
