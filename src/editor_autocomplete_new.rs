@@ -258,6 +258,16 @@ mod tests {
         let tables2 = tables_near_cursor(sql, 40);
         assert_eq!(tables2, vec!["orders"]);
     }
+
+    #[test]
+    fn test_context_relevance_prefers_clause_specific_candidates() {
+        assert!(context_relevance_score(SqlContext::AfterSelect, "customer_id", "cu")
+            > context_relevance_score(SqlContext::AfterSelect, "users", "us"));
+        assert!(context_relevance_score(SqlContext::AfterFrom, "users", "us")
+            > context_relevance_score(SqlContext::AfterFrom, "customer_id", "cu"));
+        assert!(context_relevance_score(SqlContext::AfterJoinOn, "orders.id = users.id", "o")
+            > context_relevance_score(SqlContext::AfterJoinOn, "orders", "o"));
+    }
 }
 
 fn extract_tables(sql: &str) -> Vec<String> {
@@ -271,7 +281,7 @@ fn extract_tables(sql: &str) -> Vec<String> {
     out
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SqlContext {
+pub(crate) enum SqlContext {
     AfterSelect,
     AfterFrom,
     AfterWhere,
@@ -855,11 +865,104 @@ fn suggest_join_conditions(
     suggestions
 }
 
-pub fn build_suggestions(
+fn looks_like_column_name(suggestion: &str) -> bool {
+    let lower = suggestion.to_ascii_lowercase();
+    if lower == "*" || suggestion.contains('=') || suggestion.contains('.') {
+        return false;
+    }
+
+    lower.contains('_')
+        || lower.ends_with("id")
+        || lower.ends_with("name")
+        || lower.ends_with("date")
+        || lower.ends_with("count")
+        || lower.ends_with("type")
+        || lower.ends_with("status")
+        || lower.ends_with("code")
+}
+
+fn context_relevance_score(context: SqlContext, suggestion: &str, prefix: &str) -> i32 {
+    let lower = suggestion.to_ascii_lowercase();
+    let is_keyword = SQL_KEYWORDS.iter().any(|kw| lower == kw.to_ascii_lowercase()) || lower == "*";
+    let is_qualified = suggestion.contains('.') && !suggestion.contains('=');
+    let is_join_condition = suggestion.contains('=');
+    let prefix_lower = prefix.to_ascii_lowercase();
+    let prefix_bonus = if prefix_lower.is_empty() || lower.starts_with(&prefix_lower) {
+        20
+    } else {
+        0
+    };
+    let column_like = looks_like_column_name(suggestion);
+
+    match context {
+        SqlContext::AfterSelect => {
+            if is_keyword || lower == "*" {
+                120 + prefix_bonus
+            } else if is_join_condition {
+                -200
+            } else if is_qualified {
+                -80
+            } else if column_like {
+                80 + prefix_bonus
+            } else {
+                40 + prefix_bonus
+            }
+        }
+        SqlContext::AfterFrom => {
+            if is_keyword {
+                100 + prefix_bonus
+            } else if is_join_condition || is_qualified {
+                -140
+            } else if column_like {
+                60 + prefix_bonus
+            } else {
+                100 + prefix_bonus
+            }
+        }
+        SqlContext::AfterWhere => {
+            if is_keyword {
+                90 + prefix_bonus
+            } else if is_join_condition {
+                60 + prefix_bonus
+            } else if is_qualified {
+                35 + prefix_bonus
+            } else if column_like {
+                70 + prefix_bonus
+            } else {
+                40 + prefix_bonus
+            }
+        }
+        SqlContext::AfterJoinOn => {
+            if is_join_condition {
+                180 + prefix_bonus
+            } else if is_qualified {
+                90 + prefix_bonus
+            } else if is_keyword {
+                60 + prefix_bonus
+            } else if column_like {
+                55 + prefix_bonus
+            } else {
+                20 + prefix_bonus
+            }
+        }
+        SqlContext::General => {
+            if is_keyword {
+                45 + prefix_bonus
+            } else if is_qualified {
+                25 + prefix_bonus
+            } else {
+                5 + prefix_bonus
+            }
+        }
+    }
+}
+
+fn build_suggestions(
     app: &mut Tabular,
     text: &str,
     cursor: usize,
     prefix: &str,
+    context: SqlContext,
 ) -> Vec<String> {
     let mut out = Vec::new();
     let pl = prefix.to_ascii_lowercase();
@@ -968,7 +1071,7 @@ pub fn build_suggestions(
         return out;
     }
 
-    let ctx = detect_ctx(text, cursor);
+    let ctx = context;
     let mut tables_in_scope = tables_near_cursor(text, cursor);
     let tables_all = extract_tables(text);
     if tables_in_scope.is_empty() {
@@ -1101,7 +1204,11 @@ pub fn build_suggestions(
     // This avoids the O(N log N) repeated fuzzy_match calls of sort_by.
     let mut scored: Vec<(i32, String)> = out
         .into_iter()
-        .map(|s| (fuzzy_match(&pl, &s).unwrap_or(i32::MIN), s))
+        .map(|s| {
+            let base = fuzzy_match(&pl, &s).unwrap_or(i32::MIN);
+            let relevance = context_relevance_score(context, &s, prefix);
+            (base + relevance, s)
+        })
         .collect();
     scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     scored.dedup_by_key(|x| x.1.clone());
@@ -1198,7 +1305,8 @@ pub fn update_autocomplete(app: &mut Tabular) {
     app.autocomplete_prefix = pref.clone();
 
     if app.last_autocomplete_trigger_len != pref.len() || !app.show_autocomplete {
-        let suggestions = build_suggestions(app, &editor_text, cursor, &pref);
+        let context = detect_ctx(&editor_text, cursor);
+        let suggestions = build_suggestions(app, &editor_text, cursor, &pref, context);
         if suggestions.is_empty() {
             app.show_autocomplete = false;
             app.autocomplete_payloads.clear();
