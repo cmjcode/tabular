@@ -1609,21 +1609,31 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     }
     
     // nice shadow and generic window styles
-    // nice shadow and generic window styles
     egui::Area::new(egui::Id::new("autocomplete_popup"))
         .fixed_pos(popup_pos)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
-             egui::Frame::popup(ui.style())
+            // Create a custom frame with high-contrast styling
+            let bg_fill = if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(30, 30, 35)  // darker background in dark mode
+            } else {
+                egui::Color32::from_rgb(250, 250, 250)  // lighter background in light mode
+            };
+            let stroke_color = if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(100, 100, 110)
+            } else {
+                egui::Color32::from_rgb(180, 180, 190)
+            };
+            
+            egui::Frame::new()
+                .fill(bg_fill)
+                .stroke(egui::Stroke::new(1.0, stroke_color))
                 .shadow(eframe::epaint::Shadow {
                     offset: [0, 8],
-                    blur: 10,
-                    spread: 0,
-                    color: egui::Color32::from_black_alpha(96),
+                    blur: 12,
+                    spread: 1,
+                    color: egui::Color32::from_black_alpha(120),
                 })
-                .fill(ui.style().visuals.window_fill)
-                .stroke(ui.style().visuals.window_stroke())
-
                 .show(ui, |ui| {
                     ui.set_min_width(popup_w);
                     ui.set_max_width(popup_w);
@@ -1659,11 +1669,16 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                     ui.allocate_ui(egui::vec2(ui.available_width(), 22.0), |ui| {
                                         ui.horizontal(|ui| {
                                             ui.add_space(8.0);
+                                            let header_color = if ui.visuals().dark_mode {
+                                                egui::Color32::from_rgb(180, 180, 190)  // bright gray in dark
+                                            } else {
+                                                egui::Color32::from_rgb(60, 60, 70)  // dark gray in light
+                                            };
                                             ui.label(
                                                 egui::RichText::new(label)
                                                     .size(11.0)
                                                     .strong()
-                                                    .color(ui.visuals().text_color().gamma_multiply(0.7)),
+                                                    .color(header_color),
                                             );
                                         });
                                     });
@@ -1676,25 +1691,36 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                 let (rect, response) = ui.allocate_exact_size(egui::vec2(available_width, row_height), egui::Sense::click());
                                 
                                 if ui.is_rect_visible(rect) {
-                                    let visuals = ui.style().interact_selectable(&response, selected);
-
-                                    if selected || response.hovered() {
-                                        let fill = if selected {
-                                            visuals.bg_fill.gamma_multiply(0.95)
+                                    if selected {
+                                        let sel_color = if ui.visuals().dark_mode {
+                                            egui::Color32::from_rgb(70, 130, 180)  // steel blue in dark
                                         } else {
-                                            visuals.bg_fill.gamma_multiply(0.7)
+                                            egui::Color32::from_rgb(100, 150, 220)  // lighter blue in light
                                         };
                                         ui.painter().add(egui::Shape::rect_filled(
-                                            rect.shrink(1.0),
+                                            rect.shrink(0.0),
                                             0.0,
-                                            fill,
+                                            sel_color,
+                                        ));
+                                    } else if response.hovered() {
+                                        let hover_color = if ui.visuals().dark_mode {
+                                            egui::Color32::from_rgb(50, 50, 55)
+                                        } else {
+                                            egui::Color32::from_rgb(240, 240, 245)
+                                        };
+                                        ui.painter().add(egui::Shape::rect_filled(
+                                            rect.shrink(0.0),
+                                            0.0,
+                                            hover_color,
                                         ));
                                     }
 
                                     let text_color = if selected {
-                                        visuals.text_color()
+                                        egui::Color32::WHITE
+                                    } else if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(220, 220, 220)  // bright text in dark
                                     } else {
-                                        ui.visuals().text_color()
+                                        egui::Color32::from_rgb(20, 20, 30)  // dark text in light
                                     };
 
                                     let content_rect = rect.shrink2(egui::vec2(8.0, 0.0));
@@ -1708,9 +1734,11 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                 if let Some(note) = notes.get(i).and_then(|n| n.clone()) {
                                                     let note_color = if selected {
-                                                        text_color.gamma_multiply(0.75)
+                                                        egui::Color32::from_rgb(200, 200, 210)
+                                                    } else if ui.visuals().dark_mode {
+                                                        egui::Color32::from_rgb(140, 140, 150)
                                                     } else {
-                                                        ui.visuals().text_color().gamma_multiply(0.55)
+                                                        egui::Color32::from_rgb(100, 100, 120)
                                                     };
                                                     ui.label(
                                                         egui::RichText::new(note)

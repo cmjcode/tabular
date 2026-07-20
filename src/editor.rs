@@ -3733,6 +3733,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Keyboard handling for autocomplete
     let input = ui.input(|i| i.clone());
+    if tabular.show_autocomplete
+        && (input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd)
+    {
+        tabular.show_autocomplete = false;
+    }
     if input.key_pressed(egui::Key::Space) && (input.modifiers.ctrl || input.modifiers.command) {
         editor_autocomplete::trigger_manual(tabular);
     }
