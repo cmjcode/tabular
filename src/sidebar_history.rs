@@ -86,8 +86,8 @@ pub(crate) fn load_query_history(tabular: &mut window_egui::Tabular) {
             let check = rt.block_on(async {
                 sqlx::query("SELECT 1 FROM query_history LIMIT 1").execute(pool.as_ref()).await
             });
-            if let Err(e) = check && sidebar_database::is_sqlite_corrupt(&e) {
-                sidebar_database::reset_corrupted_sqlite_db(tabular);
+            if let Err(e) = check {
+                sidebar_database::check_and_recover_sqlite_corruption(tabular, &e);
             }
         }
     }
@@ -163,10 +163,7 @@ pub(crate) fn save_query_to_history(
                 );
             }
             Err(e) => {
-                if sidebar_database::is_sqlite_corrupt(&e) {
-                    warn!("⚠️ [save_query_to_history] SQLite corruption (code 11) detected — triggering DB reset & RAM restoration");
-                    sidebar_database::reset_corrupted_sqlite_db(tabular);
-                } else {
+                if !sidebar_database::check_and_recover_sqlite_corruption(tabular, &e) {
                     error!(
                         "❌ [save_query_to_history] Failed to insert query into SQLite query_history: {}",
                         e

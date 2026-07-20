@@ -1517,6 +1517,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     .await;
 
                     // Log exactly which table(s) failed instead of a vague message.
+                    let mut startup_corruption_detected = false;
                     for (name, res) in [
                         ("connections", &create_connections_result),
                         ("database_cache", &create_db_cache_result),
@@ -1530,15 +1531,21 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     ] {
                         if let Err(e) = res {
                             warn!("Failed to create/verify table '{}': {}", name, e);
+                            if is_sqlite_corrupt(e) {
+                                startup_corruption_detected = true;
+                            }
                         }
                     }
+
+                    if startup_corruption_detected {
+                        warn!("⚠️ [init_db] SQLite database corruption detected during startup table verification!");
+                    }
+
                     // The pool is usable as long as the essential `connections` table exists.
-                    // A failure in an auxiliary cache table must NOT null the whole pool —
-                    // otherwise caching (and autocomplete) is disabled app-wide.
-                    if create_connections_result.is_ok() {
+                    if create_connections_result.is_ok() && !startup_corruption_detected {
                         Some(pool)
                     } else {
-                        error!("Essential 'connections' table could not be created — cache disabled");
+                        error!("Essential tables or SQLite database image corrupted on disk — pool recreated");
                         None
                     }
                 },
@@ -1573,6 +1580,24 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
         load_connection_folders(tabular);
         // Load query history from database
         sidebar_history::load_query_history(tabular);
+    } else {
+        // Backup corrupt file and re-create fresh database if startup failed due to corruption
+        let data_dir = directory::get_data_dir();
+        let db_path = data_dir.join("connections.db");
+        if db_path.exists() {
+            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+            let backup_path = data_dir.join(format!("connections.db.corrupt_{}.bak", timestamp));
+            warn!("⚠️ Recreating fresh connections.db after corruption (backing up to {:?})", backup_path);
+            let _ = std::fs::rename(&db_path, &backup_path);
+            
+            // Second attempt connect to fresh empty file
+            let db_path_str = db_path.to_string_lossy();
+            let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
+            if let Ok(new_pool) = rt.block_on(async { SqlitePool::connect(&connection_string).await }) {
+                tabular.db_pool = Some(Arc::new(new_pool));
+                info!("✅ Successfully created fresh connections.db after corruption recovery");
+            }
+        }
     }
 }
 
@@ -2328,4 +2353,18 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
         error!("❌ [reset_sqlite] Failed to initialize new connections.db pool after corruption reset");
         false
     }
+}
+
+pub(crate) fn check_and_recover_sqlite_corruption(
+    tabular: &mut window_egui::Tabular,
+    err: &sqlx::Error,
+) -> bool {
+    if is_sqlite_corrupt(err) {
+        warn!(
+            "⚠️ [check_and_recover_sqlite_corruption] SQLite database error detected: {} — triggering automatic recovery with RAM preservation",
+            err
+        );
+        return reset_corrupted_sqlite_db(tabular);
+    }
+    false
 }
