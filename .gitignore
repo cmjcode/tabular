@@ -14,3 +14,4 @@ flatpak/dist
 flatpak/cargo-vendor
 flatpak/repo
 .claude
+.agent
