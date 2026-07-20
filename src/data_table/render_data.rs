@@ -112,7 +112,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             let avail_h = ui.available_height();
             let pagination_height_est = ui.text_style_height(&egui::TextStyle::Body) + 14.0;
             let total_h = (avail_h - pagination_height_est).max(50.0);
-            let header_h = 32.0_f32;
+            let header_h = 36.0_f32;
             let data_h = (total_h - header_h).max(20.0);
 
             // ── Sticky header row ──────────────────────────────────────────────────
@@ -224,12 +224,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                         ui.add(egui::Label::new(
                                             egui::RichText::new(header)
                                                 .strong()
-                                                .size(14.0)
-                                                .color(if ui.visuals().dark_mode {
-                                                    egui::Color32::from_rgb(220, 220, 255)
-                                                } else {
-                                                    egui::Color32::from_rgb(60, 60, 120)
-                                                }),
+                                                .size(13.0)
+                                                .color(ui.visuals().text_color()),
                                         ));
                                     },
                                 );
@@ -366,7 +362,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // Virtual scroll: only render rows visible in the viewport.
             // Previous frame's scroll offset drives row range — 1-frame lag is imperceptible.
-            const ROW_HEIGHT: f32 = 25.0;
+            const ROW_HEIGHT: f32 = 28.0;
             let total_rows = tabular.current_table_data.len();
             let prev_scroll_y = tabular.data_scroll_y;
             let first_row = ((prev_scroll_y / ROW_HEIGHT) as usize).saturating_sub(3);
@@ -430,7 +426,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
                                 let row_rect = ui.max_rect();
+                                // Hover detection for the entire row
+                                let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+                                let is_row_hovered = pointer_pos.map_or(false, |p| row_rect.contains(p));
 
                                 // Alternating stripe background
                                 if row_index % 2 == 1 {
@@ -441,6 +441,16 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     };
                                     ui.painter().rect_filled(row_rect, 0.0, stripe);
                                 }
+                                // Hover highlight (subtle) when not selected
+                                if is_row_hovered && row_color == egui::Color32::TRANSPARENT {
+                                    let hover_col = if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 8)
+                                    } else {
+                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 8)
+                                    };
+                                    ui.painter().rect_filled(row_rect, 0.0, hover_col);
+                                }
+
                                 // Selection / new-row highlight
                                 if row_color != egui::Color32::TRANSPARENT {
                                     ui.painter().rect_filled(row_rect, 3.0, row_color);
@@ -480,7 +490,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             rect.center(),
                                             egui::Align2::CENTER_CENTER,
                                             (row_index + 1).to_string(),
-                                            egui::FontId::proportional(14.0),
+                                            egui::FontId::proportional(13.0),
                                             text_color,
                                         );
                                         // Clickable overlay for row selection
@@ -570,31 +580,25 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             if is_selected_cell {
                                                 let stroke = egui::Stroke::new(
                                                     2.0,
-                                                    egui::Color32::from_rgb(255, 0, 0),
+                                                    ui.visuals().selection.stroke.color,
                                                 );
                                                 ui.painter().rect_filled(
                                                     rect,
                                                     0.0,
-                                                    egui::Color32::from_rgba_unmultiplied(
-                                                        255, 60, 10, 20,
-                                                    ),
+                                                    ui.visuals().selection.bg_fill,
                                                 );
-                                                ui.painter().line_segment(
-                                                    [rect.left_top(), rect.right_top()],
-                                                    stroke,
-                                                );
-                                                ui.painter().line_segment(
-                                                    [rect.right_top(), rect.right_bottom()],
-                                                    stroke,
-                                                );
-                                                ui.painter().line_segment(
-                                                    [rect.right_bottom(), rect.left_bottom()],
-                                                    stroke,
-                                                );
-                                                ui.painter().line_segment(
-                                                    [rect.left_bottom(), rect.left_top()],
-                                                    stroke,
-                                                );
+                                                ui.painter().line_segment([
+                                                    rect.left_top(), rect.right_top(),
+                                                ], stroke);
+                                                ui.painter().line_segment([
+                                                    rect.right_top(), rect.right_bottom(),
+                                                ], stroke);
+                                                ui.painter().line_segment([
+                                                    rect.right_bottom(), rect.left_bottom(),
+                                                ], stroke);
+                                                ui.painter().line_segment([
+                                                    rect.left_bottom(), rect.left_top(),
+                                                ], stroke);
                                             }
                                             let max_chars =
                                                 ((column_width / 8.0).floor() as usize).max(10);
@@ -853,36 +857,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         if let (Some(a), Some(b)) = (
                                                             tabular.table_sel_anchor,
                                                             tabular.selected_cell,
-                                                        ) && let Some(csv) =
-                                                            copy_selected_block_as_csv(
-                                                                tabular, a, b,
-                                                            )
-                                                        {
-                                                            ui.ctx().copy_text(csv);
-                                                        }
-                                                        ui.close();
-                                                    }
-                                                    if !tabular.selected_rows.is_empty()
-                                                        && ui
-                                                            .button("📄 Copy Selected Rows as CSV")
-                                                            .clicked()
-                                                    {
-                                                        if let Some(csv) =
-                                                            copy_selected_rows_as_csv(tabular)
-                                                        {
-                                                            ui.ctx().copy_text(csv);
-                                                        }
-                                                        ui.close();
-                                                    }
-                                                    if !tabular.selected_columns.is_empty()
-                                                        && ui
-                                                            .button(
-                                                                "📄 Copy Selected Columns as CSV",
-                                                            )
-                                                            .clicked()
-                                                    {
-                                                        if let Some(csv) =
-                                                            copy_selected_columns_as_csv(tabular)
+                                                        ) && let Some(csv) = copy_selected_block_as_csv(tabular, a, b)
                                                         {
                                                             ui.ctx().copy_text(csv);
                                                         }

@@ -2676,7 +2676,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Calculate gutter width and editor rect
     let gutter_width = if tabular.advanced_editor.show_line_numbers {
         let digits = (pre_line_count as f32).log10().floor() as usize + 1;
-        (digits as f32) * 8.0 + 16.0 // approximate monospace char width
+        // Base gutter on configured editor font size for consistent alignment
+        (digits as f32) * (tabular.advanced_editor.font_size * 0.6) + 20.0
     } else {
         0.0
     };
@@ -2708,7 +2709,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Build TextEdit widget directly and capture full output (galley, clip rect, etc.)
     // NOTE: Removed .code_editor() as it may interfere with cursor rendering
     let text_edit = egui::TextEdit::multiline(&mut tabular.editor.text)
-        .font(egui::TextStyle::Monospace)
+        .font(egui::FontId::monospace(tabular.advanced_editor.font_size))
         .desired_rows(rows)
         .desired_width(f32::INFINITY)
         .cursor_at_end(false) // Allow cursor to be positioned anywhere
