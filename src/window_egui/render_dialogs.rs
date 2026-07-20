@@ -18,7 +18,7 @@ impl super::Tabular {
             ui.horizontal(|ui| {
                 let warning_text =
                     egui::RichText::new(format!("⚠ {} lint issue{} detected", count, plural))
-                        .color(egui::Color32::from_rgb(255, 183, 0));
+                        .color(super::style::theme_warning(ui.ctx()));
                 ui.label(warning_text);
                 if ui.button("Show details").clicked() {
                     self.show_lint_panel = true;
@@ -41,7 +41,7 @@ impl super::Tabular {
 
         let inner = egui::Frame::group(ui.style())
             .fill(panel_fill)
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)))
+            .stroke(egui::Stroke::new(1.0, super::style::theme_warning(ui.ctx())))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("Lint ({})", count)).strong());
@@ -82,13 +82,13 @@ impl super::Tabular {
                 for msg in &self.lint_messages {
                     let (icon, color) = match msg.severity {
                         query_tools::LintSeverity::Info => {
-                            ("ℹ", egui::Color32::from_rgb(120, 170, 255))
+                            ("ℹ", super::style::theme_info(ui.ctx()))
                         }
                         query_tools::LintSeverity::Warning => {
-                            ("⚠", egui::Color32::from_rgb(255, 183, 0))
+                            ("⚠", super::style::theme_warning(ui.ctx()))
                         }
                         query_tools::LintSeverity::Error => {
-                            ("⛔", egui::Color32::from_rgb(255, 0, 0))
+                            ("⛔", super::style::theme_danger(ui.ctx()))
                         }
                     };
 
@@ -217,7 +217,7 @@ impl super::Tabular {
                     ui.add_space(8.0);
                     
                     if let Some(err) = &state.error {
-                         ui.label(egui::RichText::new(err).color(egui::Color32::RED));
+                         ui.label(egui::RichText::new(err).color(super::style::theme_danger(ui.ctx())));
                          ui.add_space(8.0);
                     }
                     
@@ -349,19 +349,9 @@ impl super::Tabular {
                 ui.add_space(12.0);
 
                 let (text_color, icon) = if self.query_message_is_error {
-                    // Error styling
-                    if ui.visuals().dark_mode {
-                        (egui::Color32::from_rgb(255, 120, 120), "❌")
-                    } else {
-                        (egui::Color32::from_rgb(180, 40, 40), "❌")
-                    }
+                    (super::style::theme_danger(ui.ctx()), "❌")
                 } else {
-                    // Success styling
-                    if ui.visuals().dark_mode {
-                        (egui::Color32::from_rgb(120, 220, 120), "👍")
-                    } else {
-                        (egui::Color32::from_rgb(40, 140, 40), "👍")
-                    }
+                    (super::style::theme_success(ui.ctx()), "👍")
                 };
 
                 ui.horizontal_wrapped(|ui| {
@@ -847,7 +837,7 @@ impl super::Tabular {
                         let is_active = i == active_idx;
                         let btn = if is_active {
                              egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::WHITE))
-                                .fill(egui::Color32::from_rgb(255, 0, 0)) // default red 
+                                .fill(super::style::theme_accent(ui.ctx()))
                         } else {
                              egui::Button::new(label)
                         };
@@ -941,7 +931,7 @@ impl super::Tabular {
                             ui.label(
                                 egui::RichText::new(title.clone())
                                     .strong()
-                                    .color(egui::Color32::from_rgb(255, 0, 0)), // rgba(255, 60, 0, 1)
+                                    .color(super::style::theme_accent(ui.ctx())),
                             );
                         });
 
@@ -994,7 +984,7 @@ impl super::Tabular {
                                         egui::Button::new(
                                             egui::RichText::new("Cancel")
                                                 .size(11.0)
-                                                .color(egui::Color32::from_rgb(255, 0, 0)),
+                                                .color(super::style::theme_danger(ui.ctx())),
                                         )
                                         .min_size(egui::vec2(64.0, 22.0)),
                                     );

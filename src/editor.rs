@@ -4145,7 +4145,7 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
     }
 
     let no_api_key = tabular.ai_api_key.is_empty();
-    let accent = egui::Color32::from_rgb(99, 135, 255);
+    let accent = crate::window_egui::style::theme_accent(ui.ctx());
     let panel_bg = if ui.visuals().dark_mode {
         egui::Color32::from_rgb(28, 30, 40)
     } else {
@@ -4169,7 +4169,7 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                 ui.label(
                     egui::RichText::new(format!("({provider_label})"))
                         .size(11.0)
-                        .color(egui::Color32::from_gray(140)),
+                        .color(crate::window_egui::style::theme_muted_text(ui.ctx())),
                 );
                 // Schema context indicator
                 let schema_preview = crate::ai_assistant::build_schema_context(tabular, 30);
@@ -4177,7 +4177,7 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                     ui.label(
                         egui::RichText::new("⚠ no schema")
                             .size(10.0)
-                            .color(egui::Color32::from_rgb(180, 140, 40)),
+                            .color(crate::window_egui::style::theme_warning(ui.ctx())),
                     ).on_hover_text("No table schema found in cache. Browse a table first to populate the schema cache.");
                 } else {
                     let table_count = schema_preview.lines()
@@ -4186,7 +4186,7 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                     ui.label(
                         egui::RichText::new(format!("🗄 {table_count} tables"))
                             .size(10.0)
-                            .color(egui::Color32::from_rgb(80, 200, 120)),
+                            .color(crate::window_egui::style::theme_success(ui.ctx())),
                     ).on_hover_text(format!("Schema context will be sent with every prompt:\n\n{}", &schema_preview.chars().take(600).collect::<String>()));
                 };
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4203,7 +4203,7 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
             if no_api_key {
                 ui.label(
                     egui::RichText::new("⚠ No API key configured. Open Settings → AI Assistant to add one.")
-                        .color(egui::Color32::from_rgb(220, 160, 30))
+                        .color(crate::window_egui::style::theme_warning(ui.ctx()))
                         .size(12.0),
                 );
                 return;
@@ -4227,7 +4227,7 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                 let send_btn = ui.add_enabled(
                     can_send,
                     egui::Button::new(egui::RichText::new("Send ↵").color(egui::Color32::WHITE))
-                        .fill(if can_send { accent } else { egui::Color32::from_gray(100) }),
+                        .fill(if can_send { accent } else { crate::window_egui::style::theme_muted_text(ui.ctx()) }),
                 );
                 let send_via_enter = input_resp.has_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);

@@ -75,8 +75,7 @@ pub fn render_http_client(
     state: &mut HttpClientState,
     toasts: &mut crate::window_egui::notifications::ToastManager,
 ) {
-    // Default red accent: selected/active controls use rgb(255,0,0) with white text.
-    ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
+    ui.style_mut().visuals.selection.bg_fill = crate::window_egui::style::theme_accent(ui.ctx());
     ui.style_mut().visuals.selection.stroke.color = egui::Color32::WHITE;
 
     // Poll background thread for a completed response
@@ -181,7 +180,7 @@ fn render_url_bar(
         let send_btn = ui.add_enabled(
             !state.is_loading && !state.url.is_empty(),
             egui::Button::new(egui::RichText::new(send_label).color(egui::Color32::WHITE))
-                .fill(egui::Color32::from_rgb(255, 0, 0))
+                .fill(crate::window_egui::style::theme_accent(ui.ctx()))
                 .min_size(egui::vec2(send_w - 10.0, 0.0)),
         );
         if send_btn.clicked() {
@@ -359,7 +358,7 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     let btn = ui.add_sized(
                         [22.0, 22.0],
                         egui::Button::new(egui::RichText::new("⚡").color(egui::Color32::WHITE))
-                            .fill(egui::Color32::from_rgb(255, 0, 0)),
+                            .fill(crate::window_egui::style::theme_accent(ui.ctx())),
                     );
                     if btn.clicked() {
                         match state.body_type {
@@ -565,14 +564,14 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
     // Status bar
     ui.horizontal(|ui| {
         if let Some(err) = &state.response_error {
-            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), format!("Error: {}", err));
+            ui.colored_label(crate::window_egui::style::theme_danger(ui.ctx()), format!("Error: {}", err));
         } else if let Some(status) = state.response_status {
             let color = if status < 300 {
-                egui::Color32::from_rgb(50, 205, 50)
+                crate::window_egui::style::theme_success(ui.ctx())
             } else if status < 400 {
-                egui::Color32::from_rgb(255, 200, 0)
+                crate::window_egui::style::theme_warning(ui.ctx())
             } else {
-                egui::Color32::from_rgb(220, 60, 60)
+                crate::window_egui::style::theme_danger(ui.ctx())
             };
             ui.colored_label(color, format!("Status: {} {}", status, state.response_status_text));
         }
@@ -671,7 +670,7 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     let btn = ui.add_sized(
                         [22.0, 22.0],
                         egui::Button::new(egui::RichText::new("⚡").color(egui::Color32::WHITE))
-                            .fill(egui::Color32::from_rgb(255, 0, 0)),
+                            .fill(crate::window_egui::style::theme_accent(ui.ctx())),
                     );
                     if btn.clicked() {
                         if is_json {

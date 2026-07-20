@@ -28,11 +28,11 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
             } else {
                 ui.label("0 rows");
             }
-            ui.colored_label(egui::Color32::from_rgb(50,205,50), "📡 Server pagination");
+            ui.colored_label(crate::window_egui::style::theme_success(ui.ctx()), "📡 Server pagination");
         } else {
             ui.label(format!("Total rows: {}", tabular.total_rows));
             if !tabular.use_server_pagination {
-                ui.colored_label(egui::Color32::from_rgb(255, 0, 0), "💾 Client pagination");
+                ui.colored_label(crate::window_egui::style::theme_warning(ui.ctx()), "💾 Client pagination");
             }
         }
 

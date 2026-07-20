@@ -2123,14 +2123,14 @@ impl super::Tabular {
                             has_shared = shared.contains_key(&conn_id);
                         }
                         if params.connection_pools.contains_key(&conn_id) || has_shared {
-                            (egui::Color32::from_rgb(46, 204, 113), "Connected") // green
+                            (super::style::theme_success(ui.ctx()), "Connected")
                         } else if params.pending_connection_pools.contains(&conn_id) {
-                            (egui::Color32::from_rgb(255, 0, 0), "Connecting") // red
+                            (super::style::theme_warning(ui.ctx()), "Connecting")
                         } else {
-                            (egui::Color32::from_rgb(255, 0, 0), "Disconnected") // red
+                            (super::style::theme_muted_text(ui.ctx()), "Disconnected")
                         }
                     } else {
-                        (egui::Color32::from_rgb(255, 0, 0), "Disconnected")
+                        (super::style::theme_muted_text(ui.ctx()), "Disconnected")
                     }
                 } else { (ui.visuals().text_color(), "") };
 
@@ -3680,7 +3680,7 @@ impl super::Tabular {
                 ui.painter().rect_stroke(
                     search_response.rect,
                     0.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)),
+                    egui::Stroke::new(1.0, super::style::theme_accent(ui.ctx())),
                     egui::StrokeKind::Outside,
                 );
             }

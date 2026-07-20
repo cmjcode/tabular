@@ -137,7 +137,7 @@ pub fn render_redis_browser(
     state: &mut RedisBrowserState,
 ) -> Option<RedisBrowserAction> {
     let mut action = None;
-    ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgb(169, 169, 169);
+    ui.style_mut().visuals.selection.bg_fill = crate::window_egui::style::theme_accent(ui.ctx());
     ui.style_mut().visuals.selection.stroke.color = egui::Color32::TRANSPARENT;
 
     let filtered = filtered_key_indices(state);
@@ -286,11 +286,11 @@ pub fn render_redis_browser(
                                 .inner_margin(egui::Margin::symmetric(8, 6))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        let badge = egui::RichText::new(display_key_type(&entry.key_type))
-                                            .size(10.0)
-                                            .color(egui::Color32::WHITE)
-                                            .background_color(egui::Color32::from_rgb(255, 0, 0))
-                                            .strong();
+                                         let badge = egui::RichText::new(display_key_type(&entry.key_type))
+                                             .size(10.0)
+                                             .color(egui::Color32::WHITE)
+                                             .background_color(crate::window_egui::style::theme_accent(ui.ctx()))
+                                             .strong();
                                         ui.label(badge);
 
                                         let display_key = elide_middle(&entry.key_name, 72);
@@ -324,7 +324,7 @@ pub fn render_redis_browser(
                         let badge = egui::RichText::new(display_key_type(&preview.key_type))
                             .size(10.0)
                             .color(egui::Color32::WHITE)
-                            .background_color(egui::Color32::from_rgb(255, 0, 0))
+                            .background_color(crate::window_egui::style::theme_accent(ui.ctx()))
                             .strong();
                         ui.label(badge);
                         ui.add(
@@ -366,7 +366,7 @@ pub fn render_redis_browser(
 
                 if let Some(error) = &state.last_error {
                     ui.add_space(8.0);
-                    ui.colored_label(egui::Color32::from_rgb(255, 120, 120), error);
+                    ui.colored_label(crate::window_egui::style::theme_danger(ui.ctx()), error);
                 }
             });
         });

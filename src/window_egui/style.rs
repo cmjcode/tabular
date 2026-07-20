@@ -85,3 +85,104 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
         );
     });
 }
+
+// Theme-aware status & UI color helpers
+pub fn theme_accent(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(86, 156, 214) // Modern IDE blue
+    } else {
+        egui::Color32::from_rgb(0, 102, 204)
+    }
+}
+
+pub fn theme_danger(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(220, 80, 80) // Soft ergonomic red
+    } else {
+        egui::Color32::from_rgb(200, 50, 50)
+    }
+}
+
+pub fn theme_success(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(80, 190, 100) // Soft green
+    } else {
+        egui::Color32::from_rgb(40, 160, 70)
+    }
+}
+
+pub fn theme_warning(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(230, 170, 50) // Warm amber
+    } else {
+        egui::Color32::from_rgb(210, 140, 20)
+    }
+}
+
+pub fn theme_info(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(100, 180, 240)
+    } else {
+        egui::Color32::from_rgb(30, 130, 210)
+    }
+}
+
+pub fn theme_muted_text(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(160, 165, 175)
+    } else {
+        egui::Color32::from_rgb(110, 115, 125)
+    }
+}
+
+pub fn theme_card_frame(ctx: &egui::Context) -> egui::Frame {
+    let visuals = &ctx.global_style().visuals;
+    let bg = if visuals.dark_mode {
+        egui::Color32::from_rgb(32, 34, 40)
+    } else {
+        egui::Color32::from_rgb(250, 250, 252)
+    };
+    let stroke_col = if visuals.dark_mode {
+        egui::Color32::from_rgb(50, 54, 64)
+    } else {
+        egui::Color32::from_rgb(220, 224, 230)
+    };
+    egui::Frame::group(&ctx.global_style())
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, stroke_col))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::same(10))
+}
+
+pub fn theme_alert_frame(ctx: &egui::Context, is_danger: bool) -> egui::Frame {
+    let visuals = &ctx.global_style().visuals;
+    let (bg, stroke_col) = if is_danger {
+        if visuals.dark_mode {
+            (egui::Color32::from_rgb(60, 25, 28), egui::Color32::from_rgb(180, 60, 60))
+        } else {
+            (egui::Color32::from_rgb(255, 235, 238), egui::Color32::from_rgb(230, 100, 100))
+        }
+    } else {
+        if visuals.dark_mode {
+            (egui::Color32::from_rgb(25, 45, 30), egui::Color32::from_rgb(60, 150, 80))
+        } else {
+            (egui::Color32::from_rgb(235, 248, 238), egui::Color32::from_rgb(100, 200, 120))
+        }
+    };
+    egui::Frame::group(&ctx.global_style())
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, stroke_col))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(8))
+}
+
+pub fn render_badge(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32, fg_color: egui::Color32) {
+    egui::Frame::new()
+        .fill(bg_color)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).size(11.0).color(fg_color).strong());
+        });
+}
+

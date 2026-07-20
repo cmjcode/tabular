@@ -675,7 +675,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                 ui.add(
                     egui::ProgressBar::new(progress_fraction)
                         .desired_width(ui.available_width())
-                        .fill(egui::Color32::from_rgb(255, 0, 0)), // rgba(255, 21, 0, 1)
+                        .fill(window_egui::style::theme_accent(ui.ctx())),
                 );
             });
 
@@ -1133,7 +1133,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                 );
                             }
                             Some(Err(err)) => {
-                                ui.colored_label(egui::Color32::from_rgb(192, 57, 43), err);
+                                ui.colored_label(window_egui::style::theme_danger(ui.ctx()), err);
                             }
                             None => {
                                 ui.label(
@@ -1146,14 +1146,9 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
 
             if let Some(err) = tabular.create_table_error.as_ref() {
                 ui.add_space(10.0);
-                egui::Frame::group(ui.style())
-                    .fill(egui::Color32::from_rgb(255, 235, 238))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)))
-                    .corner_radius(egui::CornerRadius::same(8))
-                    .inner_margin(egui::Vec2::new(10.0, 8.0))
-                    .show(ui, |ui| {
-                        ui.colored_label(egui::Color32::from_rgb(192, 57, 43), err);
-                    });
+                window_egui::style::theme_alert_frame(ui.ctx(), true).show(ui, |ui| {
+                    ui.colored_label(window_egui::style::theme_danger(ui.ctx()), err);
+                });
             }
 
             ui.add_space(12.0);
@@ -1417,8 +1412,8 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         .open(&mut open_flag)
         .show(ctx, |ui| {
             let state = tabular.csv_import_state.as_mut().unwrap();
-            let accent = egui::Color32::from_rgb(86, 156, 214);
-            let muted = ui.visuals().weak_text_color();
+            let accent = window_egui::style::theme_accent(ctx);
+            let muted = window_egui::style::theme_muted_text(ctx);
 
             // ── Source file ───────────────────────────────────────────────────
             egui::Frame::group(ui.style())
@@ -1606,11 +1601,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                 if !state.progress_message.is_empty() {
                     let (icon, color) = match &state.status {
                         crate::models::structs::CsvImportStatus::Failed(_) =>
-                            ("x ", egui::Color32::from_rgb(220, 80, 80)),
+                            ("x ", window_egui::style::theme_danger(ui.ctx())),
                         crate::models::structs::CsvImportStatus::Done(_) =>
-                            ("ok ", egui::Color32::from_rgb(80, 190, 100)),
+                            ("ok ", window_egui::style::theme_success(ui.ctx())),
                         crate::models::structs::CsvImportStatus::Importing =>
-                            ("... ", egui::Color32::from_rgb(86, 156, 214)),
+                            ("... ", window_egui::style::theme_accent(ui.ctx())),
                         _ => ("", muted),
                     };
                     ui.label(
