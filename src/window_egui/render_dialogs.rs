@@ -559,23 +559,25 @@ impl super::Tabular {
                         editor::render_advanced_editor(self, ui);
                     });
 
-                // Floating query action cluster (Explain, Format, Execute)
-                let button_margin = 5.0;
-                let button_size = egui::vec2(28.0, 28.0);
-                let button_spacing = 4.0;
-                let button_corner = (button_size.y / 2.0).round().clamp(4.0, u8::MAX as f32) as u8;
-                let cluster_width = button_size.x * 3.0 + button_spacing * 2.0;
+                let button_size = egui::vec2(34.0, 34.0);
+                let button_spacing = 2.0;
+                let button_corner = 2 as u8;
+                let frame_margin = 2.0; // inner_margin
+                let frame_stroke = 1.0; // stroke width
+                let total_cluster_width = button_size.x * 3.0 + button_spacing * 2.0 + (frame_margin + frame_stroke) * 2.0;
+                let cluster_width = total_cluster_width;
+                let right_margin = 26.0; // Clean right alignment matching top controls
                 let cluster_pos = egui::pos2(
-                    rect.max.x - cluster_width - button_margin,
-                    rect.min.y + button_margin + 2.0,
+                    rect.max.x - total_cluster_width - right_margin,
+                    rect.min.y + 6.0,
                 );
                 let is_loading = self.query_execution_in_progress || self.pool_wait_in_progress;
                 let play_text = if is_loading {
-                    egui::RichText::new("⏳").color(egui::Color32::WHITE).size(14.0)
+                    egui::RichText::new("⏳").color(egui::Color32::WHITE).size(12.0)
                 } else {
                     egui::RichText::new("▶")
                         .color(egui::Color32::from_rgb(0, 120, 40))
-                        .size(14.0)
+                        .size(12.0)
                 };
                 let play_tooltip = if is_loading {
                     "Executing query…"
@@ -616,8 +618,8 @@ impl super::Tabular {
                         egui::Frame::new()
                             .fill(cluster_bg)
                             .stroke(egui::Stroke::new(1.0, cluster_border))
-                            .corner_radius(egui::CornerRadius::same(10u8))
-                            .inner_margin(egui::Margin::same(4))
+                            .corner_radius(egui::CornerRadius::same(8u8))
+                            .inner_margin(egui::Margin::same(3))
                             .show(area_ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = button_spacing;
@@ -633,7 +635,7 @@ impl super::Tabular {
                                         egui::Color32::from_rgb(190, 190, 190)
                                     };
 
-                                    let format_button = egui::Button::new(egui::RichText::new("</>").size(16.0))
+                                    let format_button = egui::Button::new(egui::RichText::new("</>").size(11.0))
                                         .fill(base_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))
                                         .corner_radius(egui::CornerRadius::same(button_corner));
@@ -645,7 +647,7 @@ impl super::Tabular {
                                         format_clicked = true;
                                     }
 
-                                    let explain_button = egui::Button::new(egui::RichText::new("🔍").size(16.0))
+                                    let explain_button = egui::Button::new(egui::RichText::new("🔍").size(11.0))
                                         .fill(base_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))
                                         .corner_radius(egui::CornerRadius::same(button_corner));
