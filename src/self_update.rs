@@ -43,7 +43,16 @@ pub enum UpdateError {
 impl fmt::Display for UpdateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            UpdateError::NetworkError(msg) => write!(f, "Network error: {}", msg),
+            UpdateError::NetworkError(msg) => {
+                if msg.contains("403 Forbidden") {
+                    write!(
+                        f,
+                        "GitHub API rate limit exceeded (403 Forbidden). You can check releases directly at https://github.com/tabular-id/tabular/releases"
+                    )
+                } else {
+                    write!(f, "Network error: {}", msg)
+                }
+            }
             UpdateError::ParseError(msg) => write!(f, "Parse error: {}", msg),
         }
     }
@@ -59,13 +68,36 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
         GITHUB_REPO
     );
 
-    let client = reqwest::Client::new();
-    let response = client
+    let client = reqwest::Client::builder()
+        .user_agent(format!("Tabular/{}", CURRENT_VERSION))
+        .build()
+        .map_err(|e| UpdateError::NetworkError(e.to_string()))?;
+
+    let mut request_builder = client
         .get(&url)
-        .header("User-Agent", format!("Tabular/{}", CURRENT_VERSION))
+        .header("Accept", "application/vnd.github+json");
+
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        let token_trimmed = token.trim();
+        if !token_trimmed.is_empty() {
+            request_builder = request_builder.header("Authorization", format!("Bearer {}", token_trimmed));
+        }
+    }
+
+    let response = request_builder
         .send()
         .await
         .map_err(|e| UpdateError::NetworkError(e.to_string()))?;
+
+    if response.status() == reqwest::StatusCode::FORBIDDEN
+        || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        warn!(
+            "GitHub API rate limit or access restriction ({}); falling back to web redirect check...",
+            response.status()
+        );
+        return check_for_updates_web_fallback().await;
+    }
 
     if !response.status().is_success() {
         return Err(UpdateError::NetworkError(format!(
@@ -111,6 +143,81 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
         asset_name,
         release_url: release.html_url,
         published_at: release.published_at,
+    })
+}
+
+pub async fn check_for_updates_web_fallback() -> Result<UpdateInfo, UpdateError> {
+    debug!("Checking for updates via web redirect fallback...");
+    let web_release_url = format!("https://github.com/{}/releases/latest", GITHUB_REPO);
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("Tabular/{}", CURRENT_VERSION))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| UpdateError::NetworkError(e.to_string()))?;
+
+    let response = match client.head(&web_release_url).send().await {
+        Ok(res) if res.status().is_redirection() => res,
+        _ => client
+            .get(&web_release_url)
+            .send()
+            .await
+            .map_err(|e| UpdateError::NetworkError(e.to_string()))?,
+    };
+
+    let redirect_url = if response.status().is_redirection() {
+        response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    let tag_name = if let Some(ref loc) = redirect_url {
+        loc.rsplit('/').next().unwrap_or("").to_string()
+    } else {
+        String::new()
+    };
+
+    if tag_name.is_empty() {
+        return Err(UpdateError::NetworkError(
+            "GitHub API rate limit exceeded (403 Forbidden). Could not determine latest version from web fallback.".to_string(),
+        ));
+    }
+
+    debug!("Latest release tag from web fallback: {}", tag_name);
+
+    let current_version = Version::parse(CURRENT_VERSION)
+        .map_err(|e| UpdateError::ParseError(format!("Invalid current version: {}", e)))?;
+
+    let latest_version_str = tag_name.strip_prefix('v').unwrap_or(&tag_name);
+    let latest_version = Version::parse(latest_version_str)
+        .map_err(|e| UpdateError::ParseError(format!("Invalid latest version tag '{}': {}", tag_name, e)))?;
+
+    let update_available = latest_version > current_version;
+    let release_url = if let Some(loc) = redirect_url {
+        loc
+    } else {
+        format!("https://github.com/{}/releases/tag/{}", GITHUB_REPO, tag_name)
+    };
+
+    let release_notes = if update_available {
+        "Note: GitHub API rate limit reached (403 Forbidden). Detailed release notes unavailable in app.\n\nPlease click 'View Release' to open GitHub and download the latest version.".to_string()
+    } else {
+        "You are on the latest version.".to_string()
+    };
+
+    Ok(UpdateInfo {
+        current_version: CURRENT_VERSION.to_string(),
+        latest_version: latest_version.to_string(),
+        update_available,
+        release_notes,
+        download_url: None,
+        asset_name: None,
+        release_url,
+        published_at: None,
     })
 }
 
@@ -220,63 +327,33 @@ fn get_platform_info() -> PlatformInfo {
     PlatformInfo { os, arch }
 }
 
-pub fn open_release_page(update_info: &UpdateInfo) {
-    let url = &update_info.release_url;
-    debug!("Opening release page: {}", url);
+pub fn open_url(url: &str) {
+    debug!("Opening URL: {}", url);
 
     #[cfg(target_os = "macos")]
     {
-        let status = std::process::Command::new("open")
-            .arg(url)
-            .status()
-            .unwrap_or_else(|e| {
-                error!("Failed to open URL on macOS: {}", e);
-                std::process::exit(1);
-            });
-
-        if !status.success() {
-            error!(
-                "Failed to open URL on macOS, exit status: {:?}",
-                status.code()
-            );
+        if let Err(e) = std::process::Command::new("open").arg(url).status() {
+            error!("Failed to open URL on macOS: {}", e);
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        let status = std::process::Command::new("xdg-open")
-            .arg(url)
-            .status()
-            .unwrap_or_else(|e| {
-                error!("Failed to open URL on Linux: {}", e);
-                std::process::exit(1);
-            });
-
-        if !status.success() {
-            error!(
-                "Failed to open URL on Linux, exit status: {:?}",
-                status.code()
-            );
+        if let Err(e) = std::process::Command::new("xdg-open").arg(url).status() {
+            error!("Failed to open URL on Linux: {}", e);
         }
     }
 
     #[cfg(target_os = "windows")]
     {
-        let status = std::process::Command::new("cmd")
-            .args(["/c", "start", url])
-            .status()
-            .unwrap_or_else(|e| {
-                error!("Failed to open URL on Windows: {}", e);
-                std::process::exit(1);
-            });
-
-        if !status.success() {
-            error!(
-                "Failed to open URL on Windows, exit status: {:?}",
-                status.code()
-            );
+        if let Err(e) = std::process::Command::new("cmd").args(["/c", "start", url]).status() {
+            error!("Failed to open URL on Windows: {}", e);
         }
     }
+}
+
+pub fn open_release_page(update_info: &UpdateInfo) {
+    open_url(&update_info.release_url);
 }
 
 #[cfg(test)]
@@ -306,5 +383,15 @@ mod tests {
         let v1 = Version::parse("0.3.0").unwrap();
         let v2 = Version::parse("0.4.0").unwrap();
         assert!(v2 > v1);
+    }
+
+    #[test]
+    fn test_update_error_formatting() {
+        let err_403 = UpdateError::NetworkError("GitHub API returned status: 403 Forbidden".to_string());
+        assert!(err_403.to_string().contains("403 Forbidden"));
+        assert!(err_403.to_string().contains("https://github.com/tabular-id/tabular/releases"));
+
+        let err_generic = UpdateError::NetworkError("Connection refused".to_string());
+        assert_eq!(err_generic.to_string(), "Network error: Connection refused");
     }
 }

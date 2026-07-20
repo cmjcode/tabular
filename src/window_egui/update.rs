@@ -41,13 +41,18 @@ impl super::Tabular {
                     });
                 } else if let Some(error) = &self.update_check_error {
                     ui.colored_label(
-                        egui::Color32::from_rgb(255, 0, 0),
+                        egui::Color32::from_rgb(255, 100, 100),
                         format!("Error: {}", error),
                     );
                     ui.separator();
-                    if ui.button("Close").clicked() {
-                        self.show_update_dialog = false;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("View Releases on GitHub").clicked() {
+                            crate::self_update::open_url("https://github.com/tabular-id/tabular/releases");
+                        }
+                        if ui.button("Close").clicked() {
+                            self.show_update_dialog = false;
+                        }
+                    });
                 } else if let Some(update_info) = &self.update_info.clone() {
                     if update_info.update_available {
                         ui.heading("Update Available!");
