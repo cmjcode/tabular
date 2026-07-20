@@ -976,12 +976,12 @@ impl Tabular {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 let btn_avail_width = ui.available_width();
                                 let button_width = ((btn_avail_width - 8.0) / 3.0).clamp(50.0, 130.0);
-                                let button_height = TAB_BUTTON_HEIGHT - 6.0;
+                                let button_height = 34.0;
                                 let active_fill = ui.visuals().widgets.active.bg_fill;
                                 let inactive_fill = egui::Color32::TRANSPARENT;
                                 let active_text = egui::Color32::WHITE;
                                 let inactive_text = ui.visuals().text_color();
-                                let button_radius = 6.0;
+                                let button_radius = 0.0;
 
                                 let database_button = egui::Button::new(
                                     egui::RichText::new("Database")
@@ -1383,16 +1383,17 @@ impl Tabular {
                         left_rect.size(),
                         egui::Layout::left_to_right(egui::Align::TOP),
                         |ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
+                            ui.spacing_mut().item_spacing.x = 2.0;
 
                             // Sidebar Toggle
                             let toggle_icon = if self.sidebar_visible { "◀" } else { "▶" };
                             if ui
                                 .add_sized(
-                                    [26.0, 26.0],
+                                    [34.0, 34.0],
                                     egui::Button::new(toggle_icon)
                                         .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(egui::Stroke::NONE),
+                                        .stroke(egui::Stroke::NONE)
+                                        .corner_radius(0.3),
                                 )
                                 .on_hover_text(if self.sidebar_visible {
                                     "Hide Sidebar"
@@ -1414,17 +1415,25 @@ impl Tabular {
                                     egui::Color32::from_rgb(240, 240, 240)
                                 };
                                 let tab_bg = if active {
-                                    ui.visuals().widgets.active.bg_fill
+                                    if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(45, 48, 56)
+                                    } else {
+                                        egui::Color32::from_rgb(255, 255, 255)
+                                    }
                                 } else {
                                     inactive_bg
                                 };
                                 let border_color = if active {
-                                    ui.visuals().widgets.active.bg_stroke.color
+                                    super::style::theme_accent(ui.ctx())
                                 } else {
                                     ui.visuals().widgets.inactive.bg_stroke.color
                                 };
                                 let text_color = if active {
-                                    egui::Color32::WHITE
+                                    if ui.visuals().dark_mode {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        egui::Color32::from_rgb(20, 20, 20)
+                                    }
                                 } else {
                                     ui.visuals().text_color()
                                 };
@@ -1436,12 +1445,12 @@ impl Tabular {
                                 }
                                 let close_size = 16.0;
                                 let tab_width = (title.len() as f32 * 8.0 + 72.0).clamp(130.0, 260.0);
-                                let menu_tab_height = TAB_BUTTON_HEIGHT - 6.0;
+                                let menu_tab_height = 34.0;
                                 let (tab_rect, tab_resp) = ui.allocate_exact_size(
                                     egui::vec2(tab_width, menu_tab_height),
                                     egui::Sense::click(),
                                 );
-                                let tab_radius: egui::CornerRadius = 8.0.into();
+                                let tab_radius: egui::CornerRadius = 0.0.into();
                                 ui.painter().rect_filled(tab_rect, tab_radius, tab_bg);
                                 ui.painter().rect_stroke(
                                     tab_rect,
@@ -1457,7 +1466,7 @@ impl Tabular {
                                     ui.painter().rect_filled(
                                         accent_rect,
                                         0.0,
-                                        ui.visuals().selection.stroke.color,
+                                        super::style::theme_accent(ui.ctx()),
                                     );
                                 }
                                 let close_rect = egui::Rect::from_min_size(
@@ -1522,11 +1531,11 @@ impl Tabular {
                             };
                             if ui
                                 .add_sized(
-                                    [28.0, 28.0],
+                                    [34.0, 34.0],
                                     egui::Button::new("+")
                                         .fill(plus_bg)
                                         .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
-                                        .corner_radius(6.0),
+                                        .corner_radius(0.0),
                                 )
                                 .on_hover_text("New query tab")
                                 .clicked()
