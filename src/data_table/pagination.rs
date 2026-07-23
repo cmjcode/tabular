@@ -13,122 +13,142 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
         .map(|r| r.execution_time_ms)
         .filter(|ms| *ms > 0);
 
-    // Tidak ada extra space supaya bar menempel konten / tepi bawah
-    ui.horizontal(|ui| {
-        let spacing = ui.spacing_mut();
-        spacing.item_spacing.x = 4.0;
-        spacing.button_padding = egui::vec2(6.0, 2.0);
+    let bg_color = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(22, 22, 26)
+    } else {
+        egui::Color32::from_rgb(245, 245, 250)
+    };
+    let stroke_color = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(45, 45, 50)
+    } else {
+        egui::Color32::from_rgb(215, 215, 220)
+    };
 
-        if tabular.use_server_pagination && tabular.actual_total_rows.is_some() {
-            let actual_total = tabular.actual_total_rows.unwrap_or(0);
-            if actual_total > 0 {
-                let start_row = tabular.current_page * tabular.page_size + 1;
-                let end_row = ((tabular.current_page + 1) * tabular.page_size).min(actual_total);
-                ui.label(format!("Showing rows {}-{}", start_row, end_row));
-            } else {
-                ui.label("0 rows");
-            }
-            ui.colored_label(crate::window_egui::style::theme_success(ui.ctx()), "📡 Server pagination");
-        } else {
-            ui.label(format!("Total rows: {}", tabular.total_rows));
-            if !tabular.use_server_pagination {
-                ui.colored_label(crate::window_egui::style::theme_warning(ui.ctx()), "💾 Client pagination");
-            }
-        }
+    egui::Frame::new()
+        .fill(bg_color)
+        .stroke(egui::Stroke::new(1.0, stroke_color))
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let spacing = ui.spacing_mut();
+                spacing.item_spacing.x = 4.0;
+                spacing.button_padding = egui::vec2(6.0, 2.0);
 
-        // Execution time indicator
-        if let Some(ms) = exec_ms {
-            ui.separator();
-            let label = if ms >= 1000 {
-                format!("⏱ {:.2} s", ms as f64 / 1000.0)
-            } else {
-                format!("⏱ {} ms", ms)
-            };
-            ui.label(egui::RichText::new(label).color(ui.visuals().weak_text_color()))
-                .on_hover_text("Query execution time");
-        }
+                if tabular.use_server_pagination && tabular.actual_total_rows.is_some() {
+                    let actual_total = tabular.actual_total_rows.unwrap_or(0);
+                    if actual_total > 0 {
+                        let start_row = tabular.current_page * tabular.page_size + 1;
+                        let end_row = ((tabular.current_page + 1) * tabular.page_size).min(actual_total);
+                        ui.label(format!("Showing rows {}-{}", start_row, end_row));
+                    } else {
+                        ui.label("0 rows");
+                    }
+                    ui.colored_label(crate::window_egui::style::theme_success(ui.ctx()), "📡 Server pagination");
+                } else {
+                    ui.label(format!("Total rows: {}", tabular.total_rows));
+                    if !tabular.use_server_pagination {
+                        ui.colored_label(crate::window_egui::style::theme_warning(ui.ctx()), "💾 Client pagination");
+                    }
+                }
 
-        ui.separator();
+                // Execution time indicator
+                if let Some(ms) = exec_ms {
+                    ui.separator();
+                    let label = if ms >= 1000 {
+                        format!("⏱ {:.2} s", ms as f64 / 1000.0)
+                    } else {
+                        format!("⏱ {} ms", ms)
+                    };
+                    ui.label(egui::RichText::new(label).color(ui.visuals().weak_text_color()))
+                        .on_hover_text("Query execution time");
+                }
 
-        // Page size selector
-        ui.label("Rows per page:");
-        let mut page_size_str = tabular.page_size.to_string();
-        // Batasi lebar input supaya tidak mengembang mengisi bar dan membuat gap
-        if ui
-            .add(egui::TextEdit::singleline(&mut page_size_str).desired_width(60.0))
-            .changed()
-            && let Ok(new_size) = page_size_str.parse::<usize>()
-            && new_size > 0
-            && new_size <= 10000
-        {
-            tabular.set_page_size(new_size);
-        }
+                ui.separator();
 
-        ui.separator();
+                // Page size selector
+                ui.label("Rows per page:");
+                let mut page_size_str = tabular.page_size.to_string();
+                // Batasi lebar input supaya tidak mengembang mengisi bar dan membuat gap
+                if ui
+                    .add(egui::TextEdit::singleline(&mut page_size_str).desired_width(50.0))
+                    .changed()
+                    && let Ok(new_size) = page_size_str.parse::<usize>()
+                    && new_size > 0
+                    && new_size <= 10000
+                {
+                    tabular.set_page_size(new_size);
+                }
 
-        // Navigation buttons
-        let has_data = if tabular.use_server_pagination {
-            tabular.actual_total_rows.unwrap_or(0) > 0
-        } else {
-            tabular.total_rows > 0
-        };
-        let total_pages = if tabular.use_server_pagination {
-            get_total_pages_server(tabular)
-        } else {
-            get_total_pages(tabular)
-        };
+                ui.separator();
 
-        ui.add_enabled(
-            has_data && tabular.current_page > 0,
-            egui::Button::new("⏮ First"),
-        )
-        .clicked()
-        .then(|| go_to_page(tabular, 0));
-        ui.add_enabled(
-            has_data && tabular.current_page > 0,
-            egui::Button::new("◀ Prev"),
-        )
-        .clicked()
-        .then(|| previous_page(tabular));
-        ui.label(format!(
-            "Page {} of {}",
-            tabular.current_page + 1,
-            total_pages.max(1)
-        ));
-        ui.add_enabled(
-            has_data && tabular.current_page < total_pages.saturating_sub(1),
-            egui::Button::new("Next ▶"),
-        )
-        .clicked()
-        .then(|| next_page(tabular));
-        ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
-            .clicked()
-            .then(|| {
-                let last_page = total_pages.saturating_sub(1);
-                go_to_page(tabular, last_page);
+                // Navigation buttons
+                let has_data = if tabular.use_server_pagination {
+                    tabular.actual_total_rows.unwrap_or(0) > 0
+                } else {
+                    tabular.total_rows > 0
+                };
+                let total_pages = if tabular.use_server_pagination {
+                    get_total_pages_server(tabular)
+                } else {
+                    get_total_pages(tabular)
+                };
+
+                ui.add_enabled(
+                    has_data && tabular.current_page > 0,
+                    egui::Button::new("⏮ First"),
+                )
+                .clicked()
+                .then(|| go_to_page(tabular, 0));
+                ui.add_enabled(
+                    has_data && tabular.current_page > 0,
+                    egui::Button::new("◀ Prev"),
+                )
+                .clicked()
+                .then(|| previous_page(tabular));
+                ui.label(format!(
+                    "Page {} of {}",
+                    tabular.current_page + 1,
+                    total_pages.max(1)
+                ));
+                ui.add_enabled(
+                    has_data && tabular.current_page < total_pages.saturating_sub(1),
+                    egui::Button::new("Next ▶"),
+                )
+                .clicked()
+                .then(|| next_page(tabular));
+                ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
+                    .clicked()
+                    .then(|| {
+                        let last_page = total_pages.saturating_sub(1);
+                        go_to_page(tabular, last_page);
+                    });
+
+                ui.separator();
+                if ui.button("Clear selection").clicked() {
+                    tabular.selected_rows.clear();
+                    tabular.selected_columns.clear();
+                    tabular.selected_row = None;
+                    tabular.selected_cell = None;
+                    tabular.last_clicked_row = None;
+                    tabular.last_clicked_column = None;
+                }
+
+                ui.label("Go to page:");
+                let mut page_input = (tabular.current_page + 1).to_string();
+                if ui
+                    .add_enabled(has_data, egui::TextEdit::singleline(&mut page_input).desired_width(40.0))
+                    .changed()
+                    && let Ok(page_num) = page_input.parse::<usize>()
+                    && page_num > 0
+                {
+                    go_to_page(tabular, page_num - 1);
+                }
+
+                // Extra right space to ensure controls are not obscured by floating bottom-right dock
+                ui.add_space(200.0);
             });
-
-        ui.separator();
-        if ui.button("Clear selection").clicked() {
-            tabular.selected_rows.clear();
-            tabular.selected_columns.clear();
-            tabular.selected_row = None;
-            tabular.selected_cell = None;
-            tabular.last_clicked_row = None;
-            tabular.last_clicked_column = None;
-        }
-
-        ui.label("Go to page:");
-        let mut page_input = (tabular.current_page + 1).to_string();
-        if ui
-            .add_enabled(has_data, egui::TextEdit::singleline(&mut page_input))
-            .changed()
-            && let Ok(page_num) = page_input.parse::<usize>()
-            && page_num > 0
-        {
-            go_to_page(tabular, page_num - 1);
-        }
-    });
+        });
 }
 
 pub fn update_pagination_data(tabular: &mut window_egui::Tabular, all_data: Vec<Vec<String>>) {
