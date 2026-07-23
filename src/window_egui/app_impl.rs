@@ -160,19 +160,21 @@ impl Tabular {
 
                                      for (theme, title, caption) in theme_cards {
                                          let selected = self.app_theme == *theme;
-                                         let mut frame = egui::Frame::default();
-                                         frame.fill = if selected {
-                                             ui.visuals().widgets.active.bg_fill
-                                         } else {
-                                             ui.visuals().widgets.inactive.bg_fill
+                                         let frame = egui::Frame {
+                                             fill: if selected {
+                                                 ui.visuals().widgets.active.bg_fill
+                                             } else {
+                                                 ui.visuals().widgets.inactive.bg_fill
+                                             },
+                                             stroke: if selected {
+                                                 egui::Stroke::new(1.5, ui.visuals().selection.stroke.color)
+                                             } else {
+                                                 egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)
+                                             },
+                                             corner_radius: 10.0.into(),
+                                             inner_margin: 12.into(),
+                                             ..Default::default()
                                          };
-                                         frame.stroke = if selected {
-                                             egui::Stroke::new(1.5, ui.visuals().selection.stroke.color)
-                                         } else {
-                                             egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)
-                                         };
-                                         frame.corner_radius = 10.0.into();
-                                         frame.inner_margin = 12.into();
                                          frame.show(ui, |ui| {
                                              ui.set_min_size(card_size);
                                              ui.set_max_size(card_size);
@@ -1268,20 +1270,18 @@ impl Tabular {
                             ui.horizontal(|ui| {
                                 ui.add_space(5.0); // Right spacing (goes before button since layout is right-aligned)
                                 match self.selected_menu.as_str() {
-                                    "Database" => {
-                                        if ui
+                                    "Database" if ui
                                             .add_sized(
                                                 [24.0, 24.0], // Small square button
                                                 egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE)).fill(style::theme_accent(ctx)),
                                             )
                                             .on_hover_text("Add New Database Connection")
-                                            .clicked()
-                                        {
-                                            // Reset test connection status saat buka add dialog
-                                            self.test_connection_status = None;
-                                            self.test_connection_in_progress = false;
-                                            self.show_add_connection = true;
-                                        }
+                                            .clicked() =>
+                                    {
+                                        // Reset test connection status saat buka add dialog
+                                        self.test_connection_status = None;
+                                        self.test_connection_in_progress = false;
+                                        self.show_add_connection = true;
                                     }
                                     _ => {
                                         // No button for History tab

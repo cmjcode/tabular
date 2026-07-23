@@ -22,10 +22,9 @@ impl super::Tabular {
         let mut msg_hovered = false;
         if self.show_message_panel && has_message
             && let Some(shown_at) = self.message_shown_at
+            && shown_at.elapsed() < std::time::Duration::from_secs(5)
         {
-            if shown_at.elapsed() < std::time::Duration::from_secs(5) {
-                ctx.request_repaint_after(std::time::Duration::from_millis(200));
-            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
 
         let is_msg_open = self.show_message_panel && has_message;
@@ -758,7 +757,7 @@ impl super::Tabular {
 
                 let button_size = egui::vec2(34.0, 34.0);
                 let _button_spacing = 2.0;
-                let button_corner = 2 as u8;
+                let button_corner = 2_u8;
                 let right_margin = 8.0; // Compact right margin to align closely with editor border
                 let cluster_pos = egui::pos2(
                     rect.max.x - right_margin,
@@ -907,34 +906,33 @@ impl super::Tabular {
                                         .add_sized(button_size, execute_button)
                                         .on_hover_text(play_tooltip)
                                         .clicked()
+                                        && !is_loading
                                     {
-                                        if !is_loading {
-                                            let id = egui::Id::new("sql_editor");
-                                            let mut direct_selected = String::new();
-                                            if let Some(range) =
-                                                crate::editor_state_adapter::EditorStateAdapter::get_range(&ctx, id)
-                                            {
-                                                let to_byte_index = |s: &str, char_idx: usize| -> usize {
-                                                    s.char_indices()
-                                                        .map(|(b, _)| b)
-                                                        .chain(std::iter::once(s.len()))
-                                                        .nth(char_idx)
-                                                        .unwrap_or(s.len())
-                                                };
-                                                let start_b = to_byte_index(&self.editor.text, range.start);
-                                                let end_b = to_byte_index(&self.editor.text, range.end);
-                                                if start_b < end_b && end_b <= self.editor.text.len() {
-                                                    direct_selected = self.editor.text[start_b..end_b].to_string();
-                                                }
-                                            }
-                                            self.query_execution_in_progress = true;
-                                            execute_clicked = true;
-                                            captured_selection_text = if !direct_selected.is_empty() {
-                                                direct_selected
-                                            } else {
-                                                self.selected_text.clone()
+                                        let id = egui::Id::new("sql_editor");
+                                        let mut direct_selected = String::new();
+                                        if let Some(range) =
+                                            crate::editor_state_adapter::EditorStateAdapter::get_range(&ctx, id)
+                                        {
+                                            let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                                                s.char_indices()
+                                                    .map(|(b, _)| b)
+                                                    .chain(std::iter::once(s.len()))
+                                                    .nth(char_idx)
+                                                    .unwrap_or(s.len())
                                             };
+                                            let start_b = to_byte_index(&self.editor.text, range.start);
+                                            let end_b = to_byte_index(&self.editor.text, range.end);
+                                            if start_b < end_b && end_b <= self.editor.text.len() {
+                                                direct_selected = self.editor.text[start_b..end_b].to_string();
+                                            }
                                         }
+                                        self.query_execution_in_progress = true;
+                                        execute_clicked = true;
+                                        captured_selection_text = if !direct_selected.is_empty() {
+                                            direct_selected
+                                        } else {
+                                            self.selected_text.clone()
+                                        };
                                     }
                                 });
                             });

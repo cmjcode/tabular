@@ -2502,7 +2502,7 @@ impl super::Tabular {
                             (None, table_name.trim_matches('"'))
                         };
 
-                        let (q, bind_schema) = if let Some(_) = schema_opt {
+                        let (q, bind_schema) = if schema_opt.is_some() {
                             ("SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey) JOIN pg_namespace n ON n.oid = c.relnamespace WHERE i.indisprimary AND c.relname = $1 AND n.nspname = $2 ORDER BY a.attnum", true)
                         } else {
                             ("SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey) JOIN pg_namespace n ON n.oid = c.relnamespace WHERE i.indisprimary AND c.relname = $1 ORDER BY a.attnum", false)
