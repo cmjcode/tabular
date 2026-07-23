@@ -5465,7 +5465,9 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
     tabular.actual_total_rows = None;
 
     tabular.lint_messages = query_tools::lint_sql(&query);
-    tabular.show_lint_panel = !tabular.lint_messages.is_empty();
+    if tabular.lint_messages.is_empty() {
+        tabular.show_lint_panel = false;
+    }
 
     if tabular.auto_format_on_execute
         && let Some(formatted) = query_tools::format_sql(&query)

@@ -20,18 +20,14 @@ impl super::Tabular {
             return;
         }
 
-        if is_lint_open && self.lint_panel_shown_at.is_none() {
-            self.lint_panel_shown_at = Some(std::time::Instant::now());
-        }
-
         let mut close_toast = false;
         let mut format_clicked = false;
 
-        // 1. STANDALONE TOAST CARD (Rendered above button bar when open)
+        // 1. STANDALONE TOAST CARD (Rendered higher above button bar when open)
         if is_lint_open {
             egui::Area::new(egui::Id::new("lint_toast_overlay"))
                 .order(egui::Order::Foreground)
-                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -44.0))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -48.0))
                 .show(ctx, |ui| {
                     let container_fill = if ctx.global_style().visuals.dark_mode {
                         egui::Color32::from_rgb(30, 31, 36)
@@ -82,7 +78,6 @@ impl super::Tabular {
 
                                 // Actions bar inside toast
                                 ui.horizontal(|ui| {
-                                    ui.checkbox(&mut self.lint_panel_pinned, "Pin open");
                                     ui.checkbox(&mut self.auto_format_on_execute, "Auto-format");
                                     if ui.button("✨ Format now").clicked() {
                                         format_clicked = true;
@@ -256,11 +251,6 @@ impl super::Tabular {
 
                                 if ui.add(lint_btn).clicked() {
                                     self.show_lint_panel = !self.show_lint_panel;
-                                    if self.show_lint_panel {
-                                        self.lint_panel_shown_at = Some(std::time::Instant::now());
-                                    } else {
-                                        self.lint_panel_shown_at = None;
-                                    }
                                 }
                             }
                         });
@@ -269,7 +259,6 @@ impl super::Tabular {
 
         if close_toast {
             self.show_lint_panel = false;
-            self.lint_panel_shown_at = None;
         }
 
         if format_clicked
@@ -283,27 +272,11 @@ impl super::Tabular {
             self.multi_selection.add_collapsed(self.cursor_position);
             self.last_editor_text = self.editor.text.clone();
             self.lint_messages = query_tools::lint_sql(&self.editor.text);
-            self.show_lint_panel = !self.lint_messages.is_empty();
-            if self.show_lint_panel {
-                self.lint_panel_shown_at = Some(std::time::Instant::now());
-            } else {
-                self.lint_panel_shown_at = None;
+            if self.lint_messages.is_empty() {
+                self.show_lint_panel = false;
             }
             self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(4);
             self.pending_cursor_set = Some(self.cursor_position);
-        }
-
-        // Hover & pin auto-hide logic
-        if self.show_lint_panel {
-            if self.lint_panel_pinned {
-                self.lint_panel_shown_at = Some(std::time::Instant::now());
-            } else if let Some(shown_at) = self.lint_panel_shown_at {
-                let elapsed_ms = shown_at.elapsed().as_millis() as u64;
-                if elapsed_ms >= self.lint_panel_auto_hide_ms {
-                    self.show_lint_panel = false;
-                    self.lint_panel_shown_at = None;
-                }
-            }
         }
     }
     pub fn render_replication_dialog(&mut self, ctx: &egui::Context) {
@@ -1158,9 +1131,9 @@ impl super::Tabular {
 
         let y_offset = if dock_visible {
             if is_lint_open {
-                -270.0
+                -276.0
             } else {
-                -46.0
+                -48.0
             }
         } else {
             -8.0
