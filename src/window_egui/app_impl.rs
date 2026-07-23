@@ -1341,13 +1341,12 @@ impl Tabular {
                     // Compact top bar: tabs on left, selectors on right, single row.
                     let top_bar_height = TAB_BUTTON_HEIGHT;
                     let available_width = ui.available_width();
-                    let mut selectors_width = (available_width * 0.40).clamp(220.0, 320.0);
-                    let mut left_width = (available_width - selectors_width).max(220.0);
-                    if left_width + selectors_width > available_width {
-                        selectors_width = (available_width - 220.0).max(180.0);
-                        left_width = available_width - selectors_width;
+                    let mut selectors_width = (available_width * 0.45).clamp(260.0, 420.0);
+                    let mut left_width = available_width - selectors_width;
+                    if left_width < 180.0 {
+                        left_width = 180.0;
+                        selectors_width = (available_width - left_width).max(220.0);
                     }
-                    selectors_width = selectors_width.clamp(180.0, available_width - 220.0);
                     let (bar_rect, _resp) = ui.allocate_exact_size(
                         egui::vec2(available_width, top_bar_height),
                         egui::Sense::hover(),
@@ -1378,6 +1377,20 @@ impl Tabular {
                         bar_rect.left_top(),
                         egui::vec2(left_width, top_bar_height),
                     );
+
+                    // Pemisah visual tipis antara tab bar dan action toolbar kanan
+                    let sep_x = bar_rect.right() - selectors_width;
+                    let sep_color = if ui.visuals().dark_mode {
+                        egui::Color32::from_rgb(55, 55, 55)
+                    } else {
+                        egui::Color32::from_rgb(210, 210, 210)
+                    };
+                    ui.painter().vline(
+                        sep_x,
+                        bar_rect.y_range(),
+                        egui::Stroke::new(1.0, sep_color),
+                    );
+
                     let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(left_rect));
                     left_ui.allocate_ui_with_layout(
                         left_rect.size(),
@@ -1405,149 +1418,181 @@ impl Tabular {
                                 self.sidebar_visible = !self.sidebar_visible;
                             }
 
-                            let mut to_close = None;
-                            let mut to_switch = None;
-                            for (i, tab) in self.query_tabs.iter().enumerate() {
-                                let active = i == self.active_tab_index;
-                                let inactive_bg = if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(35, 35, 35)
-                                } else {
-                                    egui::Color32::from_rgb(240, 240, 240)
-                                };
-                                let tab_bg = if active {
-                                    if ui.visuals().dark_mode {
-                                        egui::Color32::from_rgb(45, 48, 56)
-                                    } else {
-                                        egui::Color32::from_rgb(255, 255, 255)
-                                    }
-                                } else {
-                                    inactive_bg
-                                };
-                                let border_color = if active {
-                                    super::style::theme_accent(ui.ctx())
-                                } else {
-                                    ui.visuals().widgets.inactive.bg_stroke.color
-                                };
-                                let text_color = if active {
-                                    if ui.visuals().dark_mode {
-                                        egui::Color32::WHITE
-                                    } else {
-                                        egui::Color32::from_rgb(20, 20, 20)
-                                    }
-                                } else {
-                                    ui.visuals().text_color()
-                                };
-                                let mut title = tab.title.clone();
-                                if let Some(cid) = tab.connection_id
-                                    && let Some(n) = self.get_connection_name(cid)
-                                {
-                                    title = format!("{} [{}]", title, n);
-                                }
-                                let close_size = 16.0;
-                                let tab_width = (title.len() as f32 * 8.0 + 72.0).clamp(130.0, 260.0);
-                                let menu_tab_height = 34.0;
-                                let (tab_rect, tab_resp) = ui.allocate_exact_size(
-                                    egui::vec2(tab_width, menu_tab_height),
-                                    egui::Sense::click(),
-                                );
-                                let tab_radius: egui::CornerRadius = 0.0.into();
-                                ui.painter().rect_filled(tab_rect, tab_radius, tab_bg);
-                                ui.painter().rect_stroke(
-                                    tab_rect,
-                                    tab_radius,
-                                    egui::Stroke::new(1.0, border_color),
-                                    egui::StrokeKind::Outside,
-                                );
-                                if active {
-                                    let accent_rect = egui::Rect::from_min_size(
-                                        tab_rect.left_top(),
-                                        egui::vec2(tab_rect.width(), 3.0),
-                                    );
-                                    ui.painter().rect_filled(
-                                        accent_rect,
-                                        0.0,
-                                        super::style::theme_accent(ui.ctx()),
-                                    );
-                                }
-                                let close_rect = egui::Rect::from_min_size(
-                                    egui::pos2(
-                                        tab_rect.right() - close_size - 6.0,
-                                        tab_rect.center().y - close_size / 2.0,
-                                    ),
-                                    egui::vec2(close_size, close_size),
-                                );
-                                let label_max_width = tab_rect.width() - close_size - 18.0;
-                                let label_area = egui::Rect::from_min_size(
-                                    egui::pos2(tab_rect.left() + 10.0, tab_rect.top()),
-                                    egui::vec2(label_max_width, tab_rect.height()),
-                                );
-                                ui.painter()
-                                    .with_clip_rect(label_area)
-                                    .text(
-                                        label_area.left_center(),
-                                        egui::Align2::LEFT_CENTER,
-                                        &title,
-                                        egui::FontId::proportional(12.0),
-                                        text_color,
-                                    );
+                            // Scrollable container for tab buttons + '+' button
+                            egui::ScrollArea::horizontal()
+                                .id_salt("query_tabs_scroll_bar")
+                                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 2.0;
 
-                                let show_close = self.query_tabs.len() > 1 || !active;
-                                if show_close {
-                                    let close_resp = ui.interact(close_rect, ui.id().with(("tab_close", i)), egui::Sense::click());
-                                    if close_resp.hovered() {
-                                        let hover_color = if active {
-                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+                                        let mut to_close = None;
+                                        let mut to_switch = None;
+
+                                        let tab_count = self.query_tabs.len();
+                                        let max_single_tab_w = 240.0;
+                                        let min_single_tab_w = 110.0;
+                                        let tab_width_cap = if tab_count > 0 {
+                                            let approx_available = (left_width - 80.0).max(min_single_tab_w);
+                                            (approx_available / tab_count as f32).clamp(min_single_tab_w, max_single_tab_w)
                                         } else {
-                                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
+                                            max_single_tab_w
                                         };
-                                        ui.painter().rect_filled(close_rect, 4.0, hover_color);
-                                    }
-                                    ui.painter().text(
-                                        close_rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        "×",
-                                        egui::FontId::proportional(13.0),
-                                        text_color,
-                                    );
-                                    if close_resp.clicked() {
-                                        to_close = Some(i);
-                                    }
-                                }
 
-                                if tab_resp.clicked()
-                                    && !active
-                                    && !close_rect.contains(
-                                        tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO),
-                                    )
-                                {
-                                    to_switch = Some(i);
-                                }
-                            }
+                                        for (i, tab) in self.query_tabs.iter().enumerate() {
+                                            let active = i == self.active_tab_index;
+                                            let inactive_bg = if ui.visuals().dark_mode {
+                                                egui::Color32::from_rgb(35, 35, 35)
+                                            } else {
+                                                egui::Color32::from_rgb(240, 240, 240)
+                                            };
+                                            let tab_bg = if active {
+                                                if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgb(45, 48, 56)
+                                                } else {
+                                                    egui::Color32::from_rgb(255, 255, 255)
+                                                }
+                                            } else {
+                                                inactive_bg
+                                            };
+                                            let border_color = if active {
+                                                super::style::theme_accent(ui.ctx())
+                                            } else {
+                                                ui.visuals().widgets.inactive.bg_stroke.color
+                                            };
+                                            let text_color = if active {
+                                                if ui.visuals().dark_mode {
+                                                    egui::Color32::WHITE
+                                                } else {
+                                                    egui::Color32::from_rgb(20, 20, 20)
+                                                }
+                                            } else {
+                                                ui.visuals().text_color()
+                                            };
+                                            let mut title = tab.title.clone();
+                                            if let Some(cid) = tab.connection_id
+                                                && let Some(n) = self.get_connection_name(cid)
+                                            {
+                                                title = format!("{} [{}]", title, n);
+                                            }
+                                            let close_size = 16.0;
+                                            let tab_width = (title.len() as f32 * 8.0 + 64.0)
+                                                .clamp(min_single_tab_w, tab_width_cap);
+                                            let menu_tab_height = 34.0;
+                                            let (tab_rect, tab_resp) = ui.allocate_exact_size(
+                                                egui::vec2(tab_width, menu_tab_height),
+                                                egui::Sense::click(),
+                                            );
 
-                            let plus_bg = if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(55, 55, 55)
-                            } else {
-                                egui::Color32::from_rgb(230, 230, 230)
-                            };
-                            if ui
-                                .add_sized(
-                                    [34.0, 34.0],
-                                    egui::Button::new("+")
-                                        .fill(plus_bg)
-                                        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
-                                        .corner_radius(0.0),
-                                )
-                                .on_hover_text("New query tab")
-                                .clicked()
-                            {
-                                editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
-                            }
-                            if let Some(i) = to_close {
-                                editor::close_tab(self, i);
-                            }
-                            if let Some(i) = to_switch {
-                                editor::switch_to_tab(self, i);
-                            }
+                                            if active {
+                                                tab_resp.scroll_to_me(Some(egui::Align::Center));
+                                            }
+
+                                            let tab_radius: egui::CornerRadius = 0.0.into();
+                                            ui.painter().rect_filled(tab_rect, tab_radius, tab_bg);
+                                            ui.painter().rect_stroke(
+                                                tab_rect,
+                                                tab_radius,
+                                                egui::Stroke::new(1.0, border_color),
+                                                egui::StrokeKind::Outside,
+                                            );
+                                            if active {
+                                                let accent_rect = egui::Rect::from_min_size(
+                                                    tab_rect.left_top(),
+                                                    egui::vec2(tab_rect.width(), 3.0),
+                                                );
+                                                ui.painter().rect_filled(
+                                                    accent_rect,
+                                                    0.0,
+                                                    super::style::theme_accent(ui.ctx()),
+                                                );
+                                            }
+                                            let close_rect = egui::Rect::from_min_size(
+                                                egui::pos2(
+                                                    tab_rect.right() - close_size - 6.0,
+                                                    tab_rect.center().y - close_size / 2.0,
+                                                ),
+                                                egui::vec2(close_size, close_size),
+                                            );
+                                            let label_max_width = tab_rect.width() - close_size - 18.0;
+                                            let label_area = egui::Rect::from_min_size(
+                                                egui::pos2(tab_rect.left() + 10.0, tab_rect.top()),
+                                                egui::vec2(label_max_width, tab_rect.height()),
+                                            );
+                                            ui.painter()
+                                                .with_clip_rect(label_area)
+                                                .text(
+                                                    label_area.left_center(),
+                                                    egui::Align2::LEFT_CENTER,
+                                                    &title,
+                                                    egui::FontId::proportional(12.0),
+                                                    text_color,
+                                                );
+
+                                            let show_close = self.query_tabs.len() > 1 || !active;
+                                            if show_close {
+                                                let close_resp = ui.interact(
+                                                    close_rect,
+                                                    ui.id().with(("tab_close", i)),
+                                                    egui::Sense::click(),
+                                                );
+                                                if close_resp.hovered() {
+                                                    let hover_color = if active {
+                                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+                                                    } else {
+                                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
+                                                    };
+                                                    ui.painter().rect_filled(close_rect, 4.0, hover_color);
+                                                }
+                                                ui.painter().text(
+                                                    close_rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    "×",
+                                                    egui::FontId::proportional(13.0),
+                                                    text_color,
+                                                );
+                                                if close_resp.clicked() {
+                                                    to_close = Some(i);
+                                                }
+                                            }
+
+                                            if tab_resp.clicked()
+                                                && !active
+                                                && !close_rect.contains(
+                                                    tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO),
+                                                )
+                                            {
+                                                to_switch = Some(i);
+                                            }
+                                        }
+
+                                        let plus_bg = if ui.visuals().dark_mode {
+                                            egui::Color32::from_rgb(55, 55, 55)
+                                        } else {
+                                            egui::Color32::from_rgb(230, 230, 230)
+                                        };
+                                        if ui
+                                            .add_sized(
+                                                [34.0, 34.0],
+                                                egui::Button::new("+")
+                                                    .fill(plus_bg)
+                                                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
+                                                    .corner_radius(0.0),
+                                            )
+                                            .on_hover_text("New query tab")
+                                            .clicked()
+                                        {
+                                            editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
+                                        }
+                                        if let Some(i) = to_close {
+                                            editor::close_tab(self, i);
+                                        }
+                                        if let Some(i) = to_switch {
+                                            editor::switch_to_tab(self, i);
+                                        }
+                                    });
+                                });
                         },
                     );
                     // Right side overlay for selectors
@@ -1556,6 +1601,7 @@ impl Tabular {
                         egui::vec2(selectors_width, top_bar_height),
                     );
                     let mut right_ui = ui.new_child(egui::UiBuilder::new().max_rect(selectors_rect));
+                    right_ui.set_clip_rect(selectors_rect);
                     right_ui.allocate_ui_with_layout(
                         selectors_rect.size(),
                         egui::Layout::right_to_left(egui::Align::TOP),
@@ -1729,7 +1775,7 @@ impl Tabular {
 
                             // Connection selector
                             egui::ComboBox::from_id_salt("query_conn_select")
-                                .width(110.0)
+                                .width(135.0)
                                 .selected_text(current_conn_name)
                                 .show_ui(ui, |ui| {
                                     for (cid, name) in &conn_list {
@@ -1746,70 +1792,6 @@ impl Tabular {
                                         }
                                     }
                                 });
-
-                            // Manual-commit (transaction) controls — inline, left of connection selector
-                            let tx_supported = tab_conn_id
-                                .and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)))
-                                .map(|c| crate::connection::session::supports_transactions(&c.connection_type))
-                                .unwrap_or(false);
-                            if tx_supported {
-                                let (tx_mode, tx_active) = self
-                                    .query_tabs
-                                    .get(self.active_tab_index)
-                                    .map(|t| (t.tx_mode, t.tx_active))
-                                    .unwrap_or((false, false));
-                                let mut toggle_changed = false;
-                                let mut commit_clicked = false;
-                                let mut rollback_clicked = false;
-
-                                ui.separator();
-                                let mut mode = tx_mode;
-                                if ui
-                                    .checkbox(&mut mode, "Manual commit")
-                                    .on_hover_text(
-                                        "Run statements in a transaction on a dedicated \
-                                         connection; nothing is committed until you press Commit",
-                                    )
-                                    .changed()
-                                {
-                                    toggle_changed = true;
-                                }
-                                if tx_mode {
-                                    if tx_active {
-                                        ui.colored_label(egui::Color32::from_rgb(255, 165, 0), "●")
-                                            .on_hover_text("Transaction open (uncommitted)");
-                                    }
-                                    if ui
-                                        .add_enabled(tx_active, egui::Button::new("Commit").small())
-                                        .clicked()
-                                    {
-                                        commit_clicked = true;
-                                    }
-                                    if ui
-                                        .add_enabled(tx_active, egui::Button::new("Rollback").small())
-                                        .clicked()
-                                    {
-                                        rollback_clicked = true;
-                                    }
-                                }
-
-                                if toggle_changed
-                                    && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                        tab.tx_mode = !tab.tx_mode;
-                                        if !tab.tx_mode {
-                                            if let Some(s) = tab.session.take() {
-                                                s.close();
-                                            }
-                                            tab.tx_active = false;
-                                        }
-                                    }
-                                if commit_clicked {
-                                    editor::send_session_tx_command(self, true);
-                                }
-                                if rollback_clicked {
-                                    editor::send_session_tx_command(self, false);
-                                }
-                            }
                         },
                     );
 

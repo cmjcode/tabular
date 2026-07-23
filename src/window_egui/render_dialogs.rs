@@ -562,13 +562,9 @@ impl super::Tabular {
                 let button_size = egui::vec2(34.0, 34.0);
                 let button_spacing = 2.0;
                 let button_corner = 2 as u8;
-                let frame_margin = 2.0; // inner_margin
-                let frame_stroke = 1.0; // stroke width
-                let total_cluster_width = button_size.x * 3.0 + button_spacing * 2.0 + (frame_margin + frame_stroke) * 2.0;
-                let cluster_width = total_cluster_width;
-                let right_margin = 26.0; // Clean right alignment matching top controls
+                let right_margin = 8.0; // Compact right margin to align closely with editor border
                 let cluster_pos = egui::pos2(
-                    rect.max.x - total_cluster_width - right_margin,
+                    rect.max.x - right_margin,
                     rect.min.y + 6.0,
                 );
                 let is_loading = self.query_execution_in_progress || self.pool_wait_in_progress;
@@ -585,6 +581,15 @@ impl super::Tabular {
                     "CMD+Enter to execute"
                 };
 
+                let (tx_mode, tx_active) = self
+                    .query_tabs
+                    .get(self.active_tab_index)
+                    .map(|t| (t.tx_mode, t.tx_active))
+                    .unwrap_or((false, false));
+
+                let mut toggle_changed = false;
+                let mut commit_clicked = false;
+                let mut rollback_clicked = false;
                 let mut execute_clicked = false;
                 let mut format_clicked = false;
                 let mut explain_clicked = false;
@@ -601,6 +606,7 @@ impl super::Tabular {
 
                 egui::Area::new(egui::Id::new((format!("floating_query_actions_{}", context_id), self.active_tab_index)))
                     .order(egui::Order::Foreground)
+                    .pivot(egui::Align2::RIGHT_TOP)
                     .fixed_pos(cluster_pos)
                     .show(ui.ctx(), |area_ui| {
                         let ctx = area_ui.ctx().clone();
@@ -622,7 +628,40 @@ impl super::Tabular {
                             .inner_margin(egui::Margin::same(3))
                             .show(area_ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = button_spacing;
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+
+                                    if tx_mode {
+                                        let mut mode = tx_mode;
+                                        if ui
+                                            .checkbox(&mut mode, "Manual commit")
+                                            .on_hover_text(
+                                                "Run statements in a transaction on a dedicated \
+                                                 connection; nothing is committed until you press Commit",
+                                            )
+                                            .changed()
+                                        {
+                                            toggle_changed = true;
+                                        }
+                                        if tx_active {
+                                            ui.colored_label(egui::Color32::from_rgb(255, 165, 0), "●")
+                                                .on_hover_text("Transaction open (uncommitted)");
+                                        }
+                                        if ui
+                                            .add_enabled(tx_active, egui::Button::new("Commit").small())
+                                            .clicked()
+                                        {
+                                            commit_clicked = true;
+                                        }
+                                        if ui
+                                            .add_enabled(tx_active, egui::Button::new("Rollback").small())
+                                            .clicked()
+                                        {
+                                            rollback_clicked = true;
+                                        }
+                                        ui.add_space(2.0);
+                                        ui.separator();
+                                        ui.add_space(2.0);
+                                    }
 
                                     let base_fill = if ui.visuals().dark_mode {
                                         egui::Color32::from_rgb(36, 36, 36)
@@ -704,6 +743,23 @@ impl super::Tabular {
                             });
                     });
 
+                if toggle_changed
+                    && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        tab.tx_mode = !tab.tx_mode;
+                        if !tab.tx_mode {
+                            if let Some(s) = tab.session.take() {
+                                s.close();
+                            }
+                            tab.tx_active = false;
+                        }
+                    }
+                if commit_clicked {
+                    editor::send_session_tx_command(self, true);
+                }
+                if rollback_clicked {
+                    editor::send_session_tx_command(self, false);
+                }
+
                 if execute_clicked {
                     self.is_table_browse_mode = false;
                     self.extend_query_icon_hold();
@@ -749,7 +805,7 @@ impl super::Tabular {
                 // Inline AI loading indicator (shown below the format/run buttons while AI is working)
                 if self.ai_inline_receiver.is_some() {
                     let ai_indicator_pos = egui::pos2(
-                        cluster_pos.x + (cluster_width - 120.0),
+                        cluster_pos.x - 120.0,
                         cluster_pos.y + button_size.y + 4.0,
                     );
                     egui::Area::new(egui::Id::new((format!("ai_inline_loading_{}", context_id), self.active_tab_index)))
