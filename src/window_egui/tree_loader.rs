@@ -2494,14 +2494,37 @@ impl super::Tabular {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
                     if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
-                        let q = "SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey) JOIN pg_namespace n ON n.oid = c.relnamespace WHERE i.indisprimary AND c.relname = $1 AND n.nspname = 'public' ORDER BY a.attnum";
-                        match sqlx::query_as::<_, (String,)>(q)
-                            .bind(table_name)
-                            .fetch_all(pg_pool.as_ref())
-                            .await {
-                                Ok(rows) => rows.into_iter().map(|(n,)| n).collect(),
-                                Err(_) => Vec::new(),
-                            }
+                        let (schema_opt, tbl_only) = if let Some((s, t)) = table_name.split_once('.') {
+                            (Some(s.trim_matches('"')), t.trim_matches('"'))
+                        } else if !database_name.is_empty() && database_name != "public" && database_name != "postgres" {
+                            (Some(database_name.trim_matches('"')), table_name.trim_matches('"'))
+                        } else {
+                            (None, table_name.trim_matches('"'))
+                        };
+
+                        let (q, bind_schema) = if let Some(_) = schema_opt {
+                            ("SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey) JOIN pg_namespace n ON n.oid = c.relnamespace WHERE i.indisprimary AND c.relname = $1 AND n.nspname = $2 ORDER BY a.attnum", true)
+                        } else {
+                            ("SELECT a.attname FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey) JOIN pg_namespace n ON n.oid = c.relnamespace WHERE i.indisprimary AND c.relname = $1 ORDER BY a.attnum", false)
+                        };
+
+                        let query_res = if bind_schema {
+                            sqlx::query_as::<_, (String,)>(q)
+                                .bind(tbl_only)
+                                .bind(schema_opt.unwrap())
+                                .fetch_all(pg_pool.as_ref())
+                                .await
+                        } else {
+                            sqlx::query_as::<_, (String,)>(q)
+                                .bind(tbl_only)
+                                .fetch_all(pg_pool.as_ref())
+                                .await
+                        };
+
+                        match query_res {
+                            Ok(rows) => rows.into_iter().map(|(n,)| n).collect(),
+                            Err(_) => Vec::new(),
+                        }
                     } else { Vec::new() }
                 })
             }

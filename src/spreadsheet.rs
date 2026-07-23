@@ -998,10 +998,15 @@ impl SpreadsheetOperations for Tabular {
                     {
                         val = v.clone();
                     }
+                    let col_name_for_where = metadata
+                        .as_ref()
+                        .and_then(|meta| meta.get(i))
+                        .and_then(|m| m.original_name.clone())
+                        .unwrap_or_else(|| header.clone());
                     let clause = if val.to_uppercase() == "NULL" {
-                        format!("{} IS NULL", qt(header))
+                        format!("{} IS NULL", qt(&col_name_for_where))
                     } else {
-                        format!("{} = {}", qt(header), qv(&val))
+                        format!("{} = {}", qt(&col_name_for_where), qv(&val))
                     };
                     where_parts.push(clause);
                 }
@@ -1190,25 +1195,21 @@ impl SpreadsheetOperations for Tabular {
         } else {
             &state.primary_key_columns
         };
-        let mut pk_overrides: HashMap<usize, HashMap<String, String>> = HashMap::new();
-        if !pk_columns.is_empty() {
-            for op in &state.pending_operations {
-                if let crate::models::structs::CellEditOperation::Update {
-                    row_index,
-                    col_index,
-                    old_value,
-                    ..
-                } = op
-                    && let Some(col_name) = headers.get(*col_index)
-                    && pk_columns
-                        .iter()
-                        .any(|pk| pk.eq_ignore_ascii_case(col_name))
-                {
-                    pk_overrides
-                        .entry(*row_index)
-                        .or_default()
-                        .insert(col_name.to_lowercase(), old_value.clone());
-                }
+        let mut row_overrides: HashMap<usize, HashMap<String, String>> = HashMap::new();
+        for op in &state.pending_operations {
+            if let crate::models::structs::CellEditOperation::Update {
+                row_index,
+                col_index,
+                old_value,
+                ..
+            } = op
+                && let Some(col_name) = headers.get(*col_index)
+            {
+                row_overrides
+                    .entry(*row_index)
+                    .or_default()
+                    .entry(col_name.to_lowercase())
+                    .or_insert_with(|| old_value.clone());
             }
         }
 
@@ -1262,7 +1263,7 @@ impl SpreadsheetOperations for Tabular {
                             continue;
                         }
                     };
-                    let overrides = pk_overrides.get(row_index);
+                    let overrides = row_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
                         &conn, row_data, headers, pk_columns, overrides, Some(&table_name_str),
                     ) {
@@ -1318,7 +1319,7 @@ impl SpreadsheetOperations for Tabular {
                     if values.is_empty() || headers.is_empty() {
                         continue;
                     }
-                    let overrides = pk_overrides.get(row_index);
+                    let overrides = row_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
                         &conn, values, headers, pk_columns, overrides, None,
                     ) {

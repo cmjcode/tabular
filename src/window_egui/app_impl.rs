@@ -3475,21 +3475,28 @@ impl App for Tabular {
             }
             // Prefer saving pending spreadsheet changes if any are queued
             if !self.spreadsheet_state.pending_operations.is_empty() {
+                let op_count = self.spreadsheet_state.pending_operations.len();
                 println!(
                     "🔥 Calling spreadsheet_save_changes with {} operations",
-                    self.spreadsheet_state.pending_operations.len()
+                    op_count
                 );
                 debug!(
                     "🔥 Calling spreadsheet_save_changes with {} operations",
-                    self.spreadsheet_state.pending_operations.len()
+                    op_count
                 );
                 self.spreadsheet_save_changes();
+                if !self.spreadsheet_state.is_dirty {
+                    self.toasts.success(format!("Berhasil menyimpan {} perubahan tabel", op_count));
+                } else if self.show_error_message {
+                    self.toasts.error(format!("Gagal menyimpan tabel: {}", self.error_message));
+                }
             } else if !self.query_tabs.is_empty() {
                 println!("🔥 No spreadsheet operations, saving query tab instead");
                 debug!("🔥 No spreadsheet operations, saving query tab instead");
                 if let Err(error) = editor::save_current_tab(self) {
                     self.error_message = format!("Save failed: {}", error);
                     self.show_error_message = true;
+                    self.toasts.error(format!("Save failed: {}", error));
                 }
             } else {
                 println!("🔥 Nothing to save - no operations and no query tabs");
