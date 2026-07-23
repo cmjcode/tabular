@@ -1605,23 +1605,55 @@ impl Tabular {
                     right_ui.set_clip_rect(selectors_rect);
                     right_ui.allocate_ui_with_layout(
                         selectors_rect.size(),
-                        egui::Layout::right_to_left(egui::Align::TOP),
+                        egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.add_space(4.0);
 
-                            // Gear menu button
-                            let gear_bg = if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(50, 50, 50)
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
+                            ui.spacing_mut().interact_size.y = 22.0;
+
+                            // Override child widget visuals for flat merged appearance with tabs
+                            ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                            ui.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                            ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                            ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
+                            ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
+                            ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::same(4);
+                            ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::same(4);
+
+                            let sep_color = if ui.visuals().dark_mode {
+                                egui::Color32::from_rgb(55, 55, 60)
                             } else {
-                                egui::Color32::from_rgb(230, 230, 230)
+                                egui::Color32::from_rgb(210, 210, 215)
+                            };
+
+                            let add_divider = |ui: &mut egui::Ui| {
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 16.0), egui::Sense::hover());
+                                ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, sep_color));
+                            };
+
+                            // 1. Gear menu button (Rightmost)
+                            let gear_bg = if self.show_settings_menu {
+                                if ui.visuals().dark_mode {
+                                    egui::Color32::from_rgb(65, 65, 72)
+                                } else {
+                                    egui::Color32::from_rgb(210, 210, 218)
+                                }
+                            } else {
+                                egui::Color32::TRANSPARENT
                             };
                             let gear_response = ui
                                 .add_sized(
-                                    [28.0, 28.0],
-                                    egui::Button::new("⚙")
-                                        .fill(gear_bg)
-                                        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
-                                        .corner_radius(6.0),
+                                    [24.0, 22.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("⚙")
+                                            .size(13.0)
+                                            .color(ui.visuals().text_color()),
+                                    )
+                                    .fill(gear_bg)
+                                    .stroke(egui::Stroke::NONE)
+                                    .corner_radius(egui::CornerRadius::same(4)),
                                 )
                                 .on_hover_text("Settings");
                             if gear_response.clicked() {
@@ -1629,37 +1661,7 @@ impl Tabular {
                                 self.show_settings_menu = !self.show_settings_menu;
                             }
 
-                            // AI Assistant button
-                            let ai_btn_bg = if self.show_ai_panel {
-                                style::theme_accent(ui.ctx())
-                            } else if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(50, 50, 50)
-                            } else {
-                                egui::Color32::from_rgb(230, 230, 230)
-                            };
-                            let ai_btn_label = egui::RichText::new("✨")
-                                .color(if self.show_ai_panel {
-                                    egui::Color32::WHITE
-                                } else {
-                                    ui.visuals().text_color()
-                                });
-                            if ui
-                                .add_sized(
-                                    [28.0, 28.0],
-                                    egui::Button::new(ai_btn_label)
-                                        .fill(ai_btn_bg)
-                                        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)),
-                                )
-                                .on_hover_text(if self.show_ai_panel {
-                                    "Close AI Assistant (Cmd+Shift+A)"
-                                } else {
-                                    "Open AI Assistant (Cmd+Shift+A)"
-                                })
-                                .clicked()
-                            {
-                                self.show_ai_panel = !self.show_ai_panel;
-                            }
-
+                            // Popup area logic for gear menu
                             if self.show_settings_menu {
                                 let pos = gear_response.rect.left_bottom();
                                 let mut menu_rect: Option<egui::Rect> = None;
@@ -1722,14 +1724,44 @@ impl Tabular {
                                 }
                             }
 
-                            ui.add_space(8.0);
+                            add_divider(ui);
+
+                            // 2. AI Assistant button
+                            let ai_btn_bg = if self.show_ai_panel {
+                                style::theme_accent(ui.ctx())
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            };
+                            let ai_btn_label = egui::RichText::new("✨")
+                                .size(13.0)
+                                .color(if self.show_ai_panel {
+                                    egui::Color32::WHITE
+                                } else {
+                                    ui.visuals().text_color()
+                                });
+                            if ui
+                                .add_sized(
+                                    [24.0, 22.0],
+                                    egui::Button::new(ai_btn_label)
+                                        .fill(ai_btn_bg)
+                                        .stroke(egui::Stroke::NONE)
+                                        .corner_radius(egui::CornerRadius::same(4)),
+                                )
+                                .on_hover_text(if self.show_ai_panel {
+                                    "Close AI Assistant (Cmd+Shift+A)"
+                                } else {
+                                    "Open AI Assistant (Cmd+Shift+A)"
+                                })
+                                .clicked()
+                            {
+                                self.show_ai_panel = !self.show_ai_panel;
+                            }
 
                             let conn_list: Vec<(i64, String)> = self
                                 .connections
                                 .iter()
                                 .filter_map(|c| c.id.map(|id| (id, c.name.clone())))
                                 .collect();
-                            // Use per-tab connection
                             let (tab_conn_id, tab_db_name) = self
                                 .query_tabs
                                 .get(self.active_tab_index)
@@ -1742,8 +1774,10 @@ impl Tabular {
                                 "Select Connection".to_string()
                             };
 
-                            // Database selector (placed right of connection due to right_to_left order)
                             if let Some(cid) = tab_conn_id {
+                                add_divider(ui);
+
+                                // 3. Database selector
                                 let mut dbs = self.get_databases_cached(cid);
                                 if dbs.is_empty() {
                                     dbs.push("(default)".to_string());
@@ -1771,12 +1805,13 @@ impl Tabular {
                                             }
                                         }
                                     });
-                                ui.add_space(6.0);
                             }
 
-                            // Connection selector
+                            add_divider(ui);
+
+                            // 4. Connection selector (Leftmost in group)
                             egui::ComboBox::from_id_salt("query_conn_select")
-                                .width(135.0)
+                                .width(130.0)
                                 .selected_text(current_conn_name)
                                 .show_ui(ui, |ui| {
                                     for (cid, name) in &conn_list {
