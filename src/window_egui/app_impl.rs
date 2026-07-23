@@ -1425,6 +1425,7 @@ impl Tabular {
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
+                                        ui.add_space(8.0);
                                         let mut to_close = None;
                                         let mut to_switch = None;
 
