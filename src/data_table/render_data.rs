@@ -110,7 +110,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // Tata letak: sticky header (32px) + data scroll + pagination bar.
             let avail_h = ui.available_height();
-            let pagination_height_est = 38.0_f32;
+            let pagination_height_est = 44.0_f32;
             let total_h = (avail_h - pagination_height_est).max(50.0);
             let header_h = 36.0_f32;
             let data_h = (total_h - header_h).max(20.0);

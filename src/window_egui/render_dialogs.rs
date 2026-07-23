@@ -23,11 +23,11 @@ impl super::Tabular {
         let mut close_toast = false;
         let mut format_clicked = false;
 
-        // 1. STANDALONE TOAST CARD (Rendered higher above button bar when open)
+        // 1. STANDALONE TOAST CARD (Rendered above footer bar when open)
         if is_lint_open {
             egui::Area::new(egui::Id::new("lint_toast_overlay"))
                 .order(egui::Order::Foreground)
-                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -48.0))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -44.0))
                 .show(ctx, |ui| {
                     let container_fill = if ctx.global_style().visuals.dark_mode {
                         egui::Color32::from_rgb(30, 31, 36)
@@ -127,136 +127,6 @@ impl super::Tabular {
                         });
                 });
         }
-
-        // 2. STANDALONE BOTTOM BUTTON PILL BAR (Anchored at bottom-right)
-        egui::Area::new(egui::Id::new("bottom_tab_buttons"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0))
-            .show(ctx, |ui| {
-                let container_fill = if ctx.global_style().visuals.dark_mode {
-                    egui::Color32::from_rgb(30, 31, 36)
-                } else {
-                    egui::Color32::from_rgb(245, 245, 250)
-                };
-                let container_stroke = if ctx.global_style().visuals.dark_mode {
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 65))
-                } else {
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(210, 210, 215))
-                };
-
-                egui::Frame::new()
-                    .fill(container_fill)
-                    .stroke(container_stroke)
-                    .corner_radius(egui::CornerRadius::same(6u8))
-                    .inner_margin(egui::Margin::symmetric(3, 2))
-                    .shadow(egui::Shadow {
-                        offset: [0, 1],
-                        blur: 4,
-                        spread: 0,
-                        color: egui::Color32::from_black_alpha(60),
-                    })
-                    .show(ui, |ui| {
-                        ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0;
-                            let button_height = 17.0;
-
-                            // Data Button
-                            let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
-                            let data_bg = if is_data {
-                                super::style::theme_accent(ui.ctx())
-                            } else if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(45, 45, 50)
-                            } else {
-                                egui::Color32::from_rgb(225, 225, 230)
-                            };
-                            let data_text_color = if is_data {
-                                egui::Color32::WHITE
-                            } else {
-                                ui.visuals().text_color()
-                            };
-
-                            let data_btn = egui::Button::new(
-                                egui::RichText::new("📊 Data")
-                                    .small()
-                                    .strong()
-                                    .color(data_text_color),
-                            )
-                            .fill(data_bg)
-                            .corner_radius(egui::CornerRadius::same(4u8))
-                            .min_size(egui::vec2(0.0, button_height));
-
-                            if ui.add(data_btn).clicked() {
-                                self.table_bottom_view = models::structs::TableBottomView::Data;
-                            }
-
-                            // Messages Button
-                            if has_message {
-                                let is_messages = self.table_bottom_view == models::structs::TableBottomView::Messages;
-                                let messages_bg = if is_messages {
-                                    super::style::theme_accent(ui.ctx())
-                                } else if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(45, 45, 50)
-                                } else {
-                                    egui::Color32::from_rgb(225, 225, 230)
-                                };
-                                let messages_text_color = if is_messages {
-                                    egui::Color32::WHITE
-                                } else {
-                                    ui.visuals().text_color()
-                                };
-
-                                let msg_btn = egui::Button::new(
-                                    egui::RichText::new("💬 Messages")
-                                        .small()
-                                        .strong()
-                                        .color(messages_text_color),
-                                )
-                                .fill(messages_bg)
-                                .corner_radius(egui::CornerRadius::same(4u8))
-                                .min_size(egui::vec2(0.0, button_height));
-
-                                if ui.add(msg_btn).clicked() {
-                                    self.table_bottom_view = models::structs::TableBottomView::Messages;
-                                }
-                            }
-
-                            // Show Details (Lint Issue) Button
-                            if has_lint {
-                                let count = self.lint_messages.len();
-                                let lint_text_label = format!("⚠️ Details ({})", count);
-
-                                let lint_bg = if is_lint_open {
-                                    super::style::theme_warning(ui.ctx())
-                                } else if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(60, 45, 30)
-                                } else {
-                                    egui::Color32::from_rgb(255, 243, 224)
-                                };
-
-                                let lint_text_color = if is_lint_open {
-                                    egui::Color32::WHITE
-                                } else {
-                                    super::style::theme_warning(ui.ctx())
-                                };
-
-                                let lint_btn = egui::Button::new(
-                                    egui::RichText::new(lint_text_label)
-                                        .small()
-                                        .strong()
-                                        .color(lint_text_color),
-                                )
-                                .fill(lint_bg)
-                                .corner_radius(egui::CornerRadius::same(4u8))
-                                .min_size(egui::vec2(0.0, button_height));
-
-                                if ui.add(lint_btn).clicked() {
-                                    self.show_lint_panel = !self.show_lint_panel;
-                                }
-                            }
-                        });
-                    });
-            });
 
         if close_toast {
             self.show_lint_panel = false;
@@ -475,99 +345,134 @@ impl super::Tabular {
         }
     }
     pub fn render_messages_content(&mut self, ui: &mut egui::Ui) {
-        if self.query_message.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
-                ui.label(
-                    egui::RichText::new("No messages")
-                        .size(16.0)
-                        .weak()
-                );
-            });
-            return;
-        }
+        let avail_h = ui.available_height();
+        let footer_h = 44.0;
+        let content_h = (avail_h - footer_h).max(40.0);
 
-        // Full-height messages view
-        egui::ScrollArea::vertical()
-            .id_salt("messages_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add_space(12.0);
-
-                let (text_color, icon) = if self.query_message_is_error {
-                    (super::style::theme_danger(ui.ctx()), "❌")
-                } else {
-                    (super::style::theme_success(ui.ctx()), "👍")
-                };
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(icon)
-                            .size(20.0)
-                            .color(text_color)
-                    );
-                    
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    
-                    // Sync display buffer with actual message if they differ
-                    if self.query_message_display_buffer != self.query_message {
-                        self.query_message_display_buffer = self.query_message.clone();
-                    }
-                    
-                    // Use TextEdit with persistent buffer for selection state
-                    // Use absolute ID so we can check focus in copy handler
-                    let message_text_id = egui::Id::new("tabular_message_text_edit_widget");
-                    let output = egui::TextEdit::multiline(&mut self.query_message_display_buffer)
-                        .id(message_text_id)
-                        .desired_width(f32::INFINITY)
-                        .text_color(text_color)
-                        .font(egui::TextStyle::Body)
-                        .frame(egui::Frame::NONE)
-                        .interactive(true)
-                        .show(ui);
-                    
-                    // Request focus when clicked to ensure CMD+C works
-                    if output.response.clicked() {
-                        output.response.request_focus();
-                    }
-                    
-                    // Manual copy handling for CMD+C in message TextEdit
-                    if output.response.has_focus() {
-                        ui.input(|i| {
-                            let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
-                            let key_combo = (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
-                            
-                            if copy_event || key_combo {
-                                // Get cursor range to find selected text
-                                if let Some(state) = egui::TextEdit::load_state(ui.ctx(), message_text_id)
-                                    && let Some(cursor_range) = state.cursor.char_range() {
-                                    let start = cursor_range.primary.index.0;
-                                    let end = cursor_range.secondary.index.0;
-                                    let (min, max) = if start < end { (start, end) } else { (end, start) };
-                                    
-                                    if min < max && max <= self.query_message_display_buffer.len() {
-                                        let selected_text = &self.query_message_display_buffer[min..max];
-                                        ui.ctx().copy_text(selected_text.to_string());
-                                        debug!("📋 Copied selected text from message: {} chars", selected_text.len());
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    
-                    // Don't sync changes back - keep it read-only
-                    // But preserve selection state by keeping the buffer
-                    
-                    // Context menu on right-click
-                    output.response.context_menu(|ui| {
-                        if ui.button("📋 Copy Text").clicked() {
-                            ui.ctx().copy_text(self.query_message.clone());
-                            ui.close();
-                        }
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), content_h),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                if self.query_message.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.label(
+                            egui::RichText::new("No messages")
+                                .size(16.0)
+                                .weak()
+                        );
                     });
-                });
+                    return;
+                }
 
-                ui.add_space(8.0);
+                // Full-height messages view
+                egui::ScrollArea::vertical()
+                    .id_salt("messages_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_space(12.0);
+
+                        let (text_color, icon) = if self.query_message_is_error {
+                            (super::style::theme_danger(ui.ctx()), "❌")
+                        } else {
+                            (super::style::theme_success(ui.ctx()), "👍")
+                        };
+
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(icon)
+                                    .size(20.0)
+                                    .color(text_color)
+                            );
+                            
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            
+                            // Sync display buffer with actual message if they differ
+                            if self.query_message_display_buffer != self.query_message {
+                                self.query_message_display_buffer = self.query_message.clone();
+                            }
+                            
+                            // Use TextEdit with persistent buffer for selection state
+                            // Use absolute ID so we can check focus in copy handler
+                            let message_text_id = egui::Id::new("tabular_message_text_edit_widget");
+                            let output = egui::TextEdit::multiline(&mut self.query_message_display_buffer)
+                                .id(message_text_id)
+                                .desired_width(f32::INFINITY)
+                                .text_color(text_color)
+                                .font(egui::TextStyle::Body)
+                                .frame(egui::Frame::NONE)
+                                .interactive(true)
+                                .show(ui);
+                            
+                            // Request focus when clicked to ensure CMD+C works
+                            if output.response.clicked() {
+                                output.response.request_focus();
+                            }
+                            
+                            // Manual copy handling for CMD+C in message TextEdit
+                            if output.response.has_focus() {
+                                ui.input(|i| {
+                                    let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+                                    let key_combo = (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
+                                    
+                                    if copy_event || key_combo {
+                                        // Get cursor range to find selected text
+                                        if let Some(state) = egui::TextEdit::load_state(ui.ctx(), message_text_id)
+                                            && let Some(cursor_range) = state.cursor.char_range() {
+                                            let start = cursor_range.primary.index.0;
+                                            let end = cursor_range.secondary.index.0;
+                                            let (min, max) = if start < end { (start, end) } else { (end, start) };
+                                            
+                                            if min < max && max <= self.query_message_display_buffer.len() {
+                                                let selected_text = &self.query_message_display_buffer[min..max];
+                                                ui.ctx().copy_text(selected_text.to_string());
+                                                debug!("📋 Copied selected text from message: {} chars", selected_text.len());
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                            
+                            // Context menu on right-click
+                            output.response.context_menu(|ui| {
+                                if ui.button("📋 Copy Text").clicked() {
+                                    ui.ctx().copy_text(self.query_message.clone());
+                                    ui.close();
+                                }
+                            });
+                        });
+
+                        ui.add_space(8.0);
+                    });
+            },
+        );
+
+        // Integrated footer bar matching data table pagination bar
+        let bg_color = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(22, 22, 26)
+        } else {
+            egui::Color32::from_rgb(245, 245, 250)
+        };
+        let stroke_color = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(45, 45, 50)
+        } else {
+            egui::Color32::from_rgb(215, 215, 220)
+        };
+
+        egui::Frame::new()
+            .fill(bg_color)
+            .stroke(egui::Stroke::new(1.0, stroke_color))
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("💬 Query Execution Message")
+                            .weak()
+                            .small(),
+                    );
+                    data_table::render_footer_view_buttons(self, ui);
+                });
             });
     }
 

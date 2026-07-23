@@ -27,13 +27,13 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
     egui::Frame::new()
         .fill(bg_color)
         .stroke(egui::Stroke::new(1.0, stroke_color))
-        .inner_margin(egui::Margin::symmetric(8, 4))
+        .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 let spacing = ui.spacing_mut();
                 spacing.item_spacing.x = 4.0;
-                spacing.button_padding = egui::vec2(6.0, 2.0);
+                spacing.button_padding = egui::vec2(6.0, 3.0);
 
                 if tabular.use_server_pagination && tabular.actual_total_rows.is_some() {
                     let actual_total = tabular.actual_total_rows.unwrap_or(0);
@@ -145,10 +145,125 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     go_to_page(tabular, page_num - 1);
                 }
 
-                // Extra right space to ensure controls are not obscured by floating bottom-right dock
-                ui.add_space(200.0);
+                // Embed 3 view buttons directly into the right side of the datatable footer bar
+                render_footer_view_buttons(tabular, ui);
             });
         });
+}
+
+pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    let executed = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.has_executed_query)
+        .unwrap_or(false);
+    let has_headers = !tabular.current_table_headers.is_empty();
+    let has_message = !tabular.query_message.is_empty();
+    let has_lint = !tabular.lint_messages.is_empty();
+
+    if !executed && !has_headers && !has_message && !has_lint {
+        return;
+    }
+
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+        let button_height = 20.0;
+
+        // Show Details (Lint Issue) Button
+        if has_lint {
+            let count = tabular.lint_messages.len();
+            let lint_text_label = format!("⚠️ Details ({})", count);
+            let is_lint_open = tabular.show_lint_panel;
+
+            let lint_bg = if is_lint_open {
+                window_egui::style::theme_warning(ui.ctx())
+            } else if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(60, 45, 30)
+            } else {
+                egui::Color32::from_rgb(255, 243, 224)
+            };
+            let lint_text_color = if is_lint_open {
+                egui::Color32::WHITE
+            } else {
+                window_egui::style::theme_warning(ui.ctx())
+            };
+
+            let lint_btn = egui::Button::new(
+                egui::RichText::new(lint_text_label)
+                    .small()
+                    .strong()
+                    .color(lint_text_color),
+            )
+            .fill(lint_bg)
+            .corner_radius(egui::CornerRadius::same(4u8))
+            .min_size(egui::vec2(0.0, button_height));
+
+            if ui.add(lint_btn).clicked() {
+                tabular.show_lint_panel = !tabular.show_lint_panel;
+            }
+        }
+
+        // Messages Button
+        if has_message {
+            let is_messages = tabular.table_bottom_view == crate::models::structs::TableBottomView::Messages;
+            let messages_bg = if is_messages {
+                window_egui::style::theme_accent(ui.ctx())
+            } else if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(45, 45, 50)
+            } else {
+                egui::Color32::from_rgb(225, 225, 230)
+            };
+            let messages_text_color = if is_messages {
+                egui::Color32::WHITE
+            } else {
+                ui.visuals().text_color()
+            };
+
+            let msg_btn = egui::Button::new(
+                egui::RichText::new("💬 Messages")
+                    .small()
+                    .strong()
+                    .color(messages_text_color),
+            )
+            .fill(messages_bg)
+            .corner_radius(egui::CornerRadius::same(4u8))
+            .min_size(egui::vec2(0.0, button_height));
+
+            if ui.add(msg_btn).clicked() {
+                tabular.table_bottom_view = crate::models::structs::TableBottomView::Messages;
+            }
+        }
+
+        // Data Button
+        let is_data = tabular.table_bottom_view == crate::models::structs::TableBottomView::Data;
+        let data_bg = if is_data {
+            window_egui::style::theme_accent(ui.ctx())
+        } else if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(45, 45, 50)
+        } else {
+            egui::Color32::from_rgb(225, 225, 230)
+        };
+        let data_text_color = if is_data {
+            egui::Color32::WHITE
+        } else {
+            ui.visuals().text_color()
+        };
+
+        let data_btn = egui::Button::new(
+            egui::RichText::new("📊 Data")
+                .small()
+                .strong()
+                .color(data_text_color),
+        )
+        .fill(data_bg)
+        .corner_radius(egui::CornerRadius::same(4u8))
+        .min_size(egui::vec2(0.0, button_height));
+
+        if ui.add(data_btn).clicked() {
+            tabular.table_bottom_view = crate::models::structs::TableBottomView::Data;
+        }
+    });
 }
 
 pub fn update_pagination_data(tabular: &mut window_egui::Tabular, all_data: Vec<Vec<String>>) {
