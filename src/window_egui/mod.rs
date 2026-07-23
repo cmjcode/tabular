@@ -388,6 +388,7 @@ pub struct Tabular {
     pub query_message: String,
     pub query_message_is_error: bool,
     pub show_message_panel: bool,
+    pub message_shown_at: Option<std::time::Instant>,
     pub message_panel_height: f32, // Height of message panel in pixels
     pub query_message_display_buffer: String, // Buffer for TextEdit to maintain selection state
     // Custom Views state

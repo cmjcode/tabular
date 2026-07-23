@@ -206,15 +206,20 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
 
         // Messages Button
         if has_message {
-            let is_messages = tabular.table_bottom_view == crate::models::structs::TableBottomView::Messages;
-            let messages_bg = if is_messages {
-                window_egui::style::theme_accent(ui.ctx())
+            let is_msg_open = tabular.show_message_panel;
+            let is_error = tabular.query_message_is_error;
+            let messages_bg = if is_msg_open || is_error {
+                if is_error {
+                    window_egui::style::theme_danger(ui.ctx())
+                } else {
+                    window_egui::style::theme_accent(ui.ctx())
+                }
             } else if ui.visuals().dark_mode {
                 egui::Color32::from_rgb(45, 45, 50)
             } else {
                 egui::Color32::from_rgb(225, 225, 230)
             };
-            let messages_text_color = if is_messages {
+            let messages_text_color = if is_msg_open || is_error {
                 egui::Color32::WHITE
             } else {
                 ui.visuals().text_color()
@@ -231,12 +236,15 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
             .min_size(egui::vec2(0.0, button_height));
 
             if ui.add(msg_btn).clicked() {
-                tabular.table_bottom_view = crate::models::structs::TableBottomView::Messages;
+                tabular.show_message_panel = !tabular.show_message_panel;
+                tabular.message_shown_at = None;
             }
         }
 
         // Data Button
-        let is_data = tabular.table_bottom_view == crate::models::structs::TableBottomView::Data;
+        let is_data = tabular.table_bottom_view == crate::models::structs::TableBottomView::Data
+            && !tabular.show_message_panel
+            && !tabular.show_lint_panel;
         let data_bg = if is_data {
             window_egui::style::theme_accent(ui.ctx())
         } else if ui.visuals().dark_mode {
@@ -262,6 +270,8 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
 
         if ui.add(data_btn).clicked() {
             tabular.table_bottom_view = crate::models::structs::TableBottomView::Data;
+            tabular.show_message_panel = false;
+            tabular.show_lint_panel = false;
         }
     });
 }

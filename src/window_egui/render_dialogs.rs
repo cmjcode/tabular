@@ -14,20 +14,151 @@ impl super::Tabular {
         let has_headers = !self.current_table_headers.is_empty();
         let has_message = !self.query_message.is_empty();
         let has_lint = !self.lint_messages.is_empty();
-        let is_lint_open = self.show_lint_panel && has_lint;
-
         if rendered_http || rendered_redis_browser || (!executed && !has_headers && !has_message && !has_lint) {
             return;
         }
 
-        let mut close_toast = false;
-        let mut format_clicked = false;
+        // 5-second auto-hide timer check for Query Message toast
+        let mut msg_hovered = false;
+        if self.show_message_panel && has_message
+            && let Some(shown_at) = self.message_shown_at
+        {
+            if shown_at.elapsed() < std::time::Duration::from_secs(5) {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
 
-        // 1. STANDALONE TOAST CARD (Rendered above footer bar when open)
-        if is_lint_open {
-            egui::Area::new(egui::Id::new("lint_toast_overlay"))
+        let is_msg_open = self.show_message_panel && has_message;
+        let is_lint_open = self.show_lint_panel && has_lint;
+
+        if !is_msg_open && !is_lint_open {
+            return;
+        }
+
+        let mut close_msg_toast = false;
+        let mut close_lint_toast = false;
+        let mut format_clicked = false;
+        let toast_width = 380.0;
+
+        // 1. MESSAGE TOAST CARD (Anchored at fixed RIGHT_BOTTOM position -8.0, -44.0)
+        if is_msg_open {
+            let area_resp = egui::Area::new(egui::Id::new("message_toast_overlay"))
                 .order(egui::Order::Foreground)
                 .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -44.0))
+                .show(ctx, |ui| {
+                    let container_fill = if ctx.global_style().visuals.dark_mode {
+                        egui::Color32::from_rgb(30, 31, 36)
+                    } else {
+                        egui::Color32::from_rgb(255, 250, 245)
+                    };
+                    let stroke_color = if self.query_message_is_error {
+                        super::style::theme_danger(ctx)
+                    } else {
+                        super::style::theme_accent(ctx)
+                    };
+                    let container_stroke = egui::Stroke::new(1.0, stroke_color);
+
+                    egui::Frame::new()
+                        .fill(container_fill)
+                        .stroke(container_stroke)
+                        .corner_radius(egui::CornerRadius::same(10u8))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .shadow(egui::Shadow {
+                            offset: [0, 4],
+                            blur: 10,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(100),
+                        })
+                        .show(ui, |ui| {
+                            ui.set_min_width(toast_width);
+                            ui.set_max_width(toast_width);
+                            ui.vertical(|ui| {
+                                let (title, title_color) = if self.query_message_is_error {
+                                    ("❌ Error Details", super::style::theme_danger(ctx))
+                                } else {
+                                    ("💬 Query Message", super::style::theme_accent(ctx))
+                                };
+
+                                // Header row with title & close button (X) aligned right
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(title)
+                                            .color(title_color)
+                                            .strong(),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            if super::style::render_close_icon_button(ui).clicked() {
+                                                close_msg_toast = true;
+                                            }
+                                        },
+                                    );
+                                });
+
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+
+                                // Scrollable message text box
+                                egui::ScrollArea::vertical()
+                                    .max_height(180.0)
+                                    .show(ui, |ui| {
+                                        if self.query_message_display_buffer != self.query_message {
+                                            self.query_message_display_buffer = self.query_message.clone();
+                                        }
+
+                                        let message_text_id = egui::Id::new("tabular_message_toast_text");
+                                        let text_color = if self.query_message_is_error {
+                                            super::style::theme_danger(ctx)
+                                        } else {
+                                            ui.visuals().text_color()
+                                        };
+                                        let output = egui::TextEdit::multiline(&mut self.query_message_display_buffer)
+                                            .id(message_text_id)
+                                            .desired_width(f32::INFINITY)
+                                            .text_color(text_color)
+                                            .font(egui::TextStyle::Body)
+                                            .frame(egui::Frame::NONE)
+                                            .interactive(true)
+                                            .show(ui);
+
+                                        if output.response.clicked() {
+                                            output.response.request_focus();
+                                        }
+
+                                        output.response.context_menu(|ui| {
+                                            if ui.button("📋 Copy Text").clicked() {
+                                                ui.ctx().copy_text(self.query_message.clone());
+                                                ui.close();
+                                            }
+                                        });
+                                    });
+                            });
+                        });
+                });
+
+            let h = area_resp.response.rect.height();
+            if h > 30.0 {
+                self.message_panel_height = h;
+            }
+            if area_resp.response.hovered() {
+                msg_hovered = true;
+            }
+        }
+
+        // 2. LINT DETAIL TOAST CARD (Positioned right above Message Toast if Message Toast is open)
+        if is_lint_open {
+            let lint_y_offset = if is_msg_open {
+                -44.0 - self.message_panel_height.max(70.0) - 8.0
+            } else {
+                -44.0
+            };
+
+            egui::Area::new(egui::Id::new("lint_toast_overlay"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, lint_y_offset))
                 .show(ctx, |ui| {
                     let container_fill = if ctx.global_style().visuals.dark_mode {
                         egui::Color32::from_rgb(30, 31, 36)
@@ -48,7 +179,8 @@ impl super::Tabular {
                             color: egui::Color32::from_black_alpha(100),
                         })
                         .show(ui, |ui| {
-                            ui.set_max_width(380.0);
+                            ui.set_min_width(toast_width);
+                            ui.set_max_width(toast_width);
                             ui.vertical(|ui| {
                                 let count = self.lint_messages.len();
                                 let plural = if count == 1 { "" } else { "s" };
@@ -66,7 +198,7 @@ impl super::Tabular {
                                         |ui| {
                                             ui.spacing_mut().item_spacing.x = 0.0;
                                             if super::style::render_close_icon_button(ui).clicked() {
-                                                close_toast = true;
+                                                close_lint_toast = true;
                                             }
                                         },
                                     );
@@ -128,7 +260,21 @@ impl super::Tabular {
                 });
         }
 
-        if close_toast {
+        // 5-second auto-hide check for Message Toast
+        if is_msg_open
+            && !msg_hovered
+            && let Some(shown_at) = self.message_shown_at
+            && shown_at.elapsed() >= std::time::Duration::from_secs(5)
+        {
+            close_msg_toast = true;
+        }
+
+        if close_msg_toast {
+            self.show_message_panel = false;
+            self.message_shown_at = None;
+        }
+
+        if close_lint_toast {
             self.show_lint_panel = false;
         }
 
@@ -983,15 +1129,8 @@ impl super::Tabular {
                 ui.separator();
             }
 
-            // Render bottom panel based on view mode
-            match self.table_bottom_view {
-                models::structs::TableBottomView::Messages => {
-                    self.render_messages_content(ui);
-                }
-                _ => {
-                    data_table::render_table_data(self, ui);
-                }
-            }
+            // Render bottom panel data grid
+            data_table::render_table_data(self, ui);
         }
     }
     pub fn render_active_query_jobs_overlay(&mut self, ctx: &egui::Context) {

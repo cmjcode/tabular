@@ -450,6 +450,7 @@ impl super::Tabular {
             query_message: String::new(),
             query_message_is_error: false,
             show_message_panel: false,
+            message_shown_at: None,
             message_panel_height: 100.0,
             query_message_display_buffer: String::new(),
             show_add_view_dialog: false,

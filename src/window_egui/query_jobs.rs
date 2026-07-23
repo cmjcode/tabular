@@ -63,6 +63,7 @@ impl super::Tabular {
             self.table_bottom_view = models::structs::TableBottomView::Messages;
         }
         self.show_message_panel = true;
+        self.message_shown_at = Some(std::time::Instant::now());
 
         // Update active tab message
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
