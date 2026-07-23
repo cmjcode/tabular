@@ -147,18 +147,19 @@ impl super::Tabular {
                 egui::Frame::new()
                     .fill(container_fill)
                     .stroke(container_stroke)
-                    .corner_radius(egui::CornerRadius::same(10u8))
-                    .inner_margin(egui::Margin::symmetric(4, 3))
+                    .corner_radius(egui::CornerRadius::same(6u8))
+                    .inner_margin(egui::Margin::symmetric(3, 2))
                     .shadow(egui::Shadow {
-                        offset: [0, 2],
-                        blur: 8,
+                        offset: [0, 1],
+                        blur: 4,
                         spread: 0,
-                        color: egui::Color32::from_black_alpha(80),
+                        color: egui::Color32::from_black_alpha(60),
                     })
                     .show(ui, |ui| {
+                        ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            let button_height = 22.0;
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            let button_height = 17.0;
 
                             // Data Button
                             let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
@@ -182,8 +183,8 @@ impl super::Tabular {
                                     .color(data_text_color),
                             )
                             .fill(data_bg)
-                            .corner_radius(egui::CornerRadius::same(6u8))
-                            .min_size(egui::vec2(64.0, button_height));
+                            .corner_radius(egui::CornerRadius::same(4u8))
+                            .min_size(egui::vec2(0.0, button_height));
 
                             if ui.add(data_btn).clicked() {
                                 self.table_bottom_view = models::structs::TableBottomView::Data;
@@ -212,8 +213,8 @@ impl super::Tabular {
                                         .color(messages_text_color),
                                 )
                                 .fill(messages_bg)
-                                .corner_radius(egui::CornerRadius::same(6u8))
-                                .min_size(egui::vec2(84.0, button_height));
+                                .corner_radius(egui::CornerRadius::same(4u8))
+                                .min_size(egui::vec2(0.0, button_height));
 
                                 if ui.add(msg_btn).clicked() {
                                     self.table_bottom_view = models::structs::TableBottomView::Messages;
@@ -223,7 +224,7 @@ impl super::Tabular {
                             // Show Details (Lint Issue) Button
                             if has_lint {
                                 let count = self.lint_messages.len();
-                                let lint_text_label = format!("⚠️ Show details ({})", count);
+                                let lint_text_label = format!("⚠️ Details ({})", count);
 
                                 let lint_bg = if is_lint_open {
                                     super::style::theme_warning(ui.ctx())
@@ -246,8 +247,8 @@ impl super::Tabular {
                                         .color(lint_text_color),
                                 )
                                 .fill(lint_bg)
-                                .corner_radius(egui::CornerRadius::same(6u8))
-                                .min_size(egui::vec2(90.0, button_height));
+                                .corner_radius(egui::CornerRadius::same(4u8))
+                                .min_size(egui::vec2(0.0, button_height));
 
                                 if ui.add(lint_btn).clicked() {
                                     self.show_lint_panel = !self.show_lint_panel;
