@@ -1426,6 +1426,7 @@ impl Tabular {
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 2.0;
+                                        ui.add_space(2.0);
 
                                         let mut to_close = None;
                                         let mut to_switch = None;
@@ -1499,8 +1500,8 @@ impl Tabular {
                                             );
                                             if active {
                                                 let accent_rect = egui::Rect::from_min_size(
-                                                    tab_rect.left_top(),
-                                                    egui::vec2(tab_rect.width(), 3.0),
+                                                    egui::pos2(tab_rect.left() - 1.0, tab_rect.top()),
+                                                    egui::vec2(tab_rect.width() + 2.0, 3.0),
                                                 );
                                                 ui.painter().rect_filled(
                                                     accent_rect,
