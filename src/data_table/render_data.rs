@@ -1422,7 +1422,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     .weak(),
             );
         }
-        // Pagination bar sticky: sudah di luar area scroll jadi otomatis menempel bawah container
+
+        // Always push pagination bar sticky to bottom of container
+        let pagination_height = 44.0_f32;
+        let space_to_push = (ui.available_height() - pagination_height).max(0.0);
+        if space_to_push > 0.0 {
+            ui.add_space(space_to_push);
+        }
         render_pagination_bar(tabular, ui);
     }
 }

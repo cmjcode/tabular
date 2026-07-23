@@ -59,8 +59,8 @@ impl super::Tabular {
             let error_msg = message.error.clone().unwrap_or_else(|| "Unknown error".to_string());
             self.query_message = format!("Error: {}", error_msg);
             self.query_message_is_error = true;
-            // Auto-switch to Messages tab to show error
-            self.table_bottom_view = models::structs::TableBottomView::Messages;
+            // Keep Data view active in bottom panel
+            self.table_bottom_view = models::structs::TableBottomView::Data;
         }
         self.show_message_panel = true;
         self.message_shown_at = Some(std::time::Instant::now());

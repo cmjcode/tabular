@@ -1163,26 +1163,24 @@ impl super::Tabular {
         } else {
             egui::Color32::from_rgb(225, 190, 170)
         };
-        let executed = self
+        let _executed = self
             .query_tabs
             .get(self.active_tab_index)
             .map(|t| t.has_executed_query)
             .unwrap_or(false);
-        let has_headers = !self.current_table_headers.is_empty();
+        let _has_headers = !self.current_table_headers.is_empty();
         let has_message = !self.query_message.is_empty();
         let has_lint = !self.lint_messages.is_empty();
-        let dock_visible = executed || has_headers || has_message || has_lint;
+        let is_msg_open = self.show_message_panel && has_message;
         let is_lint_open = self.show_lint_panel && has_lint;
 
-        let y_offset = if dock_visible {
-            if is_lint_open {
-                -276.0
-            } else {
-                -48.0
-            }
-        } else {
-            -8.0
-        };
+        let mut y_offset = -48.0;
+        if is_msg_open {
+            y_offset -= self.message_panel_height.max(70.0) + 8.0;
+        }
+        if is_lint_open {
+            y_offset -= 120.0;
+        }
 
         egui::Area::new(egui::Id::new("active_query_jobs_overlay"))
             .order(egui::Order::Foreground)

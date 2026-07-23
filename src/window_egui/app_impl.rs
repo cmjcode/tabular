@@ -1974,15 +1974,15 @@ impl Tabular {
 
                                     // Messages tab - show when there's a query message
                                     if !self.query_message.is_empty() {
-                                        let is_messages = self.table_bottom_view
-                                            == models::structs::TableBottomView::Messages;
+                                        let is_messages = self.show_message_panel;
                                         let messages_text = egui::RichText::new("💬 Messages").color(if is_messages {
                                             egui::Color32::WHITE
                                         } else {
                                             default_text
                                         });
                                         if ui.selectable_label(is_messages, messages_text).clicked() {
-                                            self.table_bottom_view = models::structs::TableBottomView::Messages;
+                                            self.show_message_panel = !self.show_message_panel;
+                                            self.message_shown_at = None;
                                         }
                                     }
                                 });
@@ -2022,10 +2022,6 @@ impl Tabular {
                                             if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                                 tab.object_ddl = Some(current_text);
                                             }
-                                        }
-                                        models::structs::TableBottomView::Messages => {
-                                            // Render messages panel content
-                                            self.render_messages_content(ui);
                                         }
                                         _ => {
                                             data_table::render_table_data(self, ui);
