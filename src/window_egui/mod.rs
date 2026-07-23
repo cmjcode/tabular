@@ -112,6 +112,8 @@ pub struct Tabular {
     pub query_tabs: Vec<models::structs::QueryTab>,
     pub active_tab_index: usize,
     pub next_tab_id: usize,
+    pub scroll_to_active_tab: bool,
+    pub last_active_tab_index: Option<usize>,
     // Save dialog
     pub show_save_dialog: bool,
     pub save_filename: String,

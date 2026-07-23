@@ -1425,11 +1425,13 @@ impl Tabular {
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 2.0;
-                                        ui.add_space(2.0);
-
                                         let mut to_close = None;
                                         let mut to_switch = None;
+
+                                        if self.last_active_tab_index != Some(self.active_tab_index) {
+                                            self.scroll_to_active_tab = true;
+                                            self.last_active_tab_index = Some(self.active_tab_index);
+                                        }
 
                                         let tab_count = self.query_tabs.len();
                                         let max_single_tab_w = 240.0;
@@ -1486,7 +1488,7 @@ impl Tabular {
                                                 egui::Sense::click(),
                                             );
 
-                                            if active {
+                                            if active && self.scroll_to_active_tab {
                                                 tab_resp.scroll_to_me(Some(egui::Align::Center));
                                             }
 
@@ -1559,14 +1561,18 @@ impl Tabular {
                                             }
 
                                             if tab_resp.clicked()
-                                                && !active
                                                 && !close_rect.contains(
                                                     tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO),
                                                 )
                                             {
-                                                to_switch = Some(i);
+                                                if !active {
+                                                    to_switch = Some(i);
+                                                } else {
+                                                    self.scroll_to_active_tab = true;
+                                                }
                                             }
                                         }
+                                        self.scroll_to_active_tab = false;
 
                                         let plus_bg = if ui.visuals().dark_mode {
                                             egui::Color32::from_rgb(55, 55, 55)

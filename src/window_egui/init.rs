@@ -241,6 +241,8 @@ impl super::Tabular {
             query_tabs: Vec::new(),
             active_tab_index: 0,
             next_tab_id: 1,
+            scroll_to_active_tab: true,
+            last_active_tab_index: None,
             show_save_dialog: false,
             save_filename: String::new(),
             save_directory: String::new(),
