@@ -182,3 +182,45 @@ pub fn render_badge(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32, fg_c
         });
 }
 
+pub fn render_close_icon_button(ui: &mut egui::Ui) -> egui::Response {
+    let size = egui::vec2(20.0, 20.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let hover = response.hovered();
+        let bg_color = if hover {
+            if ui.visuals().dark_mode {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 25)
+            }
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+
+        if hover {
+            ui.painter().rect_filled(
+                rect,
+                egui::CornerRadius::same(10u8),
+                bg_color,
+            );
+        }
+
+        let icon_color = if hover {
+            ui.visuals().widgets.hovered.fg_stroke.color
+        } else {
+            ui.visuals().text_color().linear_multiply(0.6)
+        };
+
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "×",
+            egui::FontId::proportional(15.0),
+            icon_color,
+        );
+    }
+
+    response.on_hover_text("Close")
+}
+

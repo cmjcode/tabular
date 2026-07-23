@@ -2144,82 +2144,8 @@ impl Tabular {
                             self.render_query_editor_with_split(ui, "regular_query");
                         }
                     
-                        // Floating tab buttons at bottom-right corner (only show if executed or has message, and not HTTP tab)
-                        let executed = self.query_tabs.get(self.active_tab_index).map(|t| t.has_executed_query).unwrap_or(false);
-                        let has_headers = !self.current_table_headers.is_empty();
-                        if !rendered_http && !rendered_redis_browser && (executed || has_headers || !self.query_message.is_empty()) {
-                            let margin = 6.0;
-                            let button_height = 18.0; // Match Clear selection button height
-                            let button_spacing = 4.0;
-                        
-                            // Calculate total width needed for buttons
-                            let data_button_width = 80.0;
-                            let messages_button_width = if !self.query_message.is_empty() { 110.0 } else { 0.0 };
-                            let total_width = data_button_width + if !self.query_message.is_empty() { button_spacing + messages_button_width } else { 0.0 };
-                        
-                            // Position at bottom-right
-                            let screen_rect = ui.ctx().content_rect();
-                            let button_pos = egui::pos2(
-                                screen_rect.max.x - total_width - margin,
-                                screen_rect.max.y - button_height - margin
-                            );
-
-                            egui::Area::new(egui::Id::new("bottom_tab_buttons"))
-                                .order(egui::Order::Foreground)
-                                .fixed_pos(button_pos)
-                                .show(ui.ctx(), |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = button_spacing;
-                                    
-                                        let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
-                                        let data_bg = if is_data {
-                                            style::theme_accent(ui.ctx())
-                                        } else if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(50, 50, 50)
-                                        } else {
-                                            egui::Color32::from_rgb(230, 230, 230)
-                                        };
-                                        let data_text_color = if is_data {
-                                            egui::Color32::WHITE
-                                        } else {
-                                            ui.visuals().text_color()
-                                        };
-                                    
-                                        if ui.add_sized(
-                                            [data_button_width, button_height],
-                                            egui::Button::new(egui::RichText::new("📊 Data").color(data_text_color))
-                                                .fill(data_bg)
-                                        ).clicked() {
-                                            self.table_bottom_view = models::structs::TableBottomView::Data;
-                                        }
-
-                                        // Messages button - only show when there's a query message
-                                        if !self.query_message.is_empty() {
-                                            let is_messages = self.table_bottom_view == models::structs::TableBottomView::Messages;
-                                            let messages_bg = if is_messages {
-                                                style::theme_accent(ui.ctx())
-                                            } else if ui.visuals().dark_mode {
-                                                egui::Color32::from_rgb(50, 50, 50)
-                                            } else {
-                                                egui::Color32::from_rgb(230, 230, 230)
-                                            };
-                                            let messages_text_color = if is_messages {
-                                                egui::Color32::WHITE
-                                            } else {
-                                                ui.visuals().text_color()
-                                            };
-                                        
-                                            if ui.add_sized(
-                                                [messages_button_width, button_height],
-                                                egui::Button::new(egui::RichText::new("💬 Messages").color(messages_text_color))
-                                                    .fill(messages_bg)
-                                            ).clicked() {
-                                                self.table_bottom_view = models::structs::TableBottomView::Messages;
-                                            }
-                                        }
-                                    });
-                                });
-                        }
+                        // Unified bottom-right dock (renders tab buttons and expanded lint details in a single card)
+                        self.render_bottom_right_dock(ui.ctx(), rendered_http, rendered_redis_browser);
                     }
 
                     data_table::render_drop_index_confirmation(self, ui.ctx());

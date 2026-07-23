@@ -174,7 +174,7 @@ impl ToastManager {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::TOP),
                                 |ui| {
-                                    if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
+                                    if super::style::render_close_icon_button(ui).clicked() {
                                         dismiss = Some(idx);
                                     }
                                 },

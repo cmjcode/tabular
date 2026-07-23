@@ -5,131 +5,303 @@ use crate::{models, connection, query_tools, editor, data_table};
 
 
 impl super::Tabular {
-    pub fn render_lint_panel(&mut self, ui: &mut egui::Ui) {
-        if self.lint_messages.is_empty() {
+    pub fn render_bottom_right_dock(&mut self, ctx: &egui::Context, rendered_http: bool, rendered_redis_browser: bool) {
+        let executed = self
+            .query_tabs
+            .get(self.active_tab_index)
+            .map(|t| t.has_executed_query)
+            .unwrap_or(false);
+        let has_headers = !self.current_table_headers.is_empty();
+        let has_message = !self.query_message.is_empty();
+        let has_lint = !self.lint_messages.is_empty();
+        let is_lint_open = self.show_lint_panel && has_lint;
+
+        if rendered_http || rendered_redis_browser || (!executed && !has_headers && !has_message && !has_lint) {
             return;
         }
 
-        ui.add_space(6.0);
-        let count = self.lint_messages.len();
-        let plural = if count == 1 { "" } else { "s" };
-
-        if !self.show_lint_panel {
-            ui.horizontal(|ui| {
-                let warning_text =
-                    egui::RichText::new(format!("⚠ {} lint issue{} detected", count, plural))
-                        .color(super::style::theme_warning(ui.ctx()));
-                ui.label(warning_text);
-                if ui.button("Show details").clicked() {
-                    self.show_lint_panel = true;
-                    self.lint_panel_shown_at = Some(std::time::Instant::now());
-                }
-            });
-            return;
-        }
-
-        // Panel is shown: start timer if needed (hover/pin logic handled after rendering)
-        if self.lint_panel_shown_at.is_none() {
+        if is_lint_open && self.lint_panel_shown_at.is_none() {
             self.lint_panel_shown_at = Some(std::time::Instant::now());
         }
 
-        let panel_fill = if ui.visuals().dark_mode {
-            egui::Color32::from_rgb(40, 40, 40)
-        } else {
-            egui::Color32::from_rgb(255, 244, 234)
-        };
+        let mut close_toast = false;
+        let mut format_clicked = false;
 
-        let inner = egui::Frame::group(ui.style())
-            .fill(panel_fill)
-            .stroke(egui::Stroke::new(1.0, super::style::theme_warning(ui.ctx())))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("Lint ({})", count)).strong());
-                    if ui.button("Hide").clicked() {
-                        self.show_lint_panel = false;
-                        self.lint_panel_shown_at = None;
-                    }
-                    ui.add_space(12.0);
-                    ui.checkbox(&mut self.lint_panel_pinned, "Pin (keep open)");
-                    ui.checkbox(
-                        &mut self.auto_format_on_execute,
-                        "Auto-format before execute",
-                    );
-                    if ui.button("Format now").clicked()
-                        && let Some(formatted) = query_tools::format_sql(&self.editor.text)
-                        && formatted != self.editor.text
-                    {
-                        self.editor.set_text(formatted.clone());
-                        let new_len = self.editor.text.len();
-                        self.cursor_position = new_len;
-                        self.multi_selection.clear();
-                        self.multi_selection.add_collapsed(self.cursor_position);
-                        self.last_editor_text = self.editor.text.clone();
-                        self.lint_messages = query_tools::lint_sql(&self.editor.text);
-                        self.show_lint_panel = !self.lint_messages.is_empty();
-                        if self.show_lint_panel {
-                            self.lint_panel_shown_at = Some(std::time::Instant::now());
-                        } else {
-                            self.lint_panel_shown_at = None;
-                        }
-                        self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(4);
-                        self.pending_cursor_set = Some(self.cursor_position);
-                    }
-                });
-
-                ui.separator();
-
-                for msg in &self.lint_messages {
-                    let (icon, color) = match msg.severity {
-                        query_tools::LintSeverity::Info => {
-                            ("ℹ", super::style::theme_info(ui.ctx()))
-                        }
-                        query_tools::LintSeverity::Warning => {
-                            ("⚠", super::style::theme_warning(ui.ctx()))
-                        }
-                        query_tools::LintSeverity::Error => {
-                            ("⛔", super::style::theme_danger(ui.ctx()))
-                        }
+        // 1. STANDALONE TOAST CARD (Rendered above button bar when open)
+        if is_lint_open {
+            egui::Area::new(egui::Id::new("lint_toast_overlay"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -44.0))
+                .show(ctx, |ui| {
+                    let container_fill = if ctx.global_style().visuals.dark_mode {
+                        egui::Color32::from_rgb(30, 31, 36)
+                    } else {
+                        egui::Color32::from_rgb(255, 250, 245)
                     };
+                    let container_stroke = egui::Stroke::new(1.0, super::style::theme_warning(ctx));
 
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(icon).color(color).strong());
-                        ui.label(egui::RichText::new(&msg.message));
+                    egui::Frame::new()
+                        .fill(container_fill)
+                        .stroke(container_stroke)
+                        .corner_radius(egui::CornerRadius::same(10u8))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .shadow(egui::Shadow {
+                            offset: [0, 4],
+                            blur: 10,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(100),
+                        })
+                        .show(ui, |ui| {
+                            ui.set_max_width(380.0);
+                            ui.vertical(|ui| {
+                                let count = self.lint_messages.len();
+                                let plural = if count == 1 { "" } else { "s" };
+                                let warning_color = super::style::theme_warning(ctx);
+
+                                // Header row with title & close button (X) aligned right
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("⚠ Lint Detail{} ({})", plural, count))
+                                            .color(warning_color)
+                                            .strong(),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            if super::style::render_close_icon_button(ui).clicked() {
+                                                close_toast = true;
+                                            }
+                                        },
+                                    );
+                                });
+
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+
+                                // Actions bar inside toast
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut self.lint_panel_pinned, "Pin open");
+                                    ui.checkbox(&mut self.auto_format_on_execute, "Auto-format");
+                                    if ui.button("✨ Format now").clicked() {
+                                        format_clicked = true;
+                                    }
+                                });
+
+                                ui.add_space(4.0);
+
+                                // Scrollable list of lint messages
+                                egui::ScrollArea::vertical()
+                                    .max_height(180.0)
+                                    .show(ui, |ui| {
+                                        for msg in &self.lint_messages {
+                                            let (icon, color) = match msg.severity {
+                                                query_tools::LintSeverity::Info => {
+                                                    ("ℹ", super::style::theme_info(ui.ctx()))
+                                                }
+                                                query_tools::LintSeverity::Warning => {
+                                                    ("⚠", super::style::theme_warning(ui.ctx()))
+                                                }
+                                                query_tools::LintSeverity::Error => {
+                                                    ("⛔", super::style::theme_danger(ui.ctx()))
+                                                }
+                                            };
+
+                                            ui.horizontal(|ui| {
+                                                ui.label(egui::RichText::new(icon).color(color).strong());
+                                                ui.label(egui::RichText::new(&msg.message).small());
+                                            });
+
+                                            if let Some(hint) = &msg.hint {
+                                                ui.label(egui::RichText::new(hint).small().italics().weak());
+                                            }
+
+                                            if let Some(span) = &msg.span {
+                                                ui.label(
+                                                    egui::RichText::new(format!("range {}..{}", span.start, span.end))
+                                                        .small()
+                                                        .weak(),
+                                                );
+                                            }
+
+                                            ui.add_space(4.0);
+                                        }
+                                    });
+                            });
+                        });
+                });
+        }
+
+        // 2. STANDALONE BOTTOM BUTTON PILL BAR (Anchored at bottom-right)
+        egui::Area::new(egui::Id::new("bottom_tab_buttons"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0))
+            .show(ctx, |ui| {
+                let container_fill = if ctx.global_style().visuals.dark_mode {
+                    egui::Color32::from_rgb(30, 31, 36)
+                } else {
+                    egui::Color32::from_rgb(245, 245, 250)
+                };
+                let container_stroke = if ctx.global_style().visuals.dark_mode {
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 65))
+                } else {
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(210, 210, 215))
+                };
+
+                egui::Frame::new()
+                    .fill(container_fill)
+                    .stroke(container_stroke)
+                    .corner_radius(egui::CornerRadius::same(10u8))
+                    .inner_margin(egui::Margin::symmetric(4, 3))
+                    .shadow(egui::Shadow {
+                        offset: [0, 2],
+                        blur: 8,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(80),
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let button_height = 22.0;
+
+                            // Data Button
+                            let is_data = self.table_bottom_view == models::structs::TableBottomView::Data;
+                            let data_bg = if is_data {
+                                super::style::theme_accent(ui.ctx())
+                            } else if ui.visuals().dark_mode {
+                                egui::Color32::from_rgb(45, 45, 50)
+                            } else {
+                                egui::Color32::from_rgb(225, 225, 230)
+                            };
+                            let data_text_color = if is_data {
+                                egui::Color32::WHITE
+                            } else {
+                                ui.visuals().text_color()
+                            };
+
+                            let data_btn = egui::Button::new(
+                                egui::RichText::new("📊 Data")
+                                    .small()
+                                    .strong()
+                                    .color(data_text_color),
+                            )
+                            .fill(data_bg)
+                            .corner_radius(egui::CornerRadius::same(6u8))
+                            .min_size(egui::vec2(64.0, button_height));
+
+                            if ui.add(data_btn).clicked() {
+                                self.table_bottom_view = models::structs::TableBottomView::Data;
+                            }
+
+                            // Messages Button
+                            if has_message {
+                                let is_messages = self.table_bottom_view == models::structs::TableBottomView::Messages;
+                                let messages_bg = if is_messages {
+                                    super::style::theme_accent(ui.ctx())
+                                } else if ui.visuals().dark_mode {
+                                    egui::Color32::from_rgb(45, 45, 50)
+                                } else {
+                                    egui::Color32::from_rgb(225, 225, 230)
+                                };
+                                let messages_text_color = if is_messages {
+                                    egui::Color32::WHITE
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+
+                                let msg_btn = egui::Button::new(
+                                    egui::RichText::new("💬 Messages")
+                                        .small()
+                                        .strong()
+                                        .color(messages_text_color),
+                                )
+                                .fill(messages_bg)
+                                .corner_radius(egui::CornerRadius::same(6u8))
+                                .min_size(egui::vec2(84.0, button_height));
+
+                                if ui.add(msg_btn).clicked() {
+                                    self.table_bottom_view = models::structs::TableBottomView::Messages;
+                                }
+                            }
+
+                            // Show Details (Lint Issue) Button
+                            if has_lint {
+                                let count = self.lint_messages.len();
+                                let lint_text_label = format!("⚠️ Show details ({})", count);
+
+                                let lint_bg = if is_lint_open {
+                                    super::style::theme_warning(ui.ctx())
+                                } else if ui.visuals().dark_mode {
+                                    egui::Color32::from_rgb(60, 45, 30)
+                                } else {
+                                    egui::Color32::from_rgb(255, 243, 224)
+                                };
+
+                                let lint_text_color = if is_lint_open {
+                                    egui::Color32::WHITE
+                                } else {
+                                    super::style::theme_warning(ui.ctx())
+                                };
+
+                                let lint_btn = egui::Button::new(
+                                    egui::RichText::new(lint_text_label)
+                                        .small()
+                                        .strong()
+                                        .color(lint_text_color),
+                                )
+                                .fill(lint_bg)
+                                .corner_radius(egui::CornerRadius::same(6u8))
+                                .min_size(egui::vec2(90.0, button_height));
+
+                                if ui.add(lint_btn).clicked() {
+                                    self.show_lint_panel = !self.show_lint_panel;
+                                    if self.show_lint_panel {
+                                        self.lint_panel_shown_at = Some(std::time::Instant::now());
+                                    } else {
+                                        self.lint_panel_shown_at = None;
+                                    }
+                                }
+                            }
+                        });
                     });
-
-                    if let Some(hint) = &msg.hint {
-                        ui.label(egui::RichText::new(hint).small().italics().weak());
-                    }
-
-                    if let Some(span) = &msg.span {
-                        ui.label(
-                            egui::RichText::new(format!("range {}..{}", span.start, span.end))
-                                .small()
-                                .weak(),
-                        );
-                    }
-
-                    ui.add_space(4.0);
-                }
             });
 
-        // After rendering, handle auto-hide with hover/pin behavior
-        if self.show_lint_panel {
-            // If pinned, do not auto-hide
-            if self.lint_panel_pinned {
+        if close_toast {
+            self.show_lint_panel = false;
+            self.lint_panel_shown_at = None;
+        }
+
+        if format_clicked
+            && let Some(formatted) = query_tools::format_sql(&self.editor.text)
+            && formatted != self.editor.text
+        {
+            self.editor.set_text(formatted.clone());
+            let new_len = self.editor.text.len();
+            self.cursor_position = new_len;
+            self.multi_selection.clear();
+            self.multi_selection.add_collapsed(self.cursor_position);
+            self.last_editor_text = self.editor.text.clone();
+            self.lint_messages = query_tools::lint_sql(&self.editor.text);
+            self.show_lint_panel = !self.lint_messages.is_empty();
+            if self.show_lint_panel {
                 self.lint_panel_shown_at = Some(std::time::Instant::now());
             } else {
-                // If hovered, refresh timer to prevent hiding while interacting
-                if inner.response.hovered() {
-                    self.lint_panel_shown_at = Some(std::time::Instant::now());
-                }
-                // Check elapsed when not hovered
-                if let Some(shown_at) = self.lint_panel_shown_at {
-                    let elapsed_ms = shown_at.elapsed().as_millis() as u64;
-                    if elapsed_ms >= self.lint_panel_auto_hide_ms {
-                        self.show_lint_panel = false;
-                        self.lint_panel_shown_at = None;
-                    }
+                self.lint_panel_shown_at = None;
+            }
+            self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(4);
+            self.pending_cursor_set = Some(self.cursor_position);
+        }
+
+        // Hover & pin auto-hide logic
+        if self.show_lint_panel {
+            if self.lint_panel_pinned {
+                self.lint_panel_shown_at = Some(std::time::Instant::now());
+            } else if let Some(shown_at) = self.lint_panel_shown_at {
+                let elapsed_ms = shown_at.elapsed().as_millis() as u64;
+                if elapsed_ms >= self.lint_panel_auto_hide_ms {
+                    self.show_lint_panel = false;
+                    self.lint_panel_shown_at = None;
                 }
             }
         }
@@ -560,7 +732,7 @@ impl super::Tabular {
                     });
 
                 let button_size = egui::vec2(34.0, 34.0);
-                let button_spacing = 2.0;
+                let _button_spacing = 2.0;
                 let button_corner = 2 as u8;
                 let right_margin = 8.0; // Compact right margin to align closely with editor border
                 let cluster_pos = egui::pos2(
@@ -862,7 +1034,6 @@ impl super::Tabular {
                 }
             });
 
-        self.render_lint_panel(ui);
 
         if show_bottom {
             let handle_id = ui.make_persistent_id(format!("editor_table_splitter_{}", context_id));
@@ -974,9 +1145,30 @@ impl super::Tabular {
         } else {
             egui::Color32::from_rgb(225, 190, 170)
         };
+        let executed = self
+            .query_tabs
+            .get(self.active_tab_index)
+            .map(|t| t.has_executed_query)
+            .unwrap_or(false);
+        let has_headers = !self.current_table_headers.is_empty();
+        let has_message = !self.query_message.is_empty();
+        let has_lint = !self.lint_messages.is_empty();
+        let dock_visible = executed || has_headers || has_message || has_lint;
+        let is_lint_open = self.show_lint_panel && has_lint;
+
+        let y_offset = if dock_visible {
+            if is_lint_open {
+                -270.0
+            } else {
+                -46.0
+            }
+        } else {
+            -8.0
+        };
+
         egui::Area::new(egui::Id::new("active_query_jobs_overlay"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, y_offset))
             .show(ctx, |area_ui| {
                 egui::Frame::default()
                     .fill(frame_fill)
