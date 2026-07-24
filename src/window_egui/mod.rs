@@ -125,6 +125,14 @@ pub struct Tabular {
     pub auto_execute_after_connection: bool, // Flag to auto-execute after connection selected
     pub query_execution_in_progress: bool,
     pub query_icon_hold_until: Option<std::time::Instant>,
+    // Parameter Dialog state
+    pub show_parameter_dialog: bool,
+    pub parameter_dialog_query: String,
+    pub parameter_inputs: Vec<(String, String)>,
+    // Unsafe DML Warning Dialog state
+    pub show_unsafe_dml_dialog: bool,
+    pub unsafe_dml_query: String,
+    pub unsafe_dml_type: String,
     // Error message display
     pub error_message: String,
     pub show_error_message: bool,

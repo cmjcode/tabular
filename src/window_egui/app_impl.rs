@@ -3724,6 +3724,8 @@ impl App for Tabular {
         dialog::render_index_dialog(self, ctx);
         dialog::render_create_table_dialog(self, ctx);
         dialog::render_csv_import_dialog(self, ctx);
+        dialog::render_parameter_dialog(self, ctx);
+        dialog::render_unsafe_dml_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
         // Update dialog

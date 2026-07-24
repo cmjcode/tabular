@@ -261,6 +261,18 @@ impl super::Tabular {
             false
         }
     }
+    pub fn cancel_all_active_query_jobs(&mut self) {
+        let job_ids: Vec<u64> = self.active_query_jobs.keys().cloned().collect();
+        for job_id in job_ids {
+            self.cancel_active_query_job(job_id);
+        }
+        self.active_query_jobs.clear();
+        self.active_query_handles.clear();
+        self.query_job_batches.clear();
+        self.query_execution_in_progress = false;
+        self.current_table_name = "All queries cancelled".to_string();
+        self.extend_query_icon_hold();
+    }
     pub fn prune_cancelled_jobs(&mut self) {
         let now = std::time::Instant::now();
         let ttl = std::time::Duration::from_secs(30);

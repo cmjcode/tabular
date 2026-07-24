@@ -1790,3 +1790,147 @@ fn build_auto_mappings(
         }).collect()
     }
 }
+
+pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    if !tabular.show_parameter_dialog {
+        return;
+    }
+
+    let mut execute_clicked = false;
+    let mut cancel_clicked = false;
+
+    egui::Window::new("Parameter Bindings Required")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(450.0)
+        .open(&mut tabular.show_parameter_dialog)
+        .show(ctx, |ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("Query ini memiliki parameter placeholder. Masukkan nilai parameter:")
+                        .strong(),
+                );
+                ui.add_space(8.0);
+
+                egui::Grid::new("parameter_input_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| {
+                        for (param_name, val) in &mut tabular.parameter_inputs {
+                            ui.label(egui::RichText::new(param_name.as_str()).monospace().strong());
+                            ui.add(
+                                egui::TextEdit::singleline(val)
+                                    .hint_text("Masukkan nilai...")
+                                    .desired_width(260.0),
+                            );
+                            ui.end_row();
+                        }
+                    });
+
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(
+                                egui::RichText::new("🚀 Eksekusi Query")
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .clicked()
+                        {
+                            execute_clicked = true;
+                        }
+                        if ui.button("Batal").clicked() {
+                            cancel_clicked = true;
+                        }
+                    });
+                });
+            });
+        });
+
+    if cancel_clicked {
+        tabular.show_parameter_dialog = false;
+    } else if execute_clicked {
+        tabular.show_parameter_dialog = false;
+        let query = tabular.parameter_dialog_query.clone();
+        let substituted = editor::substitute_query_parameters(&query, &tabular.parameter_inputs);
+        editor::execute_query_bypass_checks(tabular, substituted);
+    }
+}
+
+pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    if !tabular.show_unsafe_dml_dialog {
+        return;
+    }
+
+    let mut confirm_clicked = false;
+    let mut cancel_clicked = false;
+
+    egui::Window::new("⚠️ Peringatan: Query Berbahaya (Unsafe DML)")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(480.0)
+        .open(&mut tabular.show_unsafe_dml_dialog)
+        .show(ctx, |ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Perintah {} ini TIDAK memiliki klausa WHERE!",
+                        tabular.unsafe_dml_type
+                    ))
+                    .color(window_egui::style::theme_danger(ctx))
+                    .strong()
+                    .size(15.0),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    "Mengeksekusi perintah ini akan mengubah atau menghapus SELURUH baris data pada tabel target. Apakah Anda yakin ingin melanjutkan?",
+                );
+                ui.add_space(8.0);
+
+                ui.group(|ui| {
+                    ui.label(
+                        egui::RichText::new(&tabular.unsafe_dml_query)
+                            .monospace()
+                            .size(12.0),
+                    );
+                });
+
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(
+                                egui::RichText::new("Ya, Eksekusi Perintah")
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .clicked()
+                        {
+                            confirm_clicked = true;
+                        }
+                        if ui.button("Batal").clicked() {
+                            cancel_clicked = true;
+                        }
+                    });
+                });
+            });
+        });
+
+    if cancel_clicked {
+        tabular.show_unsafe_dml_dialog = false;
+    } else if confirm_clicked {
+        tabular.show_unsafe_dml_dialog = false;
+        let query = tabular.unsafe_dml_query.clone();
+        editor::execute_query_bypass_checks(tabular, query);
+    }
+}
+

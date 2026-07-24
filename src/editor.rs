@@ -5496,6 +5496,40 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         return;
     }
 
+    // Safety Guard: Check for unsafe UPDATE or DELETE without WHERE clause
+    if !tabular.show_unsafe_dml_dialog {
+        if let Some(kind) = is_unsafe_dml_query(&query) {
+            tabular.show_unsafe_dml_dialog = true;
+            tabular.unsafe_dml_query = query;
+            tabular.unsafe_dml_type = kind.to_string();
+            tabular.query_execution_in_progress = false;
+            tabular.extend_query_icon_hold();
+            return;
+        }
+    }
+
+    // Parameter Prompt: Check if query contains parameter placeholders
+    if !tabular.show_parameter_dialog {
+        let params = extract_query_parameters(&query);
+        if !params.is_empty() {
+            tabular.show_parameter_dialog = true;
+            tabular.parameter_dialog_query = query;
+            tabular.parameter_inputs = params.into_iter().map(|p| (p, String::new())).collect();
+            tabular.query_execution_in_progress = false;
+            tabular.extend_query_icon_hold();
+            return;
+        }
+    }
+
+    execute_query_bypass_checks(tabular, query);
+}
+
+pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, query: String) {
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return;
+    }
+
     // Reset pagination state before evaluating auto-pagination rules
     tabular.use_server_pagination = false;
 
@@ -5976,36 +6010,348 @@ pub(crate) fn extract_query_from_cursor(tabular: &mut window_egui::Tabular) -> S
     if tabular.editor.text.is_empty() {
         return String::new();
     }
+    let text = &tabular.editor.text;
+    let cursor_pos = tabular.cursor_position.min(text.len());
+    extract_statement_at_cursor_from_text(text, cursor_pos)
+}
 
-    let text_bytes = tabular.editor.text.as_bytes();
-    let cursor_pos = tabular.cursor_position.min(text_bytes.len());
+pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usize) -> String {
+    if text.trim().is_empty() {
+        return String::new();
+    }
 
-    // Find start position: go backwards from cursor to find the last semicolon (or start of file)
-    let mut start_pos = 0;
-    for i in (0..cursor_pos).rev() {
-        if text_bytes[i] == b';' {
-            // Start after the semicolon
-            start_pos = i + 1;
-            break;
+    let statements = split_sql_statements_with_spans(text);
+    if statements.is_empty() {
+        return text.trim().to_string();
+    }
+
+    for (start, end, stmt_str) in &statements {
+        let trimmed = stmt_str.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if cursor_pos >= *start && cursor_pos <= *end {
+            return trimmed.to_string();
         }
     }
 
-    // Find end position: go forwards from cursor to find the next semicolon (or end of file)
-    let mut end_pos = text_bytes.len();
-    for (offset, &byte) in text_bytes[cursor_pos..].iter().enumerate() {
-        if byte == b';' {
-            // Include the semicolon
-            end_pos = cursor_pos + offset + 1;
-            break;
+    if let Some((_, _, first_stmt)) = statements.first() {
+        if cursor_pos < statements[0].0 && !first_stmt.trim().is_empty() {
+            return first_stmt.trim().to_string();
         }
     }
 
-    // Extract the query text
-    if let Ok(query_text) = std::str::from_utf8(&text_bytes[start_pos..end_pos]) {
-        query_text.trim().to_string()
-    } else {
-        String::new()
+    if let Some((_, _, last_stmt)) = statements.last() {
+        if cursor_pos >= statements.last().unwrap().1 && !last_stmt.trim().is_empty() {
+            return last_stmt.trim().to_string();
+        }
     }
+
+    text.trim().to_string()
+}
+
+pub(crate) fn split_sql_statements_with_spans(text: &str) -> Vec<(usize, usize, &str)> {
+    let mut result = Vec::new();
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut start = 0;
+    let mut i = 0;
+
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < len {
+        let b = bytes[i];
+        let next_b = if i + 1 < len { Some(bytes[i + 1]) } else { None };
+
+        if in_line_comment {
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_block_comment {
+            if b == b'*' && next_b == Some(b'/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_single_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            } else if b == b'\'' {
+                if next_b == Some(b'\'') {
+                    i += 2;
+                    continue;
+                }
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            } else if b == b'"' {
+                in_double_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_backtick {
+            if b == b'`' {
+                in_backtick = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'-' && next_b == Some(b'-') {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if b == b'#' {
+            in_line_comment = true;
+            i += 1;
+            continue;
+        }
+        if b == b'/' && next_b == Some(b'*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'\'' {
+            in_single_quote = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_double_quote = true;
+            i += 1;
+            continue;
+        }
+        if b == b'`' {
+            in_backtick = true;
+            i += 1;
+            continue;
+        }
+
+        if b == b';' {
+            let stmt = &text[start..=i];
+            if !stmt.trim().is_empty() {
+                result.push((start, i + 1, stmt));
+            }
+            start = i + 1;
+        }
+
+        i += 1;
+    }
+
+    if start < len {
+        let stmt = &text[start..len];
+        if !stmt.trim().is_empty() {
+            result.push((start, len, stmt));
+        }
+    }
+
+    result
+}
+
+pub(crate) fn extract_query_parameters(sql: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_backtick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while i < len {
+        let b = bytes[i];
+        let next_b = if i + 1 < len { Some(bytes[i + 1]) } else { None };
+
+        if in_line_comment {
+            if b == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_block_comment {
+            if b == b'*' && next_b == Some(b'/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_single_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            } else if b == b'\'' {
+                if next_b == Some(b'\'') {
+                    i += 2;
+                    continue;
+                }
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            } else if b == b'"' {
+                in_double_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_backtick {
+            if b == b'`' {
+                in_backtick = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'-' && next_b == Some(b'-') {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if b == b'#' {
+            in_line_comment = true;
+            i += 1;
+            continue;
+        }
+        if b == b'/' && next_b == Some(b'*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+
+        if b == b'\'' {
+            in_single_quote = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_double_quote = true;
+            i += 1;
+            continue;
+        }
+        if b == b'`' {
+            in_backtick = true;
+            i += 1;
+            continue;
+        }
+
+        if b == b':' && next_b == Some(b':') {
+            i += 2;
+            continue;
+        }
+
+        if b == b':' && next_b.map_or(false, |c| c.is_ascii_alphabetic() || c == b'_') {
+            let start = i;
+            i += 1;
+            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let param_name = &sql[start..i];
+            if !params.contains(&param_name.to_string()) {
+                params.push(param_name.to_string());
+            }
+            continue;
+        }
+
+        if b == b'$' && next_b.map_or(false, |c| c.is_ascii_digit()) {
+            let start = i;
+            i += 1;
+            while i < len && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            let param_name = &sql[start..i];
+            if !params.contains(&param_name.to_string()) {
+                params.push(param_name.to_string());
+            }
+            continue;
+        }
+
+        if b == b'?' {
+            let param_name = format!("? (Param {})", params.len() + 1);
+            if !params.contains(&param_name) {
+                params.push(param_name);
+            }
+            i += 1;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    params
+}
+
+pub(crate) fn substitute_query_parameters(query: &str, params: &[(String, String)]) -> String {
+    let mut result = query.to_string();
+    for (param_name, value) in params {
+        let val_trimmed = value.trim();
+        if val_trimmed.is_empty() {
+            continue;
+        }
+        if param_name.starts_with('?') {
+            if let Some(pos) = result.find('?') {
+                result.replace_range(pos..pos + 1, val_trimmed);
+            }
+        } else {
+            result = result.replace(param_name, val_trimmed);
+        }
+    }
+    result
+}
+
+pub(crate) fn is_unsafe_dml_query(sql: &str) -> Option<&'static str> {
+    let clean_sql = split_sql_statements_with_spans(sql);
+    let stmt = clean_sql.first().map(|(_, _, s)| *s).unwrap_or(sql);
+    let trimmed = stmt.trim();
+    let upper = trimmed.to_ascii_uppercase();
+
+    if upper.starts_with("DELETE") {
+        if !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
+            return Some("DELETE");
+        }
+    } else if upper.starts_with("UPDATE") {
+        if !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
+            return Some("UPDATE");
+        }
+    }
+    None
 }
 
 pub(crate) fn close_tabs_for_file(tabular: &mut window_egui::Tabular, file_path: &str) {
@@ -6023,3 +6369,36 @@ pub(crate) fn close_tabs_for_file(tabular: &mut window_egui::Tabular, file_path:
         editor::close_tab(tabular, index);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_statement_at_cursor_with_quotes() {
+        let sql = "SELECT * FROM users WHERE name = 'John;Doe'; SELECT * FROM orders;";
+        // Cursor on first query
+        let stmt1 = extract_statement_at_cursor_from_text(sql, 10);
+        assert_eq!(stmt1, "SELECT * FROM users WHERE name = 'John;Doe';");
+
+        // Cursor on second query
+        let stmt2 = extract_statement_at_cursor_from_text(sql, 50);
+        assert_eq!(stmt2, "SELECT * FROM orders;");
+    }
+
+    #[test]
+    fn test_extract_query_parameters() {
+        let sql = "SELECT * FROM users WHERE status = :status AND id = $1 AND name = ?;";
+        let params = extract_query_parameters(sql);
+        assert_eq!(params, vec![":status".to_string(), "$1".to_string(), "? (Param 3)".to_string()]);
+    }
+
+    #[test]
+    fn test_is_unsafe_dml_query() {
+        assert_eq!(is_unsafe_dml_query("DELETE FROM users;"), Some("DELETE"));
+        assert_eq!(is_unsafe_dml_query("UPDATE users SET status = 'inactive';"), Some("UPDATE"));
+        assert_eq!(is_unsafe_dml_query("DELETE FROM users WHERE id = 1;"), None);
+        assert_eq!(is_unsafe_dml_query("UPDATE users SET status = 'a' WHERE id = 1;"), None);
+    }
+}
+
