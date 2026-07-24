@@ -41,6 +41,30 @@ pub struct SnippetDefinition {
 
 const SNIPPETS: &[SnippetDefinition] = &[
     SnippetDefinition {
+        label: "sel -> SELECT * FROM",
+        template: "SELECT * FROM ",
+        note: "Quick SELECT statement",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
+        label: "ins -> INSERT INTO",
+        template: "INSERT INTO ",
+        note: "Quick INSERT statement",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
+        label: "upd -> UPDATE ... SET",
+        template: "UPDATE table_name SET column = value WHERE condition;",
+        note: "Quick UPDATE statement",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
+        label: "df -> DELETE FROM",
+        template: "DELETE FROM ",
+        note: "Quick DELETE statement",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
         label: "SELECT skeleton",
         template: "SELECT column1\nFROM table_name\nWHERE condition;",
         note: "Basic SELECT template",
@@ -82,8 +106,14 @@ pub fn snippet_candidates(prefix: &str, ctx: SnippetContext) -> Vec<SnippetDefin
             if lowered.is_empty() {
                 return true;
             }
-            snippet.label.to_ascii_lowercase().starts_with(&lowered)
-                || snippet.template.to_ascii_lowercase().starts_with(&lowered)
+            let label_low = snippet.label.to_ascii_lowercase();
+            let tmpl_low = snippet.template.to_ascii_lowercase();
+            label_low.starts_with(&lowered)
+                || tmpl_low.starts_with(&lowered)
+                || (lowered == "sel" && label_low.contains("sel"))
+                || (lowered == "ins" && label_low.contains("ins"))
+                || (lowered == "upd" && label_low.contains("upd"))
+                || ((lowered == "df" || lowered == "del") && label_low.contains("delete"))
         })
         .collect()
 }

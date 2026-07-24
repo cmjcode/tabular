@@ -853,6 +853,31 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
         ui.ctx().request_repaint();
     }
+
+    // Shortcut: Go to DDL / Declaration (F12 or Cmd/Ctrl + B)
+    let mut trigger_goto_def = false;
+    ui.input(|i| {
+        let cmd_or_ctrl = i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl;
+        if i.key_pressed(egui::Key::F12) || (cmd_or_ctrl && i.key_pressed(egui::Key::B)) {
+            trigger_goto_def = true;
+        }
+    });
+    if trigger_goto_def {
+        ui.ctx().input_mut(|ri| {
+            ri.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::F12 | egui::Key::B,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+        });
+        jump_to_definition_at_cursor(tabular);
+        ui.ctx().request_repaint();
+    }
     
     // Find & Replace panel
     if tabular.advanced_editor.show_find_replace {
@@ -2755,6 +2780,30 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         tabular.editor_focus_boost_frames = 10;
         ui.ctx().request_repaint();
     }
+
+    // Cmd+Click / Ctrl+Click Go to DDL / Declaration
+    if response.clicked()
+        && ui.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.mac_cmd)
+    {
+        jump_to_definition_at_cursor(tabular);
+    }
+
+    // Right-click Context Menu on SQL Editor
+    response.context_menu(|ui| {
+        if ui.button("🔍 Go to DDL / Structure (F12 / Cmd+B)").clicked() {
+            jump_to_definition_at_cursor(tabular);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("⚡ Execute Statement (Cmd+Enter)").clicked() {
+            execute_selected_command(tabular);
+            ui.close();
+        }
+        if ui.button("🧹 Format SQL (Cmd+Shift+F)").clicked() {
+            reformat_current_sql(tabular, ui);
+            ui.close();
+        }
+    });
 
     // Rely on egui's built-in double-click word selection.
     // We purposely do NOT collapse selection on double-click frame (handled via did_double_click checks above),
@@ -6368,6 +6417,143 @@ pub(crate) fn close_tabs_for_file(tabular: &mut window_egui::Tabular, file_path:
     for &index in indices_to_close.iter().rev() {
         editor::close_tab(tabular, index);
     }
+}
+
+pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
+    let text = tabular.editor.text.clone();
+    let text_len = text.len();
+    if text_len == 0 {
+        return;
+    }
+
+    // Prefer active selection if present; otherwise extract word at cursor
+    let raw_symbol = if tabular.selection_start < tabular.selection_end
+        && tabular.selection_end <= text_len
+    {
+        text[tabular.selection_start..tabular.selection_end].to_string()
+    } else {
+        let cursor = tabular.cursor_position.min(text_len);
+        let bytes = text.as_bytes();
+
+        let mut start = cursor;
+        while start > 0 {
+            let b = bytes[start - 1];
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        let mut end = cursor;
+        while end < bytes.len() {
+            let b = bytes[end];
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        if start < end {
+            text[start..end].to_string()
+        } else {
+            String::new()
+        }
+    };
+
+    let symbol = raw_symbol
+        .split('.')
+        .next_back()
+        .unwrap_or(&raw_symbol)
+        .trim_matches(|c| c == '"' || c == '`' || c == '[' || c == ']' || c == '\'' || c == ';' || c == '(' || c == ')')
+        .trim();
+
+    if symbol.is_empty() {
+        return;
+    }
+
+    let active_cid = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.connection_id)
+        .or(tabular.current_connection_id);
+    let active_db = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.database_name.clone())
+        .unwrap_or_default();
+
+    // Only proceed if symbol matches a known database table / view (skip column names & SQL keywords)
+    let target_table = match active_cid {
+        Some(cid) => {
+            let mut found = None;
+            for tt in &["BASE TABLE", "TABLE", "VIEW"] {
+                if let Some(tables) = crate::cache_data::get_tables_from_cache(tabular, cid, &active_db, tt) {
+                    if let Some(m) = tables.into_iter().find(|t| t.eq_ignore_ascii_case(symbol)) {
+                        found = Some(m);
+                        break;
+                    }
+                }
+            }
+            if found.is_none() {
+                let all = crate::editor_autocomplete_new::get_all_tables(tabular);
+                if let Some(m) = all.into_iter().find(|t| t.eq_ignore_ascii_case(symbol)) {
+                    found = Some(m);
+                }
+            }
+            found
+        }
+        None => None,
+    };
+
+    let Some(target_table) = target_table else {
+        log::debug!("🔍 [Go-To-Definition] Symbol '{}' is not a known table/view, ignoring", symbol);
+        return;
+    };
+
+    log::info!("🔍 [Go-To-Definition] Opening DDL / Structure for table '{}' (cid: {:?}, db: '{}')", target_table, active_cid, active_db);
+
+    let tab_title = format!("Table: {}", target_table);
+    let view_tab_title = format!("View: {}", target_table);
+
+    // Only match dedicated table browse tabs (avoid matching regular query tabs that ran queries on this table)
+    let existing_tab_idx = tabular.query_tabs.iter().position(|tab| {
+        tab.is_table_browse_mode && (tab.title == tab_title || tab.title == view_tab_title)
+    });
+
+    if let Some(idx) = existing_tab_idx {
+        tabular.active_tab_index = idx;
+    } else {
+        let query_content = format!("SELECT *\nFROM {};", target_table);
+        create_new_tab_with_connection_and_database(
+            tabular,
+            tab_title.clone(),
+            query_content,
+            active_cid,
+            if active_db.is_empty() { None } else { Some(active_db.clone()) },
+        );
+    }
+
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.is_table_browse_mode = true;
+        let formatted_name = format!(
+            "Table: {} (Database: {})",
+            target_table,
+            if active_db.is_empty() { "Unknown" } else { &active_db }
+        );
+        tab.result_table_name = formatted_name.clone();
+        tabular.current_table_name = formatted_name;
+    }
+
+    if let Some(cid) = active_cid {
+        tabular.current_connection_id = Some(cid);
+    }
+
+    tabular.table_bottom_view = models::structs::TableBottomView::Structure;
+    tabular.structure_sub_view = models::structs::StructureSubView::Columns;
+    tabular.last_structure_target = None;
+    data_table::load_structure_info_for_current_table(tabular);
+
+    tabular.toasts.info(format!("Opened Structure for table '{}'", target_table));
 }
 
 #[cfg(test)]

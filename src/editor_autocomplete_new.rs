@@ -454,7 +454,7 @@ fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
         Some(all)
     }
 }
-fn get_all_tables(app: &Tabular) -> Vec<String> {
+pub(crate) fn get_all_tables(app: &Tabular) -> Vec<String> {
     let mut all = Vec::new();
     for (cid, dbs) in &app.database_cache {
         for d in dbs {
@@ -1105,12 +1105,61 @@ fn build_suggestions(
         }
         SqlContext::AfterFrom => {
             add_keywords(&mut out, &pl);
-            // Prefer the resolved connection's tables; if that yields nothing
-            // (unbound tab, empty db_name, stale cache), fall back to every
-            // cached table so suggestions still appear.
             let tables = conn_id
                 .and_then(|cid| get_cached_tables(app, cid, &db))
                 .unwrap_or_else(|| get_all_tables(app));
+            
+            // FK-aware Join Table + ON clause suggestions when tables are already in scope
+            if let Some(_cid) = conn_id {
+                let fks = collect_loaded_fks(app);
+                let alias_map = collect_alias_map(text);
+                if !tables_in_scope.is_empty() && !fks.is_empty() {
+                    for scope_t in &tables_in_scope {
+                        let scope_lower = scope_t.to_ascii_lowercase();
+                        let real_scope = alias_map
+                            .get(&scope_lower)
+                            .cloned()
+                            .unwrap_or_else(|| scope_t.clone());
+                        let real_scope_lower = real_scope.to_ascii_lowercase();
+
+                        let scope_display = alias_map
+                            .iter()
+                            .find(|(k, v)| v.to_ascii_lowercase() == real_scope_lower && *k != &real_scope_lower)
+                            .map(|(k, _)| k.as_str())
+                            .unwrap_or(scope_t.as_str());
+
+                        for fk in &fks {
+                            let ft = fk.table_name.to_ascii_lowercase();
+                            let fr = fk.referenced_table_name.to_ascii_lowercase();
+
+                            if ft == real_scope_lower {
+                                let target = &fk.referenced_table_name;
+                                let join_sugg = format!(
+                                    "{} ON {}.{} = {}.{}",
+                                    target, target, fk.referenced_column_name, scope_display, fk.column_name
+                                );
+                                if fuzzy_match(&pl, &join_sugg).is_some()
+                                    || fuzzy_match(&pl, target).is_some()
+                                {
+                                    out.push(join_sugg);
+                                }
+                            } else if fr == real_scope_lower {
+                                let target = &fk.table_name;
+                                let join_sugg = format!(
+                                    "{} ON {}.{} = {}.{}",
+                                    target, target, fk.column_name, scope_display, fk.referenced_column_name
+                                );
+                                if fuzzy_match(&pl, &join_sugg).is_some()
+                                    || fuzzy_match(&pl, target).is_some()
+                                {
+                                    out.push(join_sugg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             for t in tables {
                 if fuzzy_match(&pl, &t).is_some() {
                     out.push(t);
