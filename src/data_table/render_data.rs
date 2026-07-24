@@ -6,6 +6,8 @@ use super::{
     refresh_current_table_data, infer_current_table_name,
     handle_row_click, handle_column_click,
     copy_selected_block_as_csv, copy_selected_rows_as_csv, copy_selected_columns_as_csv,
+    copy_selected_as_sql_inserts, copy_selected_as_markdown,
+    export_selected_to_sql_inserts, export_selected_to_markdown,
     apply_sql_filter, sort_table_data,
     render_pagination_bar,
 };
@@ -863,6 +865,35 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         }
                                                         ui.close();
                                                     }
+                                                    let db_type = tabular
+                                                        .current_connection_id
+                                                        .and_then(|cid| {
+                                                            tabular
+                                                                .connections
+                                                                .iter()
+                                                                .find(|c| c.id == Some(cid))
+                                                        })
+                                                        .map(|c| c.connection_type.clone());
+                                                    if ui.button("🛢 Copy Selection as SQL INSERTs").clicked() {
+                                                        if let Some(sql) = copy_selected_as_sql_inserts(tabular, db_type.as_ref()) {
+                                                            ui.ctx().copy_text(sql);
+                                                        }
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("📝 Copy Selection as Markdown Table").clicked() {
+                                                        if let Some(md) = copy_selected_as_markdown(tabular) {
+                                                            ui.ctx().copy_text(md);
+                                                        }
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("🛢 Export Selection as SQL INSERTs...").clicked() {
+                                                        export_selected_to_sql_inserts(tabular, db_type.as_ref());
+                                                        ui.close();
+                                                    }
+                                                    if ui.button("📝 Export Selection as Markdown Table...").clicked() {
+                                                        export_selected_to_markdown(tabular);
+                                                        ui.close();
+                                                    }
                                                     if let Some(selected_row_idx) =
                                                         tabular.selected_row
                                                         && ui.button("📄 Copy Row as CSV").clicked()
@@ -1000,6 +1031,32 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 {
                                     ui.ctx().copy_text(csv);
                                 }
+                                ui.close();
+                            }
+                            let db_type_bg = tabular
+                                .current_connection_id
+                                .and_then(|cid| {
+                                    tabular.connections.iter().find(|c| c.id == Some(cid))
+                                })
+                                .map(|c| c.connection_type.clone());
+                            if ui.button("🛢 Copy Selection as SQL INSERTs").clicked() {
+                                if let Some(sql) = copy_selected_as_sql_inserts(tabular, db_type_bg.as_ref()) {
+                                    ui.ctx().copy_text(sql);
+                                }
+                                ui.close();
+                            }
+                            if ui.button("📝 Copy Selection as Markdown Table").clicked() {
+                                if let Some(md) = copy_selected_as_markdown(tabular) {
+                                    ui.ctx().copy_text(md);
+                                }
+                                ui.close();
+                            }
+                            if ui.button("🛢 Export Selection as SQL INSERTs...").clicked() {
+                                export_selected_to_sql_inserts(tabular, db_type_bg.as_ref());
+                                ui.close();
+                            }
+                            if ui.button("📝 Export Selection as Markdown Table...").clicked() {
+                                export_selected_to_markdown(tabular);
                                 ui.close();
                             }
                             if ui.button("📄 Export to CSV").clicked() {

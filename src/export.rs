@@ -178,7 +178,7 @@ pub fn export_to_markdown(
     }
 }
 
-fn build_markdown(all_table_data: &[Vec<String>], headers: &[String]) -> String {
+pub fn build_markdown(all_table_data: &[Vec<String>], headers: &[String]) -> String {
     let escape = |s: &str| s.replace('|', "\\|").replace('\n', "<br>");
     let mut out = String::new();
     out.push_str(&format!(
@@ -223,7 +223,7 @@ pub fn export_to_sql_inserts(
     }
 }
 
-fn build_sql_inserts(
+pub fn build_sql_inserts(
     all_table_data: &[Vec<String>],
     headers: &[String],
     table_caption: &str,

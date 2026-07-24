@@ -64,6 +64,42 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                         .on_hover_text("Query execution time");
                 }
 
+                // Grid Summary Bar (Sum, Avg, Count, Min, Max for selected cells)
+                if let Some(summary) = super::selection::calculate_grid_summary(tabular) {
+                    ui.separator();
+                    let format_num = |v: f64| -> String {
+                        if v.fract().abs() < 1e-6 {
+                            format!("{:.0}", v)
+                        } else {
+                            format!("{:.2}", v)
+                        }
+                    };
+
+                    if summary.numeric_count > 0 {
+                        let summary_text = format!(
+                            "∑ Sum: {}  |  x̅ Avg: {}  |  🔢 Count: {}  |  ⬇ Min: {}  |  ⬆ Max: {}",
+                            format_num(summary.sum),
+                            format_num(summary.avg),
+                            summary.numeric_count,
+                            format_num(summary.min),
+                            format_num(summary.max)
+                        );
+                        ui.colored_label(
+                            crate::window_egui::style::theme_accent(ui.ctx()),
+                            egui::RichText::new(summary_text).strong().small(),
+                        )
+                        .on_hover_text(format!(
+                            "Selection Summary ({} cells selected, {} numeric)",
+                            summary.total_cells, summary.numeric_count
+                        ));
+                    } else {
+                        ui.colored_label(
+                            ui.visuals().weak_text_color(),
+                            egui::RichText::new(format!("Selected: {} cells", summary.total_cells)).small(),
+                        );
+                    }
+                }
+
                 ui.separator();
 
                 // Page size selector

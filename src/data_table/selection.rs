@@ -194,4 +194,217 @@ pub(crate) fn copy_selected_block_as_csv(
     }
 }
 
-// Pagination methods
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GridSummary {
+    pub total_cells: usize,
+    pub numeric_count: usize,
+    pub sum: f64,
+    pub avg: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+pub(crate) fn get_selected_subtable(
+    tabular: &window_egui::Tabular,
+) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    if tabular.current_table_data.is_empty() || tabular.current_table_headers.is_empty() {
+        return None;
+    }
+
+    // 1. Check block selection (table_sel_anchor + selected_cell)
+    if let (Some((ar, ac)), Some((br, bc))) = (tabular.table_sel_anchor, tabular.selected_cell) {
+        let rmin = ar.min(br);
+        let rmax = ar.max(br).min(tabular.current_table_data.len().saturating_sub(1));
+        let cmin = ac.min(bc);
+        let cmax = ac.max(bc).min(tabular.current_table_headers.len().saturating_sub(1));
+
+        if rmin <= rmax && cmin <= cmax {
+            let headers = tabular.current_table_headers[cmin..=cmax].to_vec();
+            let mut rows = Vec::new();
+            for r in rmin..=rmax {
+                if let Some(row) = tabular.current_table_data.get(r) {
+                    let sub_row = row[cmin..=cmax].to_vec();
+                    rows.push(sub_row);
+                }
+            }
+            return Some((headers, rows));
+        }
+    }
+
+    // 2. Check row selection
+    if !tabular.selected_rows.is_empty() {
+        let headers = tabular.current_table_headers.clone();
+        let mut rows = Vec::new();
+        for (r_idx, row) in tabular.current_table_data.iter().enumerate() {
+            if tabular.selected_rows.contains(&r_idx) {
+                rows.push(row.clone());
+            }
+        }
+        if !rows.is_empty() {
+            return Some((headers, rows));
+        }
+    }
+
+    // 3. Check column selection
+    if !tabular.selected_columns.is_empty() {
+        let mut col_indices: Vec<usize> = tabular.selected_columns.iter().copied().collect();
+        col_indices.sort_unstable();
+        col_indices.retain(|&c| c < tabular.current_table_headers.len());
+
+        if !col_indices.is_empty() {
+            let headers: Vec<String> = col_indices
+                .iter()
+                .map(|&c| tabular.current_table_headers[c].clone())
+                .collect();
+            let mut rows = Vec::new();
+            for row in &tabular.current_table_data {
+                let sub_row: Vec<String> = col_indices
+                    .iter()
+                    .map(|&c| row.get(c).cloned().unwrap_or_default())
+                    .collect();
+                rows.push(sub_row);
+            }
+            return Some((headers, rows));
+        }
+    }
+
+    // 4. Check single cell selection
+    if let Some((r, c)) = tabular.selected_cell {
+        if r < tabular.current_table_data.len() && c < tabular.current_table_headers.len() {
+            let headers = vec![tabular.current_table_headers[c].clone()];
+            let val = tabular.current_table_data[r].get(c).cloned().unwrap_or_default();
+            let rows = vec![vec![val]];
+            return Some((headers, rows));
+        }
+    }
+
+    None
+}
+
+pub(crate) fn calculate_grid_summary(tabular: &window_egui::Tabular) -> Option<GridSummary> {
+    let (_, rows) = get_selected_subtable(tabular)?;
+    if rows.is_empty() {
+        return None;
+    }
+
+    let mut summary = GridSummary::default();
+    let mut min_val = f64::INFINITY;
+    let mut max_val = f64::NEG_INFINITY;
+
+    for row in &rows {
+        for cell in row {
+            summary.total_cells += 1;
+            let clean = cell.replace(',', "").trim().to_string();
+            if let Ok(num) = clean.parse::<f64>() {
+                if !num.is_nan() {
+                    summary.numeric_count += 1;
+                    summary.sum += num;
+                    if num < min_val {
+                        min_val = num;
+                    }
+                    if num > max_val {
+                        max_val = num;
+                    }
+                }
+            }
+        }
+    }
+
+    if summary.total_cells == 0 {
+        return None;
+    }
+
+    if summary.numeric_count > 0 {
+        summary.avg = summary.sum / (summary.numeric_count as f64);
+        summary.min = min_val;
+        summary.max = max_val;
+    }
+
+    Some(summary)
+}
+
+pub(crate) fn copy_selected_as_sql_inserts(
+    tabular: &window_egui::Tabular,
+    db_type: Option<&crate::models::enums::DatabaseType>,
+) -> Option<String> {
+    let (headers, rows) = get_selected_subtable(tabular)?;
+    if rows.is_empty() || headers.is_empty() {
+        return None;
+    }
+    Some(crate::export::build_sql_inserts(
+        &rows,
+        &headers,
+        &tabular.current_table_name,
+        db_type,
+    ))
+}
+
+pub(crate) fn copy_selected_as_markdown(tabular: &window_egui::Tabular) -> Option<String> {
+    let (headers, rows) = get_selected_subtable(tabular)?;
+    if rows.is_empty() || headers.is_empty() {
+        return None;
+    }
+    Some(crate::export::build_markdown(&rows, &headers))
+}
+
+pub(crate) fn export_selected_to_sql_inserts(
+    tabular: &window_egui::Tabular,
+    db_type: Option<&crate::models::enums::DatabaseType>,
+) {
+    if let Some((headers, rows)) = get_selected_subtable(tabular) {
+        crate::export::export_to_sql_inserts(&rows, &headers, &tabular.current_table_name, db_type);
+    }
+}
+
+pub(crate) fn export_selected_to_markdown(tabular: &window_egui::Tabular) {
+    if let Some((headers, rows)) = get_selected_subtable(tabular) {
+        crate::export::export_to_markdown(&rows, &headers, &tabular.current_table_name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_tabular() -> window_egui::Tabular {
+        let mut tab = window_egui::Tabular::default();
+        tab.current_table_headers = vec!["id".to_string(), "val".to_string(), "name".to_string()];
+        tab.current_table_data = vec![
+            vec!["1".to_string(), "10.5".to_string(), "Alice".to_string()],
+            vec!["2".to_string(), "20.0".to_string(), "Bob".to_string()],
+            vec!["3".to_string(), "30.5".to_string(), "Charlie".to_string()],
+        ];
+        tab
+    }
+
+    #[test]
+    fn test_grid_summary_block_selection() {
+        let mut tab = create_test_tabular();
+        tab.table_sel_anchor = Some((0, 0));
+        tab.selected_cell = Some((1, 1)); // block 0..=1 rows, 0..=1 cols
+
+        let summary = calculate_grid_summary(&tab).expect("Should compute summary");
+        assert_eq!(summary.total_cells, 4);
+        assert_eq!(summary.numeric_count, 4);
+        assert_eq!(summary.sum, 1.0 + 10.5 + 2.0 + 20.0); // 33.5
+        assert_eq!(summary.min, 1.0);
+        assert_eq!(summary.max, 20.0);
+        assert_eq!(summary.avg, 33.5 / 4.0);
+    }
+
+    #[test]
+    fn test_selection_export_sql_and_markdown() {
+        let mut tab = create_test_tabular();
+        tab.selected_rows.insert(0);
+
+        let sql = copy_selected_as_sql_inserts(&tab, None).expect("SQL string");
+        assert!(sql.contains("INSERT INTO"));
+        assert!(sql.contains("('1', '10.5', 'Alice')"));
+
+        let md = copy_selected_as_markdown(&tab).expect("MD string");
+        assert!(md.contains("| id | val | name |"));
+        assert!(md.contains("| 1 | 10.5 | Alice |"));
+    }
+}
+
+
