@@ -1812,6 +1812,42 @@ impl Tabular {
                                             }
                                         }
                                     });
+
+                                add_divider(ui);
+
+                                // 3.5 Active Schema / Search Path selector
+                                let (tab_schema, active_conn_type) = self
+                                    .query_tabs
+                                    .get(self.active_tab_index)
+                                    .map(|t| {
+                                        let conn_type = self.connections.iter().find(|c| c.id == t.connection_id).map(|c| c.connection_type.clone());
+                                        (t.schema_name.clone(), conn_type)
+                                    })
+                                    .unwrap_or((None, None));
+
+                                let mut schemas = self.get_schemas_cached(cid, tab_db_name.as_deref());
+                                if schemas.is_empty() {
+                                    schemas.push("public".to_string());
+                                }
+                                let active_schema = tab_schema.unwrap_or_else(|| "public".to_string());
+
+                                egui::ComboBox::from_id_salt("query_schema_select")
+                                    .width(90.0)
+                                    .selected_text(format!("s: {}", active_schema))
+                                    .show_ui(ui, |ui| {
+                                        for s in &schemas {
+                                            if ui.selectable_label(active_schema == *s, s).clicked() {
+                                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                                    tab.schema_name = Some(s.clone());
+                                                }
+                                                if matches!(active_conn_type, Some(models::enums::DatabaseType::PostgreSQL)) {
+                                                    let set_path_query = format!("SET search_path TO {}, public;", s);
+                                                    let _ = crate::connection::execute_query_with_connection(self, cid, set_path_query);
+                                                }
+                                                self.toasts.info(format!("Switched active schema to '{}'", s));
+                                            }
+                                        }
+                                    });
                             }
 
                             add_divider(ui);
@@ -2022,6 +2058,14 @@ impl Tabular {
                                             if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                                 tab.object_ddl = Some(current_text);
                                             }
+                                        }
+                                        models::structs::TableBottomView::Explain => {
+                                            let explain_json = self
+                                                .query_tabs
+                                                .get(self.active_tab_index)
+                                                .and_then(|tab| tab.explain_plan_json.clone())
+                                                .unwrap_or_default();
+                                            crate::diagram_view::render_explain_plan_viewer(ui, &explain_json);
                                         }
                                         _ => {
                                             data_table::render_table_data(self, ui);

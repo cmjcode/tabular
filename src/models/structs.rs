@@ -450,6 +450,7 @@ pub struct QueryResult {
     pub query_message: String,
     pub query_message_is_error: bool,
     pub execution_time_ms: u128,
+    pub explain_plan_json: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -461,6 +462,7 @@ pub struct QueryTab {
     pub is_modified: bool,
     pub connection_id: Option<i64>, // Each tab can have its own database connection
     pub database_name: Option<String>, // Each tab can have its own database selection
+    pub schema_name: Option<String>, // Active schema / search_path
     pub has_executed_query: bool,   // Track if this tab has ever executed a query
     // NEW: per-tab result state so switching tabs restores its own data
     pub result_headers: Vec<String>,
@@ -481,6 +483,7 @@ pub struct QueryTab {
     // DBA quick view special post-processing mode (Replication Status, Master Status, etc.)
     pub dba_special_mode: Option<models::enums::DBASpecialMode>,
     pub object_ddl: Option<String>, // Optional DDL (e.g., ALTER VIEW) for browsed objects
+    pub explain_plan_json: Option<String>, // Parsed/raw EXPLAIN plan output JSON
     // Query execution message (similar to TablePlus message tab)
     pub query_message: String,      // Message text (success/error)
     pub query_message_is_error: bool, // Whether the message is an error or success
@@ -646,6 +649,7 @@ pub enum TableBottomView {
     Structure,
     Query,
     Messages,
+    Explain,
 }
 
 // Simplified column info for Structure tab (can be extended later per RDBMS)

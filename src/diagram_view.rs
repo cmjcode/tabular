@@ -1,4 +1,5 @@
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use crate::models::structs::{DiagramState, DiagramNode};
 
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
@@ -1028,3 +1029,537 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
         node.pos.y -= min_y - 50.0;
     }
 }
+
+// ============================================================================
+// VISUAL EXPLAIN PLAN VIEWER (PostgreSQL / MySQL / Text fallback)
+// ============================================================================
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExplainPlanNode {
+    pub node_type: String,
+    pub relation_name: Option<String>,
+    pub index_name: Option<String>,
+    pub alias: Option<String>,
+    pub startup_cost: f64,
+    pub total_cost: f64,
+    pub plan_rows: u64,
+    pub plan_width: u64,
+    pub actual_startup_time: Option<f64>,
+    pub actual_total_time: Option<f64>,
+    pub actual_rows: Option<u64>,
+    pub actual_loops: Option<u64>,
+    pub children: Vec<ExplainPlanNode>,
+}
+
+impl ExplainPlanNode {
+    pub fn parse(raw_plan: &str) -> Option<Self> {
+        let trimmed = raw_plan.trim();
+        if trimmed.starts_with('[') || trimmed.starts_with('{') {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(node) = Self::parse_json_value(&v) {
+                    return Some(node);
+                }
+            }
+        }
+
+        // Fallback: parse plain text EXPLAIN output lines
+        Self::parse_text_lines(trimmed)
+    }
+
+    fn parse_json_value(v: &serde_json::Value) -> Option<Self> {
+        if let Some(arr) = v.as_array() {
+            if let Some(first) = arr.first() {
+                return Self::parse_json_value(first);
+            }
+        }
+        if let Some(obj) = v.as_object() {
+            if let Some(plan) = obj.get("Plan") {
+                return Self::parse_pg_node(plan);
+            }
+            if let Some(qb) = obj.get("query_block") {
+                return Self::parse_mysql_qb(qb);
+            }
+            if obj.contains_key("Node Type") {
+                return Self::parse_pg_node(v);
+            }
+        }
+        None
+    }
+
+    fn parse_pg_node(v: &serde_json::Value) -> Option<Self> {
+        let node_type = v.get("Node Type")?.as_str()?.to_string();
+        let relation_name = v.get("Relation Name").and_then(|s| s.as_str()).map(|s| s.to_string());
+        let index_name = v.get("Index Name").and_then(|s| s.as_str()).map(|s| s.to_string());
+        let alias = v.get("Alias").and_then(|s| s.as_str()).map(|s| s.to_string());
+
+        let startup_cost = v.get("Startup Cost").and_then(|n| n.as_f64()).unwrap_or(0.0);
+        let total_cost = v.get("Total Cost").and_then(|n| n.as_f64()).unwrap_or(0.0);
+        let plan_rows = v.get("Plan Rows").and_then(|n| n.as_u64()).unwrap_or(0);
+        let plan_width = v.get("Plan Width").and_then(|n| n.as_u64()).unwrap_or(0);
+
+        let actual_startup_time = v.get("Actual Startup Time").and_then(|n| n.as_f64());
+        let actual_total_time = v.get("Actual Total Time").and_then(|n| n.as_f64());
+        let actual_rows = v.get("Actual Rows").and_then(|n| n.as_u64());
+        let actual_loops = v.get("Actual Loops").and_then(|n| n.as_u64());
+
+        let mut children = Vec::new();
+        if let Some(plans) = v.get("Plans").and_then(|p| p.as_array()) {
+            for child_val in plans {
+                if let Some(child_node) = Self::parse_pg_node(child_val) {
+                    children.push(child_node);
+                }
+            }
+        }
+
+        Some(ExplainPlanNode {
+            node_type,
+            relation_name,
+            index_name,
+            alias,
+            startup_cost,
+            total_cost,
+            plan_rows,
+            plan_width,
+            actual_startup_time,
+            actual_total_time,
+            actual_rows,
+            actual_loops,
+            children,
+        })
+    }
+
+    fn parse_mysql_qb(v: &serde_json::Value) -> Option<Self> {
+        let mut children = Vec::new();
+        let mut node_type = "Query Block".to_string();
+        let mut total_cost = 0.0;
+
+        if let Some(cost) = v
+            .get("cost_info")
+            .and_then(|c| c.get("query_cost"))
+            .and_then(|s| s.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            total_cost = cost;
+        }
+
+        if let Some(nl) = v.get("nested_loop").and_then(|n| n.as_array()) {
+            node_type = "Nested Loop Join".to_string();
+            for item in nl {
+                if let Some(t) = item.get("table") {
+                    if let Some(cn) = Self::parse_mysql_table(t) {
+                        children.push(cn);
+                    }
+                }
+            }
+        } else if let Some(t) = v.get("table") {
+            return Self::parse_mysql_table(t);
+        }
+
+        Some(ExplainPlanNode {
+            node_type,
+            relation_name: None,
+            index_name: None,
+            alias: None,
+            startup_cost: 0.0,
+            total_cost,
+            plan_rows: 0,
+            plan_width: 0,
+            actual_startup_time: None,
+            actual_total_time: None,
+            actual_rows: None,
+            actual_loops: None,
+            children,
+        })
+    }
+
+    fn parse_mysql_table(v: &serde_json::Value) -> Option<Self> {
+        let table_name = v.get("table_name").and_then(|s| s.as_str()).map(|s| s.to_string());
+        let access_type = v.get("access_type").and_then(|s| s.as_str()).unwrap_or("ALL");
+        let node_type = match access_type {
+            "ALL" => "Seq Scan (Full Table Scan)".to_string(),
+            "ref" | "eq_ref" | "const" => "Index Scan".to_string(),
+            "range" => "Index Range Scan".to_string(),
+            other => format!("{} Scan", other),
+        };
+        let rows = v.get("rows_examined_per_scan").and_then(|n| n.as_u64()).unwrap_or(0);
+        let cost = v
+            .get("cost_info")
+            .and_then(|c| c.get("prefix_cost"))
+            .and_then(|s| s.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let key = v.get("key").and_then(|s| s.as_str()).map(|s| s.to_string());
+
+        Some(ExplainPlanNode {
+            node_type,
+            relation_name: table_name,
+            index_name: key,
+            alias: None,
+            startup_cost: 0.0,
+            total_cost: cost,
+            plan_rows: rows,
+            plan_width: 0,
+            actual_startup_time: None,
+            actual_total_time: None,
+            actual_rows: None,
+            actual_loops: None,
+            children: Vec::new(),
+        })
+    }
+
+    fn parse_text_lines(text: &str) -> Option<Self> {
+        let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+        if lines.is_empty() {
+            return None;
+        }
+        let first_line = lines[0];
+        Some(ExplainPlanNode {
+            node_type: first_line.to_string(),
+            relation_name: None,
+            index_name: None,
+            alias: None,
+            startup_cost: 0.0,
+            total_cost: 1.0,
+            plan_rows: 1,
+            plan_width: 0,
+            actual_startup_time: None,
+            actual_total_time: None,
+            actual_rows: None,
+            actual_loops: None,
+            children: Vec::new(),
+        })
+    }
+
+    pub fn max_cost(&self) -> f64 {
+        let mut max_c = self.total_cost;
+        for child in &self.children {
+            max_c = max_c.max(child.max_cost());
+        }
+        max_c
+    }
+
+    pub fn max_duration(&self) -> f64 {
+        let mut max_d = self.actual_total_time.unwrap_or(0.0);
+        for child in &self.children {
+            max_d = max_d.max(child.max_duration());
+        }
+        max_d
+    }
+}
+
+pub fn render_explain_plan_viewer(ui: &mut egui::Ui, raw_plan: &str) {
+    let parsed_root = ExplainPlanNode::parse(raw_plan);
+
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(
+                        egui::RichText::new("🔍 Visual EXPLAIN Query Plan")
+                            .color(if ui.visuals().dark_mode {
+                                egui::Color32::from_rgb(144, 202, 249)
+                            } else {
+                                egui::Color32::from_rgb(25, 118, 210)
+                            })
+                            .strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new("PostgreSQL / MySQL EXPLAIN JSON")
+                                .size(11.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                    });
+                });
+
+                ui.separator();
+                ui.add_space(8.0);
+
+                if let Some(ref root) = parsed_root {
+                    let max_cost = root.max_cost().max(0.001);
+                    let max_duration = root.max_duration();
+
+                    egui::Frame::NONE
+                        .fill(if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(25, 28, 35)
+                        } else {
+                            egui::Color32::from_rgb(240, 244, 248)
+                        })
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("📊 Summary:")
+                                        .strong()
+                                        .color(egui::Color32::GRAY),
+                                );
+                                ui.separator();
+                                ui.label(
+                                    egui::RichText::new(format!("Max Cost: {:.2}", max_cost))
+                                        .strong(),
+                                );
+                                if max_duration > 0.0 {
+                                    ui.separator();
+                                    ui.label(
+                                        egui::RichText::new(format!("Total Duration: {:.3}ms", max_duration))
+                                            .color(egui::Color32::from_rgb(255, 183, 77))
+                                            .strong(),
+                                    );
+                                }
+                            });
+                        });
+
+                    ui.add_space(12.0);
+
+                    egui::ScrollArea::both()
+                        .id_salt("visual_explain_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_explain_node(ui, root, max_cost, max_duration, 0);
+                        });
+                } else {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 183, 77),
+                        "⚠️ Displaying Raw EXPLAIN Text Plan Output:",
+                    );
+                    ui.add_space(6.0);
+                    egui::ScrollArea::both().show(ui, |ui| {
+                        ui.code(raw_plan);
+                    });
+                }
+            });
+        });
+}
+
+fn render_explain_node(
+    ui: &mut egui::Ui,
+    node: &ExplainPlanNode,
+    max_cost: f64,
+    max_duration: f64,
+    depth: usize,
+) {
+    let card_bg = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(32, 34, 42)
+    } else {
+        egui::Color32::from_rgb(245, 247, 250)
+    };
+    let card_border = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(60, 64, 75)
+    } else {
+        egui::Color32::from_rgb(210, 215, 225)
+    };
+
+    let cost_pct = if max_cost > 0.0 {
+        ((node.total_cost / max_cost) as f32 * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let duration_pct = if max_duration > 0.0 {
+        ((node.actual_total_time.unwrap_or(0.0) / max_duration) as f32 * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+
+    let (badge_text, badge_color) = match node.node_type.to_lowercase() {
+        s if s.contains("index") => ("INDEX SCAN", egui::Color32::from_rgb(46, 125, 50)),
+        s if s.contains("seq scan") || s.contains("full table") => ("SEQ SCAN", egui::Color32::from_rgb(230, 81, 0)),
+        s if s.contains("join") || s.contains("nested loop") => ("JOIN", egui::Color32::from_rgb(21, 101, 192)),
+        s if s.contains("sort") => ("SORT", egui::Color32::from_rgb(106, 27, 154)),
+        s if s.contains("aggregate") || s.contains("group") => ("AGGREGATE", egui::Color32::from_rgb(0, 131, 143)),
+        _ => ("EXECUTE", egui::Color32::from_rgb(97, 97, 97)),
+    };
+
+    ui.horizontal(|ui| {
+        if depth > 0 {
+            ui.add_space((depth as f32) * 20.0);
+            ui.label(egui::RichText::new("└─").color(egui::Color32::GRAY));
+        }
+
+        egui::Frame::NONE
+            .fill(card_bg)
+            .stroke(egui::Stroke::new(1.0, card_border))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_min_width(500.0);
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(badge_text)
+                                .color(badge_color)
+                                .size(11.0)
+                                .strong(),
+                        );
+                        ui.heading(
+                            egui::RichText::new(&node.node_type)
+                                .size(13.0)
+                                .strong(),
+                        );
+                        if let Some(ref rel) = node.relation_name {
+                            ui.label(
+                                egui::RichText::new(format!("on {}", rel))
+                                    .color(egui::Color32::from_rgb(100, 180, 255))
+                                    .strong(),
+                            );
+                        }
+                        if let Some(ref idx) = node.index_name {
+                            ui.label(
+                                egui::RichText::new(format!("using {}", idx))
+                                    .color(egui::Color32::from_rgb(160, 210, 120)),
+                            );
+                        }
+                    });
+
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("Cost: {:.2}..{:.2}", node.startup_cost, node.total_cost))
+                                .size(11.0),
+                        );
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!("Rows: {}", node.plan_rows))
+                                .size(11.0),
+                        );
+                        if node.plan_width > 0 {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(format!("Width: {}b", node.plan_width))
+                                    .size(11.0),
+                            );
+                        }
+                        if let Some(actual_time) = node.actual_total_time {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(format!("Actual Time: {:.3}ms", actual_time))
+                                    .color(egui::Color32::from_rgb(255, 183, 77))
+                                    .strong()
+                                    .size(11.0),
+                            );
+                        }
+                    });
+
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Cost %:")
+                                .size(10.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                        let bar_color = if cost_pct > 50.0 {
+                            egui::Color32::from_rgb(229, 115, 115)
+                        } else if cost_pct > 20.0 {
+                            egui::Color32::from_rgb(255, 183, 77)
+                        } else {
+                            egui::Color32::from_rgb(129, 199, 132)
+                        };
+                        ui.add(
+                            egui::ProgressBar::new(cost_pct / 100.0)
+                                .text(format!("{:.1}%", cost_pct))
+                                .fill(bar_color),
+                        );
+                    });
+
+                    if node.actual_total_time.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Duration %:")
+                                    .size(10.0)
+                                    .color(egui::Color32::GRAY),
+                            );
+                            let duration_bar_color = if duration_pct > 50.0 {
+                                egui::Color32::from_rgb(239, 83, 80)
+                            } else if duration_pct > 20.0 {
+                                egui::Color32::from_rgb(255, 167, 38)
+                            } else {
+                                egui::Color32::from_rgb(102, 187, 106)
+                            };
+                            ui.add(
+                                egui::ProgressBar::new(duration_pct / 100.0)
+                                    .text(format!("{:.1}%", duration_pct))
+                                    .fill(duration_bar_color),
+                            );
+                        });
+                    }
+                });
+            });
+    });
+
+    ui.add_space(6.0);
+
+    for child in &node.children {
+        render_explain_node(ui, child, max_cost, max_duration, depth + 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_postgres_explain_json() {
+        let pg_json = r#"[
+          {
+            "Plan": {
+              "Node Type": "Nested Loop",
+              "Startup Cost": 0.29,
+              "Total Cost": 16.34,
+              "Plan Rows": 1,
+              "Plan Width": 244,
+              "Actual Startup Time": 0.035,
+              "Actual Total Time": 0.042,
+              "Plans": [
+                {
+                  "Node Type": "Index Scan",
+                  "Relation Name": "users",
+                  "Index Name": "users_pkey",
+                  "Startup Cost": 0.15,
+                  "Total Cost": 8.17,
+                  "Plan Rows": 1,
+                  "Plan Width": 120
+                }
+              ]
+            }
+          }
+        ]"#;
+
+        let node = ExplainPlanNode::parse(pg_json).expect("should parse PostgreSQL EXPLAIN JSON");
+        assert_eq!(node.node_type, "Nested Loop");
+        assert_eq!(node.total_cost, 16.34);
+        assert_eq!(node.children.len(), 1);
+        assert_eq!(node.children[0].node_type, "Index Scan");
+        assert_eq!(node.children[0].relation_name.as_deref(), Some("users"));
+        assert_eq!(node.children[0].index_name.as_deref(), Some("users_pkey"));
+    }
+
+    #[test]
+    fn test_parse_mysql_explain_json() {
+        let mysql_json = r#"{
+          "query_block": {
+            "select_id": 1,
+            "cost_info": {
+              "query_cost": "2.50"
+            },
+            "table": {
+              "table_name": "orders",
+              "access_type": "ALL",
+              "rows_examined_per_scan": 100,
+              "cost_info": {
+                "prefix_cost": "2.50"
+              }
+            }
+          }
+        }"#;
+
+        let node = ExplainPlanNode::parse(mysql_json).expect("should parse MySQL EXPLAIN JSON");
+        assert_eq!(node.relation_name.as_deref(), Some("orders"));
+        assert!(node.node_type.contains("Seq Scan"));
+        assert_eq!(node.total_cost, 2.50);
+        assert_eq!(node.plan_rows, 100);
+    }
+}
+

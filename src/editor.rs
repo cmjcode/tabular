@@ -31,6 +31,7 @@ pub(crate) fn create_new_tab(
         is_modified: false,
         connection_id: None,       // No connection assigned by default
         database_name: None,       // No database assigned by default
+        schema_name: None,         // No schema assigned by default
         has_executed_query: false, // New tab hasn't executed any query yet
         result_headers: Vec::new(),
         result_rows: Vec::new(),
@@ -46,6 +47,7 @@ pub(crate) fn create_new_tab(
         base_query: String::new(), // Empty base query initially
         dba_special_mode: None,
         object_ddl: None,
+        explain_plan_json: None,
         query_message: String::new(),
         query_message_is_error: false,
         diagram_state: None,
@@ -5426,8 +5428,8 @@ pub(crate) fn explain_current_query(
         .map(|c| c.connection_type.clone());
 
     let prefix = match connection_type {
-        Some(crate::models::enums::DatabaseType::MySQL)
-        | Some(crate::models::enums::DatabaseType::PostgreSQL) => "EXPLAIN ",
+        Some(crate::models::enums::DatabaseType::PostgreSQL) => "EXPLAIN (ANALYZE, FORMAT JSON) ",
+        Some(crate::models::enums::DatabaseType::MySQL) => "EXPLAIN FORMAT=JSON ",
         Some(crate::models::enums::DatabaseType::SQLite) => "EXPLAIN QUERY PLAN ",
         // MsSQL needs SET SHOWPLAN_ALL in its own batch — follow-up work.
         _ => {

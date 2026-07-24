@@ -344,6 +344,7 @@ pub(crate) fn open_query_file(
         is_modified: false,
         connection_id: effective_connection_id,
         database_name: resolved_database.clone(),
+        schema_name: None,
         has_executed_query: false, // New tab hasn't executed any query yet
         result_headers: Vec::new(),
         result_rows: Vec::new(),
@@ -359,6 +360,7 @@ pub(crate) fn open_query_file(
         base_query: String::new(), // Empty base query for file queries
         dba_special_mode: None,
         object_ddl: None,
+        explain_plan_json: None,
         query_message: String::new(),
         query_message_is_error: false,
         diagram_state: None,

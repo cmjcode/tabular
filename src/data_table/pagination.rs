@@ -309,6 +309,46 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
             tabular.show_message_panel = false;
             tabular.show_lint_panel = false;
         }
+
+        // Explain Button (shown if EXPLAIN output present)
+        let has_explain = tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .and_then(|t| t.explain_plan_json.as_ref())
+            .is_some();
+        if has_explain {
+            let is_explain = tabular.table_bottom_view == crate::models::structs::TableBottomView::Explain
+                && !tabular.show_message_panel
+                && !tabular.show_lint_panel;
+            let explain_bg = if is_explain {
+                window_egui::style::theme_accent(ui.ctx())
+            } else if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(45, 45, 50)
+            } else {
+                egui::Color32::from_rgb(225, 225, 230)
+            };
+            let explain_text_color = if is_explain {
+                egui::Color32::WHITE
+            } else {
+                ui.visuals().text_color()
+            };
+
+            let explain_btn = egui::Button::new(
+                egui::RichText::new("🔍 Explain")
+                    .small()
+                    .strong()
+                    .color(explain_text_color),
+            )
+            .fill(explain_bg)
+            .corner_radius(egui::CornerRadius::same(4u8))
+            .min_size(egui::vec2(0.0, button_height));
+
+            if ui.add(explain_btn).clicked() {
+                tabular.table_bottom_view = crate::models::structs::TableBottomView::Explain;
+                tabular.show_message_panel = false;
+                tabular.show_lint_panel = false;
+            }
+        }
     });
 }
 

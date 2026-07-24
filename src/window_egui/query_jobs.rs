@@ -93,6 +93,7 @@ impl super::Tabular {
             query_message_is_error: self.query_message_is_error,
             execution_time_ms: message.duration.as_millis(),
             column_metadata: message.column_metadata.clone(),
+            explain_plan_json: None,
         };
 
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {

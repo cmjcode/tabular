@@ -1136,6 +1136,17 @@ impl super::Tabular {
         // Return empty for now; UI will update when background task completes
         Vec::new()
     }
+
+    pub fn get_schemas_cached(&mut self, _connection_id: i64, database_name: Option<&str>) -> Vec<String> {
+        let mut schemas = vec!["public".to_string(), "information_schema".to_string(), "pg_catalog".to_string()];
+        if let Some(db) = database_name {
+            if !db.is_empty() && !schemas.contains(&db.to_string()) {
+                schemas.insert(0, db.to_string());
+            }
+        }
+        schemas.dedup();
+        schemas
+    }
     pub fn load_folder_content(
         &mut self,
         connection_id: i64,

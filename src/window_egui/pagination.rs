@@ -156,6 +156,16 @@ impl super::Tabular {
                     active_tab.page_size = self.page_size;
                     // Note: is_table_browse_mode is not forced here - it inherits from self
                     active_tab.is_table_browse_mode = self.is_table_browse_mode;
+
+                    // Detect EXPLAIN output JSON/text and set active view to Explain
+                    let first_cell = self.current_table_data.first().and_then(|r| r.first()).cloned().unwrap_or_default();
+                    let is_explain = self.current_table_headers.iter().any(|h| h.to_uppercase().contains("EXPLAIN") || h.to_uppercase().contains("QUERY PLAN"))
+                        || first_cell.trim().starts_with('[')
+                        || first_cell.trim().starts_with('{');
+                    if is_explain && !first_cell.trim().is_empty() {
+                        active_tab.explain_plan_json = Some(first_cell.clone());
+                        self.table_bottom_view = models::structs::TableBottomView::Explain;
+                    }
                 }
 
                 // Save this first page into row cache (only when on first page)
