@@ -341,6 +341,8 @@ pub struct Tabular {
     pub update_download_started: bool,
     pub update_installed: bool,
     pub update_install_receiver: Option<std::sync::mpsc::Receiver<bool>>, // receive success flag
+    pub update_stage: crate::auto_updater::UpdateStage,
+    pub update_stage_receiver: Option<std::sync::mpsc::Receiver<crate::auto_updater::UpdateStage>>,
     pub enable_debug_logging: bool, // New field for debug logging
     // Auto updater instance
     pub auto_updater: Option<crate::auto_updater::AutoUpdater>,

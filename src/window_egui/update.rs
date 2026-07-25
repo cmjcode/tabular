@@ -1,5 +1,6 @@
 use eframe::egui;
 use crate::models;
+use crate::auto_updater::UpdateStage;
 
 impl super::Tabular {
     pub fn check_for_updates(&mut self, manual: bool) {
@@ -22,6 +23,7 @@ impl super::Tabular {
             let _ = sender.send(models::enums::BackgroundTask::CheckForUpdates);
         }
     }
+
     pub fn render_update_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_update_dialog {
             return;
@@ -32,12 +34,12 @@ impl super::Tabular {
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_min_width(400.0);
+                ui.set_min_width(440.0);
 
                 if self.update_check_in_progress {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Checking for updates...");
+                        ui.label("Checking for updates from GitHub...");
                     });
                 } else if let Some(error) = &self.update_check_error {
                     ui.colored_label(
@@ -55,15 +57,13 @@ impl super::Tabular {
                     });
                 } else if let Some(update_info) = &self.update_info.clone() {
                     if update_info.update_available {
-                        ui.heading("Update Available!");
+                        ui.heading("🚀 Tabular Update Available!");
                         ui.separator();
 
                         ui.horizontal(|ui| {
                             ui.label("Current version:");
                             ui.strong(&update_info.current_version);
-                        });
-
-                        ui.horizontal(|ui| {
+                            ui.label("➡");
                             ui.label("Latest version:");
                             ui.strong(&update_info.latest_version);
                         });
@@ -76,30 +76,79 @@ impl super::Tabular {
 
                         ui.label("Release Notes:");
                         egui::ScrollArea::vertical()
-                            .max_height(200.0)
+                            .max_height(160.0)
                             .show(ui, |ui| {
                                 ui.text_edit_multiline(&mut update_info.release_notes.clone());
                             });
 
                         ui.separator();
 
-                        ui.horizontal(|ui| {
-                            if update_info.download_url.is_some() {
-                                if self.update_download_in_progress {
-                                    ui.add_enabled(false, egui::Button::new("Downloading..."));
+                        // Progress or Status UI
+                        match &self.update_stage {
+                            UpdateStage::Downloading { progress, downloaded, total } => {
+                                ui.vertical(|ui| {
+                                    let mb_downloaded = *downloaded as f32 / (1024.0 * 1024.0);
+                                    let progress_text = if let Some(tot) = total {
+                                        let mb_total = *tot as f32 / (1024.0 * 1024.0);
+                                        format!("{:.1}% ({:.1} MB / {:.1} MB)", progress * 100.0, mb_downloaded, mb_total)
+                                    } else {
+                                        format!("{:.1} MB downloaded", mb_downloaded)
+                                    };
+                                    ui.add(egui::ProgressBar::new(*progress).text(progress_text));
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label("Downloading latest release payload...");
+                                    });
+                                });
+                            }
+                            UpdateStage::Extracting => {
+                                ui.horizontal(|ui| {
                                     ui.spinner();
-                                } else if ui.button("Update Now").clicked() {
+                                    ui.label("Extracting update archive...");
+                                });
+                            }
+                            UpdateStage::Applying => {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label("Applying update in-place...");
+                                });
+                            }
+                            UpdateStage::Completed => {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(100, 220, 100),
+                                    "✅ Update installed successfully! Restart to apply changes.",
+                                );
+                            }
+                            UpdateStage::Failed(err) => {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(255, 100, 100),
+                                    format!("Update failed: {}", err),
+                                );
+                            }
+                            UpdateStage::Idle => {}
+                        }
+
+                        ui.separator();
+
+                        ui.horizontal(|ui| {
+                            if self.update_installed || self.update_stage == UpdateStage::Completed {
+                                if ui.button("🚀 Restart Now").clicked() {
+                                    let _ = crate::auto_updater::AutoUpdater::restart_app();
+                                }
+                            } else if self.update_download_in_progress {
+                                ui.add_enabled(false, egui::Button::new("Updating..."));
+                            } else if update_info.download_url.is_some() {
+                                if ui.button("Update Now").clicked() {
                                     self.start_update_download();
                                 }
                             } else {
-                                // No download URL available - show manual download option
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(255, 0, 0),
-                                    "Auto-update not available for this platform",
+                                    egui::Color32::from_rgb(255, 100, 100),
+                                    "Auto-update asset not available for this platform",
                                 );
                             }
 
-                            if ui.button("View Release").clicked() {
+                            if ui.button("View Release Page").clicked() {
                                 crate::self_update::open_release_page(update_info);
                             }
 
@@ -127,43 +176,45 @@ impl super::Tabular {
                 }
             });
     }
+
     pub fn start_update_download(&mut self) {
-        log::debug!("🚀 Starting auto update process...");
+        log::info!("🚀 Starting automatic update process...");
 
         // Prevent multiple simultaneous downloads
         if self.update_download_in_progress {
-            log::warn!("⚠️ Download already in progress, ignoring request");
+            log::warn!("⚠️ Update already in progress, ignoring request");
             return;
         }
 
-        // Prevent re-downloading if already completed
         if self.update_installed {
-            log::warn!("⚠️ Update already downloaded, ignoring request");
+            log::warn!("⚠️ Update already installed, ignoring request");
             return;
         }
 
         if let Some(update_info) = &self.update_info {
             if let Some(auto_updater) = &self.auto_updater {
-                log::debug!(
-                    "📦 Update info available: {} -> {}",
+                log::info!(
+                    "📦 Auto updating Tabular: {} -> {}",
                     update_info.current_version,
                     update_info.latest_version
                 );
-                log::debug!("📥 Download URL: {:?}", update_info.download_url);
-                log::debug!("📄 Asset name: {:?}", update_info.asset_name);
 
                 self.update_download_in_progress = true;
-                // Prepare channel to receive completion signal
+                self.update_stage = UpdateStage::Downloading {
+                    progress: 0.0,
+                    downloaded: 0,
+                    total: None,
+                };
+
                 let (tx, rx) = std::sync::mpsc::channel();
-                self.update_install_receiver = Some(rx);
+                self.update_stage_receiver = Some(rx);
 
                 let update_info_clone = update_info.clone();
                 let auto_updater_clone = auto_updater.clone();
 
                 std::thread::spawn(move || {
-                    log::debug!("🔄 Background update thread started (auto updater)");
+                    log::debug!("🔄 Background update thread running");
 
-                    // Create a completely new, independent Tokio runtime for the update process
                     let rt = match tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -171,27 +222,28 @@ impl super::Tabular {
                         Ok(rt) => rt,
                         Err(e) => {
                             log::error!("❌ Failed to create update runtime: {}", e);
-                            let _ = tx.send(false);
+                            let _ = tx.send(UpdateStage::Failed(e.to_string()));
                             return;
                         }
                     };
 
-                    match rt
-                        .block_on(auto_updater_clone.download_and_stage_update(&update_info_clone))
-                    {
-                        Ok(()) => {
-                            log::debug!("✅ Update staged successfully");
-                            let _ = tx.send(true);
-                        }
-                        Err(e) => {
-                            log::error!("❌ Update failed: {}", e);
-                            let _ = tx.send(false);
-                        }
+                    let tx_cb = tx.clone();
+                    let res = rt.block_on(auto_updater_clone.download_and_stage_update(
+                        &update_info_clone,
+                        move |stage| {
+                            let _ = tx_cb.send(stage);
+                        },
+                    ));
+
+                    if let Err(e) = res {
+                        log::error!("❌ Auto update failed: {}", e);
+                        let _ = tx.send(UpdateStage::Failed(e.to_string()));
                     }
                 });
             } else {
-                log::error!("❌ Auto updater not available");
+                log::error!("❌ Auto updater component not available");
                 self.update_download_in_progress = false;
+                self.update_stage = UpdateStage::Failed("Auto updater component not available".to_string());
             }
         } else {
             log::error!("❌ No update info available");

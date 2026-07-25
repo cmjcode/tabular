@@ -3539,16 +3539,31 @@ impl App for Tabular {
             self.start_update_download();
         }
 
-        // Poll for update install completion (async thread sends on channel)
-        if let Some(rx) = &self.update_install_receiver
-            && let Ok(success) = rx.try_recv()
-        {
-            self.update_download_in_progress = false;
-            self.update_download_started = false; // Reset this flag to prevent loop
-            self.update_installed = success;
-            self.show_update_notification = true; // show completion toast
-            self.update_install_receiver = None; // cleanup
-            ctx.request_repaint();
+        // Poll for update stage updates from background auto-updater thread
+        if let Some(rx) = &self.update_stage_receiver {
+            let mut latest_stage = None;
+            while let Ok(stage) = rx.try_recv() {
+                latest_stage = Some(stage);
+            }
+            if let Some(stage) = latest_stage {
+                match &stage {
+                    crate::auto_updater::UpdateStage::Completed => {
+                        self.update_download_in_progress = false;
+                        self.update_download_started = false;
+                        self.update_installed = true;
+                        self.show_update_notification = true;
+                    }
+                    crate::auto_updater::UpdateStage::Failed(err) => {
+                        self.update_download_in_progress = false;
+                        self.update_download_started = false;
+                        self.update_check_error = Some(err.clone());
+                        self.show_update_dialog = true;
+                    }
+                    _ => {}
+                }
+                self.update_stage = stage;
+                ctx.request_repaint();
+            }
         }
 
         // Render mini notification (toast) for update events
@@ -3559,7 +3574,7 @@ impl App for Tabular {
             let installed = self.update_installed;
             let download_started = self.update_download_started;
             let mut keep_open = true;
-            egui::Window::new("Update")
+            egui::Window::new("Update Notification")
                 .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
                 .collapsible(false)
                 .resizable(false)
@@ -3568,61 +3583,48 @@ impl App for Tabular {
                 .show(ctx, |ui| {
                     if let Some(info) = &info_clone {
                         if downloading {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(format!("Downloading update {}...", info.latest_version));
+                            ui.vertical(|ui| {
+                                match &self.update_stage {
+                                    crate::auto_updater::UpdateStage::Downloading { progress, .. } => {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label(format!("Downloading Tabular {} ({:.0}%)...", info.latest_version, progress * 100.0));
+                                        });
+                                    }
+                                    crate::auto_updater::UpdateStage::Extracting => {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label("Extracting update archive...");
+                                        });
+                                    }
+                                    crate::auto_updater::UpdateStage::Applying => {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label("Applying update...");
+                                        });
+                                    }
+                                    _ => {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label(format!("Downloading update {}...", info.latest_version));
+                                        });
+                                    }
+                                }
                             });
                         } else if installed {
                             ui.vertical(|ui| {
                                 ui.label(
-                                    egui::RichText::new("✅ Update downloaded successfully!")
+                                    egui::RichText::new("✅ Update installed successfully!")
                                         .strong(),
                                 );
-
-                                #[cfg(target_os = "macos")]
                                 ui.label(
-                                    egui::RichText::new("DMG file opened for installation")
-                                        .size(12.0),
-                                );
-
-                                #[cfg(target_os = "linux")]
-                                ui.label(
-                                    egui::RichText::new("Update downloaded to Downloads folder")
-                                        .size(12.0),
-                                );
-
-                                #[cfg(target_os = "windows")]
-                                ui.label(
-                                    egui::RichText::new("Installer opened for installation")
+                                    egui::RichText::new("Restart Tabular to apply the update.")
                                         .size(12.0),
                                 );
 
                                 ui.horizontal(|ui| {
-                                    if ui.button("Open Downloads Folder").clicked() {
-                                        #[cfg(target_os = "macos")]
-                                        {
-                                            let _ = std::process::Command::new("open")
-                                                .arg(dirs::download_dir().unwrap_or_else(|| {
-                                                    std::path::PathBuf::from("/")
-                                                }))
-                                                .spawn();
-                                        }
-                                        #[cfg(target_os = "linux")]
-                                        {
-                                            let _ = std::process::Command::new("xdg-open")
-                                                .arg(dirs::download_dir().unwrap_or_else(|| {
-                                                    std::path::PathBuf::from("/")
-                                                }))
-                                                .spawn();
-                                        }
-                                        #[cfg(target_os = "windows")]
-                                        {
-                                            let _ = std::process::Command::new("explorer")
-                                                .arg(dirs::download_dir().unwrap_or_else(|| {
-                                                    std::path::PathBuf::from("C:\\")
-                                                }))
-                                                .spawn();
-                                        }
+                                    if ui.button("🚀 Restart Now").clicked() {
+                                        let _ = crate::auto_updater::AutoUpdater::restart_app();
                                     }
                                     if ui.button("Dismiss").clicked() {
                                         self.show_update_notification = false;
