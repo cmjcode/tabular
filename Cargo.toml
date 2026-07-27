@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.9.5"
+version = "0.10.0"
 edition = "2024"
 
 [lib]
@@ -73,7 +73,7 @@ reqwest = { version = "0.13", features = [
        "blocking",
 ], default-features = false }
 semver = "1.0"
-flate2 = "1.0"
+flate2 = "1.1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
