@@ -2159,7 +2159,7 @@ impl super::Tabular {
                             if let Some(texture) = params.db_icon_textures.get(icon_key) {
                                 icon_response = Some(ui.add(
                                     egui::Image::new(texture)
-                                        .fit_to_exact_size(egui::Vec2::splat(16.0))
+                                        .fit_to_exact_size(egui::Vec2::splat(21.0))
                                         .sense(egui::Sense::click_and_drag()),
                                 ));
                             } else {
