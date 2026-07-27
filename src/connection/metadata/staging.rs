@@ -1,4 +1,3 @@
-use log::debug;
 use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Default)]

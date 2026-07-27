@@ -433,7 +433,6 @@ pub(crate) fn convert_mysql_rows_to_table_data(
 }
 
 #[allow(dead_code)]
-#[allow(dead_code)]
 pub(crate) async fn fetch_mysql_data(
     connection_id: i64,
     pool: &MySqlPool,
@@ -869,6 +868,7 @@ pub(crate) async fn fetch_mysql_columns(
 }
 
 // Check if the connection is a replica (slave)
+#[allow(dead_code)]
 pub(crate) async fn check_replication_status(
     pool: &sqlx::MySqlPool,
 ) -> bool {

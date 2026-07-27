@@ -674,7 +674,7 @@ pub(crate) fn render_connection_dialog(
                                 tabular.test_connection_status = None;
                                 if let Some(sender) = &tabular.background_sender {
                                     let _ = sender.send(models::enums::BackgroundTask::TestConnection {
-                                        connection: connection_data.clone(),
+                                        connection: Box::new(connection_data.clone()),
                                     });
                                 } else {
                                     let result = connection::test_database_connection(&connection_data);

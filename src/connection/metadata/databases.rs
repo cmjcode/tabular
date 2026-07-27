@@ -192,6 +192,7 @@ pub(crate) fn fetch_databases_from_connection_blocking(
 }
 
 // Async version to avoid creating a new runtime each call; preferred for internal use
+#[allow(dead_code)]
 pub(crate) async fn fetch_databases_from_connection_async(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,

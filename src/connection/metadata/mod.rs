@@ -21,9 +21,7 @@ pub(crate) use staging::MetadataStaging;
 
 pub use databases::fetch_databases_background_task; // fully pub in original
 #[allow(deprecated)]
-pub(crate) use databases::{
-    fetch_databases_from_connection_async, fetch_databases_from_connection_blocking,
-};
+pub(crate) use databases::fetch_databases_from_connection_blocking;
 
 pub(crate) use columns::fetch_columns_from_database;
 

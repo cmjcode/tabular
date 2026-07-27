@@ -95,7 +95,7 @@ pub enum BackgroundTask {
         search_text: String,
     },
     TestConnection {
-        connection: crate::models::structs::ConnectionConfig,
+        connection: Box<crate::models::structs::ConnectionConfig>,
     },
     EnsureConnectionPool {
         connection_id: i64,
