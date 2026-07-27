@@ -534,8 +534,122 @@ async fn try_quick_pool_creation(
     }
 }
 
+pub(crate) async fn create_connection_pool_by_id(
+    connection_id: i64,
+    cache_pool: &sqlx::SqlitePool,
+) -> Result<models::enums::DatabasePool, String> {
+    use sqlx::Row;
+    let row_opt = sqlx::query(
+        "SELECT id, name, host, port, username, password, database_name, connection_type, folder, \
+                COALESCE(ssh_enabled, 0) AS ssh_enabled, \
+                COALESCE(ssh_host, '') AS ssh_host, \
+                COALESCE(ssh_port, '22') AS ssh_port, \
+                COALESCE(ssh_username, '') AS ssh_username, \
+                COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
+                COALESCE(ssh_private_key, '') AS ssh_private_key, \
+                COALESCE(ssh_password, '') AS ssh_password, \
+                COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+         FROM connections WHERE id = ?"
+    )
+    .bind(connection_id)
+    .fetch_optional(cache_pool)
+    .await
+    .map_err(|e| format!("Failed to read connection from SQLite: {}", e))?;
+
+    let row = match row_opt {
+        Some(r) => r,
+        None => return Err(format!("Connection ID {} not found in local store", connection_id)),
+    };
+
+    let id = row.try_get::<i64, _>("id").unwrap_or(connection_id);
+    let name = row.try_get::<String, _>("name").unwrap_or_default();
+    let host = row.try_get::<String, _>("host").unwrap_or_default();
+    let port = row
+        .try_get::<String, _>("port")
+        .unwrap_or_else(|_| "3306".to_string());
+    let username = row.try_get::<String, _>("username").unwrap_or_default();
+    let password = row.try_get::<String, _>("password").unwrap_or_default();
+    let database_name = row
+        .try_get::<String, _>("database_name")
+        .unwrap_or_default();
+    let connection_type = row
+        .try_get::<String, _>("connection_type")
+        .unwrap_or_else(|_| "SQLite".to_string());
+    let folder = row.try_get::<Option<String>, _>("folder").unwrap_or(None);
+    let ssh_enabled = row.try_get::<i64, _>("ssh_enabled").unwrap_or(0);
+    let ssh_host = row.try_get::<String, _>("ssh_host").unwrap_or_default();
+    let ssh_port = row
+        .try_get::<String, _>("ssh_port")
+        .unwrap_or_else(|_| "22".to_string());
+    let ssh_username = row.try_get::<String, _>("ssh_username").unwrap_or_default();
+    let ssh_auth_method = row
+        .try_get::<String, _>("ssh_auth_method")
+        .unwrap_or_else(|_| "key".to_string());
+    let ssh_private_key = row
+        .try_get::<String, _>("ssh_private_key")
+        .unwrap_or_default();
+    let ssh_password = row.try_get::<String, _>("ssh_password").unwrap_or_default();
+    let ssh_accept_unknown_host_keys = row
+        .try_get::<i64, _>("ssh_accept_unknown_host_keys")
+        .unwrap_or(0);
+
+    let password = crate::secrets::resolve_readonly(
+        &crate::secrets::connection_secret_name(id, "password"),
+        &password,
+    );
+    let ssh_private_key = crate::secrets::resolve_readonly(
+        &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+        &ssh_private_key,
+    );
+    let ssh_password = crate::secrets::resolve_readonly(
+        &crate::secrets::connection_secret_name(id, "ssh_password"),
+        &ssh_password,
+    );
+
+    let connection = models::structs::ConnectionConfig {
+        id: Some(id),
+        name,
+        host,
+        port,
+        username,
+        password,
+        database: database_name,
+        connection_type: match connection_type.as_str() {
+            "MySQL" => models::enums::DatabaseType::MySQL,
+            "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
+            "Redis" => models::enums::DatabaseType::Redis,
+            "MsSQL" => models::enums::DatabaseType::MsSQL,
+            "MongoDB" => models::enums::DatabaseType::MongoDB,
+            _ => models::enums::DatabaseType::SQLite,
+        },
+        folder,
+        ssh_enabled: ssh_enabled != 0,
+        ssh_host,
+        ssh_port,
+        ssh_username,
+        ssh_auth_method: models::enums::SshAuthMethod::from_db_value(&ssh_auth_method),
+        ssh_private_key,
+        ssh_password,
+        ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+        custom_views: Vec::new(),
+        replication_master_id: None,
+    };
+
+    match create_connection_pool_for_config(&connection).await {
+        Some(pool) => Ok(pool),
+        None => Err("Failed to connect to database server. Please check host, port, credentials, or network.".to_string()),
+    }
+}
+
 /// Start background pool creation without blocking the UI thread.
 pub(crate) fn start_background_pool_creation(tabular: &mut Tabular, connection_id: i64) {
+    tabular.pending_connection_pools.insert(connection_id);
+
+    if let Some(sender) = &tabular.background_sender {
+        let _ = sender.send(models::enums::BackgroundTask::EnsureConnectionPool { connection_id });
+        return;
+    }
+
     let connection = match tabular
         .connections
         .iter()

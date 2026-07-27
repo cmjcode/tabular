@@ -417,7 +417,7 @@ pub async fn fetch_databases_background_task(
     debug!("Background fetch databases for connection {}", connection_id);
 
     // 1. Get connection config from cache
-    let connection_result = sqlx::query("SELECT * FROM connection WHERE id = ?")
+    let connection_result = sqlx::query("SELECT * FROM connections WHERE id = ?")
         .bind(connection_id)
         .fetch_optional(cache_pool)
         .await;
@@ -454,6 +454,19 @@ pub async fn fetch_databases_background_task(
             let ssh_accept_unknown_host_keys = row
                 .try_get::<i64, _>("ssh_accept_unknown_host_keys")
                 .unwrap_or(0);
+
+            let password = crate::secrets::resolve_readonly(
+                &crate::secrets::connection_secret_name(id, "password"),
+                &password,
+            );
+            let ssh_private_key = crate::secrets::resolve_readonly(
+                &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                &ssh_private_key,
+            );
+            let ssh_password = crate::secrets::resolve_readonly(
+                &crate::secrets::connection_secret_name(id, "ssh_password"),
+                &ssh_password,
+            );
 
             models::structs::ConnectionConfig {
                 id: Some(id),

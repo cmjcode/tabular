@@ -814,6 +814,32 @@ impl super::Tabular {
                                 success,
                             });
                     }
+                    models::enums::BackgroundTask::EnsureConnectionPool { connection_id } => {
+                        if let Some(pool) = &cache_pool
+                            && let Ok(rt) = tokio::runtime::Runtime::new()
+                        {
+                            let res = rt.block_on(async {
+                                crate::connection::create_connection_pool_by_id(connection_id, pool).await
+                            });
+                            match res {
+                                Ok(new_pool) => {
+                                    if let Ok(mut shared) = shared_pools.lock() {
+                                        shared.insert(connection_id, new_pool);
+                                    }
+                                    let _ = result_sender.send(models::enums::BackgroundResult::RefreshComplete {
+                                        connection_id,
+                                        success: true,
+                                    });
+                                }
+                                Err(err_msg) => {
+                                    let _ = result_sender.send(models::enums::BackgroundResult::ConnectionFailed {
+                                        connection_id,
+                                        error_message: err_msg,
+                                    });
+                                }
+                            }
+                        }
+                    }
                     models::enums::BackgroundTask::CheckForUpdates => {
                         // Perform update check on a lightweight runtime (if required by async API)
                         let result = if let Ok(rt) = tokio::runtime::Runtime::new() {

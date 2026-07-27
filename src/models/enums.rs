@@ -97,6 +97,9 @@ pub enum BackgroundTask {
     TestConnection {
         connection: crate::models::structs::ConnectionConfig,
     },
+    EnsureConnectionPool {
+        connection_id: i64,
+    },
 }
 
 // Infrequent mpsc channel message (one per background task completion), so the

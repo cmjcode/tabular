@@ -753,7 +753,18 @@ impl super::Tabular {
 
             debug!("Created new tab with connection ID: {}", connection_id);
 
-            // NEW: Immediately (lazily-once) create the underlying connection pool so that
+            // If connection had previously failed, clear error and retry connecting
+            if self.connection_errors.contains_key(&connection_id) {
+                self.connection_errors.remove(&connection_id);
+                self.fetching_databases.remove(&connection_id);
+                self.refreshing_connections.remove(&connection_id);
+                if let Some(connection_node) = Self::find_connection_node_recursive(nodes, connection_id) {
+                    connection_node.is_loaded = false;
+                    self.load_connection_tables(connection_id, connection_node);
+                }
+            }
+
+            // Immediately (lazily-once) create the underlying connection pool so that
             // first table/data click feels faster. Previously pool was only created
             // when executing a query or expanding tables.
             if !is_api_http && !self.connection_pools.contains_key(&connection_id) {
@@ -784,11 +795,16 @@ impl super::Tabular {
         for expansion_req in expansion_requests {
             match expansion_req.node_type {
                 models::enums::NodeType::Connection => {
-                    // Find Connection node recursively and load if not already loaded
+                    // Find Connection node recursively and load if not already loaded or if previously failed
+                    let is_failed = self.connection_errors.contains_key(&expansion_req.connection_id);
                     if let Some(connection_node) =
                         Self::find_connection_node_recursive(nodes, expansion_req.connection_id)
                     {
-                        if !connection_node.is_loaded {
+                        if !connection_node.is_loaded || is_failed {
+                            self.connection_errors.remove(&expansion_req.connection_id);
+                            self.fetching_databases.remove(&expansion_req.connection_id);
+                            self.refreshing_connections.remove(&expansion_req.connection_id);
+                            connection_node.is_loaded = false;
                             self.load_connection_tables(
                                 expansion_req.connection_id,
                                 connection_node,
