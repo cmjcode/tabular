@@ -16,3 +16,4 @@ flatpak/repo
 .claude
 .agent
 Cargo.lock
+.idea

@@ -610,6 +610,17 @@ impl Default for ConnectionConfig {
     }
 }
 
+impl ConnectionConfig {
+    pub fn display_name(&self) -> String {
+        match &self.folder {
+            Some(folder) if !folder.trim().is_empty() => {
+                format!("{}/{}", folder.trim(), self.name)
+            }
+            _ => self.name.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExpansionRequest {
     pub node_type: models::enums::NodeType,
@@ -1140,5 +1151,40 @@ mod serde_option_pos2 {
     {
         let opt: Option<[f32; 2]> = Deserialize::deserialize(deserializer)?;
         Ok(opt.map(|arr| Pos2::new(arr[0], arr[1])))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_connection_display_name_with_folder() {
+        let conn = ConnectionConfig {
+            name: "58".to_string(),
+            folder: Some("FOX".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(conn.display_name(), "FOX/58");
+    }
+
+    #[test]
+    fn test_connection_display_name_without_folder() {
+        let conn = ConnectionConfig {
+            name: "My Database".to_string(),
+            folder: None,
+            ..Default::default()
+        };
+        assert_eq!(conn.display_name(), "My Database");
+    }
+
+    #[test]
+    fn test_connection_display_name_with_empty_folder() {
+        let conn = ConnectionConfig {
+            name: "Staging".to_string(),
+            folder: Some("   ".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(conn.display_name(), "Staging");
     }
 }

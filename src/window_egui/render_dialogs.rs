@@ -329,11 +329,12 @@ impl super::Tabular {
                     );
                     
                     if !is_target && is_mysql && has_pool {
-                        source_candidates.push((Some(conn_id), conn.name.clone()));
-                        log::debug!("[REPLICATION] ✓ Added '{}' to candidates", conn.name);
+                        source_candidates.push((Some(conn_id), conn.display_name()));
+                        log::debug!("[REPLICATION] ✓ Added '{}' to candidates", conn.display_name());
                     }
                 }
             }
+            source_candidates.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
             
             log::debug!("[REPLICATION] Total source candidates: {}", source_candidates.len());
         }
@@ -1270,9 +1271,10 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
     use crate::models::structs::{DiffStatus, SchemaDiffStatus};
 
     // Collect values needed outside closure upfront to avoid borrow conflicts.
-    let conn_labels: Vec<(i64, String)> = tabular.connections.iter()
-        .filter_map(|c| c.id.map(|id| (id, c.name.clone())))
+    let mut conn_labels: Vec<(i64, String)> = tabular.connections.iter()
+        .filter_map(|c| c.id.map(|id| (id, c.display_name())))
         .collect();
+    conn_labels.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
 
     // Variables set inside the window closure and used after.
     let mut run_diff: Option<(i64, String, i64, String)> = None;

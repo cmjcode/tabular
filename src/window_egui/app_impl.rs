@@ -1900,11 +1900,12 @@ impl Tabular {
                                 self.show_ai_panel = !self.show_ai_panel;
                             }
 
-                            let conn_list: Vec<(i64, String)> = self
+                            let mut conn_list: Vec<(i64, String)> = self
                                 .connections
                                 .iter()
-                                .filter_map(|c| c.id.map(|id| (id, c.name.clone())))
+                                .filter_map(|c| c.id.map(|id| (id, c.display_name())))
                                 .collect();
+                            conn_list.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
                             let (tab_conn_id, tab_db_name) = self
                                 .query_tabs
                                 .get(self.active_tab_index)
@@ -1990,7 +1991,7 @@ impl Tabular {
 
                             // 4. Connection selector (Leftmost in group)
                             egui::ComboBox::from_id_salt("query_conn_select")
-                                .width(130.0)
+                                .width(140.0)
                                 .selected_text(current_conn_name)
                                 .show_ui(ui, |ui| {
                                     for (cid, name) in &conn_list {

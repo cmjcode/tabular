@@ -30,7 +30,7 @@ impl super::Tabular {
         self.connections
             .iter()
             .find(|conn| conn.id == Some(connection_id))
-            .map(|conn| conn.name.clone())
+            .map(|conn| conn.display_name())
     }
     pub fn render_tree(
         &mut self,
