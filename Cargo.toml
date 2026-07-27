@@ -121,6 +121,10 @@ sqlparser = ["dep:sqlparser"]
 
 # removed lapce_core in egui-only mode
 
+
+[target.'cfg(unix)'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 [package.metadata.deb]
 name = "tabular"
 maintainer = "Tabular Team <yulius.jayuda@gmail.com>"
