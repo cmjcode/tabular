@@ -1299,7 +1299,10 @@ pub(crate) async fn fetch_redis_data(
     redis_manager: &ConnectionManager,
     cache_pool: &SqlitePool,
 ) -> bool {
-    // Try to get a Redis connection
+    use crate::connection::metadata::staging::{MetadataStaging, TableMetaStaging};
+
+    let mut staging = MetadataStaging::new(connection_id);
+
     let mut conn = redis_manager.clone();
     match tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -1308,33 +1311,18 @@ pub(crate) async fn fetch_redis_data(
     .await
     {
         Ok(Ok(_)) => {
-            // Detect cluster mode first; clusters have no db0/db1 concept.
             let is_cluster = detect_cluster_mode(&mut conn).await;
 
             if is_cluster {
                 debug!("🔀 Redis Cluster detected — using single keyspace");
-
-                // Cluster has one keyspace — store it under a special internal identifier.
-                let _ = sqlx::query(
-                    "INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)",
-                )
-                .bind(connection_id)
-                .bind(REDIS_CLUSTER_KEYSPACE)
-                .execute(cache_pool)
-                .await;
-
-                // Always mark the cluster keyspace as having keys.
-                let _ = sqlx::query(
-                    "INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)",
-                )
-                .bind(connection_id)
-                .bind(REDIS_CLUSTER_KEYSPACE)
-                .bind("_has_keys")
-                .bind("redis_marker")
-                .execute(cache_pool)
-                .await;
+                let staged_db = staging.add_database(REDIS_CLUSTER_KEYSPACE);
+                staged_db.tables.push(TableMetaStaging {
+                    table_name: "_has_keys".to_string(),
+                    table_type: "redis_marker".to_string(),
+                    columns: Vec::new(),
+                    indexes: Vec::new(),
+                });
             } else {
-                // Standard Redis: determine the number of logical databases.
                 let max_databases = match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
                     redis::cmd("CONFIG")
@@ -1344,26 +1332,17 @@ pub(crate) async fn fetch_redis_data(
                 )
                 .await
                 {
-                    Ok(Ok(config_result))
-                        if config_result.len() >= 2 => {
-                            config_result[1].parse::<i32>().unwrap_or(16)
-                        }
+                    Ok(Ok(config_result)) if config_result.len() >= 2 => {
+                        config_result[1].parse::<i32>().unwrap_or(16)
+                    }
                     _ => 16,
                 };
 
-                // Cache db0 … db(N-1).
                 for db_num in 0..max_databases {
                     let db_name = format!("db{}", db_num);
-                    let _ = sqlx::query(
-                        "INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)",
-                    )
-                    .bind(connection_id)
-                    .bind(&db_name)
-                    .execute(cache_pool)
-                    .await;
+                    staging.add_database(&db_name);
                 }
 
-                // Get keyspace info to identify which databases actually have keys.
                 if let Ok(Ok(keyspace_result)) = tokio::time::timeout(
                     std::time::Duration::from_secs(10),
                     redis::cmd("INFO")
@@ -1376,19 +1355,19 @@ pub(crate) async fn fetch_redis_data(
                         if line.starts_with("db")
                             && let Some(db_part) = line.split(':').next()
                         {
-                            let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
-                                .bind(connection_id)
-                                .bind(db_part)
-                                .bind("_has_keys")
-                                .bind("redis_marker")
-                                .execute(cache_pool)
-                                .await;
+                            let staged_db = staging.add_database(db_part);
+                            staged_db.tables.push(TableMetaStaging {
+                                table_name: "_has_keys".to_string(),
+                                table_type: "redis_marker".to_string(),
+                                columns: Vec::new(),
+                                indexes: Vec::new(),
+                            });
                         }
                     }
                 }
             }
 
-            true
+            staging.commit_to_sqlite(cache_pool).await.is_ok()
         }
         _ => false,
     }

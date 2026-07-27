@@ -10,11 +10,14 @@ mod cache;
 mod databases;
 mod columns;
 mod ddl;
+pub(crate) mod staging;
 
 // Re-export everything that the parent connection module (and the rest of the
 // crate) expects to find at the `metadata::*` path.
 
 pub(crate) use cache::fetch_and_cache_all_data;
+#[allow(unused_imports)]
+pub(crate) use staging::MetadataStaging;
 
 pub use databases::fetch_databases_background_task; // fully pub in original
 #[allow(deprecated)]

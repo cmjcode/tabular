@@ -154,14 +154,8 @@ impl super::Tabular {
             node.is_loaded = true;
         }
 
-        // Trigger background sync to fetch live databases from server without blocking UI
-        if !self.fetching_databases.contains(&connection_id) {
-            self.fetching_databases.insert(connection_id);
-            self.refreshing_connections.insert(connection_id);
-            if let Some(sender) = &self.background_sender {
-                let _ = sender.send(models::enums::BackgroundTask::FetchDatabases { connection_id });
-            }
-        }
+        // Trigger unified background auto-sync to fetch live databases and schema atomically
+        self.maybe_auto_sync_connection(connection_id);
     }
     pub fn build_connection_structure_from_cache(
         &mut self,
@@ -602,162 +596,100 @@ impl super::Tabular {
             return;
         }
 
-        // Clear any loading placeholders
-        databases_folder.children.clear();
+        eprintln!("[TREE-LOADER] load_databases_for_folder conn={}", connection_id);
 
         // First check cache
-        if let Some(cached_databases) = cache_data::get_databases_from_cache(self, connection_id)
-            && !cached_databases.is_empty()
-        {
-            for db_name in cached_databases {
-                let mut db_node = models::structs::TreeNode::new(
-                    db_name.clone(),
-                    models::enums::NodeType::Database,
-                );
-                db_node.connection_id = Some(connection_id);
-                db_node.database_name = Some(db_name.clone());
-                db_node.is_loaded = false;
+        let cached_opt = cache_data::get_databases_from_cache(self, connection_id);
+        eprintln!("[TREE-LOADER] conn={} SQLite database_cache lookup returned: {:?}", connection_id, cached_opt);
 
-                // Add subfolders for each database
-                let mut db_children = Vec::new();
+        // Distinguish three cases:
+        // 1. Some(non-empty) → cache hit, populate tree immediately
+        // 2. Some([])        → cache row exists but sync hasn't written results yet (in-flight)
+        //                      Do NOT re-trigger auto-sync — show "Syncing..." and wait
+        // 3. None            → DB lookup failed entirely (no pool / first run) → trigger auto-sync
+        match cached_opt {
+            Some(cached_databases) if !cached_databases.is_empty() => {
+                eprintln!("[TREE-LOADER] conn={} CACHE HIT! Building tree nodes for {} databases: {:?}", connection_id, cached_databases.len(), cached_databases);
+                databases_folder.children.clear();
+                for db_name in &cached_databases {
+                    let mut db_node = models::structs::TreeNode::new(
+                        db_name.clone(),
+                        models::enums::NodeType::Database,
+                    );
+                    db_node.connection_id = Some(connection_id);
+                    db_node.database_name = Some(db_name.clone());
+                    db_node.is_loaded = false;
 
+                    // Add subfolders for each database
+                    let mut db_children = Vec::new();
 
+                    // Tables folder
+                    let mut tables_folder = models::structs::TreeNode::new(
+                        "Tables".to_string(),
+                        models::enums::NodeType::TablesFolder,
+                    );
+                    tables_folder.connection_id = Some(connection_id);
+                    tables_folder.database_name = Some(db_name.clone());
+                    tables_folder.is_loaded = false;
+                    db_children.push(tables_folder);
 
-                // Tables folder
-                let mut tables_folder = models::structs::TreeNode::new(
-                    "Tables".to_string(),
-                    models::enums::NodeType::TablesFolder,
-                );
-                tables_folder.connection_id = Some(connection_id);
-                tables_folder.database_name = Some(db_name.clone());
-                tables_folder.is_loaded = false;
-                db_children.push(tables_folder);
+                    // Views folder
+                    let mut views_folder = models::structs::TreeNode::new(
+                        "Views".to_string(),
+                        models::enums::NodeType::ViewsFolder,
+                    );
+                    views_folder.connection_id = Some(connection_id);
+                    views_folder.database_name = Some(db_name.clone());
+                    views_folder.is_loaded = false;
+                    db_children.push(views_folder);
 
-                // Views folder
-                let mut views_folder = models::structs::TreeNode::new(
-                    "Views".to_string(),
-                    models::enums::NodeType::ViewsFolder,
-                );
-                views_folder.connection_id = Some(connection_id);
-                views_folder.database_name = Some(db_name.clone());
-                views_folder.is_loaded = false;
-                db_children.push(views_folder);
+                    // Stored Procedures folder
+                    let mut sp_folder = models::structs::TreeNode::new(
+                        "Stored Procedures".to_string(),
+                        models::enums::NodeType::StoredProceduresFolder,
+                    );
+                    sp_folder.connection_id = Some(connection_id);
+                    sp_folder.database_name = Some(db_name.clone());
+                    sp_folder.is_loaded = false;
+                    db_children.push(sp_folder);
 
-                // Stored Procedures folder
-                let mut sp_folder = models::structs::TreeNode::new(
-                    "Stored Procedures".to_string(),
-                    models::enums::NodeType::StoredProceduresFolder,
-                );
-                sp_folder.connection_id = Some(connection_id);
-                sp_folder.database_name = Some(db_name.clone());
-                sp_folder.is_loaded = false;
-                db_children.push(sp_folder);
-
-                db_node.children = db_children;
-                databases_folder.children.push(db_node);
+                    db_node.children = db_children;
+                    databases_folder.children.push(db_node);
+                }
+                databases_folder.is_loaded = true;
             }
-
-            databases_folder.is_loaded = true;
-            return;
-        }
-
-        // Try to fetch real databases from the connection
-        if let Some(databases) = {
-             let dbs = self.get_databases_cached(connection_id);
-             if !dbs.is_empty() { Some(dbs) } else { None }
-        } {
-            // Save to cache for future use
-            cache_data::save_databases_to_cache(self, connection_id, &databases);
-
-            // Create tree nodes from fetched data
-            for db_name in databases {
-                let mut db_node = models::structs::TreeNode::new(
-                    db_name.clone(),
+            Some(_) => {
+                // Cache was queried successfully but returned an empty list — background sync
+                // is still in-flight and hasn't written database rows yet.  Do NOT re-trigger
+                // auto-sync here; just show a passive "Syncing..." placeholder.
+                eprintln!("[TREE-LOADER] conn={} cache Some([]) — sync in-flight, showing Syncing...", connection_id);
+                databases_folder.children.clear();
+                let syncing_node = models::structs::TreeNode::new(
+                    "Syncing databases...".to_string(),
                     models::enums::NodeType::Database,
                 );
-                db_node.connection_id = Some(connection_id);
-                db_node.database_name = Some(db_name.clone());
-                db_node.is_loaded = false;
+                databases_folder.children.push(syncing_node);
+                databases_folder.is_loaded = false;
+            }
+            None => {
+                // Cache lookup returned None — DB pool not ready or connection never synced.
+                // Trigger auto-sync only in this case.
+                eprintln!("[TREE-LOADER] conn={} CACHE MISS (None)! Triggering auto-sync if not already running", connection_id);
 
-                // Add subfolders for each database
-                let mut db_children = Vec::new();
-
-
-
-                // Tables folder
-                let mut tables_folder = models::structs::TreeNode::new(
-                    "Tables".to_string(),
-                    models::enums::NodeType::TablesFolder,
-                );
-                tables_folder.connection_id = Some(connection_id);
-                tables_folder.database_name = Some(db_name.clone());
-                tables_folder.is_loaded = false;
-                db_children.push(tables_folder);
-
-                // Views folder
-                let mut views_folder = models::structs::TreeNode::new(
-                    "Views".to_string(),
-                    models::enums::NodeType::ViewsFolder,
-                );
-                views_folder.connection_id = Some(connection_id);
-                views_folder.database_name = Some(db_name.clone());
-                views_folder.is_loaded = false;
-                db_children.push(views_folder);
-
-                // Stored Procedures / Functions / Triggers depending on DB type
-                if let Some(conn) = self
-                    .connections
-                    .iter()
-                    .find(|c| c.id == Some(connection_id))
+                if !self.refreshing_connections.contains(&connection_id)
+                    && !self.fetching_databases.contains(&connection_id)
                 {
-                    match conn.connection_type {
-                        models::enums::DatabaseType::MySQL => {
-                            let mut sp_folder = models::structs::TreeNode::new(
-                                "Stored Procedures".to_string(),
-                                models::enums::NodeType::StoredProceduresFolder,
-                            );
-                            sp_folder.connection_id = Some(connection_id);
-                            sp_folder.database_name = Some(db_name.clone());
-                            sp_folder.is_loaded = false;
-                            db_children.push(sp_folder);
-                        }
-                        models::enums::DatabaseType::MsSQL => {
-                            let mut sp_folder = models::structs::TreeNode::new(
-                                "Stored Procedures".to_string(),
-                                models::enums::NodeType::StoredProceduresFolder,
-                            );
-                            sp_folder.connection_id = Some(connection_id);
-                            sp_folder.database_name = Some(db_name.clone());
-                            sp_folder.is_loaded = false;
-                            db_children.push(sp_folder);
-                            let mut fn_folder = models::structs::TreeNode::new(
-                                "Functions".to_string(),
-                                models::enums::NodeType::UserFunctionsFolder,
-                            );
-                            fn_folder.connection_id = Some(connection_id);
-                            fn_folder.database_name = Some(db_name.clone());
-                            fn_folder.is_loaded = false;
-                            db_children.push(fn_folder);
-                            let mut trg_folder = models::structs::TreeNode::new(
-                                "Triggers".to_string(),
-                                models::enums::NodeType::TriggersFolder,
-                            );
-                            trg_folder.connection_id = Some(connection_id);
-                            trg_folder.database_name = Some(db_name.clone());
-                            trg_folder.is_loaded = false;
-                            db_children.push(trg_folder);
-                        }
-                        _ => {}
-                    }
+                    self.maybe_auto_sync_connection(connection_id);
                 }
 
-                db_node.children = db_children;
-                databases_folder.children.push(db_node);
+                databases_folder.children.clear();
+                let loading_node = models::structs::TreeNode::new(
+                    "Loading databases...".to_string(),
+                    models::enums::NodeType::Database,
+                );
+                databases_folder.children.push(loading_node);
+                databases_folder.is_loaded = false;
             }
-
-            databases_folder.is_loaded = true;
-        } else {
-            self.populate_sample_databases_for_folder(connection_id, databases_folder);
         }
     }
     pub fn populate_sample_databases_for_folder(

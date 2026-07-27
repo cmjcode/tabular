@@ -30,14 +30,14 @@ pub(crate) fn resolve_connection_target(
 pub(crate) fn cleanup_completed_background_pools(tabular: &mut Tabular) {
     if let Ok(shared_pools) = tabular.shared_connection_pools.lock() {
         for connection_id in shared_pools.keys() {
-            if tabular.pending_connection_pools.contains(connection_id) {
-                debug!(
-                    "🧹 Cleaning up completed background pool for connection {}",
-                    connection_id
-                );
-                tabular.pending_connection_pools.remove(connection_id);
-            }
+            tabular.pending_connection_pools.remove(connection_id);
+            tabular.refreshing_connections.remove(connection_id);
         }
+    }
+    let failed_ids: Vec<i64> = tabular.connection_errors.keys().copied().collect();
+    for connection_id in failed_ids {
+        tabular.pending_connection_pools.remove(&connection_id);
+        tabular.refreshing_connections.remove(&connection_id);
     }
 }
 

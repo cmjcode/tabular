@@ -4,59 +4,50 @@ use sqlx::{Row, SqlitePool};
 use crate::{connection, models, window_egui};
 
 pub async fn fetch_data(connection_id: i64, pool: &SqlitePool, cache_pool: &SqlitePool) -> bool {
-    // For SQLite, we typically work with the main database, but we can get table info
+    use crate::connection::metadata::staging::{
+        ColumnMetaStaging, MetadataStaging, TableMetaStaging,
+    };
+
+    let mut staging = MetadataStaging::new(connection_id);
+
     if let Ok(rows) = sqlx::query(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
     )
     .fetch_all(pool)
     .await
     {
-        // Cache the main database
         let db_name = "main";
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)",
-        )
-        .bind(connection_id)
-        .bind(db_name)
-        .execute(cache_pool)
-        .await;
+        let staged_db = staging.add_database(db_name);
 
-        // Cache tables
         for row in rows {
             if let Ok(table_name) = row.try_get::<String, _>(0) {
-                // Cache table
-                let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
-                            .bind(connection_id)
-                            .bind(db_name)
-                            .bind(&table_name)
-                            .bind("table")
-                            .execute(cache_pool)
-                            .await;
+                let mut staged_table = TableMetaStaging {
+                    table_name: table_name.clone(),
+                    table_type: "table".to_string(),
+                    columns: Vec::new(),
+                    indexes: Vec::new(),
+                };
 
-                // Fetch columns for this table
                 let col_query = format!("PRAGMA table_info({})", table_name);
                 if let Ok(col_rows) = sqlx::query(sqlx::AssertSqlSafe(col_query.as_str())).fetch_all(pool).await {
-                    for col_row in col_rows {
+                    for (idx, col_row) in col_rows.into_iter().enumerate() {
                         if let (Ok(col_name), Ok(col_type)) = (
                             col_row.try_get::<String, _>("name"),
                             col_row.try_get::<String, _>("type"),
                         ) {
-                            // Cache column
-                            let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
-                                          .bind(connection_id)
-                                          .bind(db_name)
-                                          .bind(&table_name)
-                                          .bind(&col_name)
-                                          .bind(&col_type)
-                                          .bind(0) // SQLite doesn't have ordinal position in PRAGMA
-                                          .execute(cache_pool)
-                                          .await;
+                            staged_table.columns.push(ColumnMetaStaging {
+                                column_name: col_name,
+                                data_type: col_type,
+                                ordinal_position: idx as i64,
+                            });
                         }
                     }
                 }
+
+                staged_db.tables.push(staged_table);
             }
         }
-        true
+        staging.commit_to_sqlite(cache_pool).await.is_ok()
     } else {
         false
     }

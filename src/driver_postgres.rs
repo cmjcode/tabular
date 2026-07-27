@@ -9,6 +9,12 @@ pub(crate) async fn fetch_postgres_data(
     pool: &PgPool,
     cache_pool: &SqlitePool,
 ) -> bool {
+    use crate::connection::metadata::staging::{
+        ColumnMetaStaging, MetadataStaging, TableMetaStaging,
+    };
+
+    let mut staging = MetadataStaging::new(connection_id);
+
     // 1) Cache database names
     let db_rows = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -24,11 +30,7 @@ pub(crate) async fn fetch_postgres_data(
 
     for row in db_rows {
         if let Ok(db_name) = row.try_get::<String, _>(0) {
-            let _ = sqlx::query("INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)")
-                            .bind(connection_id)
-                            .bind(&db_name)
-                            .execute(cache_pool)
-                            .await;
+            staging.add_database(&db_name);
         }
     }
 
@@ -42,6 +44,8 @@ pub(crate) async fn fetch_postgres_data(
     .and_then(|r| r.ok());
 
     if let Some(db_name) = current_db {
+        let staged_db = staging.add_database(&db_name);
+
         // Tables (public)
         if let Ok(table_rows) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -50,49 +54,46 @@ pub(crate) async fn fetch_postgres_data(
         .await
         .map_err(|_| sqlx::Error::PoolTimedOut)
         .and_then(|r| r)
-              {
-                     for table_row in table_rows {
-                            if let Ok(table_name) = table_row.try_get::<String, _>(0) {
-                                   let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
-                                          .bind(connection_id)
-                                          .bind(&db_name)
-                                          .bind(&table_name)
-                                          .bind("table")
-                                          .execute(cache_pool)
-                                          .await;
+        {
+            for table_row in table_rows {
+                if let Ok(table_name) = table_row.try_get::<String, _>(0) {
+                    let mut staged_table = TableMetaStaging {
+                        table_name: table_name.clone(),
+                        table_type: "table".to_string(),
+                        columns: Vec::new(),
+                        indexes: Vec::new(),
+                    };
 
-                                   // Columns
+                    // Columns
                     if let Ok(col_rows) = tokio::time::timeout(
-                         std::time::Duration::from_secs(10),
-                         sqlx::query("SELECT column_name, data_type, ordinal_position FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position")
-                        .bind(&table_name)
-                        .fetch_all(pool),
+                        std::time::Duration::from_secs(10),
+                        sqlx::query("SELECT column_name, data_type, ordinal_position FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position")
+                            .bind(&table_name)
+                            .fetch_all(pool),
                     )
                     .await
                     .map_err(|_| sqlx::Error::PoolTimedOut)
                     .and_then(|r| r)
-                                   {
-                                          for col_row in col_rows {
-                                                 if let (Ok(col_name), Ok(col_type), Ok(ordinal_pos)) = (
-                                                        col_row.try_get::<String, _>(0),
-                                                        col_row.try_get::<String, _>(1),
-                                                        col_row.try_get::<i32, _>(2),
-                                                 ) {
-                                                        let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
-                                                               .bind(connection_id)
-                                                               .bind(&db_name)
-                                                               .bind(&table_name)
-                                                               .bind(&col_name)
-                                                               .bind(&col_type)
-                                                               .bind(ordinal_pos)
-                                                               .execute(cache_pool)
-                                                               .await;
-                                                 }
-                                          }
-                                   }
+                    {
+                        for col_row in col_rows {
+                            if let (Ok(col_name), Ok(col_type), Ok(ordinal_pos)) = (
+                                col_row.try_get::<String, _>(0),
+                                col_row.try_get::<String, _>(1),
+                                col_row.try_get::<i32, _>(2),
+                            ) {
+                                staged_table.columns.push(ColumnMetaStaging {
+                                    column_name: col_name,
+                                    data_type: col_type,
+                                    ordinal_position: ordinal_pos as i64,
+                                });
                             }
-                     }
-              }
+                        }
+                    }
+
+                    staged_db.tables.push(staged_table);
+                }
+            }
+        }
 
         // Views (public)
         if let Ok(view_rows) = tokio::time::timeout(
@@ -108,19 +109,18 @@ pub(crate) async fn fetch_postgres_data(
         {
             for view_row in view_rows {
                 if let Ok(view_name) = view_row.try_get::<String, _>(0) {
-                    let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
-                                          .bind(connection_id)
-                                          .bind(&db_name)
-                                          .bind(&view_name)
-                                          .bind("view")
-                                          .execute(cache_pool)
-                                          .await;
+                    staged_db.tables.push(TableMetaStaging {
+                        table_name: view_name,
+                        table_type: "view".to_string(),
+                        columns: Vec::new(),
+                        indexes: Vec::new(),
+                    });
                 }
             }
         }
     }
 
-    true
+    staging.commit_to_sqlite(cache_pool).await.is_ok()
 }
 
 pub(crate) fn load_postgresql_structure(

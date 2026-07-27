@@ -561,40 +561,55 @@ impl super::Tabular {
         
         std::thread::spawn(move || {
             while let Ok(task) = task_receiver.recv() {
+                crate::window_egui::connection_mgr::autosync_log(&format!(
+                    "[WORKER-LOOP] received background task: {:?}",
+                    task
+                ));
                 match task {
                     models::enums::BackgroundTask::FetchDatabases { connection_id } => {
-                        if let Some(pool) = &cache_pool
-                            && let Ok(rt) = tokio::runtime::Runtime::new()
-                        {
-                            let dbs_opt = rt.block_on(connection::fetch_databases_background_task(
-                                connection_id,
-                                pool,
-                                &shared_pools,
-                            ));
+                        // Spawn a thread so this does NOT block the worker loop.
+                        // The old block_on approach caused the worker to stall for the
+                        // entire MySQL/PG connection time, preventing RefreshConnection
+                        // from being processed concurrently.
+                        let cache_pool_thread = cache_pool.clone();
+                        let shared_pools_thread = shared_pools.clone();
+                        let result_sender_thread = result_sender.clone();
+                        std::thread::spawn(move || {
+                            eprintln!("[FETCH-DB] FetchDatabases id={} STARTED", connection_id);
+                            if let Some(pool) = &cache_pool_thread
+                                && let Ok(rt) = tokio::runtime::Runtime::new()
+                            {
+                                let dbs_opt = rt.block_on(connection::fetch_databases_background_task(
+                                    connection_id,
+                                    pool,
+                                    &shared_pools_thread,
+                                ));
+                                eprintln!("[FETCH-DB] FetchDatabases id={} result: {:?}", connection_id, dbs_opt);
 
-                            if let Some(dbs) = dbs_opt {
-                                let _ = result_sender.send(
-                                    models::enums::BackgroundResult::DatabasesFetched {
-                                        connection_id,
-                                        databases: dbs,
-                                    },
-                                );
+                                if let Some(dbs) = dbs_opt {
+                                    let _ = result_sender_thread.send(
+                                        models::enums::BackgroundResult::DatabasesFetched {
+                                            connection_id,
+                                            databases: dbs,
+                                        },
+                                    );
+                                } else {
+                                    let _ = result_sender_thread.send(
+                                        models::enums::BackgroundResult::ConnectionFailed {
+                                            connection_id,
+                                            error_message: "Failed to connect or fetch databases from server".to_string(),
+                                        },
+                                    );
+                                }
                             } else {
-                                let _ = result_sender.send(
+                                let _ = result_sender_thread.send(
                                     models::enums::BackgroundResult::ConnectionFailed {
                                         connection_id,
-                                        error_message: "Failed to connect or fetch databases from server".to_string(),
+                                        error_message: "Runtime initialization error".to_string(),
                                     },
                                 );
                             }
-                        } else {
-                            let _ = result_sender.send(
-                                models::enums::BackgroundResult::ConnectionFailed {
-                                    connection_id,
-                                    error_message: "Runtime initialization error".to_string(),
-                                },
-                            );
-                        }
+                        });
                     }
                     models::enums::BackgroundTask::TestConnection { connection } => {
                         let (success, message) = crate::connection::test_database_connection(&connection);
@@ -785,60 +800,81 @@ impl super::Tabular {
                         }
                     }
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
-                        eprintln!(
-                            "[AUTO-SYNC] bg RefreshConnection id={} cache_pool_present={}",
-                            connection_id,
-                            cache_pool.is_some()
-                        );
-                        // Perform actual refresh and cache preload on a lightweight runtime
-                        let success = if let Some(cache_pool_arc) = &cache_pool {
-                            match tokio::runtime::Runtime::new() {
-                                Ok(rt) => rt.block_on(
-                                    crate::connection::refresh_connection_background_async(
-                                        connection_id,
-                                        &Some(cache_pool_arc.clone()),
-                                    ),
-                                ),
-                                Err(_) => false,
-                            }
-                        } else {
-                            false
-                        };
-                        eprintln!(
-                            "[AUTO-SYNC] bg RefreshConnection id={} finished success={}",
-                            connection_id, success
-                        );
-                        let _ =
-                            result_sender.send(models::enums::BackgroundResult::RefreshComplete {
+                        let cache_pool_thread = cache_pool.clone();
+                        let shared_pools_thread = shared_pools.clone();
+                        let result_sender_thread = result_sender.clone();
+                        std::thread::spawn(move || {
+                            eprintln!(
+                                "[AUTO-SYNC] bg RefreshConnection id={} STARTED cache_pool_present={}",
                                 connection_id,
-                                success,
-                            });
+                                cache_pool_thread.is_some()
+                            );
+                            let (success, databases) = if let Some(cache_pool_arc) = &cache_pool_thread {
+                                match tokio::runtime::Runtime::new() {
+                                    Ok(rt) => rt.block_on(
+                                        crate::connection::refresh_connection_background_async(
+                                            connection_id,
+                                            &Some(cache_pool_arc.clone()),
+                                            &shared_pools_thread,
+                                        ),
+                                    ),
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[AUTO-SYNC] bg RefreshConnection id={} Runtime::new failed: {}",
+                                            connection_id, e
+                                        );
+                                        (false, vec![])
+                                    }
+                                }
+                            } else {
+                                eprintln!(
+                                    "[AUTO-SYNC] bg RefreshConnection id={} cache_pool is None!",
+                                    connection_id
+                                );
+                                (false, vec![])
+                            };
+                            eprintln!(
+                                "[AUTO-SYNC] bg RefreshConnection id={} FINISHED success={} databases={:?}",
+                                connection_id, success, databases
+                            );
+                            let _ = result_sender_thread.send(
+                                models::enums::BackgroundResult::RefreshComplete {
+                                    connection_id,
+                                    success,
+                                    databases,
+                                },
+                            );
+                        });
                     }
                     models::enums::BackgroundTask::EnsureConnectionPool { connection_id } => {
-                        if let Some(pool) = &cache_pool
-                            && let Ok(rt) = tokio::runtime::Runtime::new()
-                        {
-                            let res = rt.block_on(async {
-                                crate::connection::create_connection_pool_by_id(connection_id, pool).await
-                            });
-                            match res {
-                                Ok(new_pool) => {
-                                    if let Ok(mut shared) = shared_pools.lock() {
-                                        shared.insert(connection_id, new_pool);
+                        // Spawn a thread so pool creation doesn't block the worker loop.
+                        let cache_pool_thread = cache_pool.clone();
+                        let shared_pools_thread = shared_pools.clone();
+                        let result_sender_thread = result_sender.clone();
+                        std::thread::spawn(move || {
+                            eprintln!("[POOL] EnsureConnectionPool id={} STARTED", connection_id);
+                            if let Some(pool) = &cache_pool_thread
+                                && let Ok(rt) = tokio::runtime::Runtime::new()
+                            {
+                                let res = rt.block_on(async {
+                                    crate::connection::create_connection_pool_by_id(connection_id, pool).await
+                                });
+                                eprintln!("[POOL] EnsureConnectionPool id={} result ok={}", connection_id, res.is_ok());
+                                match res {
+                                    Ok(new_pool) => {
+                                        if let Ok(mut shared) = shared_pools_thread.lock() {
+                                            shared.insert(connection_id, new_pool);
+                                        }
                                     }
-                                    let _ = result_sender.send(models::enums::BackgroundResult::RefreshComplete {
-                                        connection_id,
-                                        success: true,
-                                    });
-                                }
-                                Err(err_msg) => {
-                                    let _ = result_sender.send(models::enums::BackgroundResult::ConnectionFailed {
-                                        connection_id,
-                                        error_message: err_msg,
-                                    });
+                                    Err(err_msg) => {
+                                        let _ = result_sender_thread.send(models::enums::BackgroundResult::ConnectionFailed {
+                                            connection_id,
+                                            error_message: err_msg,
+                                        });
+                                    }
                                 }
                             }
-                        }
+                        });
                     }
                     models::enums::BackgroundTask::CheckForUpdates => {
                         // Perform update check on a lightweight runtime (if required by async API)

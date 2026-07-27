@@ -33,6 +33,10 @@ pub async fn fetch_mongodb_data(
     client: Arc<Client>,
     cache_pool: &sqlx::SqlitePool,
 ) -> bool {
+    use crate::connection::metadata::staging::{MetadataStaging, TableMetaStaging};
+
+    let mut staging = MetadataStaging::new(connection_id);
+
     // List databases
     let dbs = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -51,28 +55,10 @@ pub async fn fetch_mongodb_data(
         }
     };
 
-    // Save databases directly into cache table
-    let mut ok = true;
-    if let Err(e) = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
-        .bind(connection_id)
-        .execute(cache_pool)
-        .await
-    {
-        debug!("Failed clearing database_cache: {}", e);
-    }
-    for db in &dbs {
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)",
-        )
-        .bind(connection_id)
-        .bind(db)
-        .execute(cache_pool)
-        .await;
-    }
-
-    // For each database, list collections and cache as table_cache with type 'collection'
     for db_name in &dbs {
-        match tokio::time::timeout(
+        let staged_db = staging.add_database(db_name);
+
+        if let Ok(cols) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             client.database(db_name).list_collection_names(),
         )
@@ -85,32 +71,18 @@ pub async fn fetch_mongodb_data(
         })
         .and_then(|r| r)
         {
-            Ok(cols) => {
-                // Save collections as table_cache entries
-                let _ = sqlx::query(
-                    "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
-                )
-                .bind(connection_id)
-                .bind(db_name)
-                .execute(cache_pool)
-                .await;
-                for c in cols {
-                    let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, 'collection')")
-                        .bind(connection_id)
-                        .bind(db_name)
-                        .bind(c)
-                        .execute(cache_pool)
-                        .await;
-                }
-            }
-            Err(e) => {
-                debug!("Failed to list collections for '{}': {}", db_name, e);
-                ok = false;
+            for c in cols {
+                staged_db.tables.push(TableMetaStaging {
+                    table_name: c,
+                    table_type: "collection".to_string(),
+                    columns: Vec::new(),
+                    indexes: Vec::new(),
+                });
             }
         }
     }
 
-    ok
+    staging.commit_to_sqlite(cache_pool).await.is_ok()
 }
 
 // Build initial tree structure for MongoDB connection

@@ -279,32 +279,28 @@ impl super::Tabular {
             if let Err(e) =
                 sender.send(models::enums::BackgroundTask::RefreshConnection { connection_id })
             {
-                debug!("Failed to send background auto-sync task: {}", e);
+                autosync_log(&format!("[AUTO-SYNC] Failed to send background auto-sync task for id={}: {}", connection_id, e));
                 self.refreshing_connections.remove(&connection_id);
                 cache_data::fetch_and_cache_connection_data(self, connection_id);
+            } else {
+                autosync_log(&format!("[AUTO-SYNC] SUCCESSFULLY sent RefreshConnection task to background_sender for id={}", connection_id));
             }
         } else {
+            autosync_log(&format!("[AUTO-SYNC] background_sender is NONE for id={}!", connection_id));
             self.refreshing_connections.remove(&connection_id);
             cache_data::fetch_and_cache_connection_data(self, connection_id);
         }
     }
 
     pub fn refresh_connection(&mut self, connection_id: i64) {
-        // Clear all cached data for this connection (SQLite tables)
-        self.clear_connection_cache(connection_id);
+        eprintln!("[REFRESH-CONN] manual refresh_connection started for id={}", connection_id);
+        self.auto_synced_connections.remove(&connection_id);
 
-        // Also clear in-memory database cache so next load always hits the server
+        // Clear in-memory database cache so next load gets fresh data
         self.database_cache.remove(&connection_id);
         self.database_cache_time.remove(&connection_id);
 
-        // Remove from connection pool cache to force reconnection
-        self.connection_pools.remove(&connection_id);
-        // Also remove from shared pools
-        if let Ok(mut shared) = self.shared_connection_pools.lock() {
-            shared.remove(&connection_id);
-        }
-
-        // Mark as refreshing
+        // Mark as refreshing (shows syncing badge in UI)
         self.refreshing_connections.insert(connection_id);
 
         // Find the connection node in the tree (recursively) and reset its loaded state

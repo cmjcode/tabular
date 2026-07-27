@@ -110,6 +110,9 @@ pub enum BackgroundResult {
     RefreshComplete {
         connection_id: i64,
         success: bool,
+        /// Databases fetched during this refresh (populated only when success=true).
+        /// Passed inline to avoid a second SQLite round-trip in the UI thread.
+        databases: Vec<String>,
     },
     UpdateCheckComplete {
         result: Result<crate::self_update::UpdateInfo, String>,

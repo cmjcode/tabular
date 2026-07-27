@@ -820,23 +820,19 @@ impl super::Tabular {
                 }
                 models::enums::NodeType::DatabasesFolder => {
                     // Handle DatabasesFolder expansion - load actual databases from server
-                    for node in nodes.iter_mut() {
-                        if node.node_type == models::enums::NodeType::Connection
-                            && node.connection_id == Some(expansion_req.connection_id)
-                        {
-                            // Find the DatabasesFolder within this connection
-                            for child in &mut node.children {
-                                if child.node_type == models::enums::NodeType::DatabasesFolder
-                                    && !child.is_loaded
-                                {
-                                    self.load_databases_for_folder(
-                                        expansion_req.connection_id,
-                                        child,
-                                    );
-                                    break;
-                                }
+                    if let Some(conn_node) =
+                        Self::find_connection_node_recursive(nodes, expansion_req.connection_id)
+                    {
+                        for child in &mut conn_node.children {
+                            if child.node_type == models::enums::NodeType::DatabasesFolder
+                                && !child.is_loaded
+                            {
+                                self.load_databases_for_folder(
+                                    expansion_req.connection_id,
+                                    child,
+                                );
+                                break;
                             }
-                            break;
                         }
                     }
                 }

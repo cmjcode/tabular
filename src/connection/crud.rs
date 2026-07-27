@@ -479,7 +479,8 @@ async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
 pub(crate) async fn refresh_connection_background_async(
     connection_id: i64,
     db_pool: &Option<Arc<SqlitePool>>,
-) -> bool {
+    shared_pools: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>>,
+) -> (bool, Vec<String>) {
     debug!(
         "[refresh_connection] starting background refresh for connection {}",
         connection_id
@@ -580,68 +581,103 @@ pub(crate) async fn refresh_connection_background_async(
                 replication_master_id: None,
             };
 
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                create_database_pool(&connection),
-            )
-            .await
-            {
-                Ok(Some(new_pool)) => {
-                    debug!(
-                        "[refresh_connection] database pool recreated for connection {} ({:?})",
-                        connection_id,
-                        connection.connection_type
-                    );
+            let existing_pool = if let Ok(shared) = shared_pools.lock() {
+                shared.get(&connection_id).cloned()
+            } else {
+                None
+            };
 
-                    // Clear old SQLite cache ONLY AFTER pool creation succeeds
-                    clear_connection_cache_sqlite(connection_id, cache_pool_arc.as_ref()).await;
-
-                    let fetch_result = fetch_and_cache_all_data(
-                        connection_id,
-                        &connection,
-                        &new_pool,
-                        cache_pool_arc.as_ref(),
+            let pool = match existing_pool {
+                Some(p) => p,
+                None => {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(20),
+                        create_database_pool(&connection),
                     )
-                    .await;
-                    debug!(
-                        "[refresh_connection] cache reload finished for connection {} => {}",
-                        connection_id,
-                        fetch_result
-                    );
-                    fetch_result
+                    .await
+                    {
+                        Ok(Some(new_pool)) => {
+                            if let Ok(mut shared) = shared_pools.lock() {
+                                shared.insert(connection_id, new_pool.clone());
+                            }
+                            new_pool
+                        }
+                        Ok(None) => {
+                            warn!(
+                                "[refresh_connection] failed to create pool for connection {} — keeping existing cache intact",
+                                connection_id
+                            );
+                            return (false, vec![]);
+                        }
+                        Err(error) => {
+                            warn!(
+                                "[refresh_connection] timed out creating pool for connection {}: {} — keeping existing cache intact",
+                                connection_id,
+                                error
+                            );
+                            return (false, vec![]);
+                        }
+                    }
                 }
-                Ok(None) => {
-                    warn!(
-                        "[refresh_connection] failed to recreate database pool for connection {} — keeping existing cache intact",
-                        connection_id
-                    );
-                    false
+            };
+
+            debug!(
+                "[refresh_connection] executing metadata fetch for connection {} ({:?})",
+                connection_id,
+                connection.connection_type
+            );
+
+            let fetch_ok = fetch_and_cache_all_data(
+                connection_id,
+                &connection,
+                &pool,
+                cache_pool_arc.as_ref(),
+            )
+            .await;
+            debug!(
+                "[refresh_connection] cache reload finished for connection {} => {}",
+                connection_id,
+                fetch_ok
+            );
+
+            // After a successful write to SQLite, read back the database list inline
+            // so RefreshComplete can carry it — avoids a race-prone UI-thread re-read.
+            let databases: Vec<String> = if fetch_ok {
+                match sqlx::query_as::<_, (String,)>(
+                    "SELECT database_name FROM database_cache WHERE connection_id = ? ORDER BY database_name",
+                )
+                .bind(connection_id)
+                .fetch_all(cache_pool_arc.as_ref())
+                .await
+                {
+                    Ok(rows) => rows.into_iter().map(|(n,)| n).collect(),
+                    Err(e) => {
+                        warn!("[refresh_connection] could not read back databases: {}", e);
+                        vec![]
+                    }
                 }
-                Err(error) => {
-                    warn!(
-                        "[refresh_connection] timed out recreating pool for connection {}: {} — keeping existing cache intact",
-                        connection_id,
-                        error
-                    );
-                    false
-                }
-            }
+            } else {
+                vec![]
+            };
+            eprintln!("[refresh_connection] inline databases read-back: {:?}", databases);
+            (fetch_ok, databases)
         } else {
             warn!(
                 "[refresh_connection] connection {} not found in sqlite metadata store",
                 connection_id
             );
-            false
+            (false, vec![])
         }
     } else {
         warn!(
             "[refresh_connection] sqlite cache pool unavailable for connection {}",
             connection_id
         );
-        false
+        (false, vec![])
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn clear_connection_cache_sqlite(connection_id: i64, cache_pool: &SqlitePool) {
     debug!(
         "[refresh_connection] clearing SQLite cache rows for connection {} after successful pool creation",

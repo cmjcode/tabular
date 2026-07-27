@@ -558,9 +558,11 @@ impl Tabular {
                         models::enums::BackgroundResult::RefreshComplete {
                             connection_id,
                             success,
+                            databases,
                         } => {
-                            // Remove from refreshing set
+                            // Remove from refreshing and pending sets
                             self.refreshing_connections.remove(&connection_id);
+                            self.pending_connection_pools.remove(&connection_id);
 
                             if success {
                                 self.connection_errors.remove(&connection_id);
@@ -613,11 +615,77 @@ impl Tabular {
                                         connection_id
                                     );
                                 } else {
-                                    // Background-only auto-sync: tree is intact, no reload needed.
-                                    // The SQLite cache is now warm for autocomplete.
+                                    // Background-only auto-sync: update in-memory DB cache
+                                    if !databases.is_empty() {
+                                        self.database_cache.insert(connection_id, databases.clone());
+                                        self.database_cache_time.insert(connection_id, std::time::Instant::now());
+                                    } else {
+                                        self.database_cache.remove(&connection_id);
+                                        self.database_cache_time.remove(&connection_id);
+                                    }
+
+                                    // Use the databases list that was read-back in the background thread
+                                    // (inside the same SQLite connection as the write) — no WAL race.
+                                    eprintln!(
+                                        "[REFRESH-COMPLETE] non-full-refresh for conn={} got {} databases inline",
+                                        connection_id, databases.len()
+                                    );
+
+                                    // Populate DatabasesFolder node directly with the inline data
+                                    if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
+                                        conn_node.is_loaded = false;
+                                        for child in &mut conn_node.children {
+                                            if child.node_type == models::enums::NodeType::DatabasesFolder {
+                                                if !databases.is_empty() {
+                                                    child.children.clear();
+                                                    for db_name in &databases {
+                                                        let mut db_node = models::structs::TreeNode::new(
+                                                            db_name.clone(),
+                                                            models::enums::NodeType::Database,
+                                                        );
+                                                        db_node.connection_id = Some(connection_id);
+                                                        db_node.database_name = Some(db_name.clone());
+                                                        db_node.is_loaded = false;
+
+                                                        let mut tables_folder = models::structs::TreeNode::new(
+                                                            "Tables".to_string(),
+                                                            models::enums::NodeType::TablesFolder,
+                                                        );
+                                                        tables_folder.connection_id = Some(connection_id);
+                                                        tables_folder.database_name = Some(db_name.clone());
+                                                        tables_folder.is_loaded = false;
+
+                                                        let mut views_folder = models::structs::TreeNode::new(
+                                                            "Views".to_string(),
+                                                            models::enums::NodeType::ViewsFolder,
+                                                        );
+                                                        views_folder.connection_id = Some(connection_id);
+                                                        views_folder.database_name = Some(db_name.clone());
+                                                        views_folder.is_loaded = false;
+
+                                                        let mut sp_folder = models::structs::TreeNode::new(
+                                                            "Stored Procedures".to_string(),
+                                                            models::enums::NodeType::StoredProceduresFolder,
+                                                        );
+                                                        sp_folder.connection_id = Some(connection_id);
+                                                        sp_folder.database_name = Some(db_name.clone());
+                                                        sp_folder.is_loaded = false;
+
+                                                        db_node.children = vec![tables_folder, views_folder, sp_folder];
+                                                        child.children.push(db_node);
+                                                    }
+                                                    child.is_loaded = true;
+                                                } else {
+                                                    // sync succeeded but server returned 0 databases — keep unloaded
+                                                    child.is_loaded = false;
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
                                     debug!(
-                                        "✅ Background auto-sync complete for connection {} — tree preserved",
-                                        connection_id
+                                        "✅ Background auto-sync complete for connection {} — tree populated with {} databases",
+                                        connection_id, databases.len()
                                     );
                                 }
 
@@ -639,6 +707,7 @@ impl Tabular {
                             error_message,
                         } => {
                             self.refreshing_connections.remove(&connection_id);
+                            self.pending_connection_pools.remove(&connection_id);
                             self.fetching_databases.remove(&connection_id);
                             self.pending_expansion_restore.remove(&connection_id);
                             self.connection_errors.insert(connection_id, error_message.clone());
@@ -680,23 +749,71 @@ impl Tabular {
                         } => {
                             debug!("✅ Received background databases fetch result: {} databases", databases.len());
                             self.refreshing_connections.remove(&connection_id);
+                            self.pending_connection_pools.remove(&connection_id);
                             self.connection_errors.remove(&connection_id);
-                            // Update cache
+                            self.fetching_databases.remove(&connection_id);
+
+                            // Update in-memory cache
                             self.database_cache.insert(connection_id, databases.clone());
                             self.database_cache_time
                                 .insert(connection_id, std::time::Instant::now());
-                        
-                            // Also save to SQLite cache
+
+                            // Persist to SQLite cache so load_databases_for_folder can read it
                             cache_data::save_databases_to_cache(self, connection_id, &databases);
-                        
-                            // Update UI tree if connection node exists
+
+                            // Immediately populate the DatabasesFolder tree node from the
+                            // freshly-saved cache so the user doesn't need to re-click.
+                            // We find the DatabasesFolder child of the connection node and
+                            // call load_databases_for_folder on it directly.
                             if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
                                 conn_node.is_loaded = false;
-                                conn_node.children.clear();
+                                // Find the DatabasesFolder child and reload it if it is expanded
+                                for child in &mut conn_node.children {
+                                    if child.node_type == models::enums::NodeType::DatabasesFolder {
+                                        child.is_loaded = false;
+                                        // Clear the "Syncing..." / "Loading..." placeholder
+                                        child.children.clear();
+                                        for db_name in &databases {
+                                            let mut db_node = models::structs::TreeNode::new(
+                                                db_name.clone(),
+                                                models::enums::NodeType::Database,
+                                            );
+                                            db_node.connection_id = Some(connection_id);
+                                            db_node.database_name = Some(db_name.clone());
+                                            db_node.is_loaded = false;
+
+                                            let mut tables_folder = models::structs::TreeNode::new(
+                                                "Tables".to_string(),
+                                                models::enums::NodeType::TablesFolder,
+                                            );
+                                            tables_folder.connection_id = Some(connection_id);
+                                            tables_folder.database_name = Some(db_name.clone());
+                                            tables_folder.is_loaded = false;
+
+                                            let mut views_folder = models::structs::TreeNode::new(
+                                                "Views".to_string(),
+                                                models::enums::NodeType::ViewsFolder,
+                                            );
+                                            views_folder.connection_id = Some(connection_id);
+                                            views_folder.database_name = Some(db_name.clone());
+                                            views_folder.is_loaded = false;
+
+                                            let mut sp_folder = models::structs::TreeNode::new(
+                                                "Stored Procedures".to_string(),
+                                                models::enums::NodeType::StoredProceduresFolder,
+                                            );
+                                            sp_folder.connection_id = Some(connection_id);
+                                            sp_folder.database_name = Some(db_name.clone());
+                                            sp_folder.is_loaded = false;
+
+                                            db_node.children = vec![tables_folder, views_folder, sp_folder];
+                                            child.children.push(db_node);
+                                        }
+                                        child.is_loaded = true;
+                                        break;
+                                    }
+                                }
                             }
-                        
-                             // Also remove from fetching set
-                            self.fetching_databases.remove(&connection_id);
 
                             // Refresh UI
                             ctx.request_repaint();

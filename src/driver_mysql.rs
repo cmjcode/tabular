@@ -433,11 +433,16 @@ pub(crate) fn convert_mysql_rows_to_table_data(
 }
 
 #[allow(dead_code)]
+#[allow(dead_code)]
 pub(crate) async fn fetch_mysql_data(
     connection_id: i64,
     pool: &MySqlPool,
     cache_pool: &SqlitePool,
 ) -> bool {
+    use crate::connection::metadata::staging::{
+        ColumnMetaStaging, IndexMetaStaging, MetadataStaging, TableMetaStaging,
+    };
+
     // Helper to decode a value in a row as String or bytes -> UTF8
     fn decode_cell(row: &sqlx::mysql::MySqlRow, idx: usize) -> Option<String> {
         if let Ok(s) = row.try_get::<String, _>(idx) {
@@ -455,6 +460,9 @@ pub(crate) async fn fetch_mysql_data(
         None
     }
 
+    eprintln!("[DRIVER-MYSQL] conn={} starting fetch_mysql_data...", connection_id);
+    let mut staging = MetadataStaging::new(connection_id);
+
     // Fetch databases via INFORMATION_SCHEMA and skip system schemas (robust to VARBINARY)
     let db_rows_res = sqlx::query("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA")
         .fetch_all(pool)
@@ -463,10 +471,12 @@ pub(crate) async fn fetch_mysql_data(
     let db_rows = match db_rows_res {
         Ok(r) => r,
         Err(e) => {
-            debug!("MySQL fetch_mysql_data: failed to list schemata: {}", e);
+            eprintln!("[DRIVER-MYSQL] conn={} failed to list INFORMATION_SCHEMA.SCHEMATA: {}", connection_id, e);
             return false;
         }
     };
+
+    eprintln!("[DRIVER-MYSQL] conn={} found {} raw schemas", connection_id, db_rows.len());
 
     for row in db_rows.into_iter() {
         let db_name = match decode_cell(&row, 0) {
@@ -478,18 +488,12 @@ pub(crate) async fn fetch_mysql_data(
             continue;
         }
 
-        // Cache database
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)",
-        )
-        .bind(connection_id)
-        .bind(&db_name)
-        .execute(cache_pool)
-        .await;
+        eprintln!("[DRIVER-MYSQL] conn={} processing schema: '{}'", connection_id, db_name);
+        let staged_db = staging.add_database(&db_name);
 
-        // Fetch base tables using INFORMATION_SCHEMA
+        // Fetch base tables and views using INFORMATION_SCHEMA
         let tables_res = sqlx::query(
-            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+            "SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE IN ('BASE TABLE', 'VIEW') ORDER BY TABLE_NAME"
         )
         .bind(&db_name)
         .fetch_all(pool)
@@ -498,38 +502,37 @@ pub(crate) async fn fetch_mysql_data(
         let table_rows = match tables_res {
             Ok(r) => r,
             Err(e) => {
-                debug!(
-                    "MySQL fetch_mysql_data: failed to list tables in {}: {}",
-                    db_name, e
+                eprintln!(
+                    "[DRIVER-MYSQL] conn={} failed to list tables in '{}': {}",
+                    connection_id, db_name, e
                 );
                 continue;
             }
         };
+
+        eprintln!("[DRIVER-MYSQL] conn={} schema '{}' has {} tables/views", connection_id, db_name, table_rows.len());
 
         for row in table_rows.into_iter() {
             let table_name = match decode_cell(&row, 0) {
                 Some(v) => v,
                 None => continue,
             };
-            // Cache table (include table_type column we previously omitted) => table_type = 'table'
-            if let Err(e) = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)" )
-                .bind(connection_id)
-                .bind(&db_name)
-                .bind(&table_name)
-                .bind("table")
-                .execute(cache_pool)
-                .await {
-                debug!("MySQL fetch_mysql_data: failed to cache table {}.{}: {}", db_name, table_name, e);
-            }
+            let table_type_str = decode_cell(&row, 1).unwrap_or_default();
+            let table_type = if table_type_str.to_uppercase().contains("VIEW") {
+                "view".to_string()
+            } else {
+                "table".to_string()
+            };
+
+            let mut staged_table = TableMetaStaging {
+                table_name: table_name.clone(),
+                table_type,
+                columns: Vec::new(),
+                indexes: Vec::new(),
+            };
 
             // Fetch columns using INFORMATION_SCHEMA
             let cols_query = "SELECT COLUMN_NAME, COLUMN_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
-            debug!(
-                "📋 Fetching columns from MySQL for {}.{}",
-                db_name, table_name
-            );
-            debug!("   Query: {}", cols_query);
-
             let cols_res = sqlx::query(cols_query)
                 .bind(&db_name)
                 .bind(&table_name)
@@ -537,35 +540,19 @@ pub(crate) async fn fetch_mysql_data(
                 .await;
 
             if let Ok(cols) = cols_res {
-                let mut count = 0usize;
                 for row_c in cols {
                     let col_name = decode_cell(&row_c, 0).unwrap_or_default();
                     let col_type = decode_cell(&row_c, 1).unwrap_or_default();
                     let ord: i64 = row_c.try_get(2).unwrap_or(0);
-                    if let Err(e) = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)" )
-                        .bind(connection_id)
-                        .bind(&db_name)
-                        .bind(&table_name)
-                        .bind(&col_name)
-                        .bind(&col_type)
-                        .bind(ord)
-                        .execute(cache_pool)
-                        .await {
-                        debug!("MySQL fetch_mysql_data: failed to cache column {}.{}.{}: {}", db_name, table_name, col_name, e);
-                    } else { count += 1; }
+                    staged_table.columns.push(ColumnMetaStaging {
+                        column_name: col_name,
+                        data_type: col_type,
+                        ordinal_position: ord,
+                    });
                 }
-                debug!(
-                    "MySQL fetch_mysql_data: cached {} columns for {}.{}",
-                    count, db_name, table_name
-                );
-            } else if let Err(e) = cols_res {
-                debug!(
-                    "MySQL fetch_mysql_data: failed to list columns in {}.{}: {}",
-                    db_name, table_name, e
-                );
             }
 
-            // Now fetch and cache indexes for this table
+            // Fetch indexes for this table
             let index_query = "SELECT INDEX_NAME, \
                         GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, \
                         MIN(NON_UNIQUE) AS NON_UNIQUE,\
@@ -574,11 +561,6 @@ pub(crate) async fn fetch_mysql_data(
                  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
                  GROUP BY INDEX_NAME \
                  ORDER BY INDEX_NAME";
-            debug!(
-                "🔍 Fetching indexes from MySQL for {}.{}",
-                db_name, table_name
-            );
-            debug!("   Query: {}", index_query);
 
             let indexes_res = sqlx::query(index_query)
                 .bind(&db_name)
@@ -587,16 +569,14 @@ pub(crate) async fn fetch_mysql_data(
                 .await;
 
             if let Ok(index_rows) = indexes_res {
-                let index_count = index_rows.len();
                 for idx_row in index_rows {
                     let index_name = decode_cell(&idx_row, 0).unwrap_or_default();
                     let columns_str = decode_cell(&idx_row, 1).unwrap_or_default();
                     let non_unique: i64 = idx_row.try_get(2).unwrap_or(1);
                     let index_types = decode_cell(&idx_row, 3);
 
-                    let is_unique: i64 = if non_unique == 0 { 1 } else { 0 };
+                    let is_unique = non_unique == 0;
 
-                    // Parse comma-separated column names into JSON array
                     let columns: Vec<String> = columns_str
                         .split(',')
                         .map(|s| s.trim().to_string())
@@ -605,39 +585,36 @@ pub(crate) async fn fetch_mysql_data(
                     let columns_json =
                         serde_json::to_string(&columns).unwrap_or_else(|_| "[]".to_string());
 
-                    if let Err(e) = sqlx::query(
-                        "INSERT OR REPLACE INTO index_cache 
-                         (connection_id, database_name, table_name, index_name, method, is_unique, columns_json) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?)"
-                    )
-                    .bind(connection_id)
-                    .bind(&db_name)
-                    .bind(&table_name)
-                    .bind(&index_name)
-                    .bind(index_types)
-                    .bind(is_unique)
-                    .bind(&columns_json)
-                    .execute(cache_pool)
-                    .await {
-                        debug!("MySQL fetch_mysql_data: failed to cache index {}.{}.{}: {}", db_name, table_name, index_name, e);
-                    } else if index_name == "PRIMARY" {
-                        debug!("✅ Cached PRIMARY KEY index for {}.{} with columns: {}", db_name, table_name, columns_str);
-                    }
+                    staged_table.indexes.push(IndexMetaStaging {
+                        index_name,
+                        method: index_types,
+                        is_unique,
+                        columns_json,
+                    });
                 }
-                debug!(
-                    "MySQL fetch_mysql_data: cached {} indexes for {}.{}",
-                    index_count, db_name, table_name
-                );
-            } else if let Err(e) = indexes_res {
-                debug!(
-                    "MySQL fetch_mysql_data: failed to list indexes in {}.{}: {}",
-                    db_name, table_name, e
-                );
             }
+
+            staged_db.tables.push(staged_table);
         }
     }
 
-    true
+    let total_dbs = staging.databases.len();
+    let total_tbls: usize = staging.databases.iter().map(|d| d.tables.len()).sum();
+    eprintln!(
+        "[DRIVER-MYSQL] conn={} staging finished: {} DBs, {} tables total. Committing to SQLite...",
+        connection_id, total_dbs, total_tbls
+    );
+
+    match staging.commit_to_sqlite(cache_pool).await {
+        Ok(_) => {
+            eprintln!("[DRIVER-MYSQL] conn={} commit_to_sqlite SUCCESS", connection_id);
+            true
+        }
+        Err(e) => {
+            eprintln!("[DRIVER-MYSQL] conn={} commit_to_sqlite FAILED: {}", connection_id, e);
+            false
+        }
+    }
 }
 
 pub(crate) fn fetch_tables_from_mysql_connection(
