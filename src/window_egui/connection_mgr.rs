@@ -272,12 +272,8 @@ impl super::Tabular {
             "[AUTO-SYNC] triggering background cache sync for id={} (badge should show)",
             connection_id
         ));
-        // Warm the schema cache in the background WITHOUT clearing the visual tree.
-        // Clearing children here (as full refresh_connection does) causes an immediate
-        // visible collapse that the user has to undo by re-expanding everything.
-        self.clear_connection_cache(connection_id);
-        self.database_cache.remove(&connection_id);
-        self.database_cache_time.remove(&connection_id);
+        // Warm the schema cache in the background WITHOUT clearing existing cache pre-emptively.
+        // The SQLite cache will be updated atomically only after successful server fetch.
         self.refreshing_connections.insert(connection_id);
         if let Some(sender) = &self.background_sender {
             if let Err(e) =

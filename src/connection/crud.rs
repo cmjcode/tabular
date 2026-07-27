@@ -170,7 +170,7 @@ pub(crate) fn test_database_connection(
 
                 match MySqlPoolOptions::new()
                     .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .acquire_timeout(std::time::Duration::from_secs(5))
                     .connect(&connection_string)
                     .await
                 {
@@ -197,7 +197,7 @@ pub(crate) fn test_database_connection(
 
                 match PgPoolOptions::new()
                     .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .acquire_timeout(std::time::Duration::from_secs(5))
                     .connect(&connection_string)
                     .await
                 {
@@ -233,7 +233,7 @@ pub(crate) fn test_database_connection(
 
                 match SqlitePoolOptions::new()
                     .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .acquire_timeout(std::time::Duration::from_secs(5))
                     .connect(&raw)
                     .await
                 {
@@ -580,102 +580,8 @@ pub(crate) async fn refresh_connection_background_async(
                 replication_master_id: None,
             };
 
-            debug!(
-                "[refresh_connection] clearing SQLite cache rows for connection {} before reload",
-                connection_id
-            );
-
-            // Probe for corruption with the first DELETE; recover before touching more tables.
-            let first_del = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
-                .bind(connection_id)
-                .execute(cache_pool_arc.as_ref())
-                .await;
-            match &first_del {
-                Ok(r) => debug!(
-                    "[refresh_connection] database_cache cleared: {} rows",
-                    r.rows_affected()
-                ),
-                Err(e) if is_sqlite_corrupt(e) => {
-                    warn!(
-                        "[refresh_connection] cache is corrupt for connection {}: {} — attempting recovery",
-                        connection_id, e
-                    );
-                    recover_corrupt_cache(cache_pool_arc.as_ref()).await;
-                    // After recovery the tables are empty; no further DELETE needed.
-                }
-                Err(e) => warn!(
-                    "[refresh_connection] failed clearing database_cache for {}: {}",
-                    connection_id, e
-                ),
-            }
-
-            // Only run remaining DELETEs when the first one did not detect corruption
-            // (after recovery the tables are already empty).
-            if !matches!(&first_del, Err(e) if is_sqlite_corrupt(e)) {
-            match sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
-                .bind(connection_id)
-                .execute(cache_pool_arc.as_ref())
-                .await
-            {
-                Ok(result) => debug!(
-                    "[refresh_connection] table_cache cleared: {} rows",
-                    result.rows_affected()
-                ),
-                Err(error) => warn!(
-                    "[refresh_connection] failed clearing table_cache for {}: {}",
-                    connection_id,
-                    error
-                ),
-            }
-            match sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
-                .bind(connection_id)
-                .execute(cache_pool_arc.as_ref())
-                .await
-            {
-                Ok(result) => debug!(
-                    "[refresh_connection] column_cache cleared: {} rows",
-                    result.rows_affected()
-                ),
-                Err(error) => warn!(
-                    "[refresh_connection] failed clearing column_cache for {}: {}",
-                    connection_id,
-                    error
-                ),
-            }
-            match sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
-                .bind(connection_id)
-                .execute(cache_pool_arc.as_ref())
-                .await
-            {
-                Ok(result) => debug!(
-                    "[refresh_connection] row_cache cleared: {} rows",
-                    result.rows_affected()
-                ),
-                Err(error) => warn!(
-                    "[refresh_connection] failed clearing row_cache for {}: {}",
-                    connection_id,
-                    error
-                ),
-            }
-            match sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
-                .bind(connection_id)
-                .execute(cache_pool_arc.as_ref())
-                .await
-            {
-                Ok(result) => debug!(
-                    "[refresh_connection] index_cache cleared: {} rows",
-                    result.rows_affected()
-                ),
-                Err(error) => warn!(
-                    "[refresh_connection] failed clearing index_cache for {}: {}",
-                    connection_id,
-                    error
-                ),
-            }
-            } // end of non-corrupt-cache DELETE block
-
             match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(10),
                 create_database_pool(&connection),
             )
             .await
@@ -686,6 +592,10 @@ pub(crate) async fn refresh_connection_background_async(
                         connection_id,
                         connection.connection_type
                     );
+
+                    // Clear old SQLite cache ONLY AFTER pool creation succeeds
+                    clear_connection_cache_sqlite(connection_id, cache_pool_arc.as_ref()).await;
+
                     let fetch_result = fetch_and_cache_all_data(
                         connection_id,
                         &connection,
@@ -702,14 +612,14 @@ pub(crate) async fn refresh_connection_background_async(
                 }
                 Ok(None) => {
                     warn!(
-                        "[refresh_connection] failed to recreate database pool for connection {}",
+                        "[refresh_connection] failed to recreate database pool for connection {} — keeping existing cache intact",
                         connection_id
                     );
                     false
                 }
                 Err(error) => {
                     warn!(
-                        "[refresh_connection] timed out recreating pool for connection {}: {}",
+                        "[refresh_connection] timed out recreating pool for connection {}: {} — keeping existing cache intact",
                         connection_id,
                         error
                     );
@@ -730,4 +640,52 @@ pub(crate) async fn refresh_connection_background_async(
         );
         false
     }
+}
+
+pub(crate) async fn clear_connection_cache_sqlite(connection_id: i64, cache_pool: &SqlitePool) {
+    debug!(
+        "[refresh_connection] clearing SQLite cache rows for connection {} after successful pool creation",
+        connection_id
+    );
+
+    let first_del = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
+        .bind(connection_id)
+        .execute(cache_pool)
+        .await;
+
+    match &first_del {
+        Ok(r) => debug!(
+            "[refresh_connection] database_cache cleared: {} rows",
+            r.rows_affected()
+        ),
+        Err(e) if is_sqlite_corrupt(e) => {
+            warn!(
+                "[refresh_connection] cache is corrupt for connection {}: {} — attempting recovery",
+                connection_id, e
+            );
+            recover_corrupt_cache(cache_pool).await;
+            return;
+        }
+        Err(e) => warn!(
+            "[refresh_connection] failed clearing database_cache for {}: {}",
+            connection_id, e
+        ),
+    }
+
+    let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
+        .bind(connection_id)
+        .execute(cache_pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
+        .bind(connection_id)
+        .execute(cache_pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
+        .bind(connection_id)
+        .execute(cache_pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
+        .bind(connection_id)
+        .execute(cache_pool)
+        .await;
 }

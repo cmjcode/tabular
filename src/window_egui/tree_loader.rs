@@ -112,94 +112,27 @@ impl super::Tabular {
         false // Table not found
     }
     pub fn load_connection_tables(&mut self, connection_id: i64, node: &mut models::structs::TreeNode) {
-        debug!("Loading connection tables for ID: {}", connection_id);
+        debug!("Loading connection tables (non-blocking) for ID: {}", connection_id);
 
-        // Ensure a connection pool is opened/initialized before proceeding.
-        if !self.connection_pools.contains_key(&connection_id) {
-            let rt = self.get_runtime();
-            let start_time = std::time::Instant::now();
-            let pool_res = rt.block_on(async {
-                crate::connection::get_or_create_connection_pool(self, connection_id).await
-            });
-            match pool_res {
-                Some(_) => debug!(
-                    "✅ Connection pool ready for {} (took {:?})",
-                    connection_id,
-                    start_time.elapsed()
-                ),
-                None => debug!(
-                    "❌ Failed to initialize connection pool for {}",
-                    connection_id
-                ),
-            }
-        } else {
-            debug!("🔁 Reusing existing connection pool for {}", connection_id);
-        }
+        // Ensure background pool creation is initiated asynchronously
+        crate::connection::ensure_background_pool_creation(self, connection_id);
 
-        // Always try to fetch from the actual database server first.
-        // This ensures that after a Refresh the UI always reflects live server data
-        // (avoiding stale/incomplete cached data, e.g. missing databases).
-        // Cache is only used as a fallback when the live fetch fails.
-        let (fresh_databases_opt, is_replica) = {
-            let rt = self.get_runtime();
-            rt.block_on(async {
-                let dbs = crate::connection::fetch_databases_from_connection_async(self, connection_id).await;
-                
-                // Check replication status for MySQL
-                let mut is_replica = false;
-                if let Some(conn) = self
-                    .connections
-                    .iter()
-                    .find(|c| c.id == Some(connection_id))
-                    && conn.connection_type == models::enums::DatabaseType::MySQL
-                    && let Some(models::enums::DatabasePool::MySQL(mysql_pool)) =
-                        crate::connection::get_or_create_connection_pool(self, connection_id).await
-                {
-                    is_replica = driver_mysql::check_replication_status(&mysql_pool).await;
-                }
-                (dbs, is_replica)
-            })
-        };
-        if let Some(fresh_databases) = fresh_databases_opt {
-            debug!(
-                "✅ Successfully fetched {} databases from server",
-                fresh_databases.len()
-            );
-            eprintln!("[DB-FETCH] load_connection_tables: live fetch returned {} databases for conn {}: {:?}", fresh_databases.len(), connection_id, fresh_databases);
-            // Save to cache for future use
-            cache_data::save_databases_to_cache(self, connection_id, &fresh_databases);
-            // Also update in-memory cache
-            self.database_cache.insert(connection_id, fresh_databases.clone());
-            self.database_cache_time.insert(connection_id, std::time::Instant::now());
-            // Build structure from fresh data
-            self.build_connection_structure_from_cache(connection_id, node, &fresh_databases, is_replica);
+        // Try using cached databases from memory/disk first to render immediately
+        let cached_dbs = self.get_databases_cached(connection_id);
+        if !cached_dbs.is_empty() {
+            debug!("Found cached databases for connection {}: {:?}", connection_id, cached_dbs);
+            self.build_connection_structure_from_cache(connection_id, node, &cached_dbs, false);
             node.is_loaded = true;
-            return;
-        } else {
-            debug!("❌ Failed to fetch databases from server, falling back to cache");
-            eprintln!("[DB-FETCH] load_connection_tables: live fetch failed/empty, falling back to cache for conn {}", connection_id);
-            // Fallback: use cached data if available
-            let dbs = self.get_databases_cached(connection_id);
-            if !dbs.is_empty() {
-                debug!("Found cached databases for connection {}: {:?}", connection_id, dbs);
-                self.build_connection_structure_from_cache(connection_id, node, &dbs, false);
-                node.is_loaded = true;
-                return;
-            }
-        }
-
-        // Find the connection by ID
-        if let Some(connection) = self
+        } else if let Some(connection) = self
             .connections
             .iter()
             .find(|c| c.id == Some(connection_id))
+            .cloned()
         {
-            let connection = connection.clone();
-
-            // Create the main structure based on database type
+            // Build base tree skeleton based on database type while waiting for background sync
             match connection.connection_type {
                 models::enums::DatabaseType::MySQL => {
-                    driver_mysql::load_mysql_structure(connection_id, &connection, node, is_replica);
+                    driver_mysql::load_mysql_structure(connection_id, &connection, node, false);
                 }
                 models::enums::DatabaseType::PostgreSQL => {
                     driver_postgres::load_postgresql_structure(connection_id, &connection, node);
@@ -219,6 +152,15 @@ impl super::Tabular {
                 models::enums::DatabaseType::ApiHttp => {}
             }
             node.is_loaded = true;
+        }
+
+        // Trigger background sync to fetch live databases from server without blocking UI
+        if !self.fetching_databases.contains(&connection_id) {
+            self.fetching_databases.insert(connection_id);
+            self.refreshing_connections.insert(connection_id);
+            if let Some(sender) = &self.background_sender {
+                let _ = sender.send(models::enums::BackgroundTask::FetchDatabases { connection_id });
+            }
         }
     }
     pub fn build_connection_structure_from_cache(
@@ -1081,26 +1023,8 @@ impl super::Tabular {
         db_node.children.push(loading_node);
         // Keep is_loaded = false so the tree knows it is still pending
 
-        // Dispatch background task — ensure connection pool is available first.
-        // After creation, also copy the pool into shared_connection_pools so the
-        // background FetchRedisKeys task can find it there.
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        if let Some(pool) = rt.block_on(connection::get_or_create_connection_pool(self, connection_id)) {
-            if let Ok(mut shared) = self.shared_connection_pools.lock() {
-                shared.entry(connection_id).or_insert(pool);
-                log::debug!(
-                    "[redis_keys] shared pool ready for connection {} keyspace {}",
-                    connection_id,
-                    database_name
-                );
-            }
-        } else {
-            log::warn!(
-                "[redis_keys] no pool available when queueing fetch for connection {} keyspace {}",
-                connection_id,
-                database_name
-            );
-        }
+        // Dispatch background task — ensure connection pool is being created asynchronously.
+        crate::connection::ensure_background_pool_creation(self, connection_id);
 
         if let Some(sender) = &self.background_sender {
             let _ = sender.send(models::enums::BackgroundTask::FetchRedisKeys {

@@ -10,6 +10,7 @@ use crate::{models, connection, editor, sidebar_database,
 pub(crate) struct RenderTreeNodeParams<'a> {
     node_index: usize,
     refreshing_connections: &'a std::collections::HashSet<i64>,
+    connection_errors: &'a std::collections::HashMap<i64, String>,
     connection_pools: &'a std::collections::HashMap<i64, models::enums::DatabasePool>,
     pending_connection_pools: &'a std::collections::HashSet<i64>,
     shared_connection_pools:
@@ -126,6 +127,7 @@ impl super::Tabular {
                 RenderTreeNodeParams {
                     node_index: index,
                     refreshing_connections: &self.refreshing_connections,
+                    connection_errors: &self.connection_errors,
                     connection_pools: &self.connection_pools,
                     pending_connection_pools: &self.pending_connection_pools,
                     shared_connection_pools: &self.shared_connection_pools,
@@ -1819,6 +1821,7 @@ impl super::Tabular {
             } else if (1000..10000).contains(&context_id) {
                 // ID 1000-9999 means refresh connection (connection_id = context_id - 1000)
                 let connection_id = context_id - 1000;
+                self.connection_errors.remove(&connection_id);
                 debug!(
                     "🔄 Refresh connection operation for connection: {}",
                     connection_id
@@ -1834,6 +1837,7 @@ impl super::Tabular {
                 }
             } else if context_id > 0 {
                 // Positive ID means edit connection
+                self.connection_errors.remove(&context_id);
                 sidebar_database::start_edit_connection(self, context_id);
             } else {
                 // Negative ID means remove connection
@@ -2115,7 +2119,7 @@ impl super::Tabular {
                 };
 
                 // Build status info for Connection nodes (used below)
-                let (status_color, status_text) = if node.node_type == models::enums::NodeType::Connection {
+                let (mut status_color, status_text) = if node.node_type == models::enums::NodeType::Connection {
                     if let Some(conn_id) = node.connection_id {
                         // Determine connected/connecting/disconnected
                         let mut has_shared = false;
@@ -2171,6 +2175,9 @@ impl super::Tabular {
                         // Show refreshing spinner
                         if params.refreshing_connections.contains(&conn_id) {
                             name_text.push_str(" ⏳ Syncing…");
+                        } else if params.connection_errors.contains_key(&conn_id) {
+                            name_text.push_str(" ❌ Failed");
+                            status_color = egui::Color32::from_rgb(235, 75, 75);
                         }
                         // Show prefetch progress
                         if let Some((completed, total)) = params.prefetch_progress.get(&conn_id) {
@@ -2204,22 +2211,33 @@ impl super::Tabular {
                 };
 
                 // Tooltip for connection status
-                if node.node_type == models::enums::NodeType::Connection && !status_text.is_empty() {
-                    let mut tip = format!("Status: {}", status_text);
-                    if let Some(conn_id) = node.connection_id
-                        && let Some(db_type) = params.connection_types.get(&conn_id) {
-                            let db_name = match db_type {
-                                models::enums::DatabaseType::MySQL => "MySQL",
-                                models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
-                                models::enums::DatabaseType::SQLite => "SQLite",
-                                models::enums::DatabaseType::Redis => "Redis",
-                                models::enums::DatabaseType::MsSQL => "Microsoft SQL Server",
-                                models::enums::DatabaseType::MongoDB => "MongoDB",
-                                models::enums::DatabaseType::ApiHttp => "HTTP API",
-                            };
-                            tip = format!("{} · {}", db_name, tip);
-                        }
-                    response = response.on_hover_text(tip);
+                if node.node_type == models::enums::NodeType::Connection {
+                    let mut tip = if let Some(conn_id) = node.connection_id
+                        && let Some(err_msg) = params.connection_errors.get(&conn_id)
+                    {
+                        format!("❌ Connection Failed: {}\nClick ⚡ Reconnect or 🔧 Edit Connection", err_msg)
+                    } else if !status_text.is_empty() {
+                        format!("Status: {}", status_text)
+                    } else {
+                        String::new()
+                    };
+
+                    if !tip.is_empty() {
+                        if let Some(conn_id) = node.connection_id
+                            && let Some(db_type) = params.connection_types.get(&conn_id) {
+                                let db_name = match db_type {
+                                    models::enums::DatabaseType::MySQL => "MySQL",
+                                    models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
+                                    models::enums::DatabaseType::SQLite => "SQLite",
+                                    models::enums::DatabaseType::Redis => "Redis",
+                                    models::enums::DatabaseType::MsSQL => "Microsoft SQL Server",
+                                    models::enums::DatabaseType::MongoDB => "MongoDB",
+                                    models::enums::DatabaseType::ApiHttp => "HTTP API",
+                                };
+                                tip = format!("{} · {}", db_name, tip);
+                            }
+                        response = response.on_hover_text(tip);
+                    }
                 }
 
                 // Drag source: Connection nodes can be dragged to a folder.
@@ -2455,6 +2473,12 @@ impl super::Tabular {
                 // Add context menu for connection nodes
                 if node.node_type == models::enums::NodeType::Connection {
                     response.context_menu(|ui| {
+                        if ui.button("⚡ Reconnect").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                context_menu_request = Some(conn_id + 1000);
+                            }
+                            ui.close();
+                        }
                         if ui.button("📋 Copy Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(conn_id + 10000); // Use +10000 to indicate copy
@@ -2995,6 +3019,7 @@ impl super::Tabular {
                             RenderTreeNodeParams {
                                 node_index: child_index,
                                 refreshing_connections: params.refreshing_connections,
+                                connection_errors: params.connection_errors,
                                 connection_pools: params.connection_pools,
                                 pending_connection_pools: params.pending_connection_pools,
                                 shared_connection_pools: params.shared_connection_pools,
@@ -3117,6 +3142,7 @@ impl super::Tabular {
                                 RenderTreeNodeParams {
                                     node_index: child_index,
                                     refreshing_connections: params.refreshing_connections,
+                                    connection_errors: params.connection_errors,
                                     connection_pools: params.connection_pools,
                                     pending_connection_pools: params.pending_connection_pools,
                                     shared_connection_pools: params.shared_connection_pools,

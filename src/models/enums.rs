@@ -94,6 +94,9 @@ pub enum BackgroundTask {
         database_name: String,
         search_text: String,
     },
+    TestConnection {
+        connection: crate::models::structs::ConnectionConfig,
+    },
 }
 
 // Infrequent mpsc channel message (one per background task completion), so the
@@ -122,6 +125,16 @@ pub enum BackgroundResult {
     DatabasesFetched {
         connection_id: i64,
         databases: Vec<String>,
+    },
+    // Result when background connection or database fetch fails
+    ConnectionFailed {
+        connection_id: i64,
+        error_message: String,
+    },
+    // Result when async TestConnection task completes
+    TestConnectionComplete {
+        success: bool,
+        message: String,
     },
     // Result from background Redis key fetch
     RedisKeysFetched {

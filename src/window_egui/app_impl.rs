@@ -563,6 +563,7 @@ impl Tabular {
                             self.refreshing_connections.remove(&connection_id);
 
                             if success {
+                                self.connection_errors.remove(&connection_id);
                                 debug!(
                                     "✅ Background refresh completed successfully for connection {}",
                                     connection_id
@@ -624,9 +625,30 @@ impl Tabular {
                                 ctx.request_repaint();
                             } else {
                                 debug!("Background refresh failed for connection {}", connection_id);
+                                self.connection_errors.insert(
+                                    connection_id,
+                                    "Connection refresh failed".to_string(),
+                                );
                                 // Clean up pending restore state on failure
                                 self.pending_expansion_restore.remove(&connection_id);
+                                ctx.request_repaint();
                             }
+                        }
+                        models::enums::BackgroundResult::ConnectionFailed {
+                            connection_id,
+                            error_message,
+                        } => {
+                            self.refreshing_connections.remove(&connection_id);
+                            self.fetching_databases.remove(&connection_id);
+                            self.pending_expansion_restore.remove(&connection_id);
+                            self.connection_errors.insert(connection_id, error_message.clone());
+                            self.toasts.error(format!("Connection failed: {}", error_message));
+                            ctx.request_repaint();
+                        }
+                        models::enums::BackgroundResult::TestConnectionComplete { success, message } => {
+                            self.test_connection_in_progress = false;
+                            self.test_connection_status = Some((success, message));
+                            ctx.request_repaint();
                         }
                         models::enums::BackgroundResult::PrefetchProgress {
                             connection_id,
@@ -657,6 +679,8 @@ impl Tabular {
                             databases,
                         } => {
                             debug!("✅ Received background databases fetch result: {} databases", databases.len());
+                            self.refreshing_connections.remove(&connection_id);
+                            self.connection_errors.remove(&connection_id);
                             // Update cache
                             self.database_cache.insert(connection_id, databases.clone());
                             self.database_cache_time
@@ -666,14 +690,9 @@ impl Tabular {
                             cache_data::save_databases_to_cache(self, connection_id, &databases);
                         
                             // Update UI tree if connection node exists
-                            for node in &mut self.items_tree {
-                                if node.node_type == models::enums::NodeType::Connection
-                                    && node.connection_id == Some(connection_id)
-                                {
-                                    // Force reload of children
-                                    node.is_loaded = false; 
-                                    break;
-                                }
+                            if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
+                                conn_node.is_loaded = false;
+                                conn_node.children.clear();
                             }
                         
                              // Also remove from fetching set

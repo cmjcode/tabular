@@ -232,6 +232,7 @@ impl super::Tabular {
             pending_paginated_jobs: std::collections::HashSet::new(),
             next_query_job_id: 1,
             refreshing_connections: std::collections::HashSet::new(),
+            connection_errors: std::collections::HashMap::new(),
             fetching_redis_keys: std::collections::HashSet::new(),
             fetching_redis_browser: std::collections::HashSet::new(),
             fetching_databases: std::collections::HashSet::new(),
@@ -578,8 +579,29 @@ impl super::Tabular {
                                         databases: dbs,
                                     },
                                 );
+                            } else {
+                                let _ = result_sender.send(
+                                    models::enums::BackgroundResult::ConnectionFailed {
+                                        connection_id,
+                                        error_message: "Failed to connect or fetch databases from server".to_string(),
+                                    },
+                                );
                             }
+                        } else {
+                            let _ = result_sender.send(
+                                models::enums::BackgroundResult::ConnectionFailed {
+                                    connection_id,
+                                    error_message: "Runtime initialization error".to_string(),
+                                },
+                            );
                         }
+                    }
+                    models::enums::BackgroundTask::TestConnection { connection } => {
+                        let (success, message) = crate::connection::test_database_connection(&connection);
+                        let _ = result_sender.send(models::enums::BackgroundResult::TestConnectionComplete {
+                            success,
+                            message,
+                        });
                     }
                     models::enums::BackgroundTask::FetchRedisKeys { connection_id, database_name } => {
                         if let Ok(rt) = tokio::runtime::Runtime::new() {
