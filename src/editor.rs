@@ -5548,8 +5548,8 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
     }
 
     // Safety Guard: Check for unsafe UPDATE or DELETE without WHERE clause
-    if !tabular.show_unsafe_dml_dialog {
-        if let Some(kind) = is_unsafe_dml_query(&query) {
+    if !tabular.show_unsafe_dml_dialog
+        && let Some(kind) = is_unsafe_dml_query(&query) {
             tabular.show_unsafe_dml_dialog = true;
             tabular.unsafe_dml_query = query;
             tabular.unsafe_dml_type = kind.to_string();
@@ -5557,7 +5557,6 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
             tabular.extend_query_icon_hold();
             return;
         }
-    }
 
     // Parameter Prompt: Check if query contains parameter placeholders
     if !tabular.show_parameter_dialog {
@@ -6086,17 +6085,15 @@ pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usiz
         }
     }
 
-    if let Some((_, _, first_stmt)) = statements.first() {
-        if cursor_pos < statements[0].0 && !first_stmt.trim().is_empty() {
+    if let Some((_, _, first_stmt)) = statements.first()
+        && cursor_pos < statements[0].0 && !first_stmt.trim().is_empty() {
             return first_stmt.trim().to_string();
         }
-    }
 
-    if let Some((_, _, last_stmt)) = statements.last() {
-        if cursor_pos >= statements.last().unwrap().1 && !last_stmt.trim().is_empty() {
+    if let Some((_, _, last_stmt)) = statements.last()
+        && cursor_pos >= statements.last().unwrap().1 && !last_stmt.trim().is_empty() {
             return last_stmt.trim().to_string();
         }
-    }
 
     text.trim().to_string()
 }
@@ -6328,7 +6325,7 @@ pub(crate) fn extract_query_parameters(sql: &str) -> Vec<String> {
             continue;
         }
 
-        if b == b':' && next_b.map_or(false, |c| c.is_ascii_alphabetic() || c == b'_') {
+        if b == b':' && next_b.is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') {
             let start = i;
             i += 1;
             while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
@@ -6341,7 +6338,7 @@ pub(crate) fn extract_query_parameters(sql: &str) -> Vec<String> {
             continue;
         }
 
-        if b == b'$' && next_b.map_or(false, |c| c.is_ascii_digit()) {
+        if b == b'$' && next_b.is_some_and(|c| c.is_ascii_digit()) {
             let start = i;
             i += 1;
             while i < len && bytes[i].is_ascii_digit() {
@@ -6397,11 +6394,10 @@ pub(crate) fn is_unsafe_dml_query(sql: &str) -> Option<&'static str> {
         if !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
             return Some("DELETE");
         }
-    } else if upper.starts_with("UPDATE") {
-        if !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
+    } else if upper.starts_with("UPDATE")
+        && !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
             return Some("UPDATE");
         }
-    }
     None
 }
 
@@ -6489,12 +6485,11 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
         Some(cid) => {
             let mut found = None;
             for tt in &["BASE TABLE", "TABLE", "VIEW"] {
-                if let Some(tables) = crate::cache_data::get_tables_from_cache(tabular, cid, &active_db, tt) {
-                    if let Some(m) = tables.into_iter().find(|t| t.eq_ignore_ascii_case(symbol)) {
+                if let Some(tables) = crate::cache_data::get_tables_from_cache(tabular, cid, &active_db, tt)
+                    && let Some(m) = tables.into_iter().find(|t| t.eq_ignore_ascii_case(symbol)) {
                         found = Some(m);
                         break;
                     }
-                }
             }
             if found.is_none() {
                 let all = crate::editor_autocomplete_new::get_all_tables(tabular);

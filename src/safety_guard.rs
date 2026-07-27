@@ -96,8 +96,8 @@ fn extract_target_table(sql: &str, kind: &str) -> Option<String> {
         // DELETE FROM <table> or DELETE <table>
         let mut iter = tokens.iter();
         while let Some(tok) = iter.next() {
-            if tok.eq_ignore_ascii_case("DELETE") {
-                if let Some(next) = iter.next() {
+            if tok.eq_ignore_ascii_case("DELETE")
+                && let Some(next) = iter.next() {
                     if next.eq_ignore_ascii_case("FROM") {
                         if let Some(tbl) = iter.next() {
                             return Some(clean_table_name(tbl));
@@ -106,17 +106,15 @@ fn extract_target_table(sql: &str, kind: &str) -> Option<String> {
                         return Some(clean_table_name(next));
                     }
                 }
-            }
         }
     } else if kind == "UPDATE" {
         // UPDATE <table> SET ...
         let mut iter = tokens.iter();
         while let Some(tok) = iter.next() {
-            if tok.eq_ignore_ascii_case("UPDATE") {
-                if let Some(tbl) = iter.next() {
+            if tok.eq_ignore_ascii_case("UPDATE")
+                && let Some(tbl) = iter.next() {
                     return Some(clean_table_name(tbl));
                 }
-            }
         }
     }
     None

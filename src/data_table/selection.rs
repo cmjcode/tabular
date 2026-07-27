@@ -269,14 +269,13 @@ pub(crate) fn get_selected_subtable(
     }
 
     // 4. Check single cell selection
-    if let Some((r, c)) = tabular.selected_cell {
-        if r < tabular.current_table_data.len() && c < tabular.current_table_headers.len() {
+    if let Some((r, c)) = tabular.selected_cell
+        && r < tabular.current_table_data.len() && c < tabular.current_table_headers.len() {
             let headers = vec![tabular.current_table_headers[c].clone()];
             let val = tabular.current_table_data[r].get(c).cloned().unwrap_or_default();
             let rows = vec![vec![val]];
             return Some((headers, rows));
         }
-    }
 
     None
 }
@@ -295,8 +294,8 @@ pub(crate) fn calculate_grid_summary(tabular: &window_egui::Tabular) -> Option<G
         for cell in row {
             summary.total_cells += 1;
             let clean = cell.replace(',', "").trim().to_string();
-            if let Ok(num) = clean.parse::<f64>() {
-                if !num.is_nan() {
+            if let Ok(num) = clean.parse::<f64>()
+                && !num.is_nan() {
                     summary.numeric_count += 1;
                     summary.sum += num;
                     if num < min_val {
@@ -306,7 +305,6 @@ pub(crate) fn calculate_grid_summary(tabular: &window_egui::Tabular) -> Option<G
                         max_val = num;
                     }
                 }
-            }
         }
     }
 

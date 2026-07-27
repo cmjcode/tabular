@@ -1054,24 +1054,21 @@ pub struct ExplainPlanNode {
 impl ExplainPlanNode {
     pub fn parse(raw_plan: &str) -> Option<Self> {
         let trimmed = raw_plan.trim();
-        if trimmed.starts_with('[') || trimmed.starts_with('{') {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(node) = Self::parse_json_value(&v) {
+        if (trimmed.starts_with('[') || trimmed.starts_with('{'))
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed)
+                && let Some(node) = Self::parse_json_value(&v) {
                     return Some(node);
                 }
-            }
-        }
 
         // Fallback: parse plain text EXPLAIN output lines
         Self::parse_text_lines(trimmed)
     }
 
     fn parse_json_value(v: &serde_json::Value) -> Option<Self> {
-        if let Some(arr) = v.as_array() {
-            if let Some(first) = arr.first() {
+        if let Some(arr) = v.as_array()
+            && let Some(first) = arr.first() {
                 return Self::parse_json_value(first);
             }
-        }
         if let Some(obj) = v.as_object() {
             if let Some(plan) = obj.get("Plan") {
                 return Self::parse_pg_node(plan);
@@ -1145,11 +1142,10 @@ impl ExplainPlanNode {
         if let Some(nl) = v.get("nested_loop").and_then(|n| n.as_array()) {
             node_type = "Nested Loop Join".to_string();
             for item in nl {
-                if let Some(t) = item.get("table") {
-                    if let Some(cn) = Self::parse_mysql_table(t) {
+                if let Some(t) = item.get("table")
+                    && let Some(cn) = Self::parse_mysql_table(t) {
                         children.push(cn);
                     }
-                }
             }
         } else if let Some(t) = v.get("table") {
             return Self::parse_mysql_table(t);
