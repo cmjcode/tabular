@@ -425,7 +425,8 @@ impl super::Tabular {
         // This ensures Database and TablesFolder are visible after refresh
         match node.node_type {
             models::enums::NodeType::Connection => {
-                // If connection was expanded, keep it expanded
+                // Connection expansion is preserved if saved in state_map (restored above at line 415),
+                // but for REST API (ApiHttp) connections, node.is_expanded is forced false during render in sidebar_tree.rs.
                 if state_map.get(&key).copied().unwrap_or(false) {
                     node.is_expanded = true;
                 }

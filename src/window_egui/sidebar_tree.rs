@@ -48,6 +48,9 @@ impl super::Tabular {
             );
         }
         for connection_id in pending_loads {
+            if self.cached_connection_types.get(&connection_id) == Some(&models::enums::DatabaseType::ApiHttp) {
+                continue;
+            }
             debug!("📂 Processing auto-load for connection {}", connection_id);
             // Use recursive search so connections inside folder nodes are found
             if let Some(conn_node) = Self::find_connection_node_recursive(nodes, connection_id) {
@@ -1981,6 +1984,17 @@ impl super::Tabular {
         let mut copy_ddl_request: Option<(i64, Option<String>, String)> = None;
         let mut schema_diff_request: Option<(i64, String)> = None;
 
+        let is_api_http = if node.node_type == models::enums::NodeType::Connection
+            && let Some(conn_id) = node.connection_id {
+                params.connection_types.get(&conn_id) == Some(&models::enums::DatabaseType::ApiHttp)
+            } else {
+                false
+            };
+
+        if is_api_http {
+            node.is_expanded = false;
+        }
+
         if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
         // Show expand toggles for container folders and schema folders only
@@ -2007,8 +2021,15 @@ impl super::Tabular {
             };
             let id = egui::Id::new(&unique_id);
             ui.horizontal(|ui| {
-                // Painter-drawn triangle toggle (no font dependency)
-                if Self::triangle_toggle(ui, node.is_expanded).clicked() {
+                // Painter-drawn triangle toggle (no font dependency) for expandable nodes, or spacer for REST API
+                let triangle_clicked = if is_api_http {
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    false
+                } else {
+                    Self::triangle_toggle(ui, node.is_expanded).clicked()
+                };
+
+                if triangle_clicked {
                     node.is_expanded = !node.is_expanded;
 
                     // If this is a connection node and not loaded, request expansion
@@ -2354,33 +2375,35 @@ impl super::Tabular {
 
                 // New: Allow clicking the label to also expand/collapse for expandable nodes
                 if response.clicked() {
-                    // We toggle on label click for expandable/container nodes, but not for Table/View (they open data)
-                    let allow_label_toggle = has_children
-                        || matches!(
-                            node.node_type,
-                            models::enums::NodeType::Connection
-                                | models::enums::NodeType::Database
-                                | models::enums::NodeType::DatabasesFolder
-                                | models::enums::NodeType::TablesFolder
-                                | models::enums::NodeType::ViewsFolder
-                                | models::enums::NodeType::StoredProceduresFolder
-                                | models::enums::NodeType::UserFunctionsFolder
-                                | models::enums::NodeType::TriggersFolder
-                                | models::enums::NodeType::EventsFolder
-                                | models::enums::NodeType::DBAViewsFolder
-                                | models::enums::NodeType::UsersFolder
-                                | models::enums::NodeType::PrivilegesFolder
-                                | models::enums::NodeType::ProcessesFolder
-                                | models::enums::NodeType::StatusFolder
-                                | models::enums::NodeType::BlockedQueriesFolder
-                                | models::enums::NodeType::ReplicationStatusFolder
-                                | models::enums::NodeType::MasterStatusFolder
-                                | models::enums::NodeType::MetricsUserActiveFolder
-                                | models::enums::NodeType::ColumnsFolder
-                                | models::enums::NodeType::IndexesFolder
-                                | models::enums::NodeType::PrimaryKeysFolder
-                        ) && node.node_type != models::enums::NodeType::Table
-                            && node.node_type != models::enums::NodeType::View;
+                    // We toggle on label click for expandable/container nodes, but not for Table/View (they open data) or ApiHttp REST API
+                    let allow_label_toggle = !is_api_http
+                        && (has_children
+                            || matches!(
+                                node.node_type,
+                                models::enums::NodeType::Connection
+                                    | models::enums::NodeType::Database
+                                    | models::enums::NodeType::DatabasesFolder
+                                    | models::enums::NodeType::TablesFolder
+                                    | models::enums::NodeType::ViewsFolder
+                                    | models::enums::NodeType::StoredProceduresFolder
+                                    | models::enums::NodeType::UserFunctionsFolder
+                                    | models::enums::NodeType::TriggersFolder
+                                    | models::enums::NodeType::EventsFolder
+                                    | models::enums::NodeType::DBAViewsFolder
+                                    | models::enums::NodeType::UsersFolder
+                                    | models::enums::NodeType::PrivilegesFolder
+                                    | models::enums::NodeType::ProcessesFolder
+                                    | models::enums::NodeType::StatusFolder
+                                    | models::enums::NodeType::BlockedQueriesFolder
+                                    | models::enums::NodeType::ReplicationStatusFolder
+                                    | models::enums::NodeType::MasterStatusFolder
+                                    | models::enums::NodeType::MetricsUserActiveFolder
+                                    | models::enums::NodeType::ColumnsFolder
+                                    | models::enums::NodeType::IndexesFolder
+                                    | models::enums::NodeType::PrimaryKeysFolder
+                            ))
+                        && node.node_type != models::enums::NodeType::Table
+                        && node.node_type != models::enums::NodeType::View;
 
                     if allow_label_toggle {
                         node.is_expanded = !node.is_expanded;
