@@ -34,6 +34,7 @@ pub mod self_update;
 pub mod sidebar_database;
 pub mod sidebar_history;
 pub mod sidebar_query;
+pub mod sync;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)

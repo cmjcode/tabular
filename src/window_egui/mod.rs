@@ -26,6 +26,7 @@ pub mod table_wizard;
 pub mod tree_loader;
 pub mod update;
 pub mod style;
+pub mod sync_tick;
 
 pub struct Tabular {
     pub editor: EditorBuffer,
@@ -471,6 +472,44 @@ pub struct Tabular {
     pub show_schema_diff_dialog: bool,
     pub schema_diff_state: Option<models::structs::SchemaDiffState>,
     pub schema_diff_receiver: Option<std::sync::mpsc::Receiver<models::structs::SchemaDiffResult>>,
+
+    // ─── Sync & Collaboration ────────────────────────────────────────────────
+    /// Logged-in Tabular cloud account (None = not signed in)
+    pub sync_account: Option<crate::sync::TabularAccount>,
+    /// URL of the tabular-server instance
+    pub sync_server_url: String,
+    /// Whether cloud sync is enabled by the user
+    pub sync_enabled: bool,
+    /// Current sync status (Offline / Syncing / Synced / Error)
+    pub sync_status: crate::sync::SyncStatus,
+    /// CRDT collaborative editor state (None = not in a room)
+    pub crdt_state: Option<crate::sync::crdt_editor::CrdtEditorState>,
+    /// Known collab rooms for the current user
+    pub collab_rooms: Vec<crate::sync::CollabRoom>,
+    /// Show the floating collab panel
+    pub show_collab_panel: bool,
+    /// Input for creating a new collab room
+    pub new_collab_room_name: String,
+    /// Async receiver for room list refresh
+    pub collab_rooms_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::CollabRoom>>>>,
+    /// Async receiver for room creation result
+    pub collab_room_create_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::CollabRoom>>>,
+    // Login dialog state
+    pub sync_login_pending: bool,
+    pub sync_token_input: String,
+    pub sync_login_error: Option<String>,
+    // Manual sync triggers (set by UI, consumed in update loop)
+    pub sync_trigger_connections: bool,
+    pub sync_trigger_history: bool,
+    pub sync_trigger_queries: bool,
+    // Async receivers for sync operations
+    pub sync_connections_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<crate::sync::api_client::RemoteConnection>, String>>>,
+    pub sync_history_push_receiver: Option<std::sync::mpsc::Receiver<Result<u64, String>>>,
+    pub sync_history_pull_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
+    pub sync_queries_push_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
+    pub sync_queries_pull_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
+    /// Last time history was synced (Unix timestamp), persisted to check incremental sync
+    pub sync_history_last_ts: Option<String>,
 }
 
 // Preference tabs enumeration
@@ -482,6 +521,7 @@ pub enum PrefTab {
     DataDirectory,
     Update,
     AiAssistant,
+    SyncAccount,
 }
 
 impl Default for Tabular {

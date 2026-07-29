@@ -91,6 +91,17 @@ cargo-deb = "3.7.0"
 # the primary OS-keychain backends are declared per-target below.
 chacha20poly1305 = "0.11"
 
+# ─── Sync & Collaboration (optional, feature-gated) ─────────────────────────
+# CRDT engine (Yjs port for Rust)
+yrs = { version = "0.21", optional = true }
+# WebSocket client for collab rooms
+tokio-tungstenite = { version = "0.26", features = ["native-tls"], optional = true }
+# AES-256-GCM encryption for connection credentials before server upload
+aes-gcm = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
+base64 = "0.22"
+rand = { version = "0.8", optional = true }
+
 # OS keychain backends (see src/secrets.rs). Linux is opt-in via the
 # `linux-keyring` feature because Secret Service pulls a D-Bus build/runtime
 # dependency into the packaging chain (deb/flatpak/AUR); without it Linux
@@ -112,12 +123,14 @@ default = ["tree_sitter_sequel", "query_ast"]
 linux-keyring = ["dep:keyring"]
 
 # Enable experimental tree-sitter SQL highlighting / structural parsing.
-# Activate with: `cargo run --features tree_sitter_sequel` (nama feature memakai underscore)
 tree_sitter_sequel = ["tree-sitter", "tree-sitter-sequel", "anyhow"]
 
 # Enable experimental logical query AST parsing + emission (phase 1: simple SELECT)
 query_ast = ["sqlparser"]
 sqlparser = ["dep:sqlparser"]
+
+# Enable real-time collaboration and cloud sync features
+collab = ["dep:yrs", "dep:tokio-tungstenite", "dep:aes-gcm", "dep:sha2", "dep:rand"]
 
 # removed lapce_core in egui-only mode
 

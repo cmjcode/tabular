@@ -506,6 +506,30 @@ impl super::Tabular {
             show_schema_diff_dialog: false,
             schema_diff_state: None,
             schema_diff_receiver: None,
+            // ── Sync & Collaboration ─────────────────────────────────────────
+            sync_account: crate::sync::api_client::load_account(),
+            sync_server_url: std::env::var("TABULAR_SERVER_URL")
+                .unwrap_or_else(|_| "http://localhost:8420".to_string()),
+            sync_enabled: true,
+            sync_status: crate::sync::SyncStatus::Offline,
+            crdt_state: None,
+            collab_rooms: Vec::new(),
+            show_collab_panel: false,
+            new_collab_room_name: String::new(),
+            collab_rooms_receiver: None,
+            collab_room_create_receiver: None,
+            sync_login_pending: false,
+            sync_token_input: String::new(),
+            sync_login_error: None,
+            sync_trigger_connections: false,
+            sync_trigger_history: false,
+            sync_trigger_queries: false,
+            sync_connections_receiver: None,
+            sync_history_push_receiver: None,
+            sync_history_pull_receiver: None,
+            sync_queries_push_receiver: None,
+            sync_queries_pull_receiver: None,
+            sync_history_last_ts: None,
         };
 
         // Clear any old cached pools

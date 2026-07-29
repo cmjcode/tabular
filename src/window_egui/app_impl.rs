@@ -127,6 +127,7 @@ impl Tabular {
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::DataDirectory, "Data Directory");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::SyncAccount, "☁ Sync & Account");
                         });
                         ui.separator();
                         ui.add_space(4.0);
@@ -496,6 +497,9 @@ impl Tabular {
                                     let masked = format!("{}…{}", &self.ai_api_key[..self.ai_api_key.len().min(6)], &self.ai_api_key[self.ai_api_key.len().saturating_sub(4)..]);
                                     ui.label(egui::RichText::new(format!("✓ Key configured: {masked}")).color(egui::Color32::from_rgb(0, 180, 80)).size(12.0));
                                 }
+                            }
+                            PrefTab::SyncAccount => {
+                                crate::sync::ui_login::render_login_panel(self, ui);
                             }
                         }
 
@@ -1398,6 +1402,9 @@ impl Tabular {
                                 _ => {}
                             }
                         });
+
+                        ui.separator();
+                        crate::sync::ui_collab::render_sidebar_collab_section(self, ui);
 
                         // Bottom section with add button - conditional based on active tab
                         ui.with_layout(egui::Layout::bottom_up(egui::Align::RIGHT), |ui| {
@@ -2915,6 +2922,8 @@ impl App for Tabular {
         // `state.cursor.range()` tells us the selection!
         // Load DB-type PNG icons once from assets/db_icons/ if files are present
         self.load_db_icon_textures(ctx);
+        // Drive sync & collaboration tick
+        self.tick_sync(ctx);
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)
         #[cfg(feature = "query_ast")]
         if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
