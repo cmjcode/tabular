@@ -1,14 +1,14 @@
 use eframe::egui;
 
-pub mod auto_updater;
 pub mod ai_assistant;
+pub mod auto_updater;
 pub mod cache_data;
 pub mod config;
 pub mod connection;
 pub mod curl_import;
 pub mod data_table;
-pub mod dialog;
 pub mod diagram_view;
+pub mod dialog;
 pub mod directory;
 pub mod driver_mongodb;
 pub mod driver_mssql;
@@ -28,15 +28,15 @@ pub mod models;
 pub mod modules;
 pub mod query_tools;
 pub mod redis_browser;
-pub mod secrets;
 pub mod safety_guard;
+pub mod secrets;
 pub mod self_update;
 pub mod sidebar_database;
 pub mod sidebar_history;
 pub mod sidebar_query;
-pub mod sync;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
+pub mod sync;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
 #[cfg(feature = "query_ast")]
 pub mod query_ast;
@@ -76,7 +76,7 @@ pub fn run() -> Result<(), eframe::Error> {
         .filter_module("tracing", log::LevelFilter::Warn)
         .is_test(false)
         .try_init();
-    
+
     log::debug!(
         "Application starting with data directory: {}",
         config::get_data_dir().display()
@@ -91,7 +91,7 @@ pub fn run() -> Result<(), eframe::Error> {
     if let Some(icon) = modules::load_icon() {
         options.viewport.icon = Some(std::sync::Arc::new(icon));
     }
-    
+
     let initial_prefs = prefs.clone();
     eframe::run_native(
         "Tabular",

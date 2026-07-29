@@ -186,6 +186,8 @@ pub struct AppPreferences {
     pub ai_base_url: String,
     #[serde(default = "default_redis_browser_auto_refresh_seconds")]
     pub redis_browser_auto_refresh_seconds: u32,
+    #[serde(default)]
+    pub sync_server_url: Option<String>,
 }
 
 fn default_redis_browser_auto_refresh_seconds() -> u32 {
@@ -210,6 +212,7 @@ impl Default for AppPreferences {
             ai_provider: AiProvider::OpenAI,
             ai_base_url: String::new(),
             redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
+            sync_server_url: Some("https://api.tabular.id".to_string()),
         }
     }
 }
@@ -308,6 +311,7 @@ impl ConfigStore {
                 ai_provider: AiProvider::OpenAI,
                 ai_base_url: String::new(),
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
+                sync_server_url: Some("https://api.tabular.id".to_string()),
             };
 
             // Set when a legacy plaintext AI key was migrated to the secret
@@ -350,6 +354,9 @@ impl ConfigStore {
                         "ai_base_url" => prefs.ai_base_url = v,
                         "redis_browser_auto_refresh_seconds" => {
                             prefs.redis_browser_auto_refresh_seconds = v.parse().unwrap_or(default_redis_browser_auto_refresh_seconds())
+                        }
+                        "sync_server_url" => {
+                            prefs.sync_server_url = if v.is_empty() { None } else { Some(v) }
                         }
                         _ => {}
                     }
@@ -406,7 +413,7 @@ impl ConfigStore {
             // The key goes to the OS keychain; the row keeps only a sentinel.
             let ai_api_key_stored =
                 crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
-            let entries: [(&str, &str); 14] = [
+            let entries: [(&str, &str); 15] = [
                 ("theme", prefs.theme.as_str()),
                 (
                     "link_editor_theme",
@@ -440,6 +447,10 @@ impl ConfigStore {
                 ("ai_provider", prefs.ai_provider.as_str()),
                 ("ai_base_url", prefs.ai_base_url.as_str()),
                 ("redis_browser_auto_refresh_seconds", &redis_browser_auto_refresh_seconds),
+                (
+                    "sync_server_url",
+                    prefs.sync_server_url.as_deref().unwrap_or(""),
+                ),
             ];
 
             for (k, v) in entries.iter() {

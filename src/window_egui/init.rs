@@ -69,6 +69,11 @@ impl super::Tabular {
             prefs.ai_model.clone()
         };
         self.ai_settings_base_url_input = prefs.ai_base_url.clone();
+        if let Some(url) = prefs.sync_server_url.clone() {
+            if !url.trim().is_empty() {
+                self.sync_server_url = url;
+            }
+        }
 
         // Store as last saved
         self.last_saved_prefs = Some(prefs);
@@ -509,7 +514,7 @@ impl super::Tabular {
             // ── Sync & Collaboration ─────────────────────────────────────────
             sync_account: crate::sync::api_client::load_account(),
             sync_server_url: std::env::var("TABULAR_SERVER_URL")
-                .unwrap_or_else(|_| "http://localhost:8420".to_string()),
+                .unwrap_or_else(|_| "https://api.tabular.id".to_string()),
             sync_enabled: true,
             sync_status: crate::sync::SyncStatus::Offline,
             crdt_state: None,

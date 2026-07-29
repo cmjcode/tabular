@@ -28,10 +28,14 @@ fn render_login_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
         // Server URL input
         ui.label("Server URL:");
         let server_url = &mut tabular.sync_server_url;
-        let url_edit = egui::TextEdit::singleline(server_url)
-            .hint_text("https://your-tabular-server.com")
-            .desired_width(f32::INFINITY);
-        ui.add(url_edit);
+        let url_resp = ui.add(
+            egui::TextEdit::singleline(server_url)
+                .hint_text("https://api.tabular.id")
+                .desired_width(f32::INFINITY),
+        );
+        if url_resp.lost_focus() || url_resp.changed() {
+            tabular.prefs_dirty = true;
+        }
         ui.add_space(12.0);
 
         // OAuth buttons

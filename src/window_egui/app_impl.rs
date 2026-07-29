@@ -2868,6 +2868,7 @@ impl Tabular {
                     ai_provider: self.ai_provider,
                     ai_base_url: self.ai_base_url.clone(),
                     redis_browser_auto_refresh_seconds: self.redis_browser_auto_refresh_default_seconds.max(1),
+                    sync_server_url: Some(self.sync_server_url.clone()),
                 };
                 rt.block_on(store.save(&prefs));
                 log::debug!(
