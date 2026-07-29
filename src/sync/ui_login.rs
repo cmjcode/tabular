@@ -190,12 +190,20 @@ fn try_submit_token(tabular: &mut Tabular) {
     // Try to parse as full token response JSON from server
     match serde_json::from_str::<serde_json::Value>(&input) {
         Ok(json) => {
-            let access_token = json["access_token"].as_str().unwrap_or("").to_string();
-            let refresh_token = json["refresh_token"].as_str().unwrap_or("").to_string();
-            let expires_in = json["expires_in"].as_i64().unwrap_or(3600);
-            let user_id = json["user"]["id"].as_str().unwrap_or("").to_string();
-            let email = json["user"]["email"].as_str().unwrap_or("").to_string();
-            let display_name = json["user"]["display_name"].as_str().map(|s| s.to_string());
+            // Support both wrapped API envelope {"success": true, "data": {...}} and raw token JSON
+            let root = if json.get("data").map_or(false, |d| d.is_object()) {
+                &json["data"]
+            } else {
+                &json
+            };
+
+            let access_token = root["access_token"].as_str().unwrap_or("").to_string();
+            let refresh_token = root["refresh_token"].as_str().unwrap_or("").to_string();
+            let expires_in = root["expires_in"].as_i64().unwrap_or(3600);
+            let user_id = root["user"]["id"].as_str().unwrap_or("").to_string();
+            let email = root["user"]["email"].as_str().unwrap_or("").to_string();
+            let display_name = root["user"]["display_name"].as_str().map(|s| s.to_string());
+            let avatar_url = root["user"]["avatar_url"].as_str().map(|s| s.to_string());
 
             if access_token.is_empty() || email.is_empty() {
                 tabular.sync_login_error = Some("Invalid token JSON — missing access_token or email".to_string());
@@ -206,7 +214,7 @@ fn try_submit_token(tabular: &mut Tabular) {
                 user_id,
                 email,
                 display_name,
-                avatar_url: None,
+                avatar_url,
                 access_token,
                 refresh_token,
                 token_expires_at: chrono::Utc::now().timestamp() + expires_in,
