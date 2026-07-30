@@ -107,19 +107,101 @@ impl Tabular {
                     .show(ctx, |ui| {
                         // Tab bar
                         ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
                             let accent = style::theme_accent(ctx);
-                            let inactive_fg = ui.visuals().text_color();
                             let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
                                 let selected = *current == me;
-                                let (bg, fg) = if selected { (accent, egui::Color32::WHITE) } else { (egui::Color32::TRANSPARENT, inactive_fg) };
-                                let button = egui::Button::new(egui::RichText::new(label).color(fg).size(13.0))
-                                    .fill(bg)
-                                    .stroke(if selected { egui::Stroke { width: 1.0, color: accent } } else { egui::Stroke { width: 1.0, color: ui.visuals().widgets.inactive.bg_stroke.color } })
-                                    .min_size(egui::vec2(0.0, 24.0));
-                                // Attempt to use new corner radius API if available (ignore if not)
-                                // Rounding disabled for compatibility with current egui version
-                                let resp = ui.add(button);
-                                if resp.clicked() { *current = me; }
+                                let dark = ui.visuals().dark_mode;
+
+                                let inactive_bg = if dark {
+                                    egui::Color32::from_rgb(35, 35, 35)
+                                } else {
+                                    egui::Color32::from_rgb(240, 240, 240)
+                                };
+                                let mut tab_bg = if selected {
+                                    if dark {
+                                        egui::Color32::from_rgb(45, 48, 56)
+                                    } else {
+                                        egui::Color32::from_rgb(255, 255, 255)
+                                    }
+                                } else {
+                                    inactive_bg
+                                };
+                                let border_color = if selected {
+                                    if dark {
+                                        egui::Color32::from_rgb(55, 60, 76)
+                                    } else {
+                                        egui::Color32::from_rgb(215, 222, 232)
+                                    }
+                                } else {
+                                    ui.visuals().widgets.inactive.bg_stroke.color
+                                };
+                                let text_color = if selected {
+                                    if dark {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        egui::Color32::from_rgb(20, 20, 20)
+                                    }
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+
+                                let font_id = egui::FontId::proportional(12.5);
+                                let text_width = ui.painter().layout_no_wrap(label.to_string(), font_id.clone(), text_color).rect.width();
+                                let tab_width = text_width + 24.0;
+                                let menu_tab_height = 30.0;
+
+                                let (tab_rect, tab_resp) = ui.allocate_exact_size(
+                                    egui::vec2(tab_width, menu_tab_height),
+                                    egui::Sense::click(),
+                                );
+
+                                if !selected && tab_resp.hovered() {
+                                    tab_bg = if dark {
+                                        egui::Color32::from_rgb(42, 42, 42)
+                                    } else {
+                                        egui::Color32::from_rgb(230, 230, 230)
+                                    };
+                                }
+
+                                let tab_radius = egui::CornerRadius {
+                                    nw: 4,
+                                    ne: 4,
+                                    sw: 0,
+                                    se: 0,
+                                };
+                                ui.painter().rect_filled(tab_rect, tab_radius, tab_bg);
+                                ui.painter().rect_stroke(
+                                    tab_rect,
+                                    tab_radius,
+                                    egui::Stroke::new(1.0, border_color),
+                                    egui::StrokeKind::Outside,
+                                );
+
+                                if selected {
+                                    let line_height = 3.0;
+                                    let accent_rect = egui::Rect::from_min_size(
+                                        egui::pos2(tab_rect.left(), tab_rect.bottom() - line_height),
+                                        egui::vec2(tab_rect.width(), line_height),
+                                    );
+                                    ui.painter().rect_filled(
+                                        accent_rect,
+                                        0.0,
+                                        accent,
+                                    );
+                                }
+
+                                ui.painter().text(
+                                    tab_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    label,
+                                    font_id,
+                                    text_color,
+                                );
+
+                                if tab_resp.clicked() {
+                                    *current = me;
+                                }
                             };
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::ApplicationTheme, "Application Theme");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::EditorTheme, "Editor Theme");
