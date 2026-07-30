@@ -216,21 +216,14 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
         ui.add_space(8.0);
 
         // Subview Tabs (Columns vs Indexes) - Styled identical to Data / Structure tabs
-        let default_text_color = ui.visuals().text_color();
-        let cols_text = egui::RichText::new("☰ Columns")
-            .size(14.0)
-            .color(if is_cols { egui::Color32::WHITE } else { default_text_color });
-        if ui.selectable_label(is_cols, cols_text).clicked() {
+        if crate::window_egui::style::render_custom_tab(ui, "☰ Columns", is_cols, egui::vec2(105.0, 26.0)).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Columns;
             tabular.structure_sel_anchor = None;
             tabular.structure_selected_cell = None;
             tabular.structure_selected_row = None;
         }
 
-        let idx_text = egui::RichText::new("📈 Indexes")
-            .size(14.0)
-            .color(if is_idx { egui::Color32::WHITE } else { default_text_color });
-        if ui.selectable_label(is_idx, idx_text).clicked() {
+        if crate::window_egui::style::render_custom_tab(ui, "📈 Indexes", is_idx, egui::vec2(105.0, 26.0)).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
             load_structure_info_for_current_table(tabular);
             tabular.structure_sel_anchor = None;

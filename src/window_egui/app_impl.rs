@@ -1162,69 +1162,20 @@ impl Tabular {
                                 let btn_avail_width = ui.available_width();
                                 let button_width = ((btn_avail_width - 8.0) / 3.0).clamp(50.0, 130.0);
                                 let button_height = 34.0;
-                                let active_fill = ui.visuals().widgets.active.bg_fill;
-                                let inactive_fill = egui::Color32::TRANSPARENT;
-                                let active_text = egui::Color32::WHITE;
-                                let inactive_text = ui.visuals().text_color();
-                                let button_radius = 0.0;
 
-                                let database_button = egui::Button::new(
-                                    egui::RichText::new("Database")
-                                        .color(if self.selected_menu == "Database" {
-                                            active_text
-                                        } else {
-                                            inactive_text
-                                        })
-                                        .text_style(egui::TextStyle::Body),
-                                )
-                                .fill(if self.selected_menu == "Database" {
-                                    active_fill
-                                } else {
-                                    inactive_fill
-                                })
-                                .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
-                                .corner_radius(button_radius);
-                                if ui.add_sized([button_width, button_height], database_button).clicked() {
+
+                                let is_db_active = self.selected_menu == "Database";
+                                if style::render_custom_tab(ui, "Database", is_db_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Database".to_string();
                                 }
 
-                                let queries_button = egui::Button::new(
-                                    egui::RichText::new("Queries")
-                                        .color(if self.selected_menu == "Queries" {
-                                            active_text
-                                        } else {
-                                            inactive_text
-                                        })
-                                        .text_style(egui::TextStyle::Body),
-                                )
-                                .fill(if self.selected_menu == "Queries" {
-                                    active_fill
-                                } else {
-                                    inactive_fill
-                                })
-                                .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
-                                .corner_radius(button_radius);
-                                if ui.add_sized([button_width, button_height], queries_button).clicked() {
+                                let is_q_active = self.selected_menu == "Queries";
+                                if style::render_custom_tab(ui, "Queries", is_q_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Queries".to_string();
                                 }
 
-                                let history_button = egui::Button::new(
-                                    egui::RichText::new("History")
-                                        .color(if self.selected_menu == "History" {
-                                            active_text
-                                        } else {
-                                            inactive_text
-                                        })
-                                        .text_style(egui::TextStyle::Body),
-                                )
-                                .fill(if self.selected_menu == "History" {
-                                    active_fill
-                                } else {
-                                    inactive_fill
-                                })
-                                .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
-                                .corner_radius(button_radius);
-                                if ui.add_sized([button_width, button_height], history_button).clicked() {
+                                let is_h_active = self.selected_menu == "History";
+                                if style::render_custom_tab(ui, "History", is_h_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "History".to_string();
                                 }
                             },
@@ -1642,7 +1593,11 @@ impl Tabular {
                                                 inactive_bg
                                             };
                                             let border_color = if active {
-                                                super::style::theme_accent(ui.ctx())
+                                                if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgb(55, 60, 76)
+                                                } else {
+                                                    egui::Color32::from_rgb(215, 222, 232)
+                                                }
                                             } else {
                                                 ui.visuals().widgets.inactive.bg_stroke.color
                                             };
@@ -1674,7 +1629,12 @@ impl Tabular {
                                                 tab_resp.scroll_to_me(Some(egui::Align::Center));
                                             }
 
-                                            let tab_radius: egui::CornerRadius = 0.0.into();
+                                            let tab_radius = egui::CornerRadius {
+                                                nw: 4,
+                                                ne: 4,
+                                                sw: 0,
+                                                se: 0,
+                                            };
                                             ui.painter().rect_filled(tab_rect, tab_radius, tab_bg);
                                             ui.painter().rect_stroke(
                                                 tab_rect,
@@ -1683,9 +1643,10 @@ impl Tabular {
                                                 egui::StrokeKind::Outside,
                                             );
                                             if active {
+                                                let line_height = 3.0;
                                                 let accent_rect = egui::Rect::from_min_size(
-                                                    egui::pos2(tab_rect.left() - 1.0, tab_rect.top()),
-                                                    egui::vec2(tab_rect.width() + 2.0, 3.0),
+                                                    egui::pos2(tab_rect.left(), tab_rect.bottom() - line_height),
+                                                    egui::vec2(tab_rect.width(), line_height),
                                                 );
                                                 ui.painter().rect_filled(
                                                     accent_rect,
@@ -2086,119 +2047,98 @@ impl Tabular {
                                 ui.set_style(style);
 
                                 ui.horizontal(|ui| {
-                                    let default_text = ui.visuals().widgets.inactive.fg_stroke.color;
+                                     let is_data = self.table_bottom_view
+                                         == models::structs::TableBottomView::Data;
+                                     if style::render_custom_tab(ui, "📊 Data", is_data, egui::vec2(90.0, 26.0)).clicked() {
+                                         self.table_bottom_view =
+                                             models::structs::TableBottomView::Data;
+                                         // Ensure DATA view uses persisted cache when available.
+                                         if self.current_table_headers.is_empty() {
+                                             if let Some(tab) = self.query_tabs.get(self.active_tab_index)
+                                                 && let Some(conn_id) = tab.connection_id {
+                                                     let db_name = tab.database_name.clone().unwrap_or_default();
+                                                     let table = data_table::infer_current_table_name(self);
+                                                     if !db_name.is_empty() && !table.is_empty()
+                                                         && let Some((hdrs, rows)) = crate::cache_data::get_table_rows_from_cache(self, conn_id, &db_name, &table)
+                                                             && !hdrs.is_empty() {
+                                                                 debug!("📦 Showing cached data (toggle) for {}/{} ({} cols, {} rows)", db_name, table, hdrs.len(), rows.len());
+                                                                 self.current_table_headers = hdrs.clone();
+                                                                 self.current_table_data = rows.clone();
+                                                                 self.all_table_data = rows;
+                                                                 self.total_rows = self.all_table_data.len();
+                                                                 self.current_page = 0;
+                                                                 if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                                                     active_tab.result_headers = self.current_table_headers.clone();
+                                                                     active_tab.result_rows = self.current_table_data.clone();
+                                                                     active_tab.result_all_rows = self.all_table_data.clone();
+                                                                     active_tab.result_table_name = self.current_table_name.clone();
+                                                                     active_tab.is_table_browse_mode = true;
+                                                                     active_tab.current_page = self.current_page;
+                                                                     active_tab.page_size = self.page_size;
+                                                                     active_tab.total_rows = self.total_rows;
+                                                                 }
+                                                             }
+                                                 }
+                                         } else {
+                                             // Data already present in memory; no need to hit persistent cache
+                                             debug!("✅ Using in-memory data for Data tab (no cached reload)");
+                                         }
+                                     }
 
-                                    let is_data = self.table_bottom_view
-                                        == models::structs::TableBottomView::Data;
-                                    let data_text = egui::RichText::new("📊 Data").color(if is_data {
-                                        egui::Color32::WHITE
-                                    } else {
-                                        default_text
-                                    });
-                                    if ui.selectable_label(is_data, data_text).clicked() {
-                                        self.table_bottom_view =
-                                            models::structs::TableBottomView::Data;
-                                        // Ensure DATA view uses persisted cache when available.
-                                        if self.current_table_headers.is_empty() {
-                                            if let Some(tab) = self.query_tabs.get(self.active_tab_index)
-                                                && let Some(conn_id) = tab.connection_id {
-                                                    let db_name = tab.database_name.clone().unwrap_or_default();
-                                                    let table = data_table::infer_current_table_name(self);
-                                                    if !db_name.is_empty() && !table.is_empty()
-                                                        && let Some((hdrs, rows)) = crate::cache_data::get_table_rows_from_cache(self, conn_id, &db_name, &table)
-                                                            && !hdrs.is_empty() {
-                                                                debug!("📦 Showing cached data (toggle) for {}/{} ({} cols, {} rows)", db_name, table, hdrs.len(), rows.len());
-                                                                self.current_table_headers = hdrs.clone();
-                                                                self.current_table_data = rows.clone();
-                                                                self.all_table_data = rows;
-                                                                self.total_rows = self.all_table_data.len();
-                                                                self.current_page = 0;
-                                                                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                                                    active_tab.result_headers = self.current_table_headers.clone();
-                                                                    active_tab.result_rows = self.current_table_data.clone();
-                                                                    active_tab.result_all_rows = self.all_table_data.clone();
-                                                                    active_tab.result_table_name = self.current_table_name.clone();
-                                                                    active_tab.is_table_browse_mode = true;
-                                                                    active_tab.current_page = self.current_page;
-                                                                    active_tab.page_size = self.page_size;
-                                                                    active_tab.total_rows = self.total_rows;
-                                                                }
-                                                            }
-                                                }
-                                        } else {
-                                            // Data already present in memory; no need to hit persistent cache
-                                            debug!("✅ Using in-memory data for Data tab (no cached reload)");
-                                        }
-                                    }
-                                    let is_struct = self.table_bottom_view
-                                        == models::structs::TableBottomView::Structure;
-                                    let struct_text = egui::RichText::new("⊞ Structure").color(if is_struct {
-                                        egui::Color32::WHITE
-                                    } else {
-                                        default_text
-                                    });
-                                    if ui.selectable_label(is_struct, struct_text).clicked() {
-                                        self.table_bottom_view =
-                                            models::structs::TableBottomView::Structure;
-                                        // Load structure only if target changed; otherwise keep in-memory (avoid repeated cache hits)
-                                        if let Some(conn_id) = self.current_connection_id {
-                                            let db = self
-                                                .query_tabs
-                                                .get(self.active_tab_index)
-                                                .and_then(|t| t.database_name.clone())
-                                                .unwrap_or_default();
-                                            let table = data_table::infer_current_table_name(self);
-                                            let current_target = (conn_id, db.clone(), table.clone());
-                                            if self
-                                                .last_structure_target
-                                                .as_ref()
-                                                .map(|t| t != &current_target)
-                                                .unwrap_or(true)
-                                            {
-                                                data_table::load_structure_info_for_current_table(self);
-                                            } else {
-                                                debug!("✅ Using in-memory structure for {}/{} (no reload)", db, table);
-                                            }
-                                        } else {
-                                            // No active connection, try load to ensure state sane
-                                            data_table::load_structure_info_for_current_table(self);
-                                        }
-                                    }
+                                     let is_struct = self.table_bottom_view
+                                         == models::structs::TableBottomView::Structure;
+                                     if style::render_custom_tab(ui, "⊞ Structure", is_struct, egui::vec2(105.0, 26.0)).clicked() {
+                                         self.table_bottom_view =
+                                             models::structs::TableBottomView::Structure;
+                                         // Load structure only if target changed; otherwise keep in-memory (avoid repeated cache hits)
+                                         if let Some(conn_id) = self.current_connection_id {
+                                             let db = self
+                                                 .query_tabs
+                                                 .get(self.active_tab_index)
+                                                 .and_then(|t| t.database_name.clone())
+                                                 .unwrap_or_default();
+                                             let table = data_table::infer_current_table_name(self);
+                                             let current_target = (conn_id, db.clone(), table.clone());
+                                             if self
+                                                 .last_structure_target
+                                                 .as_ref()
+                                                 .map(|t| t != &current_target)
+                                                 .unwrap_or(true)
+                                             {
+                                                 data_table::load_structure_info_for_current_table(self);
+                                             } else {
+                                                 debug!("✅ Using in-memory structure for {}/{} (no reload)", db, table);
+                                             }
+                                         } else {
+                                             // No active connection, try load to ensure state sane
+                                             data_table::load_structure_info_for_current_table(self);
+                                         }
+                                     }
 
-                                    // Show Query toggle only for View tabs and when we have DDL
-                                    let is_view_tab = self
-                                        .query_tabs
-                                        .get(self.active_tab_index)
-                                        .map(|t| t.title.starts_with("View:"))
-                                        .unwrap_or(false);
-                                    let has_ddl = self.current_object_ddl.is_some()
-                                        || self
-                                            .query_tabs
-                                            .get(self.active_tab_index)
-                                            .and_then(|t| t.object_ddl.clone())
-                                            .is_some();
-                                    if is_view_tab && has_ddl {
-                                        let is_query = self.table_bottom_view
-                                            == models::structs::TableBottomView::Query;
-                                        let query_text = egui::RichText::new("📝 Query").color(if is_query {
-                                            egui::Color32::WHITE
-                                        } else {
-                                            default_text
-                                        });
-                                        if ui.selectable_label(is_query, query_text).clicked() {
-                                            self.table_bottom_view = models::structs::TableBottomView::Query;
-                                        }
-                                    }
+                                     // Show Query toggle only for View tabs and when we have DDL
+                                     let is_view_tab = self
+                                         .query_tabs
+                                         .get(self.active_tab_index)
+                                         .map(|t| t.title.starts_with("View:"))
+                                         .unwrap_or(false);
+                                     let has_ddl = self.current_object_ddl.is_some()
+                                         || self
+                                             .query_tabs
+                                             .get(self.active_tab_index)
+                                             .and_then(|t| t.object_ddl.clone())
+                                             .is_some();
+                                     if is_view_tab && has_ddl {
+                                         let is_query = self.table_bottom_view
+                                             == models::structs::TableBottomView::Query;
+                                         if style::render_custom_tab(ui, "📝 Query", is_query, egui::vec2(90.0, 26.0)).clicked() {
+                                             self.table_bottom_view = models::structs::TableBottomView::Query;
+                                         }
+                                     }
 
                                     // Messages tab - show when there's a query message
                                     if !self.query_message.is_empty() {
                                         let is_messages = self.show_message_panel;
-                                        let messages_text = egui::RichText::new("💬 Messages").color(if is_messages {
-                                            egui::Color32::WHITE
-                                        } else {
-                                            default_text
-                                        });
-                                        if ui.selectable_label(is_messages, messages_text).clicked() {
+                                        if style::render_custom_tab(ui, "💬 Messages", is_messages, egui::vec2(100.0, 26.0)).clicked() {
                                             self.show_message_panel = !self.show_message_panel;
                                             self.message_shown_at = None;
                                         }

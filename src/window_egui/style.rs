@@ -41,7 +41,7 @@ pub fn dark_visuals() -> egui::Visuals {
     v.widgets.open.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(98, 103, 130));
     v.widgets.open.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
 
-    v.selection.bg_fill = egui::Color32::from_rgb(59, 130, 246);
+    v.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
     v.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
     v
 }
@@ -86,7 +86,7 @@ pub fn light_visuals() -> egui::Visuals {
     v.widgets.open.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 116, 139));
     v.widgets.open.fg_stroke = egui::Stroke::new(1.0, text);
 
-    v.selection.bg_fill = egui::Color32::from_rgb(37, 99, 235);
+    v.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
     v.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
     v
 }
@@ -122,7 +122,7 @@ pub fn light_soft_visuals() -> egui::Visuals {
     v.widgets.open.bg_fill = widget_bg_open;
     v.widgets.open.weak_bg_fill = widget_bg_open;
 
-    v.selection.bg_fill = egui::Color32::from_rgba_premultiplied(180, 160, 140, 100);
+    v.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
     v.window_stroke = egui::Stroke::NONE;
     v
 }
@@ -176,13 +176,8 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
     });
 }
 
-// Theme-aware status & UI color helpers
-pub fn theme_accent(ctx: &egui::Context) -> egui::Color32 {
-    if ctx.global_style().visuals.dark_mode {
-        egui::Color32::from_rgb(59, 130, 246) // Modern Blue / Indigo
-    } else {
-        egui::Color32::from_rgb(37, 99, 235)
-    }
+pub fn theme_accent(_ctx: &egui::Context) -> egui::Color32 {
+    egui::Color32::from_rgb(255, 0, 0)
 }
 
 // Standardized Button Builders for Professional UI Theme Consistency
@@ -221,6 +216,114 @@ pub fn btn_success_ctx<'a>(ctx: &egui::Context, text: impl Into<String>) -> egui
     )
     .fill(success)
     .corner_radius(6.0)
+}
+
+/// Unified active/inactive tab component across the app (Sidebar, Workspace Header, Sub-views, Settings)
+pub fn render_custom_tab(
+    ui: &mut egui::Ui,
+    title: &str,
+    is_active: bool,
+    size: egui::Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let is_dark = ui.visuals().dark_mode;
+        let is_hovered = response.hovered();
+
+        let tab_corner = egui::CornerRadius {
+            nw: 4,
+            ne: 4,
+            sw: 0,
+            se: 0,
+        };
+
+        // 1. Background Fill (clean elevated surface, no red box fill)
+        let bg_fill = if is_active {
+            if is_dark {
+                egui::Color32::from_rgb(40, 43, 56)
+            } else {
+                egui::Color32::from_rgb(255, 255, 255)
+            }
+        } else if is_hovered {
+            if is_dark {
+                egui::Color32::from_rgb(30, 33, 44)
+            } else {
+                egui::Color32::from_rgb(238, 242, 246)
+            }
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+
+        ui.painter().rect_filled(rect, tab_corner, bg_fill);
+
+        // 2. Subtle Neutral Border (no red box stroke surrounding tab)
+        let stroke_color = if is_active {
+            if is_dark {
+                egui::Color32::from_rgb(55, 60, 76)
+            } else {
+                egui::Color32::from_rgb(215, 222, 232)
+            }
+        } else if is_hovered {
+            if is_dark {
+                egui::Color32::from_rgb(45, 48, 62)
+            } else {
+                egui::Color32::from_rgb(225, 232, 240)
+            }
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+
+        if stroke_color != egui::Color32::TRANSPARENT {
+            ui.painter().rect_stroke(
+                rect,
+                tab_corner,
+                egui::Stroke::new(1.0, stroke_color),
+                egui::StrokeKind::Outside,
+            );
+        }
+
+        // 3. Bottom Red Line Accent (drawn only at the bottom edge for active tabs)
+        if is_active {
+            let line_height = 3.0;
+            let bottom_accent_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.bottom() - line_height),
+                egui::vec2(rect.width(), line_height),
+            );
+            ui.painter().rect_filled(bottom_accent_rect, 0.0, theme_accent(ui.ctx()));
+        }
+
+        // 4. Text
+        let text_color = if is_active {
+            if is_dark {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_rgb(15, 23, 42)
+            }
+        } else if is_hovered {
+            if is_dark {
+                egui::Color32::from_rgb(226, 232, 240)
+            } else {
+                egui::Color32::from_rgb(30, 41, 59)
+            }
+        } else {
+            if is_dark {
+                egui::Color32::from_rgb(150, 160, 175)
+            } else {
+                egui::Color32::from_rgb(100, 116, 139)
+            }
+        };
+
+        let font_id = egui::FontId::new(13.0, egui::FontFamily::Proportional);
+
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            title,
+            font_id,
+            text_color,
+        );
+    }
+    response
 }
 
 pub fn theme_danger(ctx: &egui::Context) -> egui::Color32 {
