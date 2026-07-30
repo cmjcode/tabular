@@ -344,6 +344,23 @@ impl super::Tabular {
                 }
                 self.collab_room_create_receiver = None;
             }
+
+        // Room deletion
+        if let Some(rx) = &self.collab_room_delete_receiver
+            && let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(room_id) => {
+                        self.collab_rooms.retain(|r| r.id != room_id);
+                        self.toasts.info("Room deleted");
+                    }
+                    Err(e) => {
+                        warn!("[sync] Room delete error: {}", e);
+                        self.toasts.info(format!("Failed to delete room: {}", e));
+                        self.check_401_error(&e.to_string());
+                    }
+                }
+                self.collab_room_delete_receiver = None;
+            }
     }
 
     /// Notify the CRDT engine when the editor text changes (call after each edit).

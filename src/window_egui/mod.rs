@@ -495,6 +495,8 @@ pub struct Tabular {
     pub collab_rooms_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::CollabRoom>>>>,
     /// Async receiver for room creation result
     pub collab_room_create_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::CollabRoom>>>,
+    /// Async receiver for room deletion result
+    pub collab_room_delete_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
     // Login dialog state
     pub sync_login_pending: bool,
     pub sync_token_input: String,

@@ -523,6 +523,7 @@ impl super::Tabular {
             new_collab_room_name: String::new(),
             collab_rooms_receiver: None,
             collab_room_create_receiver: None,
+            collab_room_delete_receiver: None,
             sync_login_pending: false,
             sync_token_input: String::new(),
             sync_login_error: None,

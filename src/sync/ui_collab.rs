@@ -92,40 +92,34 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         tabular.crdt_state = None;
     }
 
-    // ── Header & Refresh row ─────────────────────────────────────────────
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("YOUR ROOMS").small().weak().strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(egui::RichText::new("🔄").small()).frame(false)).on_hover_text("Refresh rooms").clicked() {
-                refresh_rooms(tabular);
-            }
-        });
-    });
-
-    ui.add_space(4.0);
-
-    // ── Create room input row ───────────────────────────────────────────
+    // ── Create & Refresh room row ───────────────────────────────────────
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
 
         let avail_width = ui.available_width();
         let btn_width = 24.0;
-        let input_width = (avail_width - btn_width - 16.0).max(40.0);
+        let refresh_width = 24.0;
+        let input_width = (avail_width - btn_width - refresh_width - 16.0).max(40.0);
 
-        let response = ui.add(
+        ui.add_sized(
+            [input_width, 24.0],
             egui::TextEdit::singleline(&mut tabular.new_collab_room_name)
                 .hint_text("Room name…")
-                .desired_width(input_width)
         );
 
-        let target_height = response.rect.height();
-
         if ui.add_sized(
-            [btn_width, target_height],
+            [btn_width, 24.0],
             egui::Button::new(egui::RichText::new("+").strong()).corner_radius(4.0)
         ).on_hover_text("Create room").clicked() {
             create_room(tabular);
+        }
+
+        if ui.add_sized(
+            [refresh_width, 24.0],
+            egui::Button::new(egui::RichText::new("🔄").small()).corner_radius(4.0)
+        ).on_hover_text("Refresh room list").clicked() {
+            refresh_rooms(tabular);
         }
     });
 
@@ -142,6 +136,13 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(&room.name).small().strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                            .on_hover_text("Delete room")
+                            .clicked()
+                        {
+                            delete_room(tabular, &room.id);
+                        }
+
                         let is_current = tabular.crdt_state
                             .as_ref()
                             .map(|c| c.room_id == room.id)
@@ -164,7 +165,7 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     }
 }
 
-/// Inline sidebar section for collab — accordion version
+/// Inline sidebar section for collab — accordion version without vertical guide line
 pub fn render_sidebar_collab_section(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.add_space(2.0);
 
@@ -188,14 +189,23 @@ pub fn render_sidebar_collab_section(tabular: &mut Tabular, ui: &mut egui::Ui) {
         egui::RichText::new(header_title).strong().size(12.0)
     };
 
-    egui::CollapsingHeader::new(header_text)
-        .id_salt("sidebar_collab_accordion")
-        .default_open(session_expired)
-        .show(ui, |ui| {
+    let id = ui.make_persistent_id("sidebar_collab_accordion");
+    let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, session_expired);
+    let is_open_before = state.is_open();
+
+    let header_res = state
+        .show_header(ui, |ui| {
+            ui.label(header_text);
+        })
+        .body_unindented(|ui| {
             ui.add_space(4.0);
             render_collab_content(tabular, ui);
             ui.add_space(4.0);
         });
+
+    if header_res.0.clicked() && !is_open_before {
+        refresh_rooms(tabular);
+    }
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -250,6 +260,26 @@ fn create_room(tabular: &mut Tabular) {
 
     tabular.new_collab_room_name.clear();
     tabular.collab_room_create_receiver = Some(rx);
+}
+
+fn delete_room(tabular: &mut Tabular, room_id: &str) {
+    let account = match &tabular.sync_account {
+        Some(a) => a.clone(),
+        None => return,
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let room_id_clone = room_id.to_string();
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client.delete_room(&token, &room_id_clone).await.map(|_| room_id_clone);
+        let _ = tx.send(result);
+    });
+
+    tabular.collab_room_delete_receiver = Some(rx);
 }
 
 pub fn refresh_rooms(tabular: &mut Tabular) {

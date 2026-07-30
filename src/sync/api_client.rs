@@ -196,6 +196,14 @@ impl ApiClient {
         Ok(resp.data)
     }
 
+    pub async fn delete_room(&self, token: &str, room_id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/collab/rooms/{}", room_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
     // ── Health check ─────────────────────────────────────────────────────────
 
     pub async fn health_check(&self) -> bool {
