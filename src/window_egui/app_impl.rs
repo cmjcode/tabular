@@ -1473,11 +1473,11 @@ impl Tabular {
                     // Compact top bar: tabs on left, selectors on right, single row.
                     let top_bar_height = TAB_BUTTON_HEIGHT;
                     let available_width = ui.available_width();
-                    let mut selectors_width = (available_width * 0.45).clamp(260.0, 420.0);
+                    let mut selectors_width = (available_width * 0.48).clamp(360.0, 520.0);
                     let mut left_width = available_width - selectors_width;
                     if left_width < 180.0 {
                         left_width = 180.0;
-                        selectors_width = (available_width - left_width).max(220.0);
+                        selectors_width = (available_width - left_width).max(280.0);
                     }
                     let (bar_rect, _resp) = ui.allocate_exact_size(
                         egui::vec2(available_width, top_bar_height),
@@ -1956,9 +1956,7 @@ impl Tabular {
                                         }
                                     });
 
-                                add_divider(ui);
-
-                                // 3.5 Active Schema / Search Path selector
+                                // 3.5 Active Schema / Search Path selector (Only for databases supporting schemas e.g. PostgreSQL & MsSQL)
                                 let (tab_schema, active_conn_type) = self
                                     .query_tabs
                                     .get(self.active_tab_index)
@@ -1968,29 +1966,33 @@ impl Tabular {
                                     })
                                     .unwrap_or((None, None));
 
-                                let mut schemas = self.get_schemas_cached(cid, tab_db_name.as_deref());
-                                if schemas.is_empty() {
-                                    schemas.push("public".to_string());
-                                }
-                                let active_schema = tab_schema.unwrap_or_else(|| "public".to_string());
+                                if active_conn_type.as_ref().map_or(false, |t| t.supports_schemas()) {
+                                    add_divider(ui);
 
-                                egui::ComboBox::from_id_salt("query_schema_select")
-                                    .width(90.0)
-                                    .selected_text(format!("s: {}", active_schema))
-                                    .show_ui(ui, |ui| {
-                                        for s in &schemas {
-                                            if ui.selectable_label(active_schema == *s, s).clicked() {
-                                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                                    tab.schema_name = Some(s.clone());
+                                    let mut schemas = self.get_schemas_cached(cid, tab_db_name.as_deref());
+                                    if schemas.is_empty() {
+                                        schemas.push("public".to_string());
+                                    }
+                                    let active_schema = tab_schema.unwrap_or_else(|| "public".to_string());
+
+                                    egui::ComboBox::from_id_salt("query_schema_select")
+                                        .width(90.0)
+                                        .selected_text(format!("s: {}", active_schema))
+                                        .show_ui(ui, |ui| {
+                                            for s in &schemas {
+                                                if ui.selectable_label(active_schema == *s, s).clicked() {
+                                                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                                        tab.schema_name = Some(s.clone());
+                                                    }
+                                                    if matches!(active_conn_type, Some(models::enums::DatabaseType::PostgreSQL)) {
+                                                        let set_path_query = format!("SET search_path TO {}, public;", s);
+                                                        let _ = crate::connection::execute_query_with_connection(self, cid, set_path_query);
+                                                    }
+                                                    self.toasts.info(format!("Switched active schema to '{}'", s));
                                                 }
-                                                if matches!(active_conn_type, Some(models::enums::DatabaseType::PostgreSQL)) {
-                                                    let set_path_query = format!("SET search_path TO {}, public;", s);
-                                                    let _ = crate::connection::execute_query_with_connection(self, cid, set_path_query);
-                                                }
-                                                self.toasts.info(format!("Switched active schema to '{}'", s));
                                             }
-                                        }
-                                    });
+                                        });
+                                }
                             }
 
                             add_divider(ui);

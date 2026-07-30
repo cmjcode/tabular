@@ -209,6 +209,11 @@ impl DatabaseType {
         }
     }
 
+    /// Returns whether this database type supports PostgreSQL/MsSQL style schemas distinct from databases
+    pub fn supports_schemas(&self) -> bool {
+        matches!(self, DatabaseType::PostgreSQL | DatabaseType::MsSQL)
+    }
+
     /// Returns the brand RGB color for the sidebar badge (r, g, b)
     pub fn badge_color(&self) -> (u8, u8, u8) {
         match self {

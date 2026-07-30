@@ -993,12 +993,8 @@ impl super::Tabular {
         Vec::new()
     }
 
-    pub fn get_schemas_cached(&mut self, _connection_id: i64, database_name: Option<&str>) -> Vec<String> {
+    pub fn get_schemas_cached(&mut self, _connection_id: i64, _database_name: Option<&str>) -> Vec<String> {
         let mut schemas = vec!["public".to_string(), "information_schema".to_string(), "pg_catalog".to_string()];
-        if let Some(db) = database_name
-            && !db.is_empty() && !schemas.contains(&db.to_string()) {
-                schemas.insert(0, db.to_string());
-            }
         schemas.dedup();
         schemas
     }
