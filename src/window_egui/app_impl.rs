@@ -1894,45 +1894,144 @@ impl Tabular {
 
                             // Popup area logic for gear menu
                             if self.show_settings_menu {
-                                let pos = gear_response.rect.left_bottom();
+                                let menu_width = 170.0;
+                                let pos = egui::pos2(
+                                    gear_response.rect.right() - menu_width,
+                                    gear_response.rect.bottom() + 6.0,
+                                );
                                 let mut menu_rect: Option<egui::Rect> = None;
                                 egui::Area::new(egui::Id::new("settings_menu"))
                                     .order(egui::Order::Foreground)
-                                    .fixed_pos(pos + egui::vec2(0.0, 6.0))
+                                    .fixed_pos(pos)
                                     .show(ui.ctx(), |ui| {
-                                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                            ui.set_min_width(200.0);
-                                            if ui
-                                                .add(
-                                                    egui::Button::new("Preferences")
-                                                        .fill(egui::Color32::TRANSPARENT),
-                                                )
-                                                .clicked()
-                                            {
+                                        let dark = ui.visuals().dark_mode;
+                                        let frame_bg = if dark {
+                                            egui::Color32::from_rgb(28, 30, 36)
+                                        } else {
+                                            egui::Color32::from_rgb(255, 255, 255)
+                                        };
+                                        let border_color = if dark {
+                                            egui::Color32::from_rgb(52, 56, 68)
+                                        } else {
+                                            egui::Color32::from_rgb(218, 222, 232)
+                                        };
+
+                                        let frame = egui::Frame::popup(ui.style())
+                                            .fill(frame_bg)
+                                            .stroke(egui::Stroke::new(1.0, border_color))
+                                            .corner_radius(egui::CornerRadius::same(8))
+                                            .inner_margin(egui::Margin::symmetric(6, 6));
+
+                                        frame.show(ui, |ui| {
+                                            ui.set_width(menu_width - 12.0);
+                                            ui.spacing_mut().item_spacing.y = 2.0;
+
+                                            let draw_menu_item = |ui: &mut egui::Ui, icon: &str, label: &str, shortcut: Option<&str>| -> bool {
+                                                let item_height = 28.0;
+                                                let item_width = ui.available_width();
+                                                let (rect, resp) = ui.allocate_exact_size(
+                                                    egui::vec2(item_width, item_height),
+                                                    egui::Sense::click(),
+                                                );
+
+                                                let is_hovered = resp.hovered();
+                                                let bg_color = if is_hovered {
+                                                    if dark {
+                                                        egui::Color32::from_rgb(46, 52, 64)
+                                                    } else {
+                                                        egui::Color32::from_rgb(234, 238, 246)
+                                                    }
+                                                } else {
+                                                    egui::Color32::TRANSPARENT
+                                                };
+
+                                                let text_color = if is_hovered {
+                                                    if dark { egui::Color32::WHITE } else { egui::Color32::from_rgb(15, 15, 20) }
+                                                } else {
+                                                    ui.visuals().text_color()
+                                                };
+
+                                                ui.painter().rect_filled(
+                                                    rect,
+                                                    egui::CornerRadius::same(5),
+                                                    bg_color,
+                                                );
+
+                                                // Draw Icon
+                                                let icon_area = egui::Rect::from_min_size(
+                                                    egui::pos2(rect.left() + 8.0, rect.top()),
+                                                    egui::vec2(20.0, rect.height()),
+                                                );
+                                                ui.painter().text(
+                                                    icon_area.left_center(),
+                                                    egui::Align2::LEFT_CENTER,
+                                                    icon,
+                                                    egui::FontId::proportional(12.5),
+                                                    text_color,
+                                                );
+
+                                                // Draw Label
+                                                let text_area = egui::Rect::from_min_size(
+                                                    egui::pos2(rect.left() + 28.0, rect.top()),
+                                                    egui::vec2(rect.width() - 34.0, rect.height()),
+                                                );
+                                                ui.painter().text(
+                                                    text_area.left_center(),
+                                                    egui::Align2::LEFT_CENTER,
+                                                    label,
+                                                    egui::FontId::proportional(12.5),
+                                                    text_color,
+                                                );
+
+                                                // Draw Shortcut label (if any)
+                                                if let Some(sc) = shortcut {
+                                                    let sc_color = if dark {
+                                                        egui::Color32::from_rgb(130, 135, 150)
+                                                    } else {
+                                                        egui::Color32::from_rgb(140, 145, 160)
+                                                    };
+                                                    ui.painter().text(
+                                                        rect.right_center() - egui::vec2(8.0, 0.0),
+                                                        egui::Align2::RIGHT_CENTER,
+                                                        sc,
+                                                        egui::FontId::proportional(11.0),
+                                                        sc_color,
+                                                    );
+                                                }
+
+                                                resp.clicked()
+                                            };
+
+                                            if draw_menu_item(ui, "⚙", "Preferences", Some("⌘,")) {
                                                 self.show_settings_window = true;
                                                 self.show_settings_menu = false;
                                             }
-                                            ui.separator();
-                                            if ui
-                                                .add(
-                                                    egui::Button::new("Check for Updates")
-                                                        .fill(egui::Color32::TRANSPARENT),
-                                                )
-                                                .clicked()
-                                            {
+
+                                            ui.add_space(3.0);
+                                            let sep_color = if dark {
+                                                egui::Color32::from_rgb(45, 48, 58)
+                                            } else {
+                                                egui::Color32::from_rgb(225, 230, 238)
+                                            };
+                                            let cursor_y = ui.cursor().top();
+                                            let rect_width = ui.available_width();
+                                            ui.painter().hline(
+                                                ui.cursor().left()..=(ui.cursor().left() + rect_width),
+                                                cursor_y,
+                                                egui::Stroke::new(1.0, sep_color),
+                                            );
+                                            ui.add_space(4.0);
+
+                                            if draw_menu_item(ui, "🔄", "Check for Updates", None) {
                                                 self.check_for_updates(true);
                                                 self.show_settings_menu = false;
                                             }
-                                            if ui
-                                                .add(
-                                                    egui::Button::new("About")
-                                                        .fill(egui::Color32::TRANSPARENT),
-                                                )
-                                                .clicked()
-                                            {
+
+                                            if draw_menu_item(ui, "ℹ", "About Tabular", None) {
                                                 self.show_about_dialog = true;
                                                 self.show_settings_menu = false;
                                             }
+
                                             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                                                 self.show_settings_menu = false;
                                             }
