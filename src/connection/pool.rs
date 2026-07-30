@@ -7,6 +7,81 @@ use sqlx::{
 };
 use std::sync::Arc;
 
+/// Check TCP reachability to host & port before attempting database driver connection.
+/// Fails fast (within timeout_ms) if laptop has no network or host is unreachable.
+pub(crate) fn check_host_reachability(
+    connection: &models::structs::ConnectionConfig,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    if connection.connection_type == models::enums::DatabaseType::SQLite {
+        return Ok(());
+    }
+
+    let (host, port_str) = if connection.ssh_enabled {
+        let h = connection.ssh_host.trim();
+        let p = if connection.ssh_port.trim().is_empty() {
+            "22"
+        } else {
+            connection.ssh_port.trim()
+        };
+        if h.is_empty() {
+            return Err("SSH host tidak boleh kosong".to_string());
+        }
+        (h, p)
+    } else {
+        let h = connection.host.trim();
+        let p = if connection.port.trim().is_empty() {
+            "3306"
+        } else {
+            connection.port.trim()
+        };
+        if h.is_empty() {
+            return Err("Database host tidak boleh kosong".to_string());
+        }
+        (h, p)
+    };
+
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+        return Ok(());
+    }
+
+    let addr_str = format!("{}:{}", host, port_str);
+    let socket_addrs = match addr_str.to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(e) => {
+            return Err(format!(
+                "Gagal resolve host '{}': Jaringan/Internet tidak terhubung ({})",
+                host, e
+            ));
+        }
+    };
+
+    if socket_addrs.is_empty() {
+        return Err(format!("Host '{}' tidak valid", host));
+    }
+
+    let timeout = Duration::from_millis(timeout_ms);
+    let mut reachable = false;
+    for addr in socket_addrs {
+        if TcpStream::connect_timeout(&addr, timeout).is_ok() {
+            reachable = true;
+            break;
+        }
+    }
+
+    if !reachable {
+        return Err(format!(
+            "Gagal terhubung ke host [{}:{}]: Jaringan/Internet tidak terjangkau (Host Offline).",
+            host, port_str
+        ));
+    }
+
+    Ok(())
+}
+
 /// Resolve the actual host/port to connect to, accounting for SSH tunnels.
 pub(crate) fn resolve_connection_target(
     connection: &models::structs::ConnectionConfig,
@@ -68,6 +143,14 @@ pub(crate) fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
 pub(crate) async fn create_connection_pool_for_config(
     connection: &models::structs::ConnectionConfig,
 ) -> Option<models::enums::DatabasePool> {
+    if let Err(e) = check_host_reachability(connection, 2500) {
+        debug!(
+            "❌ Fast-fail TCP reachability check failed for connection {:?}: {}",
+            connection.id, e
+        );
+        return None;
+    }
+
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
             let (target_host, target_port) = match resolve_connection_target(connection) {
@@ -92,8 +175,8 @@ pub(crate) async fn create_connection_pool_for_config(
             for attempt in 1..=2u8 {
                 let start = std::time::Instant::now();
                 let (min_conns, test_before, acquire_secs) = match attempt {
-                    1 => (0u32, false, 30u64),
-                    _ => (1u32, true, 45u64),
+                    1 => (0u32, false, 5u64),
+                    _ => (1u32, true, 5u64),
                 };
 
                 let pool_result = MySqlPoolOptions::new()
