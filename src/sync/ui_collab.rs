@@ -28,7 +28,7 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             ui.add_space(16.0);
             ui.label("🔒 Sign in to use collaboration features.");
             ui.add_space(8.0);
-            if ui.button("Open Settings → Sync & Account").clicked() {
+            if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Open Settings → Sync & Account")).clicked() {
                 tabular.show_settings_window = true;
             }
         });
@@ -61,7 +61,7 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         }
 
         ui.add_space(8.0);
-        if ui.button("🚪  Leave Room").clicked() {
+        if ui.add(crate::window_egui::style::btn_danger_ctx(ui.ctx(), "🚪  Leave Room")).clicked() {
             if let Some(crdt) = &tabular.crdt_state {
                 crdt.disconnect();
             }
@@ -82,7 +82,7 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .hint_text("Room name…")
             .desired_width(180.0);
         ui.add(name_edit);
-        if ui.button("➕ Create").clicked() {
+        if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Create")).clicked() {
             create_room(tabular);
         }
     });
@@ -90,7 +90,7 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.add_space(8.0);
 
     // Refresh button
-    if ui.small_button("🔄 Refresh rooms").clicked() {
+    if ui.add(crate::window_egui::style::btn_secondary("🔄 Refresh rooms")).clicked() {
         refresh_rooms(tabular);
     }
 

@@ -132,13 +132,13 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
 
                 ui.add_enabled(
                     has_data && tabular.current_page > 0,
-                    egui::Button::new("⏮ First"),
+                    crate::window_egui::style::btn_secondary("⏮ First"),
                 )
                 .clicked()
                 .then(|| go_to_page(tabular, 0));
                 ui.add_enabled(
                     has_data && tabular.current_page > 0,
-                    egui::Button::new("◀ Prev"),
+                    crate::window_egui::style::btn_secondary("◀ Prev"),
                 )
                 .clicked()
                 .then(|| previous_page(tabular));
@@ -149,11 +149,11 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                 ));
                 ui.add_enabled(
                     has_data && tabular.current_page < total_pages.saturating_sub(1),
-                    egui::Button::new("Next ▶"),
+                    crate::window_egui::style::btn_secondary("Next ▶"),
                 )
                 .clicked()
                 .then(|| next_page(tabular));
-                ui.add_enabled(has_data && total_pages > 1, egui::Button::new("Last ⏭"))
+                ui.add_enabled(has_data && total_pages > 1, crate::window_egui::style::btn_secondary("Last ⏭"))
                     .clicked()
                     .then(|| {
                         let last_page = total_pages.saturating_sub(1);
@@ -161,7 +161,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     });
 
                 ui.separator();
-                if ui.button("Clear selection").clicked() {
+                if ui.add(crate::window_egui::style::btn_secondary("Clear selection")).clicked() {
                     tabular.selected_rows.clear();
                     tabular.selected_columns.clear();
                     tabular.selected_row = None;

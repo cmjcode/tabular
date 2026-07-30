@@ -4,7 +4,7 @@
 /// Integrated into the Settings panel → "Sync & Account" tab.
 
 use eframe::egui;
-use crate::window_egui::Tabular;
+use crate::window_egui::{Tabular, style};
 use super::auth::OAuthProvider;
 
 /// Render the full login panel (call from settings or floating dialog)
@@ -41,10 +41,10 @@ fn render_login_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
         // OAuth buttons
         ui.horizontal(|ui| {
             // Google
-            let google_btn = egui::Button::new(
-                egui::RichText::new("  Sign in with Google  ").size(14.0)
-            )
-            .min_size(egui::vec2(180.0, 36.0));
+            let google_btn = style::btn_primary_ctx(
+                ui.ctx(),
+                "  Sign in with Google  "
+            ).min_size(egui::vec2(180.0, 36.0));
 
             if ui.add(google_btn).clicked() {
                 start_oauth(tabular, OAuthProvider::Google);
@@ -53,10 +53,10 @@ fn render_login_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
             ui.add_space(8.0);
 
             // GitHub
-            let github_btn = egui::Button::new(
-                egui::RichText::new("  Sign in with GitHub  ").size(14.0)
-            )
-            .min_size(egui::vec2(180.0, 36.0));
+            let github_btn = style::btn_primary_ctx(
+                ui.ctx(),
+                "  Sign in with GitHub  "
+            ).min_size(egui::vec2(180.0, 36.0));
 
             if ui.add(github_btn).clicked() {
                 start_oauth(tabular, OAuthProvider::GitHub);
@@ -86,13 +86,13 @@ fn render_login_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.add(token_edit);
 
                 ui.add_space(4.0);
-                if ui.button("✅  Submit Token").clicked() {
+                if ui.add(style::btn_primary_ctx(ui.ctx(), "✅  Submit Token")).clicked() {
                     try_submit_token(tabular);
                 }
             });
 
             ui.add_space(4.0);
-            if ui.button("Cancel").clicked() {
+            if ui.add(style::btn_secondary("Cancel")).clicked() {
                 tabular.sync_login_pending = false;
                 tabular.sync_auth_receiver = None;
                 tabular.sync_token_input.clear();
@@ -157,13 +157,13 @@ fn render_logged_in(tabular: &mut Tabular, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Manual Sync").strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("🔗  Sync Connections").clicked() {
+            if ui.add(style::btn_secondary("🔗  Sync Connections")).clicked() {
                 tabular.sync_trigger_connections = true;
             }
-            if ui.button("📜  Sync History").clicked() {
+            if ui.add(style::btn_secondary("📜  Sync History")).clicked() {
                 tabular.sync_trigger_history = true;
             }
-            if ui.button("💾  Sync Queries").clicked() {
+            if ui.add(style::btn_secondary("💾  Sync Queries")).clicked() {
                 tabular.sync_trigger_queries = true;
             }
         });
@@ -173,7 +173,7 @@ fn render_logged_in(tabular: &mut Tabular, ui: &mut egui::Ui) {
         ui.add_space(4.0);
 
         // Logout
-        if ui.button("🚪  Sign Out").clicked() {
+        if ui.add(style::btn_danger_ctx(ui.ctx(), "🚪  Sign Out")).clicked() {
             do_logout(tabular);
         }
     });

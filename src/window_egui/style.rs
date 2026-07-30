@@ -1,6 +1,96 @@
 use eframe::egui;
 use crate::config::AppTheme;
 
+pub fn dark_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::dark();
+    let panel = egui::Color32::from_rgb(24, 25, 32);
+    let bg = egui::Color32::from_rgb(18, 19, 24);
+    let text = egui::Color32::from_rgb(226, 232, 240);
+    let widget_bg = egui::Color32::from_rgb(38, 41, 52);
+    let widget_bg_hovered = egui::Color32::from_rgb(52, 56, 70);
+    let widget_bg_active = egui::Color32::from_rgb(67, 72, 90);
+    let border_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(55, 59, 74));
+
+    v.override_text_color = Some(text);
+    v.window_fill = bg;
+    v.panel_fill = panel;
+    v.faint_bg_color = egui::Color32::from_rgb(30, 32, 42);
+    v.extreme_bg_color = egui::Color32::from_rgb(15, 16, 20);
+
+    v.widgets.noninteractive.bg_fill = panel;
+    v.widgets.noninteractive.weak_bg_fill = panel;
+    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text);
+
+    v.widgets.inactive.bg_fill = widget_bg;
+    v.widgets.inactive.weak_bg_fill = widget_bg;
+    v.widgets.inactive.bg_stroke = border_stroke;
+    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text);
+
+    v.widgets.hovered.bg_fill = widget_bg_hovered;
+    v.widgets.hovered.weak_bg_fill = widget_bg_hovered;
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(82, 86, 110));
+    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+
+    v.widgets.active.bg_fill = widget_bg_active;
+    v.widgets.active.weak_bg_fill = widget_bg_active;
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(98, 103, 130));
+    v.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+
+    v.widgets.open.bg_fill = widget_bg_active;
+    v.widgets.open.weak_bg_fill = widget_bg_active;
+    v.widgets.open.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(98, 103, 130));
+    v.widgets.open.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+
+    v.selection.bg_fill = egui::Color32::from_rgb(59, 130, 246);
+    v.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    v
+}
+
+pub fn light_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::light();
+    let panel = egui::Color32::from_rgb(248, 250, 252);
+    let bg = egui::Color32::from_rgb(255, 255, 255);
+    let text = egui::Color32::from_rgb(15, 23, 42);
+    let widget_bg = egui::Color32::from_rgb(241, 245, 249);
+    let widget_bg_hovered = egui::Color32::from_rgb(226, 232, 240);
+    let widget_bg_active = egui::Color32::from_rgb(203, 213, 225);
+    let border_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(203, 213, 225));
+
+    v.override_text_color = Some(text);
+    v.window_fill = bg;
+    v.panel_fill = panel;
+    v.faint_bg_color = egui::Color32::from_rgb(241, 245, 249);
+    v.extreme_bg_color = egui::Color32::from_rgb(255, 255, 255);
+
+    v.widgets.noninteractive.bg_fill = panel;
+    v.widgets.noninteractive.weak_bg_fill = panel;
+    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text);
+
+    v.widgets.inactive.bg_fill = widget_bg;
+    v.widgets.inactive.weak_bg_fill = widget_bg;
+    v.widgets.inactive.bg_stroke = border_stroke;
+    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text);
+
+    v.widgets.hovered.bg_fill = widget_bg_hovered;
+    v.widgets.hovered.weak_bg_fill = widget_bg_hovered;
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(148, 163, 184));
+    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, text);
+
+    v.widgets.active.bg_fill = widget_bg_active;
+    v.widgets.active.weak_bg_fill = widget_bg_active;
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 116, 139));
+    v.widgets.active.fg_stroke = egui::Stroke::new(1.0, text);
+
+    v.widgets.open.bg_fill = widget_bg_active;
+    v.widgets.open.weak_bg_fill = widget_bg_active;
+    v.widgets.open.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 116, 139));
+    v.widgets.open.fg_stroke = egui::Stroke::new(1.0, text);
+
+    v.selection.bg_fill = egui::Color32::from_rgb(37, 99, 235);
+    v.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    v
+}
+
 pub fn light_soft_visuals() -> egui::Visuals {
     let mut v = egui::Visuals::light();
     let bg = egui::Color32::from_rgb(245, 242, 238);
@@ -39,8 +129,8 @@ pub fn light_soft_visuals() -> egui::Visuals {
 
 fn theme_visuals(theme: AppTheme) -> egui::Visuals {
     match theme {
-        AppTheme::Dark => egui::Visuals::dark(),
-        AppTheme::Light => egui::Visuals::light(),
+        AppTheme::Dark => dark_visuals(),
+        AppTheme::Light => light_visuals(),
         AppTheme::LightSoft => light_soft_visuals(),
     }
 }
@@ -54,16 +144,16 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
         // Global spacing and padding for a more modern layout.
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.window_margin = egui::Margin::same(10);
-        style.spacing.button_padding = egui::vec2(12.0, 8.0);
+        style.spacing.button_padding = egui::vec2(12.0, 7.0);
         style.spacing.menu_margin = egui::Margin::same(8);
         style.spacing.indent = 16.0;
-        style.spacing.interact_size = egui::vec2(44.0, 22.0);
+        style.spacing.interact_size = egui::vec2(44.0, 24.0);
 
         // Rounded widgets across the app.
-        style.visuals.widgets.inactive.corner_radius = 8.0.into();
-        style.visuals.widgets.hovered.corner_radius = 8.0.into();
-        style.visuals.widgets.active.corner_radius = 8.0.into();
-        style.visuals.widgets.open.corner_radius = 8.0.into();
+        style.visuals.widgets.inactive.corner_radius = 6.0.into();
+        style.visuals.widgets.hovered.corner_radius = 6.0.into();
+        style.visuals.widgets.active.corner_radius = 6.0.into();
+        style.visuals.widgets.open.corner_radius = 6.0.into();
 
         // Use a consistent app font / body size.
         style.override_font_id = Some(egui::FontId::new(14.0, egui::FontFamily::Proportional));
@@ -87,8 +177,50 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
 }
 
 // Theme-aware status & UI color helpers
-pub fn theme_accent(_ctx: &egui::Context) -> egui::Color32 {
-    egui::Color32::from_rgb(255, 0, 0)
+pub fn theme_accent(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(59, 130, 246) // Modern Blue / Indigo
+    } else {
+        egui::Color32::from_rgb(37, 99, 235)
+    }
+}
+
+// Standardized Button Builders for Professional UI Theme Consistency
+pub fn btn_primary_ctx<'a>(ctx: &egui::Context, text: impl Into<String>) -> egui::Button<'a> {
+    let accent = theme_accent(ctx);
+    egui::Button::new(
+        egui::RichText::new(text.into())
+            .color(egui::Color32::WHITE)
+            .strong(),
+    )
+    .fill(accent)
+    .corner_radius(6.0)
+}
+
+pub fn btn_secondary<'a>(text: impl Into<String>) -> egui::Button<'a> {
+    egui::Button::new(text.into()).corner_radius(6.0)
+}
+
+pub fn btn_danger_ctx<'a>(ctx: &egui::Context, text: impl Into<String>) -> egui::Button<'a> {
+    let danger = theme_danger(ctx);
+    egui::Button::new(
+        egui::RichText::new(text.into())
+            .color(egui::Color32::WHITE)
+            .strong(),
+    )
+    .fill(danger)
+    .corner_radius(6.0)
+}
+
+pub fn btn_success_ctx<'a>(ctx: &egui::Context, text: impl Into<String>) -> egui::Button<'a> {
+    let success = theme_success(ctx);
+    egui::Button::new(
+        egui::RichText::new(text.into())
+            .color(egui::Color32::WHITE)
+            .strong(),
+    )
+    .fill(success)
+    .corner_radius(6.0)
 }
 
 pub fn theme_danger(ctx: &egui::Context) -> egui::Color32 {

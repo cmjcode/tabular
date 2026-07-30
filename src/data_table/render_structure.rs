@@ -254,7 +254,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 );
             });
         } else if ui
-            .add(egui::Button::new(egui::RichText::new("🔄 Refresh").size(14.0)))
+            .add(crate::window_egui::style::btn_secondary("🔄 Refresh"))
             .on_hover_text("Fetch latest structure in background")
             .clicked()
         {
@@ -263,7 +263,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
         if is_cols {
             if ui
-                .add(egui::Button::new(egui::RichText::new("➕ Add Column").size(14.0)))
+                .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Add Column"))
                 .on_hover_text("Add a new column")
                 .clicked()
             {
@@ -286,7 +286,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             if ui
                 .add_enabled(
                     edit_enabled,
-                    egui::Button::new(egui::RichText::new("✏️ Edit Column").size(14.0)),
+                    crate::window_egui::style::btn_secondary("✏️ Edit Column"),
                 )
                 .on_hover_text("Edit selected column")
                 .clicked()
@@ -305,7 +305,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             if ui
                 .add_enabled(
                     drop_enabled,
-                    egui::Button::new(egui::RichText::new("🗑 Drop Column").size(14.0)),
+                    crate::window_egui::style::btn_danger_ctx(ui.ctx(), "🗑 Drop Column"),
                 )
                 .on_hover_text("Drop selected column")
                 .clicked()
@@ -316,7 +316,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             }
         } else if is_idx {
             if ui
-                .add(egui::Button::new(egui::RichText::new("➕ Add Index").size(14.0)))
+                .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Add Index"))
                 .on_hover_text("Create new index")
                 .clicked()
             {
@@ -333,7 +333,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             if ui
                 .add_enabled(
                     drop_enabled,
-                    egui::Button::new(egui::RichText::new("🗑 Drop Index").size(14.0)),
+                    crate::window_egui::style::btn_danger_ctx(ui.ctx(), "🗑 Drop Index"),
                 )
                 .on_hover_text("Drop selected index")
                 .clicked()

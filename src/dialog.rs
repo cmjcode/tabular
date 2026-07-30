@@ -1158,7 +1158,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if ui
-                            .add_sized(egui::vec2(110.0, 32.0), egui::Button::new("Cancel"))
+                            .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_secondary("Cancel"))
                             .clicked()
                         {
                             action = WizardAction::Cancel;
@@ -1166,7 +1166,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
 
                         if current_step.previous().is_some()
                             && ui
-                                .add_sized(egui::vec2(110.0, 32.0), egui::Button::new("Back"))
+                                .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_secondary("Back"))
                                 .clicked()
                         {
                             action = WizardAction::Back;
@@ -1179,7 +1179,7 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                     .map(|res| res.is_ok())
                                     .unwrap_or(false);
                                 let create_button =
-                                    egui::Button::new(egui::RichText::new("Create Table").strong())
+                                    crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Create Table")
                                         .min_size(egui::vec2(110.0, 32.0));
                                 if ui.add_enabled(create_enabled, create_button).clicked() {
                                     action = WizardAction::Create;
@@ -1188,14 +1188,14 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                     && ui
                                         .add_sized(
                                             egui::vec2(110.0, 32.0),
-                                            egui::Button::new("Copy SQL"),
+                                            crate::window_egui::style::btn_secondary("Copy SQL"),
                                         )
                                         .clicked()
                                 {
                                     copy_preview = Some(sql.clone());
                                 }
                             } else if ui
-                                .add_sized(egui::vec2(110.0, 32.0), egui::Button::new("Next"))
+                                .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Next"))
                                 .clicked()
                             {
                                 action = WizardAction::Next;
