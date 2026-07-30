@@ -100,6 +100,11 @@ pub enum BackgroundTask {
     EnsureConnectionPool {
         connection_id: i64,
     },
+    FetchTableStructure {
+        connection_id: i64,
+        database_name: String,
+        table_name: String,
+    },
 }
 
 // Infrequent mpsc channel message (one per background task completion), so the
@@ -107,6 +112,12 @@ pub enum BackgroundTask {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum BackgroundResult {
+    TableStructureFetched {
+        connection_id: i64,
+        database_name: String,
+        table_name: String,
+        columns: Option<Vec<(String, String)>>,
+    },
     RefreshComplete {
         connection_id: i64,
         success: bool,

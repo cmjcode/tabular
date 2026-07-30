@@ -75,6 +75,44 @@ pub(crate) fn default_data_type_for_conn(tabular: &window_egui::Tabular) -> Stri
         .to_string()
 }
 
+pub(crate) fn trigger_background_structure_refresh(tabular: &mut window_egui::Tabular) {
+    let Some(conn_id) = tabular.current_connection_id else {
+        return;
+    };
+    let active_db = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.database_name.clone())
+        .unwrap_or_default();
+    let conn = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(conn_id))
+        .cloned();
+    let Some(conn) = conn else {
+        return;
+    };
+    let table = infer_current_table_name(tabular);
+    if table.trim().is_empty() {
+        return;
+    }
+    let database = if !active_db.is_empty() {
+        active_db
+    } else {
+        conn.database.clone()
+    };
+
+    tabular.is_refreshing_structure = true;
+
+    if let Some(sender) = &tabular.background_sender {
+        let _ = sender.send(models::enums::BackgroundTask::FetchTableStructure {
+            connection_id: conn_id,
+            database_name: database,
+            table_name: table,
+        });
+    }
+}
+
 pub(crate) fn trigger_drop_column(tabular: &mut window_egui::Tabular, col_name: &str) {
     let table_name = infer_current_table_name(tabular);
     if let Some(conn_id) = tabular.current_connection_id
@@ -157,27 +195,42 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
     let is_cols = tabular.structure_sub_view == models::structs::StructureSubView::Columns;
     let is_idx = tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
 
-    // Top action bar
+    // Top action bar - Balanced & Clean UI style
     ui.horizontal(|ui| {
-        ui.add_space(6.0);
-        ui.heading(format!(
-            "🛠 Structure: {}",
-            if table_name.is_empty() {
-                "-"
-            } else {
-                &table_name
-            }
-        ));
-        ui.add_space(10.0);
+        ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
 
-        // Subview Tabs
-        if ui.selectable_label(is_cols, "☰ Columns").clicked() {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "🛠 Structure: {}",
+                if table_name.is_empty() {
+                    "-"
+                } else {
+                    &table_name
+                }
+            ))
+            .strong()
+            .size(15.0),
+        );
+        ui.add_space(8.0);
+
+        // Subview Tabs (Columns vs Indexes) - Styled identical to Data / Structure tabs
+        let default_text_color = ui.visuals().text_color();
+        let cols_text = egui::RichText::new("☰ Columns")
+            .size(14.0)
+            .color(if is_cols { egui::Color32::WHITE } else { default_text_color });
+        if ui.selectable_label(is_cols, cols_text).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Columns;
             tabular.structure_sel_anchor = None;
             tabular.structure_selected_cell = None;
             tabular.structure_selected_row = None;
         }
-        if ui.selectable_label(is_idx, "📈 Indexes").clicked() {
+
+        let idx_text = egui::RichText::new("📈 Indexes")
+            .size(14.0)
+            .color(if is_idx { egui::Color32::WHITE } else { default_text_color });
+        if ui.selectable_label(is_idx, idx_text).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
             load_structure_info_for_current_table(tabular);
             tabular.structure_sel_anchor = None;
@@ -185,22 +238,32 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             tabular.structure_selected_row = None;
         }
 
+        ui.add_space(4.0);
         ui.separator();
+        ui.add_space(4.0);
 
-        // Refresh Button
-        if ui
-            .button("🔄 Refresh")
-            .on_hover_text("Fetch latest structure from database server")
+        // Refresh Button & Loading Indicator
+        if tabular.is_refreshing_structure {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(15.0));
+                ui.label(
+                    egui::RichText::new("Refreshing...")
+                        .size(13.5)
+                        .italics()
+                        .color(ui.visuals().text_color()),
+                );
+            });
+        } else if ui
+            .add(egui::Button::new(egui::RichText::new("🔄 Refresh").size(14.0)))
+            .on_hover_text("Fetch latest structure in background")
             .clicked()
         {
-            tabular.request_structure_refresh = true;
-            load_structure_info_for_current_table(tabular);
-            crate::sidebar_database::refresh_connections_tree(tabular);
+            trigger_background_structure_refresh(tabular);
         }
 
         if is_cols {
             if ui
-                .button("➕ Add Column")
+                .add(egui::Button::new(egui::RichText::new("➕ Add Column").size(14.0)))
                 .on_hover_text("Add a new column")
                 .clicked()
             {
@@ -221,7 +284,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 .cloned();
             let edit_enabled = sel_col.is_some() && !tabular.editing_column;
             if ui
-                .add_enabled(edit_enabled, egui::Button::new("✏️ Edit Column"))
+                .add_enabled(
+                    edit_enabled,
+                    egui::Button::new(egui::RichText::new("✏️ Edit Column").size(14.0)),
+                )
                 .on_hover_text("Edit selected column")
                 .clicked()
             {
@@ -237,7 +303,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
             let drop_enabled = sel_col.is_some();
             if ui
-                .add_enabled(drop_enabled, egui::Button::new("🗑 Drop Column"))
+                .add_enabled(
+                    drop_enabled,
+                    egui::Button::new(egui::RichText::new("🗑 Drop Column").size(14.0)),
+                )
                 .on_hover_text("Drop selected column")
                 .clicked()
             {
@@ -247,7 +316,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             }
         } else if is_idx {
             if ui
-                .button("➕ Add Index")
+                .add(egui::Button::new(egui::RichText::new("➕ Add Index").size(14.0)))
                 .on_hover_text("Create new index")
                 .clicked()
             {
@@ -262,7 +331,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 .cloned();
             let drop_enabled = sel_idx.is_some();
             if ui
-                .add_enabled(drop_enabled, egui::Button::new("🗑 Drop Index"))
+                .add_enabled(
+                    drop_enabled,
+                    egui::Button::new(egui::RichText::new("🗑 Drop Index").size(14.0)),
+                )
                 .on_hover_text("Drop selected index")
                 .clicked()
             {

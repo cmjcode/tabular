@@ -10,6 +10,11 @@ pub(crate) fn fetch_columns_from_database(
     table_name: &str,
     connection: &models::structs::ConnectionConfig,
 ) -> Option<Vec<(String, String)>> {
+    if let Err(e) = crate::connection::pool::check_host_reachability(connection, 2000) {
+        debug!("Fast-fail in fetch_columns_from_database: {}", e);
+        return None;
+    }
+
     let rt = tokio::runtime::Runtime::new().ok()?;
 
     let connection_clone = connection.clone();
@@ -19,20 +24,28 @@ pub(crate) fn fetch_columns_from_database(
     rt.block_on(async {
         match connection_clone.connection_type {
             models::enums::DatabaseType::MySQL => {
+                let (target_host, target_port) =
+                    match crate::connection::pool::resolve_connection_target(&connection_clone) {
+                        Ok(tuple) => tuple,
+                        Err(err) => {
+                            debug!("Failed to resolve MySQL target in fetch_columns: {}", err);
+                            return None;
+                        }
+                    };
                 let encoded_username = modules::url_encode(&connection_clone.username);
                 let encoded_password = modules::url_encode(&connection_clone.password);
                 let connection_string = format!(
                     "mysql://{}:{}@{}:{}/{}",
                     encoded_username,
                     encoded_password,
-                    connection_clone.host,
-                    connection_clone.port,
+                    target_host,
+                    target_port,
                     database_name
                 );
 
                 match MySqlPoolOptions::new()
                     .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .acquire_timeout(std::time::Duration::from_secs(3))
                     .connect(&connection_string)
                     .await
                 {
@@ -137,7 +150,7 @@ pub(crate) fn fetch_columns_from_database(
 
                 match sqlx::sqlite::SqlitePoolOptions::new()
                     .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .acquire_timeout(std::time::Duration::from_secs(3))
                     .connect(&connection_string)
                     .await
                 {
@@ -173,18 +186,26 @@ pub(crate) fn fetch_columns_from_database(
                 }
             }
             models::enums::DatabaseType::PostgreSQL => {
+                let (target_host, target_port) =
+                    match crate::connection::pool::resolve_connection_target(&connection_clone) {
+                        Ok(tuple) => tuple,
+                        Err(err) => {
+                            debug!("Failed to resolve Pg target in fetch_columns: {}", err);
+                            return None;
+                        }
+                    };
                 let connection_string = format!(
                     "postgresql://{}:{}@{}:{}/{}",
                     connection_clone.username,
                     connection_clone.password,
-                    connection_clone.host,
-                    connection_clone.port,
+                    target_host,
+                    target_port,
                     database_name
                 );
 
                 match PgPoolOptions::new()
                     .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
+                    .acquire_timeout(std::time::Duration::from_secs(3))
                     .connect(&connection_string)
                     .await
                 {
@@ -221,21 +242,29 @@ pub(crate) fn fetch_columns_from_database(
                 ("ttl".to_string(), "Integer".to_string()),
             ]),
             models::enums::DatabaseType::MongoDB => {
+                let (target_host, target_port) =
+                    match crate::connection::pool::resolve_connection_target(&connection_clone) {
+                        Ok(tuple) => tuple,
+                        Err(err) => {
+                            debug!("Failed to resolve Mongo target in fetch_columns: {}", err);
+                            return None;
+                        }
+                    };
                 let uri = if connection_clone.username.is_empty() {
-                    format!("mongodb://{}:{}", connection_clone.host, connection_clone.port)
+                    format!("mongodb://{}:{}", target_host, target_port)
                 } else if connection_clone.password.is_empty() {
                     format!(
                         "mongodb://{}@{}:{}",
                         connection_clone.username,
-                        connection_clone.host,
-                        connection_clone.port
+                        target_host,
+                        target_port
                     )
                 } else {
                     let enc_user = modules::url_encode(&connection_clone.username);
                     let enc_pass = modules::url_encode(&connection_clone.password);
                     format!(
                         "mongodb://{}:{}@{}:{}",
-                        enc_user, enc_pass, connection_clone.host, connection_clone.port
+                        enc_user, enc_pass, target_host, target_port
                     )
                 };
                 match MongoClient::with_uri_str(uri).await {
@@ -279,8 +308,16 @@ pub(crate) fn fetch_columns_from_database(
                 }
             }
             models::enums::DatabaseType::MsSQL => {
-                let host = connection_clone.host.clone();
-                let port: u16 = connection_clone.port.parse().unwrap_or(1433);
+                let (target_host, target_port) =
+                    match crate::connection::pool::resolve_connection_target(&connection_clone) {
+                        Ok(tuple) => tuple,
+                        Err(err) => {
+                            debug!("Failed to resolve MsSQL target in fetch_columns: {}", err);
+                            return None;
+                        }
+                    };
+                let host = target_host;
+                let port: u16 = target_port.parse().unwrap_or(1433);
                 let user = connection_clone.username.clone();
                 let pass = connection_clone.password.clone();
                 let db = database_name.clone();

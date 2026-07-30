@@ -367,6 +367,7 @@ impl super::Tabular {
             structure_sub_view: models::structs::StructureSubView::Columns,
             last_structure_target: None,
             request_structure_refresh: false,
+            is_refreshing_structure: false,
             adding_column: false,
             new_column_name: String::new(),
             new_column_type: String::new(),
@@ -902,6 +903,54 @@ impl super::Tabular {
                                             error_message: err_msg,
                                         });
                                     }
+                                }
+                            }
+                        });
+                    }
+                    models::enums::BackgroundTask::FetchTableStructure {
+                        connection_id,
+                        database_name,
+                        table_name,
+                    } => {
+                        let cache_pool_thread = cache_pool.clone();
+                        let result_sender_thread = result_sender.clone();
+                        std::thread::spawn(move || {
+                            if let Some(pool) = &cache_pool_thread
+                                && let Ok(rt) = tokio::runtime::Runtime::new()
+                            {
+                                let conn_opt = rt.block_on(async {
+                                    crate::connection::pool::load_connection_by_id(connection_id, pool).await
+                                });
+
+                                if let Some(conn) = conn_opt {
+                                    if let Err(e) = crate::connection::pool::check_host_reachability(&conn, 2500) {
+                                        log::warn!("Background FetchTableStructure reachability failed: {}", e);
+                                        let _ = result_sender_thread.send(
+                                            models::enums::BackgroundResult::TableStructureFetched {
+                                                connection_id,
+                                                database_name,
+                                                table_name,
+                                                columns: None,
+                                            },
+                                        );
+                                        return;
+                                    }
+
+                                    let cols = crate::connection::fetch_columns_from_database(
+                                        connection_id,
+                                        &database_name,
+                                        &table_name,
+                                        &conn,
+                                    );
+
+                                    let _ = result_sender_thread.send(
+                                        models::enums::BackgroundResult::TableStructureFetched {
+                                            connection_id,
+                                            database_name,
+                                            table_name,
+                                            columns: cols,
+                                        },
+                                    );
                                 }
                             }
                         });

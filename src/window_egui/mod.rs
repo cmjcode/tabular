@@ -307,6 +307,7 @@ pub struct Tabular {
     pub last_structure_target: Option<(i64, String, String)>, // (connection_id, database, table)
     // Flag to force next structure load even if target unchanged (used by manual refresh)
     pub request_structure_refresh: bool,
+    pub is_refreshing_structure: bool,
     // Inline add/edit column state for Structure -> Columns
     pub adding_column: bool,
     pub new_column_name: String,

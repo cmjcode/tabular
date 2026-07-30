@@ -69,7 +69,10 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
         tabular.structure_sel_anchor = None;
 
         // Branch: if user explicitly requested refresh, force live fetch and update cache
-        if tabular.request_structure_refresh {
+        let is_refresh = tabular.request_structure_refresh;
+        tabular.request_structure_refresh = false;
+
+        if is_refresh {
             if let Some(cols) = crate::connection::fetch_columns_from_database(
                 conn_id,
                 &database,
@@ -161,7 +164,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
 
         // Detailed index metadata: only when Indexes subview is visible
         if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
-            if tabular.request_structure_refresh {
+            if is_refresh {
                 // Force live fetch and update cache
                 let idx =
                     fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
@@ -225,7 +228,7 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
         }
 
         // Fetch and cache partitions whenever structure is refreshed (always, not just for sidebar)
-        if tabular.request_structure_refresh {
+        if is_refresh {
             // Force live fetch of partitions and update cache
             if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
                 let partitions = fetch_partition_details_for_table(

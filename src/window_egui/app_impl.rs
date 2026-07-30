@@ -559,6 +559,44 @@ impl Tabular {
         
             for result in results {
                     match result {
+                        models::enums::BackgroundResult::TableStructureFetched {
+                            connection_id,
+                            database_name,
+                            table_name,
+                            columns,
+                        } => {
+                            self.is_refreshing_structure = false;
+                            if let Some(cols) = columns {
+                                crate::cache_data::save_columns_to_cache(
+                                    self,
+                                    connection_id,
+                                    &database_name,
+                                    &table_name,
+                                    &cols,
+                                );
+                                let active_db = self
+                                    .query_tabs
+                                    .get(self.active_tab_index)
+                                    .and_then(|t| t.database_name.clone())
+                                    .unwrap_or_default();
+                                let current_table = data_table::infer_current_table_name(self);
+                                if self.current_connection_id == Some(connection_id)
+                                    && active_db == database_name
+                                    && current_table == table_name
+                                {
+                                    self.structure_columns.clear();
+                                    for (name, dtype) in cols {
+                                        self.structure_columns.push(models::structs::ColumnStructInfo {
+                                            name,
+                                            data_type: dtype,
+                                            ..Default::default()
+                                        });
+                                    }
+                                    self.last_structure_target = Some((connection_id, database_name, table_name));
+                                }
+                            }
+                            ctx.request_repaint();
+                        }
                         models::enums::BackgroundResult::RefreshComplete {
                             connection_id,
                             success,

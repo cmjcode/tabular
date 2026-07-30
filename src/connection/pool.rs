@@ -617,6 +617,79 @@ async fn try_quick_pool_creation(
     }
 }
 
+pub(crate) async fn load_connection_by_id(
+    connection_id: i64,
+    cache_pool: &sqlx::SqlitePool,
+) -> Option<models::structs::ConnectionConfig> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT id, name, host, port, username, password, database_name, connection_type, folder, \
+                COALESCE(ssh_enabled, 0) AS ssh_enabled, \
+                COALESCE(ssh_host, '') AS ssh_host, \
+                COALESCE(ssh_port, '22') AS ssh_port, \
+                COALESCE(ssh_username, '') AS ssh_username, \
+                COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
+                COALESCE(ssh_private_key, '') AS ssh_private_key, \
+                COALESCE(ssh_password, '') AS ssh_password, \
+                COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+         FROM connections WHERE id = ?"
+    )
+    .bind(connection_id)
+    .fetch_optional(cache_pool)
+    .await
+    .ok()??;
+
+    let id: Option<i64> = row.try_get("id").ok();
+    let name: String = row.try_get("name").unwrap_or_default();
+    let host: String = row.try_get("host").unwrap_or_default();
+    let port: String = row.try_get("port").unwrap_or_default();
+    let username: String = row.try_get("username").unwrap_or_default();
+    let password: String = row.try_get("password").unwrap_or_default();
+    let database: String = row.try_get("database_name").unwrap_or_default();
+    let conn_type_str: String = row.try_get("connection_type").unwrap_or_default();
+    let folder: Option<String> = row.try_get("folder").ok();
+    let ssh_enabled: i64 = row.try_get("ssh_enabled").unwrap_or(0);
+    let ssh_host: String = row.try_get("ssh_host").unwrap_or_default();
+    let ssh_port: String = row.try_get("ssh_port").unwrap_or_else(|_| "22".to_string());
+    let ssh_username: String = row.try_get("ssh_username").unwrap_or_default();
+    let ssh_auth_method: String = row.try_get("ssh_auth_method").unwrap_or_else(|_| "key".to_string());
+    let ssh_private_key: String = row.try_get("ssh_private_key").unwrap_or_default();
+    let ssh_password: String = row.try_get("ssh_password").unwrap_or_default();
+    let ssh_accept_unknown_host_keys: i64 = row.try_get("ssh_accept_unknown_host_keys").unwrap_or(0);
+
+    Some(models::structs::ConnectionConfig {
+        id,
+        name,
+        host,
+        port,
+        username,
+        password,
+        database,
+        connection_type: match conn_type_str.as_str() {
+            "MySQL" => models::enums::DatabaseType::MySQL,
+            "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
+            "Redis" => models::enums::DatabaseType::Redis,
+            "MsSQL" => models::enums::DatabaseType::MsSQL,
+            "MongoDB" => models::enums::DatabaseType::MongoDB,
+            _ => models::enums::DatabaseType::SQLite,
+        },
+        folder,
+        ssh_enabled: ssh_enabled != 0,
+        ssh_host,
+        ssh_port,
+        ssh_username,
+        ssh_auth_method: match ssh_auth_method.as_str() {
+            "password" => models::enums::SshAuthMethod::Password,
+            _ => models::enums::SshAuthMethod::Key,
+        },
+        ssh_private_key,
+        ssh_password,
+        ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+        custom_views: Vec::new(),
+        replication_master_id: None,
+    })
+}
+
 pub(crate) async fn create_connection_pool_by_id(
     connection_id: i64,
     cache_pool: &sqlx::SqlitePool,
