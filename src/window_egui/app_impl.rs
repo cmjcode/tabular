@@ -3855,11 +3855,13 @@ impl App for Tabular {
             }
             if let Some(stage) = latest_stage {
                 match &stage {
-                    crate::auto_updater::UpdateStage::Completed => {
+                    crate::auto_updater::UpdateStage::Completed(staged_script) => {
                         self.update_download_in_progress = false;
                         self.update_download_started = false;
                         self.update_installed = true;
                         self.show_update_notification = true;
+                        // Store the macOS staged helper script path for use on restart
+                        self.staged_update_script = staged_script.clone();
                     }
                     crate::auto_updater::UpdateStage::Failed(err) => {
                         self.update_download_in_progress = false;
@@ -3932,7 +3934,8 @@ impl App for Tabular {
 
                                 ui.horizontal(|ui| {
                                     if ui.button("🚀 Restart Now").clicked() {
-                                        let _ = crate::auto_updater::AutoUpdater::restart_app();
+                                        let staged = self.staged_update_script.as_ref();
+                                        let _ = crate::auto_updater::AutoUpdater::restart_app(staged);
                                     }
                                     if ui.button("Dismiss").clicked() {
                                         self.show_update_notification = false;

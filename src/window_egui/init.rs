@@ -413,6 +413,7 @@ impl super::Tabular {
             update_install_receiver: None,
             update_stage: crate::auto_updater::UpdateStage::Idle,
             update_stage_receiver: None,
+            staged_update_script: None,
             enable_debug_logging: false, // Default to false
             auto_updater: crate::auto_updater::AutoUpdater::new().ok(),
             settings_active_pref_tab: PrefTab::ApplicationTheme,

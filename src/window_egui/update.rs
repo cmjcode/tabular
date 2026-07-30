@@ -1,4 +1,5 @@
 use eframe::egui;
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use crate::models;
 use crate::auto_updater::UpdateStage;
 
@@ -30,11 +31,12 @@ impl super::Tabular {
         }
 
         egui::Window::new("Software Update")
-            .resizable(false)
+            .resizable(true)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .min_size(egui::vec2(620.0, 480.0))
             .show(ctx, |ui| {
-                ui.set_min_width(440.0);
+                ui.set_min_width(620.0);
 
                 if self.update_check_in_progress {
                     ui.horizontal(|ui| {
@@ -76,9 +78,11 @@ impl super::Tabular {
 
                         ui.label("Release Notes:");
                         egui::ScrollArea::vertical()
-                            .max_height(160.0)
+                            .max_height(280.0)
                             .show(ui, |ui| {
-                                ui.text_edit_multiline(&mut update_info.release_notes.clone());
+                                let mut cache = CommonMarkCache::default();
+                                CommonMarkViewer::new()
+                                    .show(ui, &mut cache, &update_info.release_notes.clone());
                             });
 
                         ui.separator();
@@ -113,10 +117,10 @@ impl super::Tabular {
                                     ui.label("Applying update in-place...");
                                 });
                             }
-                            UpdateStage::Completed => {
+                        UpdateStage::Completed(_) => {
                                 ui.colored_label(
                                     egui::Color32::from_rgb(100, 220, 100),
-                                    "✅ Update installed successfully! Restart to apply changes.",
+                                    "✅ Update staged successfully! Click \"Restart Now\" to apply.",
                                 );
                             }
                             UpdateStage::Failed(err) => {
@@ -131,9 +135,10 @@ impl super::Tabular {
                         ui.separator();
 
                         ui.horizontal(|ui| {
-                            if self.update_installed || self.update_stage == UpdateStage::Completed {
+                            if self.update_installed || matches!(self.update_stage, UpdateStage::Completed(_)) {
                                 if ui.button("🚀 Restart Now").clicked() {
-                                    let _ = crate::auto_updater::AutoUpdater::restart_app();
+                                    let staged = self.staged_update_script.as_ref();
+                                    let _ = crate::auto_updater::AutoUpdater::restart_app(staged);
                                 }
                             } else if self.update_download_in_progress {
                                 ui.add_enabled(false, egui::Button::new("Updating..."));

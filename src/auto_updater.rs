@@ -12,7 +12,9 @@ pub enum UpdateStage {
     Downloading { progress: f32, downloaded: u64, total: Option<u64> },
     Extracting,
     Applying,
-    Completed,
+    /// Update completed. On macOS, contains the path to the staged helper script
+    /// that should be executed on restart to apply the update.
+    Completed(Option<PathBuf>),
     Failed(String),
 }
 
@@ -101,32 +103,61 @@ impl AutoUpdater {
         info!("📦 Update payload downloaded successfully ({} bytes)", content.len());
         progress_cb(UpdateStage::Extracting);
 
+        // staged_script carries back the macOS helper script path (None on other platforms)
+        let staged_script: Option<PathBuf>;
+
         #[cfg(target_os = "macos")]
         {
-            self.stage_macos_update(&content, update_info, &progress_cb).await?;
+            let staged = self.stage_macos_update(&content, update_info, &progress_cb).await?;
+            staged_script = staged;
         }
 
         #[cfg(target_os = "linux")]
         {
             self.stage_linux_update(&content, update_info, &progress_cb).await?;
+            staged_script = None;
         }
 
         #[cfg(target_os = "windows")]
         {
             self.stage_windows_update(&content, update_info, &progress_cb).await?;
+            staged_script = None;
         }
 
-        progress_cb(UpdateStage::Completed);
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            staged_script = None;
+        }
+
+        progress_cb(UpdateStage::Completed(staged_script));
         Ok(())
     }
 
-    /// Relaunches Tabular application automatically
-    pub fn restart_app() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    /// Relaunches Tabular application automatically.
+    ///
+    /// On macOS, if a staged update script path is provided, the helper script is
+    /// executed first (it waits for this process to exit, replaces the app, and
+    /// relaunches it). This avoids replacing the binary while it is running,
+    /// which would trigger a code-signature kill (SIGKILL / Code Signature Invalid).
+    pub fn restart_app(
+        staged_script: Option<&PathBuf>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let current_exe = std::env::current_exe()?;
         info!("🔄 Restarting Tabular executable: {:?}", current_exe);
 
         #[cfg(target_os = "macos")]
         {
+            // If a staged update script is available, run it and exit.
+            // The script waits for us to quit, then replaces the .app and relaunches.
+            if let Some(script_path) = staged_script {
+                info!("🍏 Launching staged update helper script: {:?}", script_path);
+                std::process::Command::new("bash")
+                    .arg(script_path)
+                    .spawn()?;
+                std::process::exit(0);
+            }
+
+            // Normal relaunch (no staged update)
             let exe_str = current_exe.to_string_lossy();
             if let Some(app_pos) = exe_str.find(".app/Contents/MacOS/") {
                 let app_path = &exe_str[..app_pos + 4];
@@ -138,6 +169,9 @@ impl AutoUpdater {
             }
         }
 
+        #[cfg(not(target_os = "macos"))]
+        let _ = staged_script; // unused on other platforms
+
         std::process::Command::new(&current_exe).spawn()?;
         std::process::exit(0);
     }
@@ -146,16 +180,32 @@ impl AutoUpdater {
 // Platform Specific Implementation: macOS
 #[cfg(target_os = "macos")]
 impl AutoUpdater {
+    /// Stage a macOS update safely WITHOUT replacing the currently-running binary.
+    ///
+    /// # Why not replace in-place?
+    /// macOS enforces code-signing at the page level. Overwriting the executable
+    /// while it is mapped into memory causes the kernel to detect a signature
+    /// mismatch and immediately sends SIGKILL (`Code Signature Invalid`).
+    ///
+    /// # Safe staged approach
+    /// 1. Download & mount the DMG (unchanged).
+    /// 2. Copy the new `.app` bundle to a **staging directory** in `$TMPDIR`.
+    /// 3. Write a shell helper script that will:
+    ///    - Wait briefly for this process to exit.
+    ///    - Replace the installed `.app` with the staged one.
+    ///    - Clear macOS quarantine attribute.
+    ///    - Re-launch the app.
+    /// 4. Returns the staged helper script path for `restart_app()` to use.
     async fn stage_macos_update<F>(
         &self,
         content: &[u8],
         update_info: &UpdateInfo,
         progress_cb: &F,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    ) -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>>
     where
         F: Fn(UpdateStage) + Send + Sync + 'static,
     {
-        info!("🍏 Staging macOS update...");
+        info!("🍏 Staging macOS update (safe staged approach)...");
         progress_cb(UpdateStage::Applying);
 
         let asset_name = update_info
@@ -168,7 +218,14 @@ impl AutoUpdater {
 
         let current_exe = std::env::current_exe()?;
         let exe_str = current_exe.to_string_lossy();
-        let is_app_bundle = exe_str.contains(".app/Contents/MacOS/");
+
+        // Determine the current .app bundle path (if running from inside a .app)
+        let current_app_path: Option<PathBuf> =
+            if let Some(app_pos) = exe_str.find(".app/Contents/MacOS/") {
+                Some(PathBuf::from(&exe_str[..app_pos + 4]))
+            } else {
+                None
+            };
 
         // Mount DMG via hdiutil
         let mount_point = self.temp_dir.join("mount");
@@ -176,7 +233,7 @@ impl AutoUpdater {
         fs::create_dir_all(&mount_point)?;
 
         debug!("Mounting DMG {:?} to {:?}", dmg_path, mount_point);
-        let mount_status = std::process::Command::new("hdiutil")
+        let mount_output = std::process::Command::new("hdiutil")
             .args([
                 "attach",
                 "-nobrowse",
@@ -186,62 +243,97 @@ impl AutoUpdater {
             ])
             .output();
 
-        let mounted = match mount_status {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
-        };
+        let mounted = matches!(mount_output, Ok(ref o) if o.status.success());
 
         if mounted {
-            debug!("DMG mounted successfully. Finding extracted app or binary...");
+            debug!("DMG mounted. Looking for Tabular.app inside mount...");
             let mounted_app = mount_point.join("Tabular.app");
 
-            if mounted_app.exists() && is_app_bundle {
-                let app_pos = exe_str.find(".app/Contents/MacOS/").unwrap();
-                let current_app_path = PathBuf::from(&exe_str[..app_pos + 4]);
-                info!("Replacing macOS bundle at {:?}", current_app_path);
+            if mounted_app.exists() {
+                // Stage: copy the new .app to a temp location (NOT over the live install)
+                let staging_dir = self.temp_dir.join("tabular_staged");
+                let _ = fs::remove_dir_all(&staging_dir);
+                fs::create_dir_all(&staging_dir)?;
 
-                // Copy binary inside .app bundle directly
-                let mounted_binary = mounted_app.join("Contents/MacOS/tabular");
-                if mounted_binary.exists() {
-                    let res = fs::copy(&mounted_binary, &current_exe);
-                    if res.is_ok() {
-                        let _ = std::process::Command::new("hdiutil")
-                            .args(["detach", mount_point.to_str().unwrap()])
-                            .output();
-                        let _ = fs::remove_file(&dmg_path);
-                        return Ok(());
+                let staged_app = staging_dir.join("Tabular.app");
+                info!("📋 Copying new .app to staging dir: {:?}", staged_app);
+
+                // Use system cp -R for reliable deep-copy of .app bundle
+                let cp_status = std::process::Command::new("cp")
+                    .args(["-R", mounted_app.to_str().unwrap(), staged_app.to_str().unwrap()])
+                    .status();
+
+                let _ = std::process::Command::new("hdiutil")
+                    .args(["detach", mount_point.to_str().unwrap()])
+                    .output();
+                let _ = fs::remove_file(&dmg_path);
+
+                if cp_status.map_or(false, |s| s.success()) && staged_app.exists() {
+                    // Determine install target (default to current .app location or /Applications)
+                    let install_target = current_app_path
+                        .as_deref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "/Applications/Tabular.app".to_string());
+
+                    // Write a helper shell script that runs AFTER we exit
+                    let helper_script_path = self.temp_dir.join("tabular_update_helper.sh");
+                    let script_content = format!(
+                        "#!/bin/bash\n\
+                        # Tabular auto-update helper — runs after the app exits\n\
+                        sleep 1\n\
+                        # Replace installed .app with staged version\n\
+                        rm -rf \"{install}\"\n\
+                        cp -R \"{staged}\" \"{install}\"\n\
+                        # Clear macOS quarantine attribute\n\
+                        xattr -cr \"{install}\" 2>/dev/null || true\n\
+                        # Remove this helper script\n\
+                        rm -f \"{script}\"\n\
+                        # Relaunch the app\n\
+                        open \"{install}\"\n",
+                        install = install_target,
+                        staged = staged_app.to_string_lossy(),
+                        script = helper_script_path.to_string_lossy(),
+                    );
+
+                    fs::write(&helper_script_path, script_content)?;
+
+                    // Make the helper script executable
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(&helper_script_path, fs::Permissions::from_mode(0o755))?;
                     }
+
+                    info!("✅ Update staged. Helper script ready at {:?}", helper_script_path);
+                    return Ok(Some(helper_script_path));
+                } else {
+                    warn!("❌ Failed to copy new .app to staging dir; falling back to Downloads DMG");
                 }
-            } else if mounted_app.exists() && !is_app_bundle {
-                // Standalone binary mode
-                let mounted_binary = mounted_app.join("Contents/MacOS/tabular");
-                if mounted_binary.exists() {
-                    let res = fs::copy(&mounted_binary, &current_exe);
-                    if res.is_ok() {
-                        let _ = std::process::Command::new("hdiutil")
-                            .args(["detach", mount_point.to_str().unwrap()])
-                            .output();
-                        let _ = fs::remove_file(&dmg_path);
-                        return Ok(());
-                    }
-                }
+            } else {
+                let _ = std::process::Command::new("hdiutil")
+                    .args(["detach", mount_point.to_str().unwrap()])
+                    .output();
+                let _ = fs::remove_file(&dmg_path);
+                warn!("Tabular.app not found inside mounted DMG; falling back to Downloads");
             }
-
-            let _ = std::process::Command::new("hdiutil")
-                .args(["detach", mount_point.to_str().unwrap()])
-                .output();
+        } else {
+            warn!("Failed to mount DMG; falling back to Downloads");
+            let _ = fs::remove_file(&dmg_path);
         }
 
-        // Fallback: If in-place replacement was blocked by permissions (SIP/System root), save to Downloads & open DMG
-        warn!("In-place macOS bundle update not permitted; falling back to Downloads DMG setup");
-        if let Some(downloads_dir) = dirs::download_dir() {
-            let download_dmg = downloads_dir.join(asset_name);
-            let _ = fs::copy(&dmg_path, &download_dmg);
-            let _ = std::process::Command::new("open").arg(&download_dmg).spawn();
+        // Fallback: save DMG to Downloads and open it so the user can update manually
+        warn!("Staged update could not complete; placing DMG in Downloads for manual installation");
+        let dmg_fallback_path = self.temp_dir.join(asset_name);
+        if dmg_fallback_path.exists() {
+            if let Some(downloads_dir) = dirs::download_dir() {
+                let download_dmg = downloads_dir.join(asset_name);
+                let _ = fs::copy(&dmg_fallback_path, &download_dmg);
+                let _ = std::process::Command::new("open").arg(&download_dmg).spawn();
+            }
+            let _ = fs::remove_file(&dmg_fallback_path);
         }
 
-        let _ = fs::remove_file(&dmg_path);
-        Ok(())
+        Ok(None)
     }
 }
 

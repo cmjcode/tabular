@@ -42,6 +42,7 @@ mongodb = { version = "3.8.0", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = { version = "0.35", features = ["datepicker"] }
+egui_commonmark = { version = "0.24", features = ["pulldown_cmark"] }
 # Date type consumed by egui_extras' DatePickerButton (chrono elsewhere).
 jiff = "0.2"
 colorful = "0.3.2"

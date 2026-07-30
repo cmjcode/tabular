@@ -347,6 +347,10 @@ pub struct Tabular {
     pub update_install_receiver: Option<std::sync::mpsc::Receiver<bool>>, // receive success flag
     pub update_stage: crate::auto_updater::UpdateStage,
     pub update_stage_receiver: Option<std::sync::mpsc::Receiver<crate::auto_updater::UpdateStage>>,
+    /// macOS only: path to the staged update helper shell script.
+    /// Populated when `UpdateStage::Completed(Some(path))` is received;
+    /// passed to `restart_app()` on "Restart Now".
+    pub staged_update_script: Option<std::path::PathBuf>,
     pub enable_debug_logging: bool, // New field for debug logging
     // Auto updater instance
     pub auto_updater: Option<crate::auto_updater::AutoUpdater>,
