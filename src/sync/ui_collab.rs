@@ -23,88 +23,124 @@ pub fn render_collab_panel(tabular: &mut Tabular, ctx: &egui::Context) {
 }
 
 fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
-    if tabular.sync_account.is_none() {
-        ui.vertical_centered(|ui| {
-            ui.add_space(16.0);
-            ui.label("🔒 Sign in to use collaboration features.");
-            ui.add_space(8.0);
-            if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Open Settings → Sync & Account")).clicked() {
-                tabular.show_settings_window = true;
+    let session_expired = if let Some(err) = &tabular.sync_login_error {
+        err.contains("401") || err.contains("Unauthorized") || err.contains("Session expired")
+    } else {
+        false
+    };
+
+    if tabular.sync_account.is_none() || session_expired {
+        ui.add_space(4.0);
+        ui.group(|ui| {
+            if session_expired {
+                ui.label(egui::RichText::new("⚠️ Sesi Telah Berakhir (401)").small().strong().color(egui::Color32::from_rgb(255, 170, 0)));
+                ui.label(egui::RichText::new("Sesi login Anda telah habis. Silakan login kembali untuk melanjutkan kolaborasi.").small().weak());
+            } else {
+                ui.label(egui::RichText::new("🔒 Belum Login").small().strong());
+                ui.label(egui::RichText::new("Silakan login akun Tabular untuk menggunakan fitur kolaborasi.").small().weak());
+            }
+            ui.add_space(6.0);
+            if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "🔑 Login Kembali")).clicked() {
+                tabular.sync_login_pending = true;
+                tabular.sync_login_error = None;
+                tabular.sync_auth_receiver = Some(crate::sync::auth::start_oauth_flow(
+                    &tabular.sync_server_url,
+                    crate::sync::auth::OAuthProvider::Google,
+                ));
             }
         });
+        ui.add_space(4.0);
         return;
     }
 
-    // ── Current session ────────────────────────────────────────────────────
+    // ── Current session card ─────────────────────────────────────────────
+    let mut disconnect_requested = false;
     if let Some(crdt) = &tabular.crdt_state {
-        ui.horizontal(|ui| {
-            ui.label("📡 Connected to room:");
-            ui.strong(&crdt.room_id);
-        });
+        let room_id = crdt.room_id.clone();
+        let peers = crdt.peers.clone();
 
-        // Connected peers
-        if !crdt.peers.is_empty() {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("Online now:").small());
-            for peer in &crdt.peers {
-                ui.horizontal(|ui| {
-                    let dot = egui::RichText::new("●").color(peer.color).small();
-                    ui.label(dot);
-                    ui.label(&peer.display_name);
-                    if let Some(pos) = peer.cursor_pos {
-                        ui.label(egui::RichText::new(format!("(pos {})", pos)).small().weak());
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(72, 199, 116)).small());
+                ui.label(egui::RichText::new(format!("Room: {}", room_id)).small().strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(crate::window_egui::style::btn_danger_ctx(ui.ctx(), "Leave")).clicked() {
+                        disconnect_requested = true;
+                    }
+                });
+            });
+
+            if !peers.is_empty() {
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Members:").small().weak());
+                    for peer in &peers {
+                        let dot = egui::RichText::new("●").color(peer.color).small();
+                        ui.label(dot);
+                        ui.label(egui::RichText::new(&peer.display_name).small());
                     }
                 });
             }
-        } else {
-            ui.label(egui::RichText::new("You are the only one here.").small().weak());
-        }
-
-        ui.add_space(8.0);
-        if ui.add(crate::window_egui::style::btn_danger_ctx(ui.ctx(), "🚪  Leave Room")).clicked() {
-            if let Some(crdt) = &tabular.crdt_state {
-                crdt.disconnect();
-            }
-            tabular.crdt_state = None;
-        }
-
-        ui.separator();
-        ui.add_space(8.0);
+        });
+        ui.add_space(6.0);
     }
 
-    // ── Room list ─────────────────────────────────────────────────────────
-    ui.label(egui::RichText::new("Your Rooms").strong());
+    if disconnect_requested {
+        if let Some(crdt) = &tabular.crdt_state {
+            crdt.disconnect();
+        }
+        tabular.crdt_state = None;
+    }
+
+    // ── Header & Refresh row ─────────────────────────────────────────────
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("YOUR ROOMS").small().weak().strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(egui::Button::new(egui::RichText::new("🔄").small()).frame(false)).on_hover_text("Refresh rooms").clicked() {
+                refresh_rooms(tabular);
+            }
+        });
+    });
+
     ui.add_space(4.0);
 
-    // New room button
+    // ── Create room input row ───────────────────────────────────────────
     ui.horizontal(|ui| {
-        let name_edit = egui::TextEdit::singleline(&mut tabular.new_collab_room_name)
-            .hint_text("Room name…")
-            .desired_width(180.0);
-        ui.add(name_edit);
-        if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Create")).clicked() {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+
+        let avail_width = ui.available_width();
+        let btn_width = 24.0;
+        let input_width = (avail_width - btn_width - 16.0).max(40.0);
+
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut tabular.new_collab_room_name)
+                .hint_text("Room name…")
+                .desired_width(input_width)
+        );
+
+        let target_height = response.rect.height();
+
+        if ui.add_sized(
+            [btn_width, target_height],
+            egui::Button::new(egui::RichText::new("+").strong()).corner_radius(4.0)
+        ).on_hover_text("Create room").clicked() {
             create_room(tabular);
         }
     });
 
-    ui.add_space(8.0);
+    ui.add_space(6.0);
 
-    // Refresh button
-    if ui.add(crate::window_egui::style::btn_secondary("🔄 Refresh rooms")).clicked() {
-        refresh_rooms(tabular);
-    }
-
-    ui.add_space(4.0);
-
-    // Room list
+    // ── Room list ─────────────────────────────────────────────────────────
     if tabular.collab_rooms.is_empty() {
+        ui.add_space(4.0);
         ui.label(egui::RichText::new("No rooms yet. Create one to start collaborating.").small().weak());
     } else {
         let rooms = tabular.collab_rooms.clone();
         for room in &rooms {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&room.name).strong());
+                    ui.label(egui::RichText::new(&room.name).small().strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let is_current = tabular.crdt_state
                             .as_ref()
@@ -128,28 +164,38 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     }
 }
 
-/// Inline sidebar section for collab — compact version
+/// Inline sidebar section for collab — accordion version
 pub fn render_sidebar_collab_section(tabular: &mut Tabular, ui: &mut egui::Ui) {
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new("🤝 Collaboration").strong().size(12.0));
     ui.add_space(2.0);
 
-    if let Some(crdt) = &tabular.crdt_state {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(72, 199, 116)));
-            ui.label(egui::RichText::new(&crdt.room_id).small().strong());
-        });
-        let peer_count = crdt.peers.len();
-        if peer_count > 0 {
-            ui.label(egui::RichText::new(format!("{} other(s) online", peer_count)).small().weak());
-        }
+    let session_expired = if let Some(err) = &tabular.sync_login_error {
+        err.contains("401") || err.contains("Unauthorized") || err.contains("Session expired")
     } else {
-        ui.label(egui::RichText::new("Not in a room").small().weak());
-    }
+        false
+    };
 
-    if ui.small_button("Open Collab Panel").clicked() {
-        tabular.show_collab_panel = true;
-    }
+    let header_title = if session_expired {
+        "☁ Collaboration (⚠️ Sesi Expired)".to_string()
+    } else if let Some(crdt) = &tabular.crdt_state {
+        format!("☁ Collaboration (● {})", crdt.room_id)
+    } else {
+        "☁ Collaboration".to_string()
+    };
+
+    let header_text = if session_expired {
+        egui::RichText::new(header_title).strong().size(12.0).color(egui::Color32::from_rgb(255, 170, 0))
+    } else {
+        egui::RichText::new(header_title).strong().size(12.0)
+    };
+
+    egui::CollapsingHeader::new(header_text)
+        .id_salt("sidebar_collab_accordion")
+        .default_open(session_expired)
+        .show(ui, |ui| {
+            ui.add_space(4.0);
+            render_collab_content(tabular, ui);
+            ui.add_space(4.0);
+        });
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -206,7 +252,7 @@ fn create_room(tabular: &mut Tabular) {
     tabular.collab_room_create_receiver = Some(rx);
 }
 
-fn refresh_rooms(tabular: &mut Tabular) {
+pub fn refresh_rooms(tabular: &mut Tabular) {
     let account = match &tabular.sync_account {
         Some(a) => a.clone(),
         None => return,

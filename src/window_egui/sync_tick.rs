@@ -77,13 +77,58 @@ impl super::Tabular {
         }
     }
 
+    pub fn trigger_refresh_token(&mut self) {
+        if self.sync_refresh_receiver.is_some() {
+            return; // Refresh already in progress
+        }
+        let account = match &self.sync_account {
+            Some(a) => a.clone(),
+            None => return,
+        };
+        if account.refresh_token.is_empty() {
+            warn!("[sync] Cannot refresh token: refresh_token is empty");
+            self.sync_login_error = Some("Session expired. Please sign in again.".to_string());
+            return;
+        }
+        info!("[sync] 🔄 Attempting automatic token refresh...");
+        let server = self.sync_server_url.clone();
+        let refresh_token = account.refresh_token.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.sync_refresh_receiver = Some(rx);
+        crate::sync::spawn_async(async move {
+            let client = crate::sync::api_client::ApiClient::new(&server);
+            match client.refresh_token(&refresh_token).await {
+                Ok(resp) => {
+                    let updated = crate::sync::auth::token_to_account(&resp);
+                    crate::sync::api_client::save_account(&updated);
+                    let _ = tx.send(Ok(updated));
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string()));
+                }
+            }
+        });
+    }
+
+    fn check_401_error(&mut self, err_msg: &str) {
+        if err_msg.contains("401") || err_msg.contains("Unauthorized") {
+            warn!("[sync] ⚠️ 401 Unauthorized detected. Triggering token refresh.");
+            self.trigger_refresh_token();
+        }
+    }
+
     fn handle_sync_triggers(&mut self) {
         let account = match self.sync_account.clone() {
             Some(a) => a,
             None => return,
         };
 
-        // Refresh token if expiring
+        // Automatically refresh token if expired
+        if account.is_token_expired() {
+            self.trigger_refresh_token();
+            return;
+        }
+
         let token = account.access_token.clone();
         let server = self.sync_server_url.clone();
 
@@ -154,6 +199,31 @@ impl super::Tabular {
                 self.sync_auth_receiver = None;
             }
 
+        // Automatic Token Refresh Callback
+        if let Some(rx) = &self.sync_refresh_receiver
+            && let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(updated) => {
+                        info!("[sync] ✅ Access token refreshed automatically!");
+                        self.sync_account = Some(updated);
+                        self.sync_login_error = None;
+                        self.sync_status = crate::sync::SyncStatus::Synced;
+
+                        // Re-trigger sync with refreshed token
+                        self.sync_trigger_connections = true;
+                        self.sync_trigger_history = true;
+                        self.sync_trigger_queries = true;
+                        crate::sync::ui_collab::refresh_rooms(self);
+                    }
+                    Err(e) => {
+                        warn!("[sync] ❌ Automatic token refresh failed: {}. User must sign in again.", e);
+                        self.sync_login_error = Some("Session expired. Please sign in again.".to_string());
+                        self.toasts.warning("⚠️ Session expired. Please sign in again.");
+                    }
+                }
+                self.sync_refresh_receiver = None;
+            }
+
         // Connections
         if let Some(rx) = &self.sync_connections_receiver
             && let Ok(result) = rx.try_recv() {
@@ -165,7 +235,8 @@ impl super::Tabular {
                     }
                     Err(e) => {
                         warn!("[sync] Connections sync error: {}", e);
-                        self.sync_status = crate::sync::SyncStatus::Error(e);
+                        self.sync_status = crate::sync::SyncStatus::Error(e.clone());
+                        self.check_401_error(&e);
                     }
                 }
                 self.sync_connections_receiver = None;
@@ -181,7 +252,8 @@ impl super::Tabular {
                     }
                     Err(e) => {
                         warn!("[sync] History push error: {}", e);
-                        self.sync_status = crate::sync::SyncStatus::Error(e);
+                        self.sync_status = crate::sync::SyncStatus::Error(e.clone());
+                        self.check_401_error(&e);
                     }
                 }
                 self.sync_history_push_receiver = None;
@@ -197,7 +269,8 @@ impl super::Tabular {
                     }
                     Err(e) => {
                         warn!("[sync] History pull error: {}", e);
-                        self.sync_status = crate::sync::SyncStatus::Error(e);
+                        self.sync_status = crate::sync::SyncStatus::Error(e.clone());
+                        self.check_401_error(&e);
                     }
                 }
                 self.sync_history_pull_receiver = None;
@@ -213,7 +286,8 @@ impl super::Tabular {
                     }
                     Err(e) => {
                         warn!("[sync] Queries push error: {}", e);
-                        self.sync_status = crate::sync::SyncStatus::Error(e);
+                        self.sync_status = crate::sync::SyncStatus::Error(e.clone());
+                        self.check_401_error(&e);
                     }
                 }
                 self.sync_queries_push_receiver = None;
@@ -229,7 +303,8 @@ impl super::Tabular {
                     }
                     Err(e) => {
                         warn!("[sync] Queries pull error: {}", e);
-                        self.sync_status = crate::sync::SyncStatus::Error(e);
+                        self.sync_status = crate::sync::SyncStatus::Error(e.clone());
+                        self.check_401_error(&e);
                     }
                 }
                 self.sync_queries_pull_receiver = None;
@@ -247,6 +322,7 @@ impl super::Tabular {
                     }
                     Err(e) => {
                         warn!("[sync] Room list error: {}", e);
+                        self.check_401_error(&e.to_string());
                     }
                 }
                 self.collab_rooms_receiver = None;
@@ -263,6 +339,7 @@ impl super::Tabular {
                     Err(e) => {
                         warn!("[sync] Room create error: {}", e);
                         self.toasts.info(format!("Failed to create room: {}", e));
+                        self.check_401_error(&e.to_string());
                     }
                 }
                 self.collab_room_create_receiver = None;
