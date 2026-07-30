@@ -1,7 +1,7 @@
-/// Login / Register UI dialog for tabular cloud sync.
-///
-/// Shows login options (Google / GitHub OAuth) and account info when logged in.
-/// Integrated into the Settings panel → "Sync & Account" tab.
+//! Login / Register UI dialog for tabular cloud sync.
+//!
+//! Shows login options (Google / GitHub OAuth) and account info when logged in.
+//! Integrated into the Settings panel → "Sync & Account" tab.
 
 use eframe::egui;
 use crate::window_egui::{Tabular, style};
@@ -10,7 +10,7 @@ use super::auth::OAuthProvider;
 /// Render the full login panel (call from settings or floating dialog)
 pub fn render_login_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
     match &tabular.sync_account {
-        Some(account) => render_logged_in(tabular, ui),
+        Some(_account) => render_logged_in(tabular, ui),
         None => render_login_form(tabular, ui),
     }
 }
@@ -201,7 +201,7 @@ fn try_submit_token(tabular: &mut Tabular) {
     match serde_json::from_str::<serde_json::Value>(&input) {
         Ok(json) => {
             // Support both wrapped API envelope {"success": true, "data": {...}} and raw token JSON
-            let root = if json.get("data").map_or(false, |d| d.is_object()) {
+            let root = if json.get("data").is_some_and(|d| d.is_object()) {
                 &json["data"]
             } else {
                 &json

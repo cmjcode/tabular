@@ -1,15 +1,13 @@
-/// CRDT Collaborative Editor using yrs (Yjs port for Rust).
-///
-/// This module handles:
-/// - Connecting to a tabular-server collab room via WebSocket
-/// - Syncing the yrs Doc (Yjs document) with remote peers
-/// - Applying remote updates to the local editor buffer
-/// - Broadcasting local editor changes as CRDT updates
-/// - Tracking remote user cursors (presence/awareness)
+//! CRDT Collaborative Editor using yrs (Yjs port for Rust).
+//!
+//! This module handles:
+//! - Connecting to a tabular-server collab room via WebSocket
+//! - Syncing the yrs Doc (Yjs document) with remote peers
+//! - Applying remote updates to the local editor buffer
+//! - Broadcasting local editor changes as CRDT updates
+//! - Tracking remote user cursors (presence/awareness)
 
-use std::sync::{Arc, Mutex, mpsc};
-use log::{debug, info, warn};
-use serde::{Deserialize, Serialize};
+use std::sync::mpsc;
 
 #[cfg(feature = "collab")]
 use yrs::{Doc, GetString, ReadTxn, Text, Transact};
@@ -315,7 +313,7 @@ fn diff_to_yjs_ops(old: &str, new: &str, text: &yrs::TextRef, doc: &Doc) -> Opti
 }
 
 /// Assign a deterministic color to a peer based on their client_id
-fn pick_peer_color(client_id: u64) -> eframe::egui::Color32 {
+pub fn pick_peer_color(client_id: u64) -> eframe::egui::Color32 {
     const COLORS: [(u8, u8, u8); 8] = [
         (99, 132, 255),   // Blue
         (255, 99, 132),   // Pink

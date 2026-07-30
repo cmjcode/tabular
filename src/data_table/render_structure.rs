@@ -259,8 +259,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Add Column"))
                 .on_hover_text("Add a new column")
                 .clicked()
-            {
-                if !tabular.adding_column {
+                && !tabular.adding_column {
                     tabular.adding_column = true;
                     if tabular.new_column_type.trim().is_empty() {
                         tabular.new_column_type = default_data_type_for_conn(tabular);
@@ -269,7 +268,6 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                     tabular.new_column_default.clear();
                     tabular.new_column_nullable = true;
                 }
-            }
 
             let sel_col = tabular
                 .structure_selected_row
@@ -283,8 +281,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 )
                 .on_hover_text("Edit selected column")
                 .clicked()
-            {
-                if let Some(col) = &sel_col {
+                && let Some(col) = &sel_col {
                     tabular.editing_column = true;
                     tabular.edit_column_original_name = col.name.clone();
                     tabular.edit_column_name = col.name.clone();
@@ -292,7 +289,6 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                     tabular.edit_column_nullable = col.nullable.unwrap_or(true);
                     tabular.edit_column_default = col.default_value.clone().unwrap_or_default();
                 }
-            }
 
             let drop_enabled = sel_col.is_some();
             if ui
@@ -302,21 +298,17 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 )
                 .on_hover_text("Drop selected column")
                 .clicked()
-            {
-                if let Some(col) = &sel_col {
+                && let Some(col) = &sel_col {
                     trigger_drop_column(tabular, &col.name);
                 }
-            }
         } else if is_idx {
             if ui
                 .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Add Index"))
                 .on_hover_text("Create new index")
                 .clicked()
-            {
-                if !tabular.adding_index {
+                && !tabular.adding_index {
                     start_inline_add_index(tabular);
                 }
-            }
 
             let sel_idx = tabular
                 .structure_selected_row
@@ -330,11 +322,9 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 )
                 .on_hover_text("Drop selected index")
                 .clicked()
-            {
-                if let Some(idx) = &sel_idx {
+                && let Some(idx) = &sel_idx {
                     trigger_drop_index(tabular, &idx.name);
                 }
-            }
         }
     });
 
@@ -785,157 +775,166 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                     }
                                     // Inline add new index row (editable fields like add column)
                                     if tabular.adding_index {
+                                        let edit_row_bg = if dark {
+                                            egui::Color32::from_rgb(32, 36, 46)
+                                        } else {
+                                            egui::Color32::from_rgb(238, 244, 255)
+                                        };
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 0.0;
-                                            // #
-                                            let (rect_no, _) = ui.allocate_exact_size(
-                                                egui::vec2(widths[0], row_h),
-                                                egui::Sense::hover(),
-                                            );
-                                            ui.painter().rect_stroke(
-                                                rect_no,
-                                                0.0,
-                                                stroke,
-                                                egui::StrokeKind::Outside,
-                                            );
-                                            let idx_txt =
-                                                format!("{}", tabular.structure_indexes.len() + 1);
-                                            let txt_col = if dark {
-                                                egui::Color32::LIGHT_GRAY
-                                            } else {
-                                                egui::Color32::BLACK
-                                            };
-                                            ui.painter().text(
-                                                rect_no.left_center() + egui::vec2(6.0, 0.0),
-                                                egui::Align2::LEFT_CENTER,
-                                                idx_txt,
-                                                egui::FontId::proportional(13.0),
-                                                txt_col,
-                                            );
-                                            // index_name
-                                            let w_name = widths[1];
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(w_name, row_h),
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    ui.set_min_width(w_name - 8.0);
-                                                    ui.add_space(4.0);
-                                                    if tabular.new_index_name.is_empty() {
-                                                        tabular.new_index_name = format!(
-                                                            "idx_{}_col",
-                                                            infer_current_table_name(tabular)
+
+                                            for i in 0..6 {
+                                                let w = widths[i];
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    egui::vec2(w, row_h),
+                                                    egui::Sense::hover(),
+                                                );
+                                                ui.painter().rect_filled(rect, 0.0, edit_row_bg);
+                                                ui.painter().rect_stroke(
+                                                    rect,
+                                                    0.0,
+                                                    stroke,
+                                                    egui::StrokeKind::Outside,
+                                                );
+
+                                                let mut child_ui = ui.new_child(
+                                                    egui::UiBuilder::new()
+                                                        .max_rect(rect)
+                                                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                                );
+                                                child_ui.spacing_mut().item_spacing.x = 2.0;
+
+                                                match i {
+                                                    0 => {
+                                                        let idx_txt = format!("{}", tabular.structure_indexes.len() + 1);
+                                                        let txt_col = if dark {
+                                                            egui::Color32::LIGHT_GRAY
+                                                        } else {
+                                                            egui::Color32::BLACK
+                                                        };
+                                                        child_ui.add_space(6.0);
+                                                        child_ui.label(
+                                                            egui::RichText::new(idx_txt)
+                                                                .size(13.0)
+                                                                .color(txt_col),
                                                         );
                                                     }
-                                                    ui.text_edit_singleline(&mut tabular.new_index_name);
-                                                },
-                                            );
-                                            // algorithm
-                                            let w_alg = widths[2];
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(w_alg, row_h),
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    let algos = ["", "btree", "hash", "gin", "gist"];
-                                                    egui::ComboBox::from_id_salt("new_index_algo")
-                                                        .selected_text(if tabular
-                                                            .new_index_method
-                                                            .is_empty()
-                                                        {
-                                                            "(auto)"
-                                                        } else {
-                                                            &tabular.new_index_method
-                                                        })
-                                                        .show_ui(ui, |ui| {
-                                                            for a in algos {
+                                                    1 => {
+                                                        child_ui.add_space(3.0);
+                                                        if tabular.new_index_name.is_empty() {
+                                                            tabular.new_index_name = format!(
+                                                                "idx_{}_col",
+                                                                infer_current_table_name(tabular)
+                                                            );
+                                                        }
+                                                        let text_w = (w - 8.0).max(20.0);
+                                                        child_ui.add(
+                                                            egui::TextEdit::singleline(&mut tabular.new_index_name)
+                                                                .desired_width(text_w),
+                                                        );
+                                                    }
+                                                    2 => {
+                                                        child_ui.add_space(3.0);
+                                                        let algos = ["", "btree", "hash", "gin", "gist"];
+                                                        let combo_w = (w - 8.0).max(20.0);
+                                                        egui::ComboBox::from_id_salt("new_index_algo")
+                                                            .selected_text(
+                                                                if tabular.new_index_method.is_empty() {
+                                                                    "(auto)"
+                                                                } else {
+                                                                    &tabular.new_index_method
+                                                                },
+                                                            )
+                                                            .width(combo_w)
+                                                            .show_ui(&mut child_ui, |ui| {
+                                                                for a in algos {
+                                                                    if ui
+                                                                        .selectable_label(
+                                                                            tabular.new_index_method == a,
+                                                                            if a.is_empty() {
+                                                                                "(auto)"
+                                                                            } else {
+                                                                                a
+                                                                            },
+                                                                        )
+                                                                        .clicked()
+                                                                    {
+                                                                        tabular.new_index_method = a.to_string();
+                                                                    }
+                                                                }
+                                                            });
+                                                    }
+                                                    3 => {
+                                                        child_ui.add_space(3.0);
+                                                        let combo_w = (w - 8.0).max(20.0);
+                                                        egui::ComboBox::from_id_salt("new_index_unique")
+                                                            .selected_text(if tabular.new_index_unique {
+                                                                "YES"
+                                                            } else {
+                                                                "NO"
+                                                            })
+                                                            .width(combo_w)
+                                                            .show_ui(&mut child_ui, |ui| {
                                                                 if ui
                                                                     .selectable_label(
-                                                                        tabular.new_index_method == a,
-                                                                        if a.is_empty() {
-                                                                            "(auto)"
-                                                                        } else {
-                                                                            a
-                                                                        },
+                                                                        tabular.new_index_unique,
+                                                                        "YES",
                                                                     )
                                                                     .clicked()
                                                                 {
-                                                                    tabular.new_index_method =
-                                                                        a.to_string();
+                                                                    tabular.new_index_unique = true;
                                                                 }
-                                                            }
-                                                        });
-                                                },
-                                            );
-                                            // unique
-                                            let w_unique = widths[3];
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(w_unique, row_h),
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    egui::ComboBox::from_id_salt("new_index_unique")
-                                                        .selected_text(if tabular.new_index_unique {
-                                                            "YES"
-                                                        } else {
-                                                            "NO"
-                                                        })
-                                                        .show_ui(ui, |ui| {
-                                                            if ui
-                                                                .selectable_label(
-                                                                    tabular.new_index_unique,
-                                                                    "YES",
-                                                                )
-                                                                .clicked()
-                                                            {
-                                                                tabular.new_index_unique = true;
-                                                            }
-                                                            if ui
-                                                                .selectable_label(
-                                                                    !tabular.new_index_unique,
-                                                                    "NO",
-                                                                )
-                                                                .clicked()
-                                                            {
-                                                                tabular.new_index_unique = false;
-                                                            }
-                                                        });
-                                                },
-                                            );
-                                            // columns
-                                            let w_cols = widths[4];
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(w_cols, row_h),
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    ui.set_min_width(w_cols - 8.0);
-                                                    ui.add_space(4.0);
-                                                    if tabular.new_index_columns.is_empty() {
-                                                        tabular.new_index_columns = "col1".to_string();
+                                                                if ui
+                                                                    .selectable_label(
+                                                                        !tabular.new_index_unique,
+                                                                        "NO",
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    tabular.new_index_unique = false;
+                                                                }
+                                                            });
                                                     }
-                                                    ui.text_edit_singleline(&mut tabular.new_index_columns);
-                                                },
-                                            );
-                                            // actions
-                                            let w_act = widths[5];
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(w_act, row_h),
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    let save_enabled =
-                                                        !tabular.new_index_name.trim().is_empty()
-                                                            && !tabular.new_index_columns.trim().is_empty();
-                                                    if ui
-                                                        .add_enabled(
-                                                            save_enabled,
-                                                            egui::Button::new("Save"),
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        commit_new_index(tabular);
+                                                    4 => {
+                                                        child_ui.add_space(3.0);
+                                                        if tabular.new_index_columns.is_empty() {
+                                                            tabular.new_index_columns = "col1".to_string();
+                                                        }
+                                                        let text_w = (w - 8.0).max(20.0);
+                                                        child_ui.add(
+                                                            egui::TextEdit::singleline(&mut tabular.new_index_columns)
+                                                                .desired_width(text_w),
+                                                        );
                                                     }
-                                                    if ui.button("Cancel").clicked() {
-                                                        tabular.adding_index = false;
+                                                    5 => {
+                                                        child_ui.add_space(3.0);
+                                                        child_ui.spacing_mut().item_spacing.x = 4.0;
+                                                        child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                                                        let save_enabled =
+                                                            !tabular.new_index_name.trim().is_empty()
+                                                                && !tabular.new_index_columns.trim().is_empty();
+                                                        if child_ui
+                                                            .add_enabled(
+                                                                save_enabled,
+                                                                crate::window_egui::style::btn_primary_ctx(
+                                                                    child_ui.ctx(),
+                                                                    "Save",
+                                                                ),
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            commit_new_index(tabular);
+                                                        }
+                                                        if child_ui
+                                                            .add(crate::window_egui::style::btn_secondary("Cancel"))
+                                                            .clicked()
+                                                        {
+                                                            tabular.adding_index = false;
+                                                        }
                                                     }
-                                                },
-                                            );
+                                                    _ => {}
+                                                }
+                                            }
                                         });
                                     }
                                 });
@@ -1176,124 +1175,269 @@ pub(crate) fn render_structure_columns_editor(
 
             // NEW COLUMN ROW (editable)
             if tabular.adding_column {
+                let edit_row_bg = if dark {
+                    egui::Color32::from_rgb(32, 36, 46)
+                } else {
+                    egui::Color32::from_rgb(238, 244, 255)
+                };
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    // #
-                    let (rect_no,_) = ui.allocate_exact_size(egui::vec2(widths[0], row_h), egui::Sense::hover());
-                    ui.painter().rect_stroke(rect_no,0.0,stroke, egui::StrokeKind::Outside);
-                    let idx_txt = format!("{}", tabular.structure_columns.len()+1);
-                    let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK }; ui.painter().text(rect_no.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, idx_txt, egui::FontId::proportional(13.0), txt_col);
-                    // Name
-                    let w_name = widths[1];
-                    ui.allocate_ui_with_layout(egui::vec2(w_name,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_width(w_name-8.0);
-                        ui.add_space(4.0);
-                        ui.text_edit_singleline(&mut tabular.new_column_name);
-                    });
-                    // Type combobox
-                    // Type combobox / editable
-                    let w_type = widths[2];
-                    ui.allocate_ui_with_layout(egui::vec2(w_type,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_width(w_type-8.0);
-                        let types = data_types_for_current_conn(tabular);
-                        
-                        // Use a horizontal layout for text edit + picker button
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut tabular.new_column_type).desired_width(w_type - 30.0));
-                            
-                            egui::ComboBox::from_id_salt("new_col_type_picker")
-                                .selected_text("")
-                                .width(16.0)
-                                .show_ui(ui, |ui| {
-                                    for t in types {
-                                        if ui.selectable_label(tabular.new_column_type == *t, *t).clicked() {
-                                            tabular.new_column_type = t.to_string();
+
+                    for i in 0..6 {
+                        let w = widths[i];
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 0.0, edit_row_bg);
+                        ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
+
+                        let mut child_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        child_ui.spacing_mut().item_spacing.x = 2.0;
+
+                        match i {
+                            0 => {
+                                let idx_txt = format!("{}", tabular.structure_columns.len() + 1);
+                                let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
+                                child_ui.add_space(6.0);
+                                child_ui.label(egui::RichText::new(idx_txt).size(13.0).color(txt_col));
+                            }
+                            1 => {
+                                child_ui.add_space(3.0);
+                                let text_w = (w - 8.0).max(20.0);
+                                child_ui.add(
+                                    egui::TextEdit::singleline(&mut tabular.new_column_name)
+                                        .desired_width(text_w)
+                                        .hint_text("column_name"),
+                                );
+                            }
+                            2 => {
+                                child_ui.add_space(3.0);
+                                let picker_w = 18.0;
+                                let text_w = (w - picker_w - 8.0).max(20.0);
+
+                                child_ui.add(
+                                    egui::TextEdit::singleline(&mut tabular.new_column_type)
+                                        .desired_width(text_w),
+                                );
+
+                                let types = data_types_for_current_conn(tabular);
+                                egui::ComboBox::from_id_salt("new_col_type_picker")
+                                    .selected_text("")
+                                    .width(14.0)
+                                    .show_ui(&mut child_ui, |ui| {
+                                        for t in types {
+                                            if ui
+                                                .selectable_label(
+                                                    tabular.new_column_type == *t,
+                                                    *t,
+                                                )
+                                                .clicked()
+                                            {
+                                                tabular.new_column_type = t.to_string();
+                                            }
                                         }
-                                    }
-                                });
-                        });
-                    });
-                    // Nullable
-                    let w_null = widths[3];
-                    ui.allocate_ui_with_layout(egui::vec2(w_null,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        egui::ComboBox::from_id_salt("new_col_nullable").selected_text(if tabular.new_column_nullable {"YES"} else {"NO"}).show_ui(ui, |ui| {
-                            if ui.selectable_label(tabular.new_column_nullable, "YES").clicked() { tabular.new_column_nullable = true; }
-                            if ui.selectable_label(!tabular.new_column_nullable, "NO").clicked() { tabular.new_column_nullable = false; }
-                        });
-                    });
-                    // Default
-                    let w_def = widths[4];
-                    ui.allocate_ui_with_layout(egui::vec2(w_def,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_width(w_def-8.0);
-                        ui.add_space(4.0);
-                        ui.text_edit_singleline(&mut tabular.new_column_default);
-                    });
-                    // Extra (save/cancel buttons)
-                    let w_extra = widths[5];
-                    ui.allocate_ui_with_layout(egui::vec2(w_extra,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        let save_enabled = !tabular.new_column_name.trim().is_empty();
-                        if ui.add_enabled(save_enabled, egui::Button::new("Save")).clicked() { commit_new_column(tabular); }
-                        if ui.button("Cancel").clicked() { tabular.adding_column = false; }
-                    });
+                                    });
+                            }
+                            3 => {
+                                child_ui.add_space(3.0);
+                                let combo_w = (w - 8.0).max(20.0);
+                                egui::ComboBox::from_id_salt("new_col_nullable")
+                                    .selected_text(if tabular.new_column_nullable {
+                                        "YES"
+                                    } else {
+                                        "NO"
+                                    })
+                                    .width(combo_w)
+                                    .show_ui(&mut child_ui, |ui| {
+                                        if ui
+                                            .selectable_label(tabular.new_column_nullable, "YES")
+                                            .clicked()
+                                        {
+                                            tabular.new_column_nullable = true;
+                                        }
+                                        if ui
+                                            .selectable_label(!tabular.new_column_nullable, "NO")
+                                            .clicked()
+                                        {
+                                            tabular.new_column_nullable = false;
+                                        }
+                                    });
+                            }
+                            4 => {
+                                child_ui.add_space(3.0);
+                                let text_w = (w - 8.0).max(20.0);
+                                child_ui.add(
+                                    egui::TextEdit::singleline(&mut tabular.new_column_default)
+                                        .desired_width(text_w)
+                                        .hint_text("NULL"),
+                                );
+                            }
+                            5 => {
+                                child_ui.add_space(3.0);
+                                child_ui.spacing_mut().item_spacing.x = 4.0;
+                                child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                                let save_enabled = !tabular.new_column_name.trim().is_empty();
+                                if child_ui
+                                    .add_enabled(
+                                        save_enabled,
+                                        crate::window_egui::style::btn_primary_ctx(
+                                            child_ui.ctx(),
+                                            "Save",
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    commit_new_column(tabular);
+                                }
+                                if child_ui
+                                    .add(crate::window_egui::style::btn_secondary("Cancel"))
+                                    .clicked()
+                                {
+                                    tabular.adding_column = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 });
             }
 
             // EDIT COLUMN ROW (editable)
             if tabular.editing_column {
+                let edit_row_bg = if dark {
+                    egui::Color32::from_rgb(32, 36, 46)
+                } else {
+                    egui::Color32::from_rgb(238, 244, 255)
+                };
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    // # (blank)
-                    let (rect_no,_) = ui.allocate_exact_size(egui::vec2(widths[0], row_h), egui::Sense::hover());
-                    ui.painter().rect_stroke(rect_no,0.0,stroke, egui::StrokeKind::Outside);
-                    // Name
-                    let w_name = widths[1];
-                    ui.allocate_ui_with_layout(egui::vec2(w_name,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_width(w_name-8.0);
-                        ui.add_space(4.0);
-                        ui.text_edit_singleline(&mut tabular.edit_column_name);
-                    });
-                    // Type
-                    let w_type = widths[2];
-                    ui.allocate_ui_with_layout(egui::vec2(w_type,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_width(w_type-8.0);
-                        let types = data_types_for_current_conn(tabular);
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut tabular.edit_column_type).desired_width(w_type - 30.0));
-                            
-                            egui::ComboBox::from_id_salt("edit_col_type_picker")
-                                .selected_text("")
-                                .width(16.0)
-                                .show_ui(ui, |ui| {
-                                    for t in types {
-                                        if ui.selectable_label(tabular.edit_column_type == *t, *t).clicked() {
-                                            tabular.edit_column_type = t.to_string();
+
+                    for i in 0..6 {
+                        let w = widths[i];
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 0.0, edit_row_bg);
+                        ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
+
+                        let mut child_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        child_ui.spacing_mut().item_spacing.x = 2.0;
+
+                        match i {
+                            0 => {
+                                let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
+                                child_ui.add_space(6.0);
+                                child_ui.label(egui::RichText::new("✏️").size(12.0).color(txt_col));
+                            }
+                            1 => {
+                                child_ui.add_space(3.0);
+                                let text_w = (w - 8.0).max(20.0);
+                                child_ui.add(
+                                    egui::TextEdit::singleline(&mut tabular.edit_column_name)
+                                        .desired_width(text_w),
+                                );
+                            }
+                            2 => {
+                                child_ui.add_space(3.0);
+                                let picker_w = 18.0;
+                                let text_w = (w - picker_w - 8.0).max(20.0);
+
+                                child_ui.add(
+                                    egui::TextEdit::singleline(&mut tabular.edit_column_type)
+                                        .desired_width(text_w),
+                                );
+
+                                let types = data_types_for_current_conn(tabular);
+                                egui::ComboBox::from_id_salt("edit_col_type_picker")
+                                    .selected_text("")
+                                    .width(14.0)
+                                    .show_ui(&mut child_ui, |ui| {
+                                        for t in types {
+                                            if ui
+                                                .selectable_label(
+                                                    tabular.edit_column_type == *t,
+                                                    *t,
+                                                )
+                                                .clicked()
+                                            {
+                                                tabular.edit_column_type = t.to_string();
+                                            }
                                         }
-                                    }
-                                });
-                        });
-                    });
-                    // Nullable
-                    let w_null = widths[3];
-                    ui.allocate_ui_with_layout(egui::vec2(w_null,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        egui::ComboBox::from_id_salt("edit_col_nullable").selected_text(if tabular.edit_column_nullable {"YES"} else {"NO"}).show_ui(ui, |ui| {
-                            if ui.selectable_label(tabular.edit_column_nullable, "YES").clicked() { tabular.edit_column_nullable = true; }
-                            if ui.selectable_label(!tabular.edit_column_nullable, "NO").clicked() { tabular.edit_column_nullable = false; }
-                        });
-                    });
-                    // Default
-                    let w_def = widths[4];
-                    ui.allocate_ui_with_layout(egui::vec2(w_def,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_width(w_def-8.0);
-                        ui.add_space(4.0);
-                        ui.text_edit_singleline(&mut tabular.edit_column_default);
-                    });
-                    // Actions
-                    let w_extra = widths[5];
-                    ui.allocate_ui_with_layout(egui::vec2(w_extra,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        let save_enabled = !tabular.edit_column_name.trim().is_empty() && !tabular.edit_column_type.trim().is_empty();
-                        if ui.add_enabled(save_enabled, egui::Button::new("Save")).clicked() { commit_edit_column(tabular); }
-                        if ui.button("Cancel").clicked() { tabular.editing_column = false; }
-                    });
+                                    });
+                            }
+                            3 => {
+                                child_ui.add_space(3.0);
+                                let combo_w = (w - 8.0).max(20.0);
+                                egui::ComboBox::from_id_salt("edit_col_nullable")
+                                    .selected_text(if tabular.edit_column_nullable {
+                                        "YES"
+                                    } else {
+                                        "NO"
+                                    })
+                                    .width(combo_w)
+                                    .show_ui(&mut child_ui, |ui| {
+                                        if ui
+                                            .selectable_label(
+                                                tabular.edit_column_nullable,
+                                                "YES",
+                                            )
+                                            .clicked()
+                                        {
+                                            tabular.edit_column_nullable = true;
+                                        }
+                                        if ui
+                                            .selectable_label(
+                                                !tabular.edit_column_nullable,
+                                                "NO",
+                                            )
+                                            .clicked()
+                                        {
+                                            tabular.edit_column_nullable = false;
+                                        }
+                                    });
+                            }
+                            4 => {
+                                child_ui.add_space(3.0);
+                                let text_w = (w - 8.0).max(20.0);
+                                child_ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut tabular.edit_column_default,
+                                    )
+                                    .desired_width(text_w),
+                                );
+                            }
+                            5 => {
+                                child_ui.add_space(3.0);
+                                child_ui.spacing_mut().item_spacing.x = 4.0;
+                                child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                                let save_enabled = !tabular.edit_column_name.trim().is_empty()
+                                    && !tabular.edit_column_type.trim().is_empty();
+                                if child_ui
+                                    .add_enabled(
+                                        save_enabled,
+                                        crate::window_egui::style::btn_primary_ctx(
+                                            child_ui.ctx(),
+                                            "Save",
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    commit_edit_column(tabular);
+                                }
+                                if child_ui
+                                    .add(crate::window_egui::style::btn_secondary("Cancel"))
+                                    .clicked()
+                                {
+                                    tabular.editing_column = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 });
             }
         });

@@ -1,20 +1,20 @@
-/// OAuth 2.0 authentication for the desktop client.
-///
-/// Flow:
-/// 1. User clicks "Login with Google/GitHub"
-/// 2. We open a local HTTP server on a random port
-/// 3. We redirect the user's browser to the tabular-server /auth/login/{provider}
-///    endpoint (which in turn redirects to the OAuth provider)
-/// 4. After the user consents, the provider redirects to tabular-server's callback,
-///    which returns a JSON response with access_token + refresh_token
-///
-/// For the desktop flow (PKCE-less via server), we use a "relay" approach:
-/// - tabular-server handles the OAuth dance and emits tokens
-/// - The client polls a one-time token endpoint, or the server redirects
-///   to a custom deeplink: tabular://auth?access_token=...&refresh_token=...
-///
-/// Simple implementation: the client opens the browser to the server's login URL
-/// and shows a "paste token" dialog OR we use a local callback server.
+//! OAuth 2.0 authentication for the desktop client.
+//!
+//! Flow:
+//! 1. User clicks "Login with Google/GitHub"
+//! 2. We open a local HTTP server on a random port
+//! 3. We redirect the user's browser to the tabular-server /auth/login/{provider}
+//!    endpoint (which in turn redirects to the OAuth provider)
+//! 4. After the user consents, the provider redirects to tabular-server's callback,
+//!    which returns a JSON response with access_token + refresh_token
+//!
+//! For the desktop flow (PKCE-less via server), we use a "relay" approach:
+//! - tabular-server handles the OAuth dance and emits tokens
+//! - The client polls a one-time token endpoint, or the server redirects
+//!   to a custom deeplink: tabular://auth?access_token=...&refresh_token=...
+//!
+//! Simple implementation: the client opens the browser to the server's login URL
+//! and shows a "paste token" dialog OR we use a local callback server.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;

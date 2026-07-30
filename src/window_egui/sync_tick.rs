@@ -1,11 +1,11 @@
-/// Sync update loop — call from the egui `update()` frame to:
-/// 1. Poll CRDT messages from the background WebSocket task
-/// 2. Handle manual sync triggers
-/// 3. Drain async sync result receivers
-/// 4. Periodically auto-sync when online
+//! Sync update loop — call from the egui `update()` frame to:
+//! 1. Poll CRDT messages from the background WebSocket task
+//! 2. Handle manual sync triggers
+//! 3. Drain async sync result receivers
+//! 4. Periodically auto-sync when online
 
 use eframe::egui;
-use log::{debug, info, warn};
+use log::{info, warn};
 
 impl super::Tabular {
     /// Call once per frame (from app_impl update) to drive the sync system.
@@ -127,8 +127,8 @@ impl super::Tabular {
 
     fn drain_sync_receivers(&mut self) {
         // OAuth automatic login callback
-        if let Some(rx) = &self.sync_auth_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(rx) = &self.sync_auth_receiver
+            && let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(token_resp) => {
                         info!("[sync] ✅ OAuth login completed automatically!");
@@ -153,11 +153,10 @@ impl super::Tabular {
                 }
                 self.sync_auth_receiver = None;
             }
-        }
 
         // Connections
-        if let Some(rx) = &self.sync_connections_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(rx) = &self.sync_connections_receiver
+            && let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(remote_conns) => {
                         info!("[sync] Received {} remote connections", remote_conns.len());
@@ -171,11 +170,10 @@ impl super::Tabular {
                 }
                 self.sync_connections_receiver = None;
             }
-        }
 
         // History push
-        if let Some(rx) = &self.sync_history_push_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(rx) = &self.sync_history_push_receiver
+            && let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(inserted) => {
                         info!("[sync] Pushed {} history items", inserted);
@@ -188,11 +186,10 @@ impl super::Tabular {
                 }
                 self.sync_history_push_receiver = None;
             }
-        }
 
         // History pull
-        if let Some(rx) = &self.sync_history_pull_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(rx) = &self.sync_history_pull_receiver
+            && let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(n) => {
                         info!("[sync] Pulled {} history items", n);
@@ -205,11 +202,10 @@ impl super::Tabular {
                 }
                 self.sync_history_pull_receiver = None;
             }
-        }
 
         // Queries push
-        if let Some(rx) = &self.sync_queries_push_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(rx) = &self.sync_queries_push_receiver
+            && let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(n) => {
                         info!("[sync] Pushed {} queries", n);
@@ -222,11 +218,10 @@ impl super::Tabular {
                 }
                 self.sync_queries_push_receiver = None;
             }
-        }
 
         // Queries pull
-        if let Some(rx) = &self.sync_queries_pull_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(rx) = &self.sync_queries_pull_receiver
+            && let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(n) => {
                         info!("[sync] Pulled {} queries", n);
@@ -239,13 +234,12 @@ impl super::Tabular {
                 }
                 self.sync_queries_pull_receiver = None;
             }
-        }
     }
 
     fn poll_collab_receivers(&mut self) {
         // Room list refresh
-        if let Some(rx) = &self.collab_rooms_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(rx) = &self.collab_rooms_receiver
+            && let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(rooms) => {
                         self.collab_rooms = rooms;
@@ -257,11 +251,10 @@ impl super::Tabular {
                 }
                 self.collab_rooms_receiver = None;
             }
-        }
 
         // Room creation
-        if let Some(rx) = &self.collab_room_create_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(rx) = &self.collab_room_create_receiver
+            && let Ok(result) = rx.try_recv() {
                 match result {
                     Ok(room) => {
                         self.collab_rooms.push(room.clone());
@@ -274,24 +267,21 @@ impl super::Tabular {
                 }
                 self.collab_room_create_receiver = None;
             }
-        }
     }
 
     /// Notify the CRDT engine when the editor text changes (call after each edit).
     pub fn notify_crdt_text_change(&mut self, old_text: String, new_text: String) {
-        if let Some(crdt) = &self.crdt_state {
-            if crdt.is_connected {
+        if let Some(crdt) = &self.crdt_state
+            && crdt.is_connected {
                 crdt.on_local_change(old_text, new_text);
             }
-        }
     }
 
     /// Notify the CRDT engine when the cursor moves.
     pub fn notify_crdt_cursor_move(&mut self, pos: usize) {
-        if let Some(crdt) = &self.crdt_state {
-            if crdt.is_connected {
+        if let Some(crdt) = &self.crdt_state
+            && crdt.is_connected {
                 crdt.on_cursor_move(pos);
             }
-        }
     }
 }

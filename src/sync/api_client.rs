@@ -1,6 +1,6 @@
-/// REST API client for tabular-server.
-/// All network calls are async and return Results.
-/// The caller is responsible for scheduling them on the Tokio runtime.
+//! REST API client for tabular-server.
+//! All network calls are async and return Results.
+//! The caller is responsible for scheduling them on the Tokio runtime.
 
 use serde::{Deserialize, Serialize};
 use reqwest::Client;

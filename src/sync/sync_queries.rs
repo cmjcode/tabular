@@ -1,18 +1,18 @@
-/// Sync Saved Queries — sync .sql files with the server.
-///
-/// Offline-first: local filesystem is the source of truth.
-/// Checksum (SHA-256) detects conflicts; last-write-wins by default.
+//! Sync Saved Queries — sync .sql files with the server.
+//!
+//! Offline-first: local filesystem is the source of truth.
+//! Checksum (SHA-256) detects conflicts; last-write-wins by default.
 
 use log::{debug, info, warn};
 use std::sync::mpsc;
 use std::path::Path;
 
 use crate::directory;
-use super::api_client::{ApiClient, CreateQueryReq, RemoteSavedQuery};
+use super::api_client::{ApiClient, CreateQueryReq};
 
 /// Compute SHA-256 checksum of a string (for conflict detection)
 pub fn checksum(content: &str) -> String {
-    use std::fmt::Write;
+    
     let digest = md5::compute(content.as_bytes());
     format!("{:x}", digest)
 }

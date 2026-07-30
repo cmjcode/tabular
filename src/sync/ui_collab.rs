@@ -1,10 +1,10 @@
-/// Collaboration panel UI — shows rooms, members, and presence.
-///
-/// Renders as a floating panel or a sidebar section when user is in collab mode.
+//! Collaboration panel UI — shows rooms, members, and presence.
+//!
+//! Renders as a floating panel or a sidebar section when user is in collab mode.
 
 use eframe::egui;
 use crate::window_egui::Tabular;
-use super::{CollabRoom, RoomMember, crdt_editor};
+use super::{CollabRoom, crdt_editor};
 
 /// Render the collab panel (call from sidebar or floating window)
 pub fn render_collab_panel(tabular: &mut Tabular, ctx: &egui::Context) {
@@ -118,11 +118,10 @@ fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                         }
                     });
                 });
-                if let Some(desc) = &room.description {
-                    if !desc.is_empty() {
+                if let Some(desc) = &room.description
+                    && !desc.is_empty() {
                         ui.label(egui::RichText::new(desc).small().weak());
                     }
-                }
             });
             ui.add_space(2.0);
         }

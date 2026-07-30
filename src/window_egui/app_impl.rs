@@ -1911,7 +1911,7 @@ impl Tabular {
                                 .iter()
                                 .filter_map(|c| c.id.map(|id| (id, c.display_name())))
                                 .collect();
-                            conn_list.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                            conn_list.sort_by_key(|a| a.1.to_lowercase());
                             let (tab_conn_id, tab_db_name) = self
                                 .query_tabs
                                 .get(self.active_tab_index)

@@ -1,10 +1,11 @@
-/// Sync Connections — upload/download encrypted connection configs.
-///
-/// Security: connection credentials are encrypted with AES-256-GCM
-/// BEFORE being sent to the server. The server only stores ciphertext.
-/// Key derivation: PBKDF2 from the user's access_token sub (user_id).
+//! Sync Connections — upload/download encrypted connection configs.
+//!
+//! Security: connection credentials are encrypted with AES-256-GCM
+//! BEFORE being sent to the server. The server only stores ciphertext.
+//! Key derivation: PBKDF2 from the user's access_token sub (user_id).
 
-use log::{debug, info, warn};
+use base64::Engine;
+use log::{info, warn};
 use std::sync::mpsc;
 
 use crate::models::structs::ConnectionConfig;
@@ -42,12 +43,12 @@ pub fn encrypt_config(plaintext: &str, user_id: &str) -> Result<String, String> 
     let mut combined = nonce_bytes.to_vec();
     combined.extend_from_slice(&ciphertext);
 
-    Ok(base64::encode(combined))
+    Ok(base64::engine::general_purpose::STANDARD.encode(combined))
 }
 
 #[cfg(not(feature = "collab"))]
 pub fn encrypt_config(plaintext: &str, _user_id: &str) -> Result<String, String> {
-    Ok(base64::encode(plaintext)) // No-op stub without collab feature
+    Ok(base64::engine::general_purpose::STANDARD.encode(plaintext)) // No-op stub without collab feature
 }
 
 /// Decrypt an AES-256-GCM encrypted connection config.
@@ -59,7 +60,9 @@ pub fn decrypt_config(encrypted: &str, user_id: &str) -> Result<String, String> 
     };
     use sha2::{Sha256, Digest};
 
-    let data = base64::decode(encrypted).map_err(|e| e.to_string())?;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(encrypted)
+        .map_err(|e| e.to_string())?;
     if data.len() < 12 {
         return Err("Invalid ciphertext: too short".to_string());
     }
@@ -83,7 +86,9 @@ pub fn decrypt_config(encrypted: &str, user_id: &str) -> Result<String, String> 
 
 #[cfg(not(feature = "collab"))]
 pub fn decrypt_config(encrypted: &str, _user_id: &str) -> Result<String, String> {
-    let bytes = base64::decode(encrypted).map_err(|e| e.to_string())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encrypted)
+        .map_err(|e| e.to_string())?;
     String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
@@ -139,7 +144,7 @@ pub fn push_connection_to_server(
 
 /// Pull all connections from server and return decrypted configs.
 pub fn pull_connections_from_server(
-    user_id: String,
+    _user_id: String,
     token: String,
     server_url: String,
     result_tx: mpsc::Sender<Result<Vec<RemoteConnection>, String>>,

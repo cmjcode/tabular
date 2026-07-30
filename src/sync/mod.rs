@@ -1,10 +1,10 @@
-/// Sync & Collaboration module for tabular-client.
-///
-/// All submodules compile normally; CRDT/WebSocket/crypto features
-/// are only active when built with `--features collab`.
-///
-/// Offline-first: local SQLite remains the source of truth.
-/// Sync runs as background tasks when server is reachable.
+//! Sync & Collaboration module for tabular-client.
+//!
+//! All submodules compile normally; CRDT/WebSocket/crypto features
+//! are only active when built with `--features collab`.
+//!
+//! Offline-first: local SQLite remains the source of truth.
+//! Sync runs as background tasks when server is reachable.
 
 pub mod api_client;
 pub mod auth;

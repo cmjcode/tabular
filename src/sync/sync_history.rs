@@ -1,13 +1,12 @@
-/// Sync History — push local history to server, pull remote history.
-///
-/// Offline-first: local SQLite is always the source of truth.
-/// Server sync happens in background when online.
+//! Sync History — push local history to server, pull remote history.
+//!
+//! Offline-first: local SQLite is always the source of truth.
+//! Server sync happens in background when online.
 
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::sync::mpsc;
 
 use crate::models::structs::HistoryItem;
-use crate::window_egui::Tabular;
 
 use super::api_client::{ApiClient, HistoryPushItem};
 

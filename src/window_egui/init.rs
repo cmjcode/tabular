@@ -69,11 +69,10 @@ impl super::Tabular {
             prefs.ai_model.clone()
         };
         self.ai_settings_base_url_input = prefs.ai_base_url.clone();
-        if let Some(url) = prefs.sync_server_url.clone() {
-            if !url.trim().is_empty() {
+        if let Some(url) = prefs.sync_server_url.clone()
+            && !url.trim().is_empty() {
                 self.sync_server_url = url;
             }
-        }
 
         // Store as last saved
         self.last_saved_prefs = Some(prefs);
