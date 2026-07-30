@@ -19,7 +19,7 @@ pub fn push_history_to_server(
     server_url: String,
     result_tx: mpsc::Sender<Result<u64, String>>,
 ) {
-    tokio::spawn(async move {
+    super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
 
         let push_items: Vec<HistoryPushItem> = items
@@ -52,7 +52,7 @@ pub fn pull_history_from_server(
     db_pool: std::sync::Arc<sqlx::SqlitePool>,
     result_tx: mpsc::Sender<Result<usize, String>>,
 ) {
-    tokio::spawn(async move {
+    super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
 
         let remote_items = match client.fetch_history(&token, None).await {

@@ -196,14 +196,12 @@ fn create_room(tabular: &mut Tabular) {
     let server = tabular.sync_server_url.clone();
     let (tx, rx) = std::sync::mpsc::channel();
 
-    if let Some(rt) = &tabular.runtime {
-        let name_clone = name.clone();
-        rt.spawn(async move {
-            let client = super::api_client::ApiClient::new(&server);
-            let result = client.create_room(&token, &name_clone, None).await;
-            let _ = tx.send(result);
-        });
-    }
+    let name_clone = name.clone();
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client.create_room(&token, &name_clone, None).await;
+        let _ = tx.send(result);
+    });
 
     tabular.new_collab_room_name.clear();
     tabular.collab_room_create_receiver = Some(rx);
@@ -219,13 +217,11 @@ fn refresh_rooms(tabular: &mut Tabular) {
     let server = tabular.sync_server_url.clone();
     let (tx, rx) = std::sync::mpsc::channel();
 
-    if let Some(rt) = &tabular.runtime {
-        rt.spawn(async move {
-            let client = super::api_client::ApiClient::new(&server);
-            let result = client.list_rooms(&token).await;
-            let _ = tx.send(result);
-        });
-    }
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client.list_rooms(&token).await;
+        let _ = tx.send(result);
+    });
 
     tabular.collab_rooms_receiver = Some(rx);
 }

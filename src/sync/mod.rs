@@ -84,3 +84,20 @@ pub struct RoomMember {
     pub role: String,
     pub is_online: bool,
 }
+
+/// Helper to spawn async sync tasks from synchronous threads (e.g., egui UI thread).
+pub fn spawn_async<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::spawn(move || {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            rt.block_on(future);
+        } else {
+            log::error!("[sync] Failed to build Tokio runtime for background task");
+        }
+    });
+}

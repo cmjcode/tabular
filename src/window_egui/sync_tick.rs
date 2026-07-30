@@ -126,6 +126,35 @@ impl super::Tabular {
     }
 
     fn drain_sync_receivers(&mut self) {
+        // OAuth automatic login callback
+        if let Some(rx) = &self.sync_auth_receiver {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(token_resp) => {
+                        info!("[sync] ✅ OAuth login completed automatically!");
+                        let account = crate::sync::auth::token_to_account(&token_resp);
+                        crate::sync::api_client::save_account(&account);
+                        self.sync_account = Some(account.clone());
+                        self.sync_login_pending = false;
+                        self.sync_login_error = None;
+                        self.sync_status = crate::sync::SyncStatus::Synced;
+                        self.toasts.info(format!("Signed in as {}", account.email));
+
+                        // Trigger automatic sync for connections, history, queries
+                        self.sync_trigger_connections = true;
+                        self.sync_trigger_history = true;
+                        self.sync_trigger_queries = true;
+                    }
+                    Err(e) => {
+                        warn!("[sync] ❌ OAuth login error: {}", e);
+                        self.sync_login_error = Some(e);
+                        self.sync_login_pending = false;
+                    }
+                }
+                self.sync_auth_receiver = None;
+            }
+        }
+
         // Connections
         if let Some(rx) = &self.sync_connections_receiver {
             if let Ok(result) = rx.try_recv() {

@@ -97,7 +97,7 @@ pub fn push_connection_to_server(
     server_url: String,
     result_tx: mpsc::Sender<Result<String, String>>, // returns server connection ID
 ) {
-    tokio::spawn(async move {
+    super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
 
         // Serialize connection to JSON, then encrypt
@@ -144,7 +144,7 @@ pub fn pull_connections_from_server(
     server_url: String,
     result_tx: mpsc::Sender<Result<Vec<RemoteConnection>, String>>,
 ) {
-    tokio::spawn(async move {
+    super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
 
         match client.list_connections(&token).await {

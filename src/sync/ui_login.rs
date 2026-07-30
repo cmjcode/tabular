@@ -65,26 +65,36 @@ fn render_login_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
         ui.add_space(8.0);
 
-        // Pending login / manual token entry
+        // Pending login / automatic loopback listener / manual fallback
         if tabular.sync_login_pending {
             ui.separator();
             ui.add_space(4.0);
-            ui.label("🌐 Browser opened. After signing in, copy the token JSON from the browser:");
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("🌐 Opening browser... Complete sign-in in your browser.");
+            });
             ui.add_space(4.0);
 
-            let token_edit = egui::TextEdit::multiline(&mut tabular.sync_token_input)
-                .hint_text("Paste token JSON here: { \"access_token\": \"...\", \"refresh_token\": \"...\" }")
-                .desired_width(f32::INFINITY)
-                .desired_rows(4);
-            ui.add(token_edit);
+            ui.collapsing("Enter token manually (fallback)", |ui| {
+                ui.label("If browser redirect does not complete automatically, copy the token JSON from your browser:");
+                ui.add_space(4.0);
+
+                let token_edit = egui::TextEdit::multiline(&mut tabular.sync_token_input)
+                    .hint_text("Paste token JSON here: { \"access_token\": \"...\", \"refresh_token\": \"...\" }")
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(3);
+                ui.add(token_edit);
+
+                ui.add_space(4.0);
+                if ui.button("✅  Submit Token").clicked() {
+                    try_submit_token(tabular);
+                }
+            });
 
             ui.add_space(4.0);
-            if ui.button("✅  Submit Token").clicked() {
-                try_submit_token(tabular);
-            }
-
             if ui.button("Cancel").clicked() {
                 tabular.sync_login_pending = false;
+                tabular.sync_auth_receiver = None;
                 tabular.sync_token_input.clear();
             }
         }
@@ -180,8 +190,8 @@ fn start_oauth(tabular: &mut Tabular, provider: OAuthProvider) {
     tabular.sync_login_pending = true;
     tabular.sync_token_input.clear();
 
-    let _rx = super::auth::start_oauth_flow(&tabular.sync_server_url, provider);
-    // In a future iteration: poll _rx for automatic token capture via local HTTP server
+    let rx = super::auth::start_oauth_flow(&tabular.sync_server_url, provider);
+    tabular.sync_auth_receiver = Some(rx);
 }
 
 fn try_submit_token(tabular: &mut Tabular) {

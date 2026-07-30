@@ -498,6 +498,7 @@ pub struct Tabular {
     pub sync_login_pending: bool,
     pub sync_token_input: String,
     pub sync_login_error: Option<String>,
+    pub sync_auth_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::TokenResponse, String>>>,
     // Manual sync triggers (set by UI, consumed in update loop)
     pub sync_trigger_connections: bool,
     pub sync_trigger_history: bool,

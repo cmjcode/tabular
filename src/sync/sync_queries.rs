@@ -24,7 +24,7 @@ pub fn push_queries_to_server(
     server_url: String,
     result_tx: mpsc::Sender<Result<usize, String>>,
 ) {
-    tokio::spawn(async move {
+    super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
         let query_dir = directory::get_query_dir();
 
@@ -87,7 +87,7 @@ pub fn pull_queries_from_server(
     server_url: String,
     result_tx: mpsc::Sender<Result<usize, String>>,
 ) {
-    tokio::spawn(async move {
+    super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
         let query_dir = directory::get_query_dir();
 

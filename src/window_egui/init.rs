@@ -526,6 +526,7 @@ impl super::Tabular {
             sync_login_pending: false,
             sync_token_input: String::new(),
             sync_login_error: None,
+            sync_auth_receiver: None,
             sync_trigger_connections: false,
             sync_trigger_history: false,
             sync_trigger_queries: false,

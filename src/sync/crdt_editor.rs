@@ -100,7 +100,7 @@ pub fn connect_to_room(
     let room_id_clone = room_id.clone();
 
     // Spawn the background WebSocket task
-    tokio::spawn(async move {
+    super::spawn_async(async move {
         run_ws_session(
             room_id_clone,
             server_url,
