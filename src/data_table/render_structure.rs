@@ -2,105 +2,279 @@ use eframe::egui;
 use crate::{models, window_egui};
 use super::{load_structure_info_for_current_table, infer_current_table_name};
 
+pub(crate) fn data_types_for_current_conn(tabular: &window_egui::Tabular) -> &'static [&'static str] {
+    let conn = tabular
+        .current_connection_id
+        .and_then(|id| tabular.connections.iter().find(|c| c.id == Some(id)));
+    match conn.map(|c| c.connection_type.clone()) {
+        Some(models::enums::DatabaseType::PostgreSQL) => &[
+            "varchar(255)",
+            "text",
+            "integer",
+            "bigint",
+            "smallint",
+            "boolean",
+            "timestamp with time zone",
+            "timestamp",
+            "date",
+            "time",
+            "numeric(10,2)",
+            "double precision",
+            "real",
+            "jsonb",
+            "json",
+            "uuid",
+            "serial",
+            "bigserial",
+            "bytea",
+        ],
+        Some(models::enums::DatabaseType::SQLite) => &[
+            "TEXT", "INTEGER", "REAL", "BLOB", "NUMERIC",
+        ],
+        Some(models::enums::DatabaseType::MsSQL) => &[
+            "nvarchar(255)",
+            "varchar(255)",
+            "ntext",
+            "int",
+            "bigint",
+            "smallint",
+            "bit",
+            "datetime2",
+            "date",
+            "time",
+            "decimal(18,2)",
+            "float",
+            "uniqueidentifier",
+            "varbinary(max)",
+        ],
+        _ => &[
+            "varchar(255)",
+            "text",
+            "longtext",
+            "int",
+            "bigint",
+            "smallint",
+            "tinyint(1)",
+            "boolean",
+            "datetime",
+            "date",
+            "timestamp",
+            "decimal(10,2)",
+            "float",
+            "double",
+            "json",
+            "enum('a','b')",
+        ],
+    }
+}
+
+pub(crate) fn default_data_type_for_conn(tabular: &window_egui::Tabular) -> String {
+    data_types_for_current_conn(tabular)
+        .first()
+        .unwrap_or(&"varchar(255)")
+        .to_string()
+}
+
+pub(crate) fn trigger_drop_column(tabular: &mut window_egui::Tabular, col_name: &str) {
+    let table_name = infer_current_table_name(tabular);
+    if let Some(conn_id) = tabular.current_connection_id
+        && let Some(conn) = tabular
+            .connections
+            .iter()
+            .find(|c| c.id == Some(conn_id))
+            .cloned()
+    {
+        let stmt = match conn.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                format!("ALTER TABLE `{}` DROP COLUMN `{}`;", table_name, col_name)
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                format!("ALTER TABLE \"{}\" DROP COLUMN \"{}\";", table_name, col_name)
+            }
+            models::enums::DatabaseType::MsSQL => {
+                format!("ALTER TABLE [{}] DROP COLUMN [{}];", table_name, col_name)
+            }
+            models::enums::DatabaseType::SQLite => {
+                format!(
+                    "-- SQLite drop column requires table rebuild; not supported automatically. Consider manual migration for '{}'.",
+                    col_name
+                )
+            }
+            _ => "-- Drop column not supported for this database type".to_string(),
+        };
+        tabular.pending_drop_column_name = Some(col_name.to_string());
+        tabular.pending_drop_column_stmt = Some(stmt.clone());
+        let insertion = format!("\n{}", stmt);
+        let pos = tabular.editor.text.len();
+        tabular.editor.apply_single_replace(pos..pos, &insertion);
+        tabular.cursor_position = pos + insertion.len();
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.content = tabular.editor.text.clone();
+            tab.is_modified = true;
+        }
+    }
+}
+
+pub(crate) fn trigger_drop_index(tabular: &mut window_egui::Tabular, idx_name: &str) {
+    let table_name = infer_current_table_name(tabular);
+    if let Some(conn_id) = tabular.current_connection_id
+        && let Some(conn) = tabular
+            .connections
+            .iter()
+            .find(|c| c.id == Some(conn_id))
+            .cloned()
+    {
+        let stmt = match conn.connection_type {
+            models::enums::DatabaseType::MySQL => {
+                format!("ALTER TABLE `{}` DROP INDEX `{}`;", table_name, idx_name)
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                format!("DROP INDEX IF EXISTS \"{}\";", idx_name)
+            }
+            models::enums::DatabaseType::MsSQL => {
+                format!("DROP INDEX [{}] ON [{}];", idx_name, table_name)
+            }
+            models::enums::DatabaseType::SQLite => {
+                format!("DROP INDEX IF EXISTS `{}`;", idx_name)
+            }
+            _ => "-- Drop index not supported for this database type".to_string(),
+        };
+        tabular.pending_drop_index_name = Some(idx_name.to_string());
+        tabular.pending_drop_index_stmt = Some(stmt.clone());
+        let insertion = format!("\n{}", stmt);
+        let pos = tabular.editor.text.len();
+        tabular.editor.apply_single_replace(pos..pos, &insertion);
+        tabular.cursor_position = pos + insertion.len();
+        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            tab.content = tabular.editor.text.clone();
+            tab.is_modified = true;
+        }
+    }
+}
+
 pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    let avail = ui.available_size();
+    let table_name = infer_current_table_name(tabular);
+    let is_cols = tabular.structure_sub_view == models::structs::StructureSubView::Columns;
+    let is_idx = tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
 
+    // Top action bar
     ui.horizontal(|ui| {
-    let toggle_width = 20.0;
-    let toggle_height = 80.0;
+        ui.add_space(6.0);
+        ui.heading(format!(
+            "🛠 Structure: {}",
+            if table_name.is_empty() {
+                "-"
+            } else {
+                &table_name
+            }
+        ));
+        ui.add_space(10.0);
 
-    ui.add_space(4.0);
+        // Subview Tabs
+        if ui.selectable_label(is_cols, "☰ Columns").clicked() {
+            tabular.structure_sub_view = models::structs::StructureSubView::Columns;
+            tabular.structure_sel_anchor = None;
+            tabular.structure_selected_cell = None;
+            tabular.structure_selected_row = None;
+        }
+        if ui.selectable_label(is_idx, "📈 Indexes").clicked() {
+            tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
+            load_structure_info_for_current_table(tabular);
+            tabular.structure_sel_anchor = None;
+            tabular.structure_selected_cell = None;
+            tabular.structure_selected_row = None;
+        }
 
-        ui.scope(|ui| {
-            let accent_col = window_egui::style::theme_accent(ui.ctx());
-            let mut style = ui.style().as_ref().clone();
-            style.visuals.selection.bg_fill = accent_col;
-            style.visuals.selection.stroke.color = accent_col;
-            style.visuals.widgets.active.bg_fill = accent_col;
-            style.visuals.widgets.active.weak_bg_fill = accent_col;
-            ui.set_style(style);
+        ui.separator();
 
-            ui.set_min_width(toggle_width);
-            ui.set_min_height(avail.y);
-            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                let default_text = ui.visuals().widgets.inactive.fg_stroke.color;
+        // Refresh Button
+        if ui
+            .button("🔄 Refresh")
+            .on_hover_text("Fetch latest structure from database server")
+            .clicked()
+        {
+            tabular.request_structure_refresh = true;
+            load_structure_info_for_current_table(tabular);
+            crate::sidebar_database::refresh_connections_tree(tabular);
+        }
 
-                let active_cols =
-                    tabular.structure_sub_view == models::structs::StructureSubView::Columns;
-                     let draw_vertical_toggle = |ui: &mut egui::Ui,
-                                                            label: &str,
-                                                            active: bool|
-                      -> egui::Response {
-                          let button_size = egui::vec2(toggle_width, toggle_height);
-                    let (rect, response) =
-                        ui.allocate_exact_size(button_size, egui::Sense::click());
-
-                    let mut bg = if active {
-                        window_egui::style::theme_accent(ui.ctx())
-                    } else {
-                        ui.visuals().widgets.inactive.bg_fill
-                    };
-                    if response.hovered() && !active {
-                        bg = bg.gamma_multiply(1.12);
+        if is_cols {
+            if ui
+                .button("➕ Add Column")
+                .on_hover_text("Add a new column")
+                .clicked()
+            {
+                if !tabular.adding_column {
+                    tabular.adding_column = true;
+                    if tabular.new_column_type.trim().is_empty() {
+                        tabular.new_column_type = default_data_type_for_conn(tabular);
                     }
-
-                    let stroke_color = if active {
-                        window_egui::style::theme_accent(ui.ctx())
-                    } else {
-                        ui.visuals().widgets.inactive.bg_stroke.color
-                    };
-                    let stroke = egui::Stroke::new(1.0, stroke_color);
-
-                    let painter = ui.painter();
-                    let rounding = 2.0;
-                    painter.rect_filled(rect, rounding, bg);
-                    painter.rect_stroke(rect, rounding, stroke, egui::StrokeKind::Outside);
-
-                    let text_color = if active {
-                        egui::Color32::WHITE
-                    } else {
-                        default_text
-                    };
-                    let font_id = ui.style().text_styles[&egui::TextStyle::Button].clone();
-                    let galley = painter.layout_no_wrap(label.to_owned(), font_id, text_color);
-                    let size = galley.rect.size();
-                    let pos =
-                        rect.center() + egui::vec2(-size.y * 0.5, size.x * 0.5);
-                    let mut text_shape = egui::epaint::TextShape::new(pos, galley, text_color);
-                    text_shape.angle = -std::f32::consts::FRAC_PI_2;
-                    painter.add(text_shape);
-
-                    response
-                };
-
-                let cols_resp = draw_vertical_toggle(ui, "☰ Columns", active_cols);
-                if cols_resp.clicked() {
-                    tabular.structure_sub_view = models::structs::StructureSubView::Columns;
-                    tabular.structure_sel_anchor = None;
-                    tabular.structure_selected_cell = None;
-                    tabular.structure_selected_row = None;
+                    tabular.new_column_name.clear();
+                    tabular.new_column_default.clear();
+                    tabular.new_column_nullable = true;
                 }
+            }
 
-                ui.add_space(4.0);
-
-                let active_idx =
-                    tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
-                let idx_resp = draw_vertical_toggle(ui, "📈 Indexes", active_idx);
-                if idx_resp.clicked() {
-                    tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
-                    load_structure_info_for_current_table(tabular);
-                    tabular.structure_sel_anchor = None;
-                    tabular.structure_selected_cell = None;
-                    tabular.structure_selected_row = None;
+            let sel_col = tabular
+                .structure_selected_row
+                .and_then(|r| tabular.structure_columns.get(r))
+                .cloned();
+            let edit_enabled = sel_col.is_some() && !tabular.editing_column;
+            if ui
+                .add_enabled(edit_enabled, egui::Button::new("✏️ Edit Column"))
+                .on_hover_text("Edit selected column")
+                .clicked()
+            {
+                if let Some(col) = &sel_col {
+                    tabular.editing_column = true;
+                    tabular.edit_column_original_name = col.name.clone();
+                    tabular.edit_column_name = col.name.clone();
+                    tabular.edit_column_type = col.data_type.clone();
+                    tabular.edit_column_nullable = col.nullable.unwrap_or(true);
+                    tabular.edit_column_default = col.default_value.clone().unwrap_or_default();
                 }
+            }
 
-                ui.add_space(ui.available_height());
-            });
-        });
+            let drop_enabled = sel_col.is_some();
+            if ui
+                .add_enabled(drop_enabled, egui::Button::new("🗑 Drop Column"))
+                .on_hover_text("Drop selected column")
+                .clicked()
+            {
+                if let Some(col) = &sel_col {
+                    trigger_drop_column(tabular, &col.name);
+                }
+            }
+        } else if is_idx {
+            if ui
+                .button("➕ Add Index")
+                .on_hover_text("Create new index")
+                .clicked()
+            {
+                if !tabular.adding_index {
+                    start_inline_add_index(tabular);
+                }
+            }
 
-        let remaining = ui.available_size();
-        let content_size = egui::vec2(remaining.x.max(0.0), avail.y);
-        ui.allocate_ui_with_layout(content_size, egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            let sel_idx = tabular
+                .structure_selected_row
+                .and_then(|r| tabular.structure_indexes.get(r))
+                .cloned();
+            let drop_enabled = sel_idx.is_some();
+            if ui
+                .add_enabled(drop_enabled, egui::Button::new("🗑 Drop Index"))
+                .on_hover_text("Drop selected index")
+                .clicked()
+            {
+                if let Some(idx) = &sel_idx {
+                    trigger_drop_index(tabular, &idx.name);
+                }
+            }
+        }
+    });
+
+    ui.separator();
+    ui.add_space(2.0);
             egui::ScrollArea::both()
                 .id_salt("structure_scroll")
                 .auto_shrink([false, false])
@@ -704,8 +878,6 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                         }
                     }
                 });
-        });
-    });
 }
 
 pub(crate) fn render_structure_columns_editor(
@@ -831,6 +1003,14 @@ pub(crate) fn render_structure_columns_editor(
                             if !shift || tabular.structure_sel_anchor.is_none() { tabular.structure_sel_anchor = Some((idx, i)); }
                             tabular.table_recently_clicked = true;
                         }
+                        if resp.double_clicked() {
+                            tabular.editing_column = true;
+                            tabular.edit_column_original_name = col.name.clone();
+                            tabular.edit_column_name = col.name.clone();
+                            tabular.edit_column_type = col.data_type.clone();
+                            tabular.edit_column_nullable = col.nullable.unwrap_or(true);
+                            tabular.edit_column_default = col.default_value.clone().unwrap_or_default();
+                        }
                         // Drag-to-select: when user drags over cells, extend the selection to current cell
                         if resp.drag_started() {
                             tabular.structure_dragging = true;
@@ -890,11 +1070,16 @@ pub(crate) fn render_structure_columns_editor(
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("🔄 Refresh").clicked() { tabular.request_structure_refresh = true; load_structure_info_for_current_table(tabular); ui.close(); }
+                            if ui.button("🔄 Refresh").clicked() {
+                                tabular.request_structure_refresh = true;
+                                load_structure_info_for_current_table(tabular);
+                                crate::sidebar_database::refresh_connections_tree(tabular);
+                                ui.close();
+                            }
                             if ui.button("➕ Add Column").clicked() {
                                 if !tabular.adding_column {
                                     tabular.adding_column = true;
-                                    if tabular.new_column_type.trim().is_empty() { tabular.new_column_type = "varchar(255)".to_string(); }
+                                    if tabular.new_column_type.trim().is_empty() { tabular.new_column_type = default_data_type_for_conn(tabular); }
                                     tabular.new_column_name.clear();
                                     tabular.new_column_default.clear();
                                     tabular.new_column_nullable = true;
@@ -911,27 +1096,7 @@ pub(crate) fn render_structure_columns_editor(
                                 ui.close();
                             }
                             if ui.button("🗑 Drop Column").clicked() {
-                                let table_name = infer_current_table_name(tabular);
-                                if let Some(conn_id) = tabular.current_connection_id && let Some(conn) = tabular.connections.iter().find(|c| c.id==Some(conn_id)).cloned() {
-                                    let stmt = match conn.connection_type {
-                                        models::enums::DatabaseType::MySQL => format!("ALTER TABLE `{}` DROP COLUMN `{}`;", table_name, col.name),
-                                        models::enums::DatabaseType::PostgreSQL => format!("ALTER TABLE \"{}\" DROP COLUMN \"{}\";", table_name, col.name),
-                                        models::enums::DatabaseType::MsSQL => format!("ALTER TABLE [{}] DROP COLUMN [{}];", table_name, col.name),
-                                        models::enums::DatabaseType::SQLite => format!("-- SQLite drop column requires table rebuild; not supported automatically. Consider manual migration for '{}'.", col.name),
-                                        _ => "-- Drop column not supported for this database type".to_string(),
-                                    };
-                                    tabular.pending_drop_column_name = Some(col.name.clone());
-                                    tabular.pending_drop_column_stmt = Some(stmt.clone());
-                                    // Append the generated SQL to the editor via rope edit
-                                    let insertion = format!("\n{}", stmt);
-                                    let pos = tabular.editor.text.len();
-                                    tabular.editor.apply_single_replace(pos..pos, &insertion);
-                                    tabular.cursor_position = pos + insertion.len();
-                                    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                                        tab.content = tabular.editor.text.clone();
-                                        tab.is_modified = true;
-                                    }
-                                }
+                                trigger_drop_column(tabular, &col.name);
                                 ui.close();
                             }
                         });
@@ -965,18 +1130,18 @@ pub(crate) fn render_structure_columns_editor(
                     let w_type = widths[2];
                     ui.allocate_ui_with_layout(egui::vec2(w_type,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.set_min_width(w_type-8.0);
-                        let types = ["varchar(255)", "bigint", "int", "text", "longtext", "datetime", "date", "float", "double", "boolean", "enum('a','b')"];
+                        let types = data_types_for_current_conn(tabular);
                         
                         // Use a horizontal layout for text edit + picker button
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut tabular.new_column_type).desired_width(w_type - 24.0));
+                            ui.add(egui::TextEdit::singleline(&mut tabular.new_column_type).desired_width(w_type - 30.0));
                             
                             egui::ComboBox::from_id_salt("new_col_type_picker")
                                 .selected_text("")
                                 .width(16.0)
                                 .show_ui(ui, |ui| {
                                     for t in types {
-                                        if ui.selectable_label(tabular.new_column_type == t, t).clicked() {
+                                        if ui.selectable_label(tabular.new_column_type == *t, *t).clicked() {
                                             tabular.new_column_type = t.to_string();
                                         }
                                     }
@@ -1026,7 +1191,21 @@ pub(crate) fn render_structure_columns_editor(
                     let w_type = widths[2];
                     ui.allocate_ui_with_layout(egui::vec2(w_type,row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.set_min_width(w_type-8.0);
-                        ui.text_edit_singleline(&mut tabular.edit_column_type);
+                        let types = data_types_for_current_conn(tabular);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut tabular.edit_column_type).desired_width(w_type - 30.0));
+                            
+                            egui::ComboBox::from_id_salt("edit_col_type_picker")
+                                .selected_text("")
+                                .width(16.0)
+                                .show_ui(ui, |ui| {
+                                    for t in types {
+                                        if ui.selectable_label(tabular.edit_column_type == *t, *t).clicked() {
+                                            tabular.edit_column_type = t.to_string();
+                                        }
+                                    }
+                                });
+                        });
                     });
                     // Nullable
                     let w_null = widths[3];
@@ -1209,7 +1388,9 @@ pub(crate) fn commit_edit_column(tabular: &mut window_egui::Tabular) {
                 tabular.show_error_message = true;
             }
         } else {
+            tabular.request_structure_refresh = true;
             load_structure_info_for_current_table(tabular);
+            crate::sidebar_database::refresh_connections_tree(tabular);
         }
     }
 }
@@ -1255,7 +1436,9 @@ pub(crate) fn render_drop_column_confirmation(
                     }
                     let victim = col_name.clone();
                     tabular.structure_columns.retain(|it| it.name != victim);
+                    tabular.request_structure_refresh = true;
                     load_structure_info_for_current_table(tabular);
+                    crate::sidebar_database::refresh_connections_tree(tabular);
                     tabular.pending_drop_column_name = None;
                     tabular.pending_drop_column_stmt = None;
                 }
@@ -1369,7 +1552,9 @@ fn commit_new_column(tabular: &mut window_egui::Tabular) {
             }
         } else {
             // Reload from source to ensure correct view
+            tabular.request_structure_refresh = true;
             load_structure_info_for_current_table(tabular);
+            crate::sidebar_database::refresh_connections_tree(tabular);
         }
     }
 }
@@ -1566,6 +1751,7 @@ fn commit_new_index(tabular: &mut window_egui::Tabular) {
                 tabular.show_error_message = true;
             }
         } else {
+            tabular.request_structure_refresh = true;
             load_structure_info_for_current_table(tabular);
         }
     }
@@ -1612,6 +1798,7 @@ pub(crate) fn render_drop_index_confirmation(
                     }
                     let victim = idx_name.clone();
                     tabular.structure_indexes.retain(|it| it.name != victim);
+                    tabular.request_structure_refresh = true;
                     load_structure_info_for_current_table(tabular);
                     tabular.pending_drop_index_name = None;
                     tabular.pending_drop_index_stmt = None;
