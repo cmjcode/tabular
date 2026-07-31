@@ -1389,14 +1389,14 @@ impl Tabular {
                                     ui.horizontal(|ui| {
                                         ui.add_space(4.0);
                                         let search_bg = if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(40, 40, 40)
+                                            egui::Color32::from_rgb(30, 32, 42)
                                         } else {
-                                            egui::Color32::from_rgb(210, 210, 210)
+                                            egui::Color32::from_rgb(235, 238, 243)
                                         };
                                         // Make search box responsive to sidebar width
-                                        let available_width = ui.available_width() - 5.0; // Leave space for clear button and padding
+                                        let available_width = ui.available_width() - 5.0;
                                         let search_response = ui.add_sized(
-                                            [available_width, 20.0],
+                                            [available_width, 24.0],
                                             egui::TextEdit::singleline(&mut self.history_search_text)
                                                 .desired_width(f32::INFINITY)
                                                 .hint_text("Search history...")
@@ -1404,10 +1404,15 @@ impl Tabular {
                                         );
 
                                         if search_response.has_focus() {
+                                            let focus_color = if ui.visuals().dark_mode {
+                                                egui::Color32::from_rgb(80, 90, 120)
+                                            } else {
+                                                egui::Color32::from_rgb(150, 165, 200)
+                                            };
                                             ui.painter().rect_stroke(
                                                 search_response.rect,
-                                                0.0,
-                                                egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 0, 0)),
+                                                3.0,
+                                                egui::Stroke::new(1.0, focus_color),
                                                 egui::StrokeKind::Outside,
                                             );
                                         }

@@ -13,7 +13,7 @@ fn format_query_for_sidebar(query: &str, _connection_name: &str) -> String {
         .join(" ");
 
     // Truncate if too long, with ellipsis
-    let max_length = 80;
+    let max_length = 55;
     if cleaned_query.len() > max_length {
         format!("{}...", &cleaned_query[0..max_length].trim())
     } else {

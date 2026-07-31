@@ -2114,7 +2114,7 @@ impl super::Tabular {
                     models::enums::NodeType::PartitionsFolder => "📊",
                     models::enums::NodeType::Index => "#",
                     models::enums::NodeType::Query => "🔍",
-                    models::enums::NodeType::QueryHistItem => "📜",
+                    models::enums::NodeType::QueryHistItem => "",
                     models::enums::NodeType::Connection => "",
                     models::enums::NodeType::DatabasesFolder => "📁",
                     models::enums::NodeType::TablesFolder => "📋",
@@ -2145,7 +2145,7 @@ impl super::Tabular {
                     models::enums::NodeType::MongoDBFolder => "🍃",
                     models::enums::NodeType::CustomFolder => "📁",
                     models::enums::NodeType::QueryFolder => "📂",
-                    models::enums::NodeType::HistoryDateFolder => "📅",
+                    models::enums::NodeType::HistoryDateFolder => "",
                     models::enums::NodeType::MsSQLFolder => "🗳️",
                     models::enums::NodeType::DiagramsFolder => "📂",
                     models::enums::NodeType::Diagram => "🗺",
@@ -2214,6 +2214,24 @@ impl super::Tabular {
                     let mut combined = name_response;
                     if let Some(r) = icon_response { combined |= r; }
                     combined
+                } else if node.node_type == models::enums::NodeType::HistoryDateFolder {
+                    // History date section header: uppercase, muted, no emoji — VS Code style
+                    let muted_color = if ui.visuals().dark_mode {
+                        egui::Color32::from_rgb(105, 113, 130)
+                    } else {
+                        egui::Color32::from_rgb(130, 138, 155)
+                    };
+                    let header_text = node.name.to_uppercase();
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(header_text)
+                                .size(11.0)
+                                .color(muted_color)
+                                .strong(),
+                        )
+                        .truncate()
+                        .sense(egui::Sense::click()),
+                    )
                 } else {
                     // Non-connection nodes: icon + name, truncated to available width and clickable
                     let label_text = if icon.is_empty() {
@@ -3289,31 +3307,106 @@ impl super::Tabular {
             }
         } else {
             let response = if node.node_type == models::enums::NodeType::QueryHistItem {
-                // Special handling for history items - make the entire area clickable
+                // --- Professional 2-line history item row (IDE style) ---
+                let is_dark = ui.visuals().dark_mode;
                 let available_width = ui.available_width();
-                let button_response = ui.add_sized(
-                    [
-                        available_width,
-                        ui.text_style_height(&egui::TextStyle::Body),
-                    ],
-                    egui::Button::new(format!("📜  {}", node.name))
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::NONE),
+                let body_h = ui.text_style_height(&egui::TextStyle::Body);
+                let item_h = body_h * 2.0 + 6.0; // Two text lines + padding
+
+                // Parse metadata from file_path: "connection_name||executed_at||original_query"
+                let (conn_label, time_label) = if let Some(data) = &node.file_path {
+                    // Format: connection_name||executed_at||...
+                    let mut parts = data.splitn(3, "||");
+                    let conn = parts.next().unwrap_or("").to_string();
+                    let ts = parts.next().unwrap_or("");
+                    // Extract HH:MM from timestamp like "2026-07-31 11:45:56"
+                    let time_str = ts.get(11..16).unwrap_or("").to_string();
+                    (conn, time_str)
+                } else {
+                    (String::new(), String::new())
+                };
+
+                let meta_line = if !time_label.is_empty() && !conn_label.is_empty() {
+                    format!("{} · {}", time_label, conn_label)
+                } else if !conn_label.is_empty() {
+                    conn_label.clone()
+                } else {
+                    String::new()
+                };
+
+                // Allocate the full-width row rect
+                let (rect, mut row_response) = ui.allocate_exact_size(
+                    egui::vec2(available_width, item_h),
+                    egui::Sense::click(),
                 );
 
-                // Add tooltip with the full query if available
-                if let Some(data) = &node.file_path {
-                    if let Some((connection_name, original_query)) = data.split_once("||") {
-                        button_response.on_hover_text_at_pointer(format!(
-                            "Connection: {}\nFull query:\n{}",
-                            connection_name, original_query
-                        ))
-                    } else {
-                        button_response.on_hover_text_at_pointer(format!("Full query:\n{}", data))
+                if ui.is_rect_visible(rect) {
+                    let hovered = row_response.hovered();
+
+                    // Hover background highlight
+                    if hovered {
+                        let hover_bg = if is_dark {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+                        };
+                        ui.painter().rect_filled(rect, 0.0, hover_bg);
+
+                        // Left accent bar (2px)
+                        let accent_color = egui::Color32::from_rgb(255, 0, 0); // theme accent
+                        let bar_rect = egui::Rect::from_min_size(
+                            egui::pos2(rect.left(), rect.top()),
+                            egui::vec2(2.0, rect.height()),
+                        );
+                        ui.painter().rect_filled(bar_rect, 0.0, accent_color);
                     }
-                } else {
-                    button_response
+
+                    let text_x = rect.left() + 8.0;
+                    let line1_y = rect.top() + 4.0;
+                    let line2_y = line1_y + body_h + 1.0;
+
+                    // Line 1: Query preview — monospace, primary text
+                    let primary_color = if is_dark {
+                        egui::Color32::from_rgb(220, 225, 235)
+                    } else {
+                        egui::Color32::from_rgb(30, 35, 50)
+                    };
+                    ui.painter().text(
+                        egui::pos2(text_x, line1_y),
+                        egui::Align2::LEFT_TOP,
+                        &node.name,
+                        egui::FontId::new(12.5, egui::FontFamily::Monospace),
+                        primary_color,
+                    );
+
+                    // Line 2: time · connection — small, muted
+                    if !meta_line.is_empty() {
+                        let muted_color = if is_dark {
+                            egui::Color32::from_rgb(105, 113, 130)
+                        } else {
+                            egui::Color32::from_rgb(130, 138, 155)
+                        };
+                        ui.painter().text(
+                            egui::pos2(text_x, line2_y),
+                            egui::Align2::LEFT_TOP,
+                            &meta_line,
+                            egui::FontId::new(11.0, egui::FontFamily::Proportional),
+                            muted_color,
+                        );
+                    }
                 }
+
+                // Tooltip with full query
+                if let Some(data) = &node.file_path {
+                    if let Some((_conn, rest)) = data.split_once("||") {
+                        let (_ts, original_query) = rest.split_once("||").unwrap_or(("", rest));
+                        row_response = row_response.on_hover_text_at_pointer(format!(
+                            "Full query:\n{}",
+                            original_query
+                        ));
+                    }
+                }
+                row_response
             } else {
                 // For all other node types, use horizontal layout with icons.
                 // Add a spacer equal to the triangle width so leaf rows align with expandable rows (left-aligned look).
@@ -3356,7 +3449,7 @@ impl super::Tabular {
                         models::enums::NodeType::MsSQLFolder => "⛁",
                         models::enums::NodeType::CustomFolder => "📁",
                         models::enums::NodeType::QueryFolder => "📂",
-                        models::enums::NodeType::HistoryDateFolder => "📅",
+                        models::enums::NodeType::HistoryDateFolder => "",
                         models::enums::NodeType::ColumnsFolder => "📑",
                         models::enums::NodeType::IndexesFolder => "🧭",
                         models::enums::NodeType::PrimaryKeysFolder => "🔑",
