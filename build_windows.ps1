@@ -1,4 +1,4 @@
-﻿# Quick build script for Tabular (native Windows)
+# Quick build script for Tabular (native Windows)
 # Usage: .\build_windows.ps1 [-Arch x64|arm64|all] [-Deps] [-Clean] [-NoMsi] [-Help]
 # Requires: Rust (rustup + cargo) with MSVC toolchain
 #           WiX Toolset v4+ for MSI: dotnet tool install --global wix
@@ -33,7 +33,8 @@ function Write-Err     ($msg) { Write-Host "[ERROR] "   -ForegroundColor Red    
 
 function Show-Help {
     Write-Host @"
-🛠️  Tabular Windows Build Script
+================================
+  Tabular Windows Build Script
 ================================
 
 Usage: .\build_windows.ps1 [OPTIONS]
@@ -91,10 +92,18 @@ $targets = switch ($Arch) {
     'all'   { @($TargetX64, $TargetArm) }
 }
 
-if ($Deps) {
-    Write-Info "Installing rustup targets..."
-    rustup target add @targets
-    if ($LASTEXITCODE -ne 0) { Write-Err "rustup target add failed"; exit 1 }
+# Check and auto-install missing targets
+$installedTargets = rustup target list --installed
+$missingTargets = $targets | Where-Object { $_ -notin $installedTargets }
+
+if ($missingTargets) {
+    Write-Info "Target Rust required but not installed: $($missingTargets -join ', ')"
+    Write-Info "Installing rustup targets: $($missingTargets -join ', ')..."
+    rustup target add $missingTargets
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "Failed to install rustup target(s): $($missingTargets -join ', ')"
+        exit 1
+    }
 }
 
 if ($Clean) {
@@ -108,12 +117,26 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 # --- Build + package -------------------------------------------------------
 Write-Info "Starting build for $AppName v$Version ($($targets -join ', '))"
 
+$successfulBuilds = 0
+
 foreach ($target in $targets) {
     $archName = if ($target -eq $TargetX64) { 'x86_64' } else { 'aarch64' }
 
-    Write-Info "🪟 Building $target..."
+    Write-Info "Building target: $target..."
     cargo build --release --target $target
     if ($LASTEXITCODE -ne 0) {
+        if ($target -eq $TargetArm) {
+            Write-Warn "Cross-compiling for ARM64 ($TargetArm) failed."
+            Write-Warn "Reason: C dependencies (e.g., 'ring') require an ARM64 C compiler ('cl.exe' for ARM64 or LLVM 'clang')."
+            Write-Warn "To enable ARM64 cross-compilation:"
+            Write-Warn "  1. Install 'MSVC v143 - VS 2022 C++ ARM64 build tools' via Visual Studio Installer, OR"
+            Write-Warn "  2. Install LLVM Clang and add it to PATH."
+            
+            if ($Arch -eq 'all') {
+                Write-Warn "Skipping ARM64 build and continuing with available targets..."
+                continue
+            }
+        }
         Write-Err "Build failed for $target"
         exit 1
     }
@@ -138,7 +161,7 @@ foreach ($target in $targets) {
 
     # MSI installer (WiX v4+)
     if (-not $NoMsi) {
-        Write-Info "📦 Building MSI installer for $archName..."
+        Write-Info "Building MSI installer for $archName..."
         $wixArch  = if ($archName -eq 'x86_64') { 'x64' } else { 'arm64' }
         $iconPath = Join-Path $RepoRoot 'assets\tabular.ico'
         $msiPath  = Join-Path $DistDir "$AppName-$Version-windows-$archName.msi"
@@ -155,16 +178,22 @@ foreach ($target in $targets) {
     }
 
     Write-Success "$archName build packaged."
+    $successfulBuilds++
+}
+
+if ($successfulBuilds -eq 0) {
+    Write-Err "No targets were built successfully."
+    exit 1
 }
 
 # --- Show results -----------------------------------------------------------
 Write-Host ""
-Write-Success "🎉 Build completed successfully!"
+Write-Success "Build completed successfully!"
 Write-Host ""
-Write-Info "📦 Generated files:"
+Write-Info "Generated files:"
 Get-ChildItem $DistDir -File | Where-Object { $_.Extension -in '.msi', '.zip', '.exe' } | ForEach-Object {
     $size = '{0:N1} MB' -f ($_.Length / 1MB)
-    Write-Host "  📁 $($_.FullName) ($size)"
+    Write-Host "  [FILE] $($_.FullName) ($size)"
 }
 Write-Host ""
-Write-Info "✨ Ready for distribution!"
+Write-Info "Ready for distribution!"
