@@ -530,6 +530,8 @@ impl super::Tabular {
             sync_login_error: None,
             sync_auth_receiver: None,
             sync_refresh_receiver: None,
+            sync_refresh_attempt_count: 0,
+            sync_session_expired_notified: false,
             sync_trigger_connections: false,
             sync_trigger_history: false,
             sync_trigger_queries: false,

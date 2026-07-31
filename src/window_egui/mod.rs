@@ -507,6 +507,10 @@ pub struct Tabular {
     pub sync_login_error: Option<String>,
     pub sync_auth_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::TokenResponse, String>>>,
     pub sync_refresh_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::TabularAccount, String>>>,
+    /// Number of consecutive token refresh failures. Stops retrying after MAX_REFRESH_ATTEMPTS.
+    pub sync_refresh_attempt_count: u32,
+    /// True once we have shown the "session expired" toast, so it only fires once per exhaustion cycle.
+    pub sync_session_expired_notified: bool,
     // Manual sync triggers (set by UI, consumed in update loop)
     pub sync_trigger_connections: bool,
     pub sync_trigger_history: bool,
