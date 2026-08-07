@@ -9,7 +9,7 @@ use sqlx::mysql::MySqlConnection;
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::pool::{resolve_connection_target, try_get_connection_pool};
+use super::pool::{resolve_connection_target_async, try_get_connection_pool};
 use super::sql::{
     infer_column_origins, infer_select_headers, is_simple_select_statement,
     query_contains_pagination, should_enable_auto_pagination,
@@ -159,7 +159,9 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
     let query = job.options.query.clone();
     let dba_special_mode = job.options.dba_special_mode.clone();
 
-    if let Err(reachability_err) = super::pool::check_host_reachability(&job.options.connection, 2500) {
+    if let Err(reachability_err) =
+        super::pool::check_host_reachability_async(&job.options.connection, 2500).await
+    {
         return QueryResultMessage {
             job_id: job.job_id,
             connection_id,
@@ -257,8 +259,9 @@ async fn execute_mysql_query_job(
         options.connection_id
     );
 
-    let (target_host, target_port) =
-        resolve_connection_target(&options.connection).map_err(QueryExecutionError::Message)?;
+    let (target_host, target_port) = resolve_connection_target_async(&options.connection)
+        .await
+        .map_err(QueryExecutionError::Message)?;
 
     let statements_raw: Vec<&str> = options
         .query
@@ -1704,7 +1707,11 @@ pub(crate) fn execute_table_query_sync(
                     models::enums::DatabasePool::MySQL(_mysql_pool) => {
                         debug!("Executing MySQL query: {}", query);
 
-                        let (target_host, target_port) = match resolve_connection_target(connection) {
+                        let (target_host, target_port) = match resolve_connection_target_async(
+                            connection,
+                        )
+                        .await
+                        {
                             Ok(tuple) => tuple,
                             Err(err) => {
                                 return Some((

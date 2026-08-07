@@ -599,9 +599,13 @@ impl super::Tabular {
             debug!("✅ Removed connection pool from shared cache");
         }
 
-        // 3. Remove from pending pools (if connection was being created)
-        if self.pending_connection_pools.remove(&connection_id) {
-            debug!("✅ Removed from pending connection pools");
+        // 3. Cancel any in-flight connect. Previously this only dropped the
+        // pending marker, leaving the attempt running: it could still land a
+        // pool afterwards and resurrect the connection the user just closed.
+        if crate::connection::cancel_connection_attempt(self, connection_id) {
+            debug!("✅ Cancelled in-flight connection attempt");
+            // Disconnecting is not a failure worth surfacing in the sidebar.
+            self.connection_errors.remove(&connection_id);
         }
 
         // 4. Stop any prefetch in progress
@@ -650,7 +654,19 @@ impl super::Tabular {
     pub fn clear_connection_cache(&self, connection_id: i64) {
         if let Some(ref pool) = self.db_pool {
             let pool_clone = pool.clone();
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            // Reuse the shared runtime rather than standing up a whole new
+            // multi-threaded runtime, and its worker threads, on every call.
+            // These methods take `&self`, so `get_runtime()` is unavailable.
+            let rt = match self.runtime.clone() {
+                Some(rt) => rt,
+                None => match tokio::runtime::Runtime::new() {
+                    Ok(rt) => std::sync::Arc::new(rt),
+                    Err(e) => {
+                        debug!("Failed to create runtime for cache clear: {}", e);
+                        return;
+                    }
+                },
+            };
 
             rt.block_on(async {
                 log::debug!(
@@ -721,7 +737,19 @@ impl super::Tabular {
             let pool_clone = pool.clone();
             let db = database_name.to_string();
             let tbl = table_name.to_string();
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            // Reuse the shared runtime rather than standing up a whole new
+            // multi-threaded runtime, and its worker threads, on every call.
+            // These methods take `&self`, so `get_runtime()` is unavailable.
+            let rt = match self.runtime.clone() {
+                Some(rt) => rt,
+                None => match tokio::runtime::Runtime::new() {
+                    Ok(rt) => std::sync::Arc::new(rt),
+                    Err(e) => {
+                        debug!("Failed to create runtime for cache clear: {}", e);
+                        return;
+                    }
+                },
+            };
 
             rt.block_on(async {
                 debug!("🧹 Clearing cache for table {}.{}", db, tbl);

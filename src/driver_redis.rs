@@ -146,7 +146,7 @@ async fn create_redis_manager_for_target(
 ) -> Result<ConnectionManager, String> {
     let (host, port) = match target {
         Some((host, port)) => (host.to_string(), port.to_string()),
-        None => crate::connection::pool::resolve_connection_target(connection)?,
+        None => crate::connection::pool::resolve_connection_target_async(connection).await?,
     };
 
     let connection_string = build_redis_connection_string(

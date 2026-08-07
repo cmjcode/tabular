@@ -51,6 +51,10 @@ pub struct Tabular {
     pub shared_connection_pools: Arc<std::sync::Mutex<HashMap<i64, models::enums::DatabasePool>>>,
     // Rate-limit log spam for pending pool creation messages
     pub pending_pool_log_last: HashMap<i64, std::time::Instant>,
+    // When each pending pool creation was first observed, so the watchdog can
+    // release attempts that never report back. Filled in lazily by
+    // `cleanup_stuck_pending_connections`.
+    pub pending_started_at: HashMap<i64, std::time::Instant>,
     // Prefetch progress tracking
     pub prefetch_progress: HashMap<i64, (usize, usize)>, // connection_id -> (completed, total)
     pub prefetch_in_progress: std::collections::HashSet<i64>, // connections currently prefetching

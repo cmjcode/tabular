@@ -116,11 +116,11 @@ impl super::Tabular {
     }
     pub fn search_redis_keys(&mut self, connection_id: i64, search_text: &str) {
         // Search through Redis keys using SCAN with flexible pattern
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = self.get_runtime();
 
         let search_results = rt.block_on(async {
             if let Some(models::enums::DatabasePool::Redis(redis_manager)) =
-                connection::get_or_create_connection_pool(self, connection_id).await
+                connection::pool_if_connected_or_start(self, connection_id).await
             {
                 let mut conn = redis_manager.as_ref().clone();
 
@@ -205,7 +205,7 @@ impl super::Tabular {
         if let Some(ref pool) = self.db_pool {
             let pool_clone = pool.clone();
             let search_pattern = format!("*{}*", search_text); // Using GLOB pattern for case-sensitive search
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = self.get_runtime();
 
             // Search tables
             let table_search_results = rt.block_on(async {

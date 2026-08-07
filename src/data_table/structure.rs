@@ -299,9 +299,9 @@ pub fn fetch_partition_details_for_table(
 ) -> Vec<models::structs::PartitionStructInfo> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tabular.get_runtime();
             rt.block_on(async {
-                if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = crate::connection::get_or_create_connection_pool(tabular, connection_id).await {
+                if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = crate::connection::pool_if_connected_or_start(tabular, connection_id).await {
                     // First get partition names
                     let names_q = "SELECT PARTITION_NAME FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL AND SUBPARTITION_NAME IS NULL ORDER BY PARTITION_ORDINAL_POSITION";
                     let partition_names: Vec<String> = sqlx::query_as::<_, (String,)>(names_q)
@@ -346,9 +346,9 @@ pub fn fetch_partition_details_for_table(
             })
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tabular.get_runtime();
             rt.block_on(async {
-                if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = crate::connection::get_or_create_connection_pool(tabular, connection_id).await {
+                if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = crate::connection::pool_if_connected_or_start(tabular, connection_id).await {
                     // Get partition info from PostgreSQL
                     let q = "SELECT \n  c.relname AS partition_name,\n  CASE \n    WHEN p.relkind = 'p' THEN 'RANGE'\n    WHEN p.relkind = 'r' THEN (SELECT partstrat FROM pg_partitioned_table WHERE partrelid = p.oid LIMIT 1)\n    ELSE NULL\n  END AS partition_type\nFROM pg_class p\nJOIN pg_class c ON c.relfilenode = p.relfilenode OR (p.oid IN (SELECT partrelid FROM pg_partitioned_table WHERE partkeylen > 0))\nWHERE p.relname = $1 AND p.relkind IN ('p', 'r')\nORDER BY c.relname";
                     match sqlx::query_as::<_, (String, Option<String>)>(q)
@@ -476,9 +476,9 @@ fn fetch_index_details_for_table(
 ) -> Vec<models::structs::IndexStructInfo> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tabular.get_runtime();
             rt.block_on(async {
-                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = crate::connection::get_or_create_connection_pool(tabular, connection_id).await {
+                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = crate::connection::pool_if_connected_or_start(tabular, connection_id).await {
                         let q = r#"SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, MIN(NON_UNIQUE) AS NON_UNIQUE, GROUP_CONCAT(DISTINCT INDEX_TYPE) AS TYPES FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? GROUP BY INDEX_NAME ORDER BY INDEX_NAME"#;
                         match sqlx::query(q).bind(database_name).bind(table_name).fetch_all(mysql_pool.as_ref()).await {
                             Ok(rows) => { use sqlx::Row; rows.into_iter().map(|r| {
@@ -497,9 +497,9 @@ fn fetch_index_details_for_table(
                 })
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tabular.get_runtime();
             rt.block_on(async {
-                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = crate::connection::get_or_create_connection_pool(tabular, connection_id).await {
+                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = crate::connection::pool_if_connected_or_start(tabular, connection_id).await {
                         let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique FROM pg_class t JOIN pg_index i ON t.oid = i.indrelid JOIN pg_class idx ON idx.oid = i.indexrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE t.relname = $1 AND n.nspname='public' ORDER BY idx.relname"#;
                         match sqlx::query(q).bind(table_name).fetch_all(pg_pool.as_ref()).await {
                             Ok(rows) => { use sqlx::Row; rows.into_iter().map(|r| {
@@ -522,7 +522,7 @@ fn fetch_index_details_for_table(
             let pass = connection.password.clone();
             let db = database_name.to_string();
             let tbl = table_name.to_string();
-            let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
+            let rt_res = tabular.get_runtime().block_on(async move {
                     let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
                     let parse = |name: &str| -> (Option<String>, String) { if let Some((s,t)) = name.split_once('.') { (Some(s.trim_matches(['[',']']).to_string()), t.trim_matches(['[',']']).to_string()) } else { (None, name.trim_matches(['[',']']).to_string()) } };
                     let (_schema_opt, table_only) = parse(&tbl);
@@ -543,10 +543,10 @@ fn fetch_index_details_for_table(
             rt_res.unwrap_or_default()
         }
         models::enums::DatabaseType::SQLite => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tabular.get_runtime();
             rt.block_on(async {
                 if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) =
-                    crate::connection::get_or_create_connection_pool(tabular, connection_id).await
+                    crate::connection::pool_if_connected_or_start(tabular, connection_id).await
                 {
                     use sqlx::Row;
                     let list_query =
@@ -593,10 +593,10 @@ fn fetch_index_details_for_table(
             })
         }
         models::enums::DatabaseType::MongoDB => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tabular.get_runtime();
             rt.block_on(async {
                 if let Some(models::enums::DatabasePool::MongoDB(client)) =
-                    crate::connection::get_or_create_connection_pool(tabular, connection_id).await
+                    crate::connection::pool_if_connected_or_start(tabular, connection_id).await
                 {
                     match client
                         .database(database_name)

@@ -13,6 +13,8 @@ pub(crate) struct RenderTreeNodeParams<'a> {
     connection_errors: &'a std::collections::HashMap<i64, String>,
     connection_pools: &'a std::collections::HashMap<i64, models::enums::DatabasePool>,
     pending_connection_pools: &'a std::collections::HashSet<i64>,
+    // When each pending connect started, so the row can show elapsed time.
+    pending_started_at: &'a HashMap<i64, std::time::Instant>,
     shared_connection_pools:
         &'a Arc<std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>>,
     is_search_mode: bool,
@@ -133,6 +135,7 @@ impl super::Tabular {
                     connection_errors: &self.connection_errors,
                     connection_pools: &self.connection_pools,
                     pending_connection_pools: &self.pending_connection_pools,
+                    pending_started_at: &self.pending_started_at,
                     shared_connection_pools: &self.shared_connection_pools,
                     is_search_mode,
                     connection_types,
@@ -398,7 +401,7 @@ impl super::Tabular {
             if let Some(rt) = self.runtime.clone() {
                 // Ensure pool exists
                 rt.block_on(async {
-                    let _ = crate::connection::get_or_create_connection_pool(self, conn_id).await;
+                    let _ = crate::connection::pool_if_connected_or_start(self, conn_id).await;
                     fks = crate::connection::get_foreign_keys(self, conn_id, &db_name).await;
                     
                     // Fetch all columns for diagram (all supported engines)
@@ -1826,6 +1829,13 @@ impl super::Tabular {
 
                 // Break early to prevent further processing
                 break;
+            } else if (4000..5000).contains(&context_id) {
+                // ID 4000-4999 means cancel an in-flight connect
+                let connection_id = context_id - 4000;
+                debug!("✕ Cancel connect for connection: {}", connection_id);
+                connection::cancel_connection_attempt(self, connection_id);
+                // Mark for repaint so status updates immediately
+                ui.ctx().request_repaint();
             } else if (3000..4000).contains(&context_id) {
                 // ID 3000-3999 means disconnect (connection_id = context_id - 3000)
                 let connection_id = context_id - 3000;
@@ -2195,6 +2205,16 @@ impl super::Tabular {
                         // Show refreshing spinner
                         if params.refreshing_connections.contains(&conn_id) {
                             name_text.push_str(" ⏳ Syncing…");
+                        } else if params.pending_connection_pools.contains(&conn_id) {
+                            // Surface an in-progress connect with elapsed time, so a
+                            // slow server reads as slow rather than as a hung app.
+                            match params.pending_started_at.get(&conn_id) {
+                                Some(started) => name_text.push_str(&format!(
+                                    " ⏳ Connecting… ({}s)",
+                                    started.elapsed().as_secs()
+                                )),
+                                None => name_text.push_str(" ⏳ Connecting…"),
+                            }
                         } else if params.connection_errors.contains_key(&conn_id) {
                             name_text.push_str(" ❌ Failed");
                             status_color = egui::Color32::from_rgb(235, 75, 75);
@@ -2529,6 +2549,15 @@ impl super::Tabular {
                                 // Use +1000 range to indicate refresh (handled in render_tree handler)
                                 context_menu_request = Some(conn_id + 1000);
                             }
+                            ui.close();
+                        }
+                        // Only offered while a connect is actually in flight.
+                        if let Some(conn_id) = node.connection_id
+                            && params.pending_connection_pools.contains(&conn_id)
+                            && ui.button("✕ Cancel Connecting").clicked()
+                        {
+                            // Use +4000 range to indicate cancel (handled in render_tree handler)
+                            context_menu_request = Some(conn_id + 4000);
                             ui.close();
                         }
                         // NEW: Disconnect option
@@ -3061,6 +3090,7 @@ impl super::Tabular {
                                 connection_errors: params.connection_errors,
                                 connection_pools: params.connection_pools,
                                 pending_connection_pools: params.pending_connection_pools,
+                                pending_started_at: params.pending_started_at,
                                 shared_connection_pools: params.shared_connection_pools,
                                 is_search_mode: params.is_search_mode,
                                 connection_types: params.connection_types,
@@ -3184,6 +3214,7 @@ impl super::Tabular {
                                     connection_errors: params.connection_errors,
                                     connection_pools: params.connection_pools,
                                     pending_connection_pools: params.pending_connection_pools,
+                                pending_started_at: params.pending_started_at,
                                     shared_connection_pools: params.shared_connection_pools,
                                     is_search_mode: params.is_search_mode,
                                     connection_types: params.connection_types,

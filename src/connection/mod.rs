@@ -32,7 +32,8 @@ pub(crate) use sql::{
 
 // Pool management
 pub(crate) use pool::{
-    cleanup_connection_pool, ensure_background_pool_creation, get_or_create_connection_pool,
+    cancel_all_connection_attempts, cancel_connection_attempt, cleanup_connection_pool,
+    ensure_background_pool_creation, get_or_create_connection_pool, pool_if_connected_or_start,
     start_background_pool_creation,
 };
 

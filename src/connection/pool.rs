@@ -5,19 +5,97 @@ use redis::{Client, aio::ConnectionManager};
 use sqlx::{
     mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions,
 };
-use std::sync::Arc;
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-/// Check TCP reachability to host & port before attempting database driver connection.
-/// Fails fast (within timeout_ms) if laptop has no network or host is unreachable.
-pub(crate) fn check_host_reachability(
+/// Wall-clock ceiling for one full connect attempt, covering DNS, the TCP probe,
+/// the SSH tunnel and the driver handshake. Without it a hung server keeps the
+/// pool-creation task alive indefinitely and the connection stays wedged in
+/// `pending_connection_pools` until the app restarts.
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// DNS budget. Name resolution has no timeout of its own and can hang for ~30s
+/// against an unresponsive resolver.
+const DNS_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Ceiling for a single driver handshake, matching the pre-existing MongoDB value.
+const DRIVER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A pending pool creation older than this is treated as dead and released.
+/// Deliberately a little past [`CONNECT_TIMEOUT`] so an attempt that is about to
+/// report back on its own still gets the chance to.
+const PENDING_POOL_MAX_AGE: Duration = Duration::from_secs(20);
+
+/// How often an in-flight connect re-checks whether it has been cancelled. This
+/// is the worst-case latency between the user asking to cancel and the attempt
+/// actually unwinding.
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Cancellation flags for in-flight connect attempts, keyed by connection id.
+///
+/// A process-global registry (same shape as `ssh_tunnel::TUNNELS`) rather than a
+/// parameter, because connects are dispatched down two different paths — the
+/// background worker thread and `runtime.spawn` — and only one of them can hand
+/// a task handle back to the UI. Looking the flag up by `connection.id` reaches
+/// both without changing the signature of every connect function.
+static CANCEL_FLAGS: Lazy<Mutex<HashMap<i64, Arc<AtomicBool>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Register a fresh, un-cancelled flag for a new attempt, replacing any flag
+/// left over from a previous one.
+pub(crate) fn begin_connect_attempt(connection_id: i64) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    if let Ok(mut flags) = CANCEL_FLAGS.lock() {
+        flags.insert(connection_id, flag.clone());
+    }
+    flag
+}
+
+/// Ask the in-flight attempt for this connection to unwind. No-op if nothing is
+/// running.
+pub(crate) fn signal_connect_cancel(connection_id: i64) {
+    if let Ok(flags) = CANCEL_FLAGS.lock()
+        && let Some(flag) = flags.get(&connection_id)
+    {
+        flag.store(true, Ordering::SeqCst);
+    }
+}
+
+fn current_cancel_flag(connection_id: i64) -> Option<Arc<AtomicBool>> {
+    CANCEL_FLAGS.lock().ok()?.get(&connection_id).cloned()
+}
+
+/// True if this connection's current attempt has been cancelled.
+pub(crate) fn connect_was_cancelled(connection_id: i64) -> bool {
+    current_cancel_flag(connection_id).is_some_and(|f| f.load(Ordering::SeqCst))
+}
+
+/// Forget a connection's flag once no attempt is outstanding.
+fn end_connect_attempt(connection_id: i64) {
+    if let Ok(mut flags) = CANCEL_FLAGS.lock() {
+        flags.remove(&connection_id);
+    }
+}
+
+/// Resolves once the flag is raised. Raced against the connect attempt so that
+/// cancelling drops the attempt's future instead of waiting for it to finish.
+async fn wait_for_cancel(flag: Arc<AtomicBool>) {
+    while !flag.load(Ordering::SeqCst) {
+        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+    }
+}
+
+/// Host/port that a reachability probe should target: the SSH endpoint when
+/// tunnelling, otherwise the database endpoint. `Ok(None)` means the probe does
+/// not apply (SQLite, or a loopback host that is always reachable).
+fn reachability_target(
     connection: &models::structs::ConnectionConfig,
-    timeout_ms: u64,
-) -> Result<(), String> {
-    use std::net::{TcpStream, ToSocketAddrs};
-    use std::time::Duration;
-
+) -> Result<Option<(String, String)>, String> {
     if connection.connection_type == models::enums::DatabaseType::SQLite {
-        return Ok(());
+        return Ok(None);
     }
 
     let (host, port_str) = if connection.ssh_enabled {
@@ -45,44 +123,141 @@ pub(crate) fn check_host_reachability(
     };
 
     if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-        return Ok(());
+        return Ok(None);
     }
 
-    let addr_str = format!("{}:{}", host, port_str);
-    let socket_addrs = match addr_str.to_socket_addrs() {
-        Ok(addrs) => addrs.collect::<Vec<_>>(),
-        Err(e) => {
-            return Err(format!(
-                "Gagal resolve host '{}': Jaringan/Internet tidak terhubung ({})",
-                host, e
-            ));
-        }
+    Ok(Some((host.to_string(), port_str.to_string())))
+}
+
+fn unreachable_error(host: &str, port_str: &str) -> String {
+    format!(
+        "Gagal terhubung ke host [{}:{}]: Jaringan/Internet tidak terjangkau (Host Offline).",
+        host, port_str
+    )
+}
+
+/// `ToSocketAddrs` cannot be interrupted, so resolve on a detached thread and
+/// abandon the answer once the budget expires.
+fn resolve_addrs_blocking(
+    addr: &str,
+    budget: Duration,
+) -> Result<Vec<std::net::SocketAddr>, String> {
+    use std::net::ToSocketAddrs;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = addr.to_string();
+    std::thread::spawn(move || {
+        let resolved = owned
+            .to_socket_addrs()
+            .map(|addrs| addrs.collect::<Vec<_>>())
+            .map_err(|e| e.to_string());
+        let _ = tx.send(resolved);
+    });
+
+    match rx.recv_timeout(budget) {
+        Ok(Ok(addrs)) => Ok(addrs),
+        Ok(Err(e)) => Err(format!("Jaringan/Internet tidak terhubung ({})", e)),
+        Err(_) => Err(format!(
+            "DNS tidak merespons dalam {} detik",
+            budget.as_secs()
+        )),
+    }
+}
+
+/// Check TCP reachability to host & port before attempting database driver connection.
+/// Fails fast (within timeout_ms) if laptop has no network or host is unreachable.
+///
+/// Blocking variant, for callers that are genuinely synchronous. Async callers
+/// must use [`check_host_reachability_async`] — this one cannot be cancelled by
+/// `tokio::time::timeout` and would block a runtime worker thread.
+pub(crate) fn check_host_reachability(
+    connection: &models::structs::ConnectionConfig,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    use std::net::TcpStream;
+
+    let Some((host, port_str)) = reachability_target(connection)? else {
+        return Ok(());
     };
+
+    let addr_str = format!("{}:{}", host, port_str);
+    let socket_addrs = resolve_addrs_blocking(&addr_str, DNS_TIMEOUT)
+        .map_err(|e| format!("Gagal resolve host '{}': {}", host, e))?;
 
     if socket_addrs.is_empty() {
         return Err(format!("Host '{}' tidak valid", host));
     }
 
-    let timeout = Duration::from_millis(timeout_ms);
-    let mut reachable = false;
+    // The budget covers the whole probe, not each address: a host with several
+    // A-records used to multiply the wait by the number of addresses.
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     for addr in socket_addrs {
-        if TcpStream::connect_timeout(&addr, timeout).is_ok() {
-            reachable = true;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
             break;
+        }
+        if TcpStream::connect_timeout(&addr, remaining).is_ok() {
+            return Ok(());
         }
     }
 
-    if !reachable {
-        return Err(format!(
-            "Gagal terhubung ke host [{}:{}]: Jaringan/Internet tidak terjangkau (Host Offline).",
-            host, port_str
-        ));
+    Err(unreachable_error(&host, &port_str))
+}
+
+/// Async reachability probe. Every step yields, so an enclosing
+/// `tokio::time::timeout` (or a task abort) can actually cancel it.
+pub(crate) async fn check_host_reachability_async(
+    connection: &models::structs::ConnectionConfig,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    let Some((host, port_str)) = reachability_target(connection)? else {
+        return Ok(());
+    };
+
+    let addr_str = format!("{}:{}", host, port_str);
+    let socket_addrs =
+        match tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host(addr_str)).await {
+            Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
+            Ok(Err(e)) => {
+                return Err(format!(
+                    "Gagal resolve host '{}': Jaringan/Internet tidak terhubung ({})",
+                    host, e
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "Gagal resolve host '{}': DNS tidak merespons dalam {} detik",
+                    host,
+                    DNS_TIMEOUT.as_secs()
+                ));
+            }
+        };
+
+    if socket_addrs.is_empty() {
+        return Err(format!("Host '{}' tidak valid", host));
     }
 
-    Ok(())
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    for addr in socket_addrs {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if let Ok(Ok(stream)) =
+            tokio::time::timeout(remaining, tokio::net::TcpStream::connect(addr)).await
+        {
+            drop(stream);
+            return Ok(());
+        }
+    }
+
+    Err(unreachable_error(&host, &port_str))
 }
 
 /// Resolve the actual host/port to connect to, accounting for SSH tunnels.
+///
+/// Blocking variant. Async callers must use [`resolve_connection_target_async`]:
+/// `ensure_tunnel` spawns an `ssh` process and waits on it.
 pub(crate) fn resolve_connection_target(
     connection: &models::structs::ConnectionConfig,
 ) -> Result<(String, String), String> {
@@ -101,49 +276,164 @@ pub(crate) fn resolve_connection_target(
     }
 }
 
+/// Async counterpart of [`resolve_connection_target`]. Spawning the `ssh` child
+/// and waiting for it to settle happens on a blocking thread so it never
+/// occupies a runtime worker.
+pub(crate) async fn resolve_connection_target_async(
+    connection: &models::structs::ConnectionConfig,
+) -> Result<(String, String), String> {
+    if !connection.ssh_enabled {
+        return Ok((connection.host.clone(), connection.port.clone()));
+    }
+    if connection.connection_type == models::enums::DatabaseType::SQLite {
+        return Err("SSH tunnel is not supported for SQLite connections".to_string());
+    }
+
+    let conn = connection.clone();
+    match tokio::task::spawn_blocking(move || ssh_tunnel::ensure_tunnel(&conn)).await {
+        Ok(Ok(local_port)) => Ok(("127.0.0.1".to_string(), local_port.to_string())),
+        Ok(Err(e)) => Err(e),
+        Err(e) => Err(format!("SSH tunnel task failed: {e}")),
+    }
+}
+
 // Helper function to clean up completed background pools
 pub(crate) fn cleanup_completed_background_pools(tabular: &mut Tabular) {
-    if let Ok(shared_pools) = tabular.shared_connection_pools.lock() {
-        for connection_id in shared_pools.keys() {
-            tabular.pending_connection_pools.remove(connection_id);
-            tabular.refreshing_connections.remove(connection_id);
-        }
-    }
-    let failed_ids: Vec<i64> = tabular.connection_errors.keys().copied().collect();
-    for connection_id in failed_ids {
-        tabular.pending_connection_pools.remove(&connection_id);
+    let settled: Vec<i64> = {
+        let succeeded = tabular
+            .shared_connection_pools
+            .lock()
+            .map(|pools| pools.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let failed = tabular.connection_errors.keys().copied();
+        succeeded.into_iter().chain(failed).collect()
+    };
+
+    for connection_id in settled {
+        // The attempt reported back one way or the other, so its cancellation
+        // flag has nothing left to cancel.
+        clear_pending_state(tabular, connection_id);
+        end_connect_attempt(connection_id);
         tabular.refreshing_connections.remove(&connection_id);
     }
 }
 
+/// Drop every trace of a connection's pending status.
+fn clear_pending_state(tabular: &mut Tabular, connection_id: i64) {
+    tabular.pending_connection_pools.remove(&connection_id);
+    tabular.pending_started_at.remove(&connection_id);
+    tabular.pending_pool_log_last.remove(&connection_id);
+}
+
 // Force cleanup of stuck pending connections (safety net)
 pub(crate) fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
-    if !tabular.pending_connection_pools.is_empty() {
-        let stuck_connections: Vec<i64> =
-            tabular.pending_connection_pools.iter().copied().collect();
-        for connection_id in stuck_connections {
-            let has_pool = tabular.connection_pools.contains_key(&connection_id)
-                || tabular
-                    .shared_connection_pools
-                    .lock()
-                    .is_ok_and(|pools| pools.contains_key(&connection_id));
+    // Forget timestamps for connections that are no longer pending.
+    tabular
+        .pending_started_at
+        .retain(|id, _| tabular.pending_connection_pools.contains(id));
 
-            if has_pool {
-                debug!(
-                    "🧹 Removing stuck pending status for connection {} (pool exists)",
-                    connection_id
-                );
-                tabular.pending_connection_pools.remove(&connection_id);
-            }
+    if tabular.pending_connection_pools.is_empty() {
+        return;
+    }
+
+    let now = std::time::Instant::now();
+    let stuck_connections: Vec<i64> = tabular.pending_connection_pools.iter().copied().collect();
+
+    for connection_id in stuck_connections {
+        let has_pool = tabular.connection_pools.contains_key(&connection_id)
+            || tabular
+                .shared_connection_pools
+                .lock()
+                .is_ok_and(|pools| pools.contains_key(&connection_id));
+
+        if has_pool {
+            debug!(
+                "🧹 Removing stuck pending status for connection {} (pool exists)",
+                connection_id
+            );
+            clear_pending_state(tabular, connection_id);
+            continue;
+        }
+
+        // Watchdog. A pool creation can die without ever reporting back: a
+        // panicking worker thread, an aborted task, or a driver that outlives
+        // its own timeout. The id would then sit in `pending_connection_pools`
+        // forever, and because `get_or_create_connection_pool` short-circuits on
+        // pending ids, the connection would stay dead until the app restarts.
+        //
+        // The start time is recorded lazily rather than at every insertion site,
+        // so an id added through any path — now or in future code — is covered.
+        let started = *tabular.pending_started_at.entry(connection_id).or_insert(now);
+
+        if now.duration_since(started) > PENDING_POOL_MAX_AGE {
+            debug!(
+                "⏰ Pool creation for connection {} exceeded {}s without reporting — releasing it",
+                connection_id,
+                PENDING_POOL_MAX_AGE.as_secs()
+            );
+            clear_pending_state(tabular, connection_id);
+            tabular.refreshing_connections.remove(&connection_id);
+            // Don't mask a more specific error the background task already reported.
+            tabular
+                .connection_errors
+                .entry(connection_id)
+                .or_insert_with(|| {
+                    format!(
+                        "Koneksi tidak merespons dalam {} detik dan dihentikan. Silakan coba hubungkan ulang.",
+                        PENDING_POOL_MAX_AGE.as_secs()
+                    )
+                });
         }
     }
 }
 
 /// Create a new connection pool for the given connection configuration.
+///
+/// Bounded by [`CONNECT_TIMEOUT`]. Everything inside yields at `.await` points,
+/// so this timeout — and an outer task abort — can genuinely cancel the attempt.
 pub(crate) async fn create_connection_pool_for_config(
     connection: &models::structs::ConnectionConfig,
 ) -> Option<models::enums::DatabasePool> {
-    if let Err(e) = check_host_reachability(connection, 2500) {
+    let attempt = async {
+        match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            create_connection_pool_for_config_inner(connection),
+        )
+        .await
+        {
+            Ok(pool) => pool,
+            Err(_) => {
+                debug!(
+                    "⏰ Connect timed out after {}s for connection {:?}",
+                    CONNECT_TIMEOUT.as_secs(),
+                    connection.id
+                );
+                None
+            }
+        }
+    };
+
+    // Saved connections can be cancelled; ad-hoc configs without an id (test
+    // dialogs, temporary pools) have nothing to key a flag on.
+    let Some(flag) = connection.id.and_then(current_cancel_flag) else {
+        return attempt.await;
+    };
+
+    tokio::select! {
+        pool = attempt => pool,
+        _ = wait_for_cancel(flag) => {
+            // Dropping `attempt` here tears down the half-open socket instead of
+            // leaving it to run to completion in the background.
+            debug!("🚫 Connect cancelled for connection {:?}", connection.id);
+            None
+        }
+    }
+}
+
+async fn create_connection_pool_for_config_inner(
+    connection: &models::structs::ConnectionConfig,
+) -> Option<models::enums::DatabasePool> {
+    if let Err(e) = check_host_reachability_async(connection, 2500).await {
         debug!(
             "❌ Fast-fail TCP reachability check failed for connection {:?}: {}",
             connection.id, e
@@ -153,7 +443,8 @@ pub(crate) async fn create_connection_pool_for_config(
 
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -243,7 +534,8 @@ pub(crate) async fn create_connection_pool_for_config(
             None
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -308,7 +600,8 @@ pub(crate) async fn create_connection_pool_for_config(
             }
         }
         models::enums::DatabaseType::Redis => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -332,16 +625,28 @@ pub(crate) async fn create_connection_pool_for_config(
                 connection.name
             );
             match Client::open(connection_string) {
-                Ok(client) => match ConnectionManager::new(client).await {
-                    Ok(manager) => {
-                        let database_pool = models::enums::DatabasePool::Redis(Arc::new(manager));
-                        Some(database_pool)
+                // ConnectionManager retries internally and has no timeout of its own.
+                Ok(client) => {
+                    match tokio::time::timeout(DRIVER_TIMEOUT, ConnectionManager::new(client)).await
+                    {
+                        Ok(Ok(manager)) => {
+                            let database_pool =
+                                models::enums::DatabasePool::Redis(Arc::new(manager));
+                            Some(database_pool)
+                        }
+                        Ok(Err(e)) => {
+                            debug!("Failed to create Redis connection manager: {}", e);
+                            None
+                        }
+                        Err(_) => {
+                            debug!(
+                                "Redis connection manager timed out after {}s",
+                                DRIVER_TIMEOUT.as_secs()
+                            );
+                            None
+                        }
                     }
-                    Err(e) => {
-                        debug!("Failed to create Redis connection manager: {}", e);
-                        None
-                    }
-                },
+                }
                 Err(e) => {
                     debug!("Failed to create Redis client: {}", e);
                     None
@@ -349,7 +654,8 @@ pub(crate) async fn create_connection_pool_for_config(
             }
         }
         models::enums::DatabaseType::MongoDB => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -392,7 +698,8 @@ pub(crate) async fn create_connection_pool_for_config(
             }
         }
         models::enums::DatabaseType::MsSQL => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -411,15 +718,25 @@ pub(crate) async fn create_connection_pool_for_config(
                 Some(&connection.database),
             );
 
-            match mssql_driver_pool::Pool::builder()
-                .client_config(client_config)
-                .max_connections(20)
-                .build()
-                .await
+            match tokio::time::timeout(
+                DRIVER_TIMEOUT,
+                mssql_driver_pool::Pool::builder()
+                    .client_config(client_config)
+                    .max_connections(20)
+                    .build(),
+            )
+            .await
             {
-                Ok(pool) => Some(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
-                Err(e) => {
+                Ok(Ok(pool)) => Some(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
+                Ok(Err(e)) => {
                     debug!("MsSQL pool creation failed: {}", e);
+                    None
+                }
+                Err(_) => {
+                    debug!(
+                        "MsSQL pool creation timed out after {}s",
+                        DRIVER_TIMEOUT.as_secs()
+                    );
                     None
                 }
             }
@@ -432,8 +749,26 @@ pub(crate) async fn create_connection_pool_for_config(
 }
 
 /// Create a database pool (legacy / refresh path). Delegates to create_connection_pool_for_config.
+///
+/// Bounded by [`CONNECT_TIMEOUT`], same as the primary path.
 #[allow(dead_code)]
 pub(crate) async fn create_database_pool(
+    connection: &models::structs::ConnectionConfig,
+) -> Option<models::enums::DatabasePool> {
+    match tokio::time::timeout(CONNECT_TIMEOUT, create_database_pool_inner(connection)).await {
+        Ok(pool) => pool,
+        Err(_) => {
+            debug!(
+                "⏰ Connect (refresh path) timed out after {}s for connection {:?}",
+                CONNECT_TIMEOUT.as_secs(),
+                connection.id
+            );
+            None
+        }
+    }
+}
+
+async fn create_database_pool_inner(
     connection: &models::structs::ConnectionConfig,
 ) -> Option<models::enums::DatabasePool> {
     match connection.connection_type {
@@ -441,7 +776,8 @@ pub(crate) async fn create_database_pool(
             return create_connection_pool_for_config(connection).await;
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -488,7 +824,8 @@ pub(crate) async fn create_database_pool(
             }
         }
         models::enums::DatabaseType::Redis => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -508,15 +845,21 @@ pub(crate) async fn create_database_pool(
             };
 
             match Client::open(connection_string) {
-                Ok(client) => match ConnectionManager::new(client).await {
-                    Ok(manager) => Some(models::enums::DatabasePool::Redis(Arc::new(manager))),
-                    Err(_e) => None,
-                },
+                Ok(client) => {
+                    match tokio::time::timeout(DRIVER_TIMEOUT, ConnectionManager::new(client)).await
+                    {
+                        Ok(Ok(manager)) => {
+                            Some(models::enums::DatabasePool::Redis(Arc::new(manager)))
+                        }
+                        _ => None,
+                    }
+                }
                 Err(_e) => None,
             }
         }
         models::enums::DatabaseType::MsSQL => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -535,21 +878,32 @@ pub(crate) async fn create_database_pool(
                 Some(&connection.database),
             );
 
-            match mssql_driver_pool::Pool::builder()
-                .client_config(client_config)
-                .max_connections(5) // smaller size for temp/check connections
-                .build()
-                .await
+            match tokio::time::timeout(
+                DRIVER_TIMEOUT,
+                mssql_driver_pool::Pool::builder()
+                    .client_config(client_config)
+                    .max_connections(5) // smaller size for temp/check connections
+                    .build(),
+            )
+            .await
             {
-                Ok(pool) => Some(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
-                Err(e) => {
+                Ok(Ok(pool)) => Some(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
+                Ok(Err(e)) => {
                     debug!("MsSQL temp pool creation failed: {}", e);
+                    None
+                }
+                Err(_) => {
+                    debug!(
+                        "MsSQL temp pool creation timed out after {}s",
+                        DRIVER_TIMEOUT.as_secs()
+                    );
                     None
                 }
             }
         }
         models::enums::DatabaseType::MongoDB => {
-            let (target_host, target_port) = match resolve_connection_target(connection) {
+            let (target_host, target_port) = match resolve_connection_target_async(connection).await
+            {
                 Ok(tuple) => tuple,
                 Err(err) => {
                     debug!(
@@ -793,6 +1147,11 @@ pub(crate) async fn create_connection_pool_by_id(
 
     match create_connection_pool_for_config(&connection).await {
         Some(pool) => Ok(pool),
+        // Distinguish a deliberate cancel from a genuine failure, so the sidebar
+        // doesn't tell the user to check credentials they never got to use.
+        None if connect_was_cancelled(connection_id) => {
+            Err("Percobaan koneksi dibatalkan.".to_string())
+        }
         None => Err("Failed to connect to database server. Please check host, port, credentials, or network.".to_string()),
     }
 }
@@ -800,6 +1159,12 @@ pub(crate) async fn create_connection_pool_by_id(
 /// Start background pool creation without blocking the UI thread.
 pub(crate) fn start_background_pool_creation(tabular: &mut Tabular, connection_id: i64) {
     tabular.pending_connection_pools.insert(connection_id);
+    tabular
+        .pending_started_at
+        .insert(connection_id, std::time::Instant::now());
+    // Arm cancellation before dispatch, so a cancel arriving while the task is
+    // still queued is still seen by it.
+    begin_connect_attempt(connection_id);
 
     if let Some(sender) = &tabular.background_sender {
         let _ = sender.send(models::enums::BackgroundTask::EnsureConnectionPool { connection_id });
@@ -922,23 +1287,87 @@ pub(crate) async fn get_or_create_connection_pool(
     );
 
     tabular.pending_connection_pools.insert(connection_id);
+    tabular
+        .pending_started_at
+        .insert(connection_id, std::time::Instant::now());
+    begin_connect_attempt(connection_id);
 
     match try_quick_pool_creation(tabular, connection_id).await {
         Some(pool) => {
             tabular.connection_pools.insert(connection_id, pool.clone());
-            tabular.pending_connection_pools.remove(&connection_id);
-            tabular.pending_pool_log_last.remove(&connection_id);
+            clear_pending_state(tabular, connection_id);
+            end_connect_attempt(connection_id);
             debug!(
                 "✅ Quickly created connection pool for connection {}",
                 connection_id
             );
             Some(pool)
         }
+        // A cancel that landed during the quick attempt must not be undone by
+        // immediately queueing the same connect in the background.
+        None if connect_was_cancelled(connection_id) => {
+            debug!(
+                "🚫 Quick attempt for connection {} was cancelled; not escalating to background",
+                connection_id
+            );
+            clear_pending_state(tabular, connection_id);
+            None
+        }
         None => {
             start_background_pool_creation(tabular, connection_id);
             None
         }
     }
+}
+
+/// Pool lookup for callers running on the UI thread.
+///
+/// Returns a pool only if one is already established. It never performs a
+/// connect itself — unlike [`get_or_create_connection_pool`], which can spend up
+/// to the quick-attempt budget dialling the server — so it is safe to call while
+/// painting a frame. When no pool is ready it starts background creation and
+/// returns `None`; the caller should render a placeholder and pick the data up
+/// on a later frame.
+///
+/// Declared `async` purely so it drops into the existing `block_on` call sites
+/// unchanged; it never awaits.
+pub(crate) async fn pool_if_connected_or_start(
+    tabular: &mut Tabular,
+    connection_id: i64,
+) -> Option<models::enums::DatabasePool> {
+    cleanup_completed_background_pools(tabular);
+    cleanup_stuck_pending_connections(tabular);
+
+    if let Some(pool) = tabular.connection_pools.get(&connection_id) {
+        return Some(pool.clone());
+    }
+
+    let shared = tabular
+        .shared_connection_pools
+        .lock()
+        .ok()
+        .and_then(|pools| pools.get(&connection_id).cloned());
+
+    if let Some(pool) = shared {
+        debug!(
+            "✅ Promoting background-created pool for connection {}",
+            connection_id
+        );
+        tabular.connection_pools.insert(connection_id, pool.clone());
+        clear_pending_state(tabular, connection_id);
+        end_connect_attempt(connection_id);
+        return Some(pool);
+    }
+
+    // Don't re-dial a connection that already failed. Callers here are render
+    // paths, so without this a dead server would be retried on every frame. The
+    // error is cleared by an explicit Reconnect, which is what re-arms this.
+    if tabular.connection_errors.contains_key(&connection_id) {
+        return None;
+    }
+
+    ensure_background_pool_creation(tabular, connection_id);
+    None
 }
 
 /// Non-blocking version. Returns None immediately if pool is currently being created.
@@ -1017,11 +1446,232 @@ pub(crate) fn cleanup_connection_pool(tabular: &mut Tabular, connection_id: i64)
         connection_id
     );
     tabular.connection_pools.remove(&connection_id);
-    tabular.pending_connection_pools.remove(&connection_id);
+    clear_pending_state(tabular, connection_id);
+    end_connect_attempt(connection_id);
 
     if let Ok(mut shared_pools) = tabular.shared_connection_pools.lock() {
         shared_pools.remove(&connection_id);
     }
 
     ssh_tunnel::shutdown_by_id(connection_id);
+}
+
+/// Cancel an in-flight connect attempt for `connection_id`.
+///
+/// Returns `true` if there was something to cancel. The UI state is released
+/// immediately; the background task itself unwinds within
+/// [`CANCEL_POLL_INTERVAL`], when the cancel watcher wins its race and the
+/// half-open connect future is dropped.
+pub(crate) fn cancel_connection_attempt(tabular: &mut Tabular, connection_id: i64) -> bool {
+    let was_pending = tabular.pending_connection_pools.contains(&connection_id);
+    if !was_pending {
+        return false;
+    }
+
+    debug!("🚫 Cancelling connect attempt for connection {}", connection_id);
+
+    signal_connect_cancel(connection_id);
+    clear_pending_state(tabular, connection_id);
+    tabular.refreshing_connections.remove(&connection_id);
+    tabular.connection_errors.insert(
+        connection_id,
+        "Percobaan koneksi dibatalkan oleh pengguna.".to_string(),
+    );
+
+    // Tear down a tunnel the attempt may already have opened. Non-blocking, so
+    // this is safe to call from the UI thread.
+    ssh_tunnel::shutdown_by_id(connection_id);
+
+    true
+}
+
+/// Cancel every in-flight connect attempt, e.g. on shutdown.
+pub(crate) fn cancel_all_connection_attempts(tabular: &mut Tabular) {
+    let pending: Vec<i64> = tabular.pending_connection_pools.iter().copied().collect();
+    for connection_id in pending {
+        cancel_connection_attempt(tabular, connection_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use models::enums::DatabaseType;
+    use models::structs::ConnectionConfig;
+
+    fn conn(connection_type: DatabaseType) -> ConnectionConfig {
+        ConnectionConfig {
+            connection_type,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sqlite_needs_no_reachability_probe() {
+        let mut c = conn(DatabaseType::SQLite);
+        c.host = "/tmp/some.db".to_string();
+        assert_eq!(reachability_target(&c).unwrap(), None);
+    }
+
+    #[test]
+    fn loopback_hosts_need_no_reachability_probe() {
+        for host in ["localhost", "127.0.0.1", "::1"] {
+            let mut c = conn(DatabaseType::MySQL);
+            c.host = host.to_string();
+            assert_eq!(reachability_target(&c).unwrap(), None, "host {host}");
+        }
+    }
+
+    #[test]
+    fn direct_connection_probes_database_endpoint() {
+        let mut c = conn(DatabaseType::PostgreSQL);
+        c.host = "db.example.com".to_string();
+        c.port = "5432".to_string();
+        assert_eq!(
+            reachability_target(&c).unwrap(),
+            Some(("db.example.com".to_string(), "5432".to_string()))
+        );
+    }
+
+    #[test]
+    fn ssh_connection_probes_the_ssh_endpoint_not_the_database() {
+        let mut c = conn(DatabaseType::MySQL);
+        c.host = "db.internal".to_string();
+        c.port = "3306".to_string();
+        c.ssh_enabled = true;
+        c.ssh_host = "bastion.example.com".to_string();
+        c.ssh_port = "2222".to_string();
+        assert_eq!(
+            reachability_target(&c).unwrap(),
+            Some(("bastion.example.com".to_string(), "2222".to_string()))
+        );
+    }
+
+    #[test]
+    fn blank_ports_fall_back_to_defaults() {
+        let mut direct = conn(DatabaseType::MySQL);
+        direct.host = "db.example.com".to_string();
+        direct.port = "  ".to_string();
+        assert_eq!(
+            reachability_target(&direct).unwrap(),
+            Some(("db.example.com".to_string(), "3306".to_string()))
+        );
+
+        let mut tunnelled = conn(DatabaseType::MySQL);
+        tunnelled.host = "db.internal".to_string();
+        tunnelled.ssh_enabled = true;
+        tunnelled.ssh_host = "bastion.example.com".to_string();
+        tunnelled.ssh_port = String::new();
+        assert_eq!(
+            reachability_target(&tunnelled).unwrap(),
+            Some(("bastion.example.com".to_string(), "22".to_string()))
+        );
+    }
+
+    #[test]
+    fn empty_hosts_are_rejected() {
+        let mut direct = conn(DatabaseType::MySQL);
+        direct.host = String::new();
+        assert!(reachability_target(&direct).is_err());
+
+        let mut tunnelled = conn(DatabaseType::MySQL);
+        tunnelled.host = "db.internal".to_string();
+        tunnelled.ssh_enabled = true;
+        tunnelled.ssh_host = "   ".to_string();
+        assert!(reachability_target(&tunnelled).is_err());
+    }
+
+    #[test]
+    fn dns_resolution_gives_up_once_the_budget_expires() {
+        // RFC 6761 reserves .invalid, so this never resolves. The point is that
+        // the call returns rather than hanging the way `to_socket_addrs` could.
+        let started = std::time::Instant::now();
+        let result = resolve_addrs_blocking("nonexistent.invalid:3306", Duration::from_millis(300));
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "resolution should be bounded, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    // Ids are namespaced per test: CANCEL_FLAGS is process-global and tests
+    // share a process.
+    #[test]
+    fn cancel_flag_starts_clear_and_is_raised_by_signal() {
+        let id = -9001;
+        begin_connect_attempt(id);
+        assert!(!connect_was_cancelled(id));
+
+        signal_connect_cancel(id);
+        assert!(connect_was_cancelled(id));
+
+        end_connect_attempt(id);
+    }
+
+    #[test]
+    fn a_new_attempt_clears_a_previous_cancel() {
+        // Otherwise a connection cancelled once could never be reconnected.
+        let id = -9002;
+        begin_connect_attempt(id);
+        signal_connect_cancel(id);
+        assert!(connect_was_cancelled(id));
+
+        begin_connect_attempt(id);
+        assert!(!connect_was_cancelled(id));
+
+        end_connect_attempt(id);
+    }
+
+    #[test]
+    fn unknown_and_finished_connections_are_not_cancelled() {
+        let id = -9003;
+        assert!(!connect_was_cancelled(id));
+
+        begin_connect_attempt(id);
+        signal_connect_cancel(id);
+        end_connect_attempt(id);
+        // A stale flag must not make the next attempt look pre-cancelled.
+        assert!(!connect_was_cancelled(id));
+    }
+
+    #[test]
+    fn signalling_one_connection_does_not_cancel_another() {
+        let (a, b) = (-9004, -9005);
+        begin_connect_attempt(a);
+        begin_connect_attempt(b);
+
+        signal_connect_cancel(a);
+        assert!(connect_was_cancelled(a));
+        assert!(!connect_was_cancelled(b));
+
+        end_connect_attempt(a);
+        end_connect_attempt(b);
+    }
+
+    #[tokio::test]
+    async fn cancel_watcher_resolves_once_the_flag_is_raised() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let watcher = flag.clone();
+
+        let started = std::time::Instant::now();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            watcher.store(true, Ordering::SeqCst);
+        });
+
+        // Would hang forever if the watcher ignored the flag.
+        tokio::time::timeout(Duration::from_secs(5), wait_for_cancel(flag))
+            .await
+            .expect("cancel watcher should resolve after the flag is raised");
+
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn watchdog_age_stays_above_the_connect_timeout() {
+        // The watchdog must not reclaim an attempt that is still within its own
+        // connect budget, or it would cancel connections that are about to land.
+        assert!(PENDING_POOL_MAX_AGE > CONNECT_TIMEOUT);
+    }
 }

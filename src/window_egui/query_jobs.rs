@@ -156,18 +156,12 @@ impl super::Tabular {
             // Update global current_connection_id so other components (e.g. spreadsheet) pick it up
             self.current_connection_id = Some(cid);
 
-            // Skip if we already have a pool or it's being created
-            let already_has_pool = self.connection_pools.contains_key(&cid);
-            let already_pending = self.pending_connection_pools.contains(&cid);
-            if !already_has_pool && !already_pending {
-                // Use (or create) the shared runtime to synchronously kick off pool creation.
-                // We block only for the quick-attempt path inside get_or_create_connection_pool;
-                // if it becomes a background creation it will return fast.
-                let rt = self.get_runtime();
-                rt.block_on(async {
-                    let _ = crate::connection::get_or_create_connection_pool(self, cid).await;
-                });
-            }
+            // Open the pool in the background. This used to `block_on` the
+            // quick-attempt path, which parked the UI thread inside the connect
+            // itself — a slow server froze the whole app on connection select.
+            // `ensure_background_pool_creation` is a no-op when a pool already
+            // exists or one is already being created.
+            crate::connection::ensure_background_pool_creation(self, cid);
         }
     }
     pub fn apply_paginated_query_result(&mut self, message: &connection::QueryResultMessage) {

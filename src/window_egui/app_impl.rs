@@ -3096,14 +3096,19 @@ impl App for Tabular {
         if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
             self.show_query_ast_debug = !self.show_query_ast_debug;
         }
-        // Periodic cleanup of stuck connection pools to prevent infinite loops
-        if self.pending_connection_pools.len() > 10 {
-            // If we have too many pending connections, force cleanup
-            log::debug!(
-                "🧹 Force cleaning up {} pending connections",
-                self.pending_connection_pools.len()
-            );
-            self.pending_connection_pools.clear();
+        // Periodic cleanup of stuck connection pools to prevent infinite loops.
+        // Age-based: only attempts that have gone silent past their own timeout
+        // are released. The previous rule dropped *all* pending ids once more
+        // than ten piled up, which also cancelled connections that were still
+        // legitimately in flight.
+        crate::connection::pool::cleanup_completed_background_pools(self);
+        crate::connection::pool::cleanup_stuck_pending_connections(self);
+
+        // egui only repaints on input, so without this the "Connecting… (Ns)"
+        // counter would sit frozen and look exactly like the hang it is meant to
+        // rule out. Also keeps the watchdog above ticking while the app is idle.
+        if !self.pending_connection_pools.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
 
         // Handle forced refresh flag
@@ -4102,6 +4107,12 @@ impl App for Tabular {
         // stack above all panels and dialogs.
         self.toasts.show(ctx);
     } // end update
+
+    fn on_exit(&mut self) {
+        // Unwind connects that are still mid-handshake so their SSH child
+        // processes are killed rather than orphaned when the app goes away.
+        crate::connection::cancel_all_connection_attempts(self);
+    }
 } // end impl App for Tabular
 
 

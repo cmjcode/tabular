@@ -386,12 +386,11 @@ pub(crate) fn open_query_file(
         tabular.set_active_tab_connection_with_database(Some(conn_id), resolved_database);
         tabular.current_connection_id = Some(conn_id);
 
-        // Trigger connection creation in the background (non-blocking for UI)
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(async {
-                let _ = crate::connection::get_or_create_connection_pool(tabular, conn_id).await;
-            });
-        }
+        // Pool creation is already kicked off in the background by
+        // `set_active_tab_connection_with_database` above. This used to
+        // `block_on` the connect here as well — despite the comment claiming it
+        // was non-blocking — which froze the UI when opening a saved query
+        // bound to a slow connection.
     }
 
     Ok(())

@@ -148,9 +148,15 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
 pub(crate) fn test_database_connection(
     connection: &models::structs::ConnectionConfig,
 ) -> (bool, String) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return (false, format!("Gagal menyiapkan runtime: {}", e)),
+    };
 
     rt.block_on(async {
+        // The per-driver `acquire_timeout`s cover neither DNS nor the SSH
+        // tunnel, so bound the whole test the way a real connect is bounded.
+        let probe = async {
         match connection.connection_type {
             models::enums::DatabaseType::MySQL => {
                 let (target_host, target_port) = match resolve_connection_target(connection) {
@@ -340,6 +346,18 @@ pub(crate) fn test_database_connection(
             models::enums::DatabaseType::ApiHttp => (
                 false,
                 "API-HTTP connections do not support database testing".to_string(),
+            ),
+        }
+        };
+
+        match tokio::time::timeout(super::pool::CONNECT_TIMEOUT, probe).await {
+            Ok(result) => result,
+            Err(_) => (
+                false,
+                format!(
+                    "Koneksi tidak merespons dalam {} detik.",
+                    super::pool::CONNECT_TIMEOUT.as_secs()
+                ),
             ),
         }
     })

@@ -2222,9 +2222,9 @@ impl super::Tabular {
     ) -> Vec<String> {
         match connection.connection_type {
             models::enums::DatabaseType::MySQL => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = self.get_runtime();
                 rt.block_on(async {
-                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::pool_if_connected_or_start(self, connection_id).await {
                         let q = "SELECT DISTINCT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME";
                         match sqlx::query_as::<_, (String,)>(q)
                             .bind(database_name)
@@ -2238,9 +2238,9 @@ impl super::Tabular {
                 })
             }
             models::enums::DatabaseType::PostgreSQL => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = self.get_runtime();
                 rt.block_on(async {
-                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::pool_if_connected_or_start(self, connection_id).await {
                         let q = "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1 ORDER BY indexname";
                         match sqlx::query_as::<_, (String,)>(q)
                             .bind(table_name)
@@ -2253,10 +2253,10 @@ impl super::Tabular {
                 })
             }
             models::enums::DatabaseType::SQLite => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = self.get_runtime();
                 rt.block_on(async {
                     if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) =
-                        connection::get_or_create_connection_pool(self, connection_id).await
+                        connection::pool_if_connected_or_start(self, connection_id).await
                     {
                         let escaped = table_name.replace("'", "''");
                         let q = format!("PRAGMA index_list('{}')", escaped);
@@ -2285,7 +2285,7 @@ impl super::Tabular {
                 let pass = connection.password.clone();
                 let db = database_name.to_string();
                 let tbl = table_name.to_string();
-                let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                let rt_res = self.get_runtime().block_on(async move {
                     let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
                     // Parse schema-qualified name
                     let parse = |name: &str| -> (Option<String>, String) {
@@ -2310,10 +2310,10 @@ impl super::Tabular {
             }
             models::enums::DatabaseType::Redis => Vec::new(),
             models::enums::DatabaseType::MongoDB => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = self.get_runtime();
                 rt.block_on(async {
                     if let Some(models::enums::DatabasePool::MongoDB(client)) =
-                        connection::get_or_create_connection_pool(self, connection_id).await
+                        connection::pool_if_connected_or_start(self, connection_id).await
                     {
                         let coll = client
                             .database(database_name)
@@ -2337,9 +2337,9 @@ impl super::Tabular {
     ) -> Vec<String> {
         match connection.connection_type {
             models::enums::DatabaseType::MySQL => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = self.get_runtime();
                 rt.block_on(async {
-                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::pool_if_connected_or_start(self, connection_id).await {
                         let q = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION";
                         match sqlx::query_as::<_, (String,)>(q)
                             .bind(database_name)
@@ -2353,9 +2353,9 @@ impl super::Tabular {
                 })
             }
             models::enums::DatabaseType::PostgreSQL => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = self.get_runtime();
                 rt.block_on(async {
-                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::get_or_create_connection_pool(self, connection_id).await {
+                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::pool_if_connected_or_start(self, connection_id).await {
                         let (schema_opt, tbl_only) = if let Some((s, t)) = table_name.split_once('.') {
                             (Some(s.trim_matches('"')), t.trim_matches('"'))
                         } else if !database_name.is_empty() && database_name != "public" && database_name != "postgres" {
@@ -2391,10 +2391,10 @@ impl super::Tabular {
                 })
             }
             models::enums::DatabaseType::SQLite => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = self.get_runtime();
                 rt.block_on(async {
                     if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) =
-                        connection::get_or_create_connection_pool(self, connection_id).await
+                        connection::pool_if_connected_or_start(self, connection_id).await
                     {
                         let escaped = table_name.replace("'", "''");
                         let q = format!("PRAGMA table_info('{}')", escaped);
@@ -2426,7 +2426,7 @@ impl super::Tabular {
                 let pass = connection.password.clone();
                 let db = database_name.to_string();
                 let tbl = table_name.to_string();
-                let rt_res = tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                let rt_res = self.get_runtime().block_on(async move {
                     let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
                     // Parse schema-qualified name
                     let parse = |name: &str| -> (Option<String>, String) {
