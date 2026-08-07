@@ -121,7 +121,18 @@ jobs:
         targets: ${{ matrix.target }}
     
     - name: Install cross
-      run: cargo install cross
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cross
+
+    - name: Install aarch64 cross-compilation toolchain
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y \
+          gcc-aarch64-linux-gnu \
+          g++-aarch64-linux-gnu \
+          libc6-dev-arm64-cross
     
     - name: Cache cargo dependencies
       uses: actions/cache@v3
@@ -133,6 +144,15 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Build for ${{ matrix.target }}
+      env:
+        # Ensure vendored OpenSSL compiles correctly for cross targets
+        OPENSSL_STATIC: "1"
+        OPENSSL_NO_VENDOR: "0"
+        PKG_CONFIG_ALLOW_CROSS: "1"
+        # aarch64 cross-compiler binaries (no-op on x86_64 target)
+        CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+        AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
       run: cross build --release --target ${{ matrix.target }}
     
     - name: Create tarball
