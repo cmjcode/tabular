@@ -2658,6 +2658,7 @@ impl Tabular {
                     // Delete Connection confirmation dialog
                     self.render_delete_connection_confirmation(ui.ctx());
                     self.render_delete_http_request_confirmation(ui.ctx());
+                    self.render_rename_http_request_dialog(ui.ctx());
                     self.render_delete_http_folder_confirmation(ui.ctx());
                     self.render_delete_http_workspace_confirmation(ui.ctx());
 

@@ -326,6 +326,10 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             RequestAction::Open => {
                 apply_collection_request_to_active_tab(app, &req);
             }
+            RequestAction::Rename => {
+                let name = req.display_name();
+                app.pending_rename_http_request = Some((req.id.clone(), name.clone(), name));
+            }
             RequestAction::Duplicate => {
                 duplicate_request_in_workspaces(&mut app.yaak_workspaces, &req);
                 save_workspaces(&app.yaak_workspaces);
@@ -536,6 +540,7 @@ fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestAction {
     Open,
+    Rename,
     Delete,
     Duplicate,
 }
@@ -652,6 +657,10 @@ fn render_request_row(
             action = Some(RequestAction::Open);
             ui.close();
         }
+        if ui.button("Rename Request").clicked() {
+            action = Some(RequestAction::Rename);
+            ui.close();
+        }
         if ui.button("Duplicate Request").clicked() {
             action = Some(RequestAction::Duplicate);
             ui.close();
@@ -667,6 +676,10 @@ fn render_request_row(
             action = Some(RequestAction::Open);
             ui.close();
         }
+        if ui.button("Rename Request").clicked() {
+            action = Some(RequestAction::Rename);
+            ui.close();
+        }
         if ui.button("Duplicate Request").clicked() {
             action = Some(RequestAction::Duplicate);
             ui.close();
@@ -678,6 +691,39 @@ fn render_request_row(
     });
 
     action
+}
+
+pub(crate) fn rename_request_in_workspaces(
+    workspaces: &mut [crate::http_collection::HttpWorkspace],
+    req_id: &str,
+    new_name: &str,
+) -> bool {
+    for ws in workspaces.iter_mut() {
+        if let Some(req) = ws.requests.iter_mut().find(|r| r.id == req_id) {
+            req.name = new_name.to_string();
+            return true;
+        }
+        fn rename_in_folders(
+            folders: &mut [crate::http_collection::HttpFolder],
+            req_id: &str,
+            new_name: &str,
+        ) -> bool {
+            for f in folders.iter_mut() {
+                if let Some(req) = f.requests.iter_mut().find(|r| r.id == req_id) {
+                    req.name = new_name.to_string();
+                    return true;
+                }
+                if rename_in_folders(&mut f.children, req_id, new_name) {
+                    return true;
+                }
+            }
+            false
+        }
+        if rename_in_folders(&mut ws.folders, req_id, new_name) {
+            return true;
+        }
+    }
+    false
 }
 
 pub(crate) fn delete_request_from_workspaces(

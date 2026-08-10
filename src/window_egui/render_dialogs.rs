@@ -1694,5 +1694,73 @@ impl super::Tabular {
             }
         }
     }
+
+    pub fn render_rename_http_request_dialog(&mut self, ctx: &egui::Context) {
+        if let Some((req_id, current_name, mut edit_name)) = self.pending_rename_http_request.clone() {
+            let mut close_dialog = false;
+            let mut confirm_rename = false;
+
+            egui::Window::new("Rename HTTP Request")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(380.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("✏️ Rename HTTP Request")
+                                .strong(),
+                        );
+                        ui.add_space(8.0);
+                        ui.label("Request Name:");
+                        ui.add_space(2.0);
+                        let text_edit = ui.add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::TextEdit::singleline(&mut edit_name).hint_text("Enter new request name"),
+                        );
+                        if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            confirm_rename = true;
+                            close_dialog = true;
+                        }
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Save").clicked() {
+                                    confirm_rename = true;
+                                    close_dialog = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_dialog = true;
+                                }
+                            });
+                        });
+                    });
+                });
+
+            if confirm_rename {
+                let trimmed = edit_name.trim();
+                if !trimmed.is_empty() {
+                    if crate::sidebar_collection::rename_request_in_workspaces(&mut self.yaak_workspaces, &req_id, trimmed) {
+                        crate::http_collection::save_workspaces(&self.yaak_workspaces);
+                        for tab in &mut self.query_tabs {
+                            if let Some(ref state) = tab.http_client_state {
+                                if state.saved_request_id.as_deref() == Some(&req_id) {
+                                    tab.title = trimmed.to_string();
+                                }
+                            }
+                        }
+                        self.toasts.success(format!("Renamed request to '{}'", trimmed));
+                    }
+                }
+            } else if !close_dialog {
+                self.pending_rename_http_request = Some((req_id, current_name, edit_name));
+            }
+
+            if close_dialog {
+                self.pending_rename_http_request = None;
+            }
+        }
+    }
 }
 

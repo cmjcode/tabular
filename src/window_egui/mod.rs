@@ -308,6 +308,7 @@ pub struct Tabular {
     // Pending delete connection confirmation
     pub pending_delete_connection: Option<(i64, String)>, // (connection_id, connection_name)
     pub pending_delete_http_request: Option<(String, String)>, // (request_id, request_name)
+    pub pending_rename_http_request: Option<(String, String, String)>, // (request_id, current_name, edit_name)
     pub pending_delete_http_folder: Option<(String, String, String)>, // (workspace_id, folder_id, folder_name)
     pub pending_delete_http_workspace: Option<(String, String)>, // (workspace_id, workspace_name)
     // Drag and drop tracking for HTTP Connections in sidebar
