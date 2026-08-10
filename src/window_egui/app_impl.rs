@@ -1251,6 +1251,11 @@ impl Tabular {
                                     self.selected_menu = "Database".to_string();
                                 }
 
+                                let is_c_active = self.selected_menu == "HTTP Clients";
+                                if style::render_custom_tab(ui, "HTTP Clients", is_c_active, egui::vec2(button_width, button_height)).clicked() {
+                                    self.selected_menu = "HTTP Clients".to_string();
+                                }
+
                                 let is_q_active = self.selected_menu == "Queries";
                                 if style::render_custom_tab(ui, "Queries", is_q_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Queries".to_string();
@@ -1259,11 +1264,6 @@ impl Tabular {
                                 let is_h_active = self.selected_menu == "History";
                                 if style::render_custom_tab(ui, "History", is_h_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "History".to_string();
-                                }
-
-                                let is_c_active = self.selected_menu == "HTTP Clients";
-                                if style::render_custom_tab(ui, "HTTP Clients", is_c_active, egui::vec2(button_width, button_height)).clicked() {
-                                    self.selected_menu = "HTTP Clients".to_string();
                                 }
                             },
                         );
@@ -1511,6 +1511,10 @@ impl Tabular {
                                                     self.show_yaak_import_dialog = true;
                                                     ui.close();
                                                 }
+                                                if ui.button("⬇ Import Postman").clicked() {
+                                                    self.show_postman_import_dialog = true;
+                                                    ui.close();
+                                                }
                                                 if ui.button("🌐 Add New Http").clicked() {
                                                     self.test_connection_status = None;
                                                     self.test_connection_in_progress = false;
@@ -1520,7 +1524,7 @@ impl Tabular {
                                                     ui.close();
                                                 }
                                             },
-                                        ).response.on_hover_text("Import Yaak or Add New Http");
+                                        ).response.on_hover_text("Import Yaak/Postman or Add New Http");
                                     } else {
                                         let plus_btn = ui.add_sized(
                                             [24.0, 24.0],

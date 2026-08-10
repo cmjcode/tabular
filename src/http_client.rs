@@ -130,7 +130,8 @@ fn render_url_bar(
 ) {
     ui.horizontal(|ui| {
         let send_w = 88.0;
-        let bar_h = 26.0;
+        let bar_h = 28.0;
+        ui.spacing_mut().interact_size.y = bar_h;
 
         // Method selector
         egui::ComboBox::from_id_salt("http_method_combo")
@@ -152,11 +153,13 @@ fn render_url_bar(
             });
 
         // URL input
-        let url_resp = ui.add(
+        let url_w = (ui.available_width() - send_w - 8.0).max(120.0);
+        let url_resp = ui.add_sized(
+            [url_w, bar_h],
             egui::TextEdit::singleline(&mut state.url)
                 .hint_text("https://api.example.com/endpoint")
-                .desired_width((ui.available_width() - send_w - 8.0).max(120.0))
-                .min_size(egui::vec2(0.0, bar_h)),
+                .margin(egui::Margin::symmetric(8.0, 5.0))
+                .vertical_align(egui::Align::Center),
         );
 
         // Pasting a full curl command directly into the URL field auto-converts

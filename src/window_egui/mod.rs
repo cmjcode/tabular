@@ -537,6 +537,8 @@ pub struct Tabular {
     pub collection_expanded_folders: std::collections::HashSet<String>,
     /// Flag: show the Yaak import file-picker dialog next frame.
     pub show_yaak_import_dialog: bool,
+    /// Flag: show the Postman import file-picker dialog next frame.
+    pub show_postman_import_dialog: bool,
 }
 
 // Preference tabs enumeration

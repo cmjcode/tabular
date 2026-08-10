@@ -5,15 +5,16 @@
 use eframe::egui;
 use crate::window_egui::Tabular;
 use crate::http_collection::{
-    delete_workspace, import_from_yaak, save_workspaces, SavedRequest,
+    delete_workspace, import_from_postman, import_from_yaak, save_workspaces, SavedRequest,
 };
 
 // ─── Entry point called from app_impl.rs ─────────────────────────────────────
 
 /// Render the entire Collections sidebar content (called inside the ScrollArea).
 pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
-    // ── Yaak import dialog (triggered by show_yaak_import_dialog flag) ────
+    // ── Yaak & Postman import dialogs ────────────────────────────────────
     render_yaak_import_dialog(app, ui);
+    render_postman_import_dialog(app, ui);
 
     // ── Search box ────────────────────────────────────────────────────────
     let search_bg = if ui.visuals().dark_mode {
@@ -108,7 +109,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             );
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("Click ➕ to add a new HTTP connection\nor import a Yaak collection.")
+                egui::RichText::new("Click ➕ to add a new HTTP connection\nor import a Yaak/Postman collection.")
                     .weak()
                     .small(),
             );
@@ -322,6 +323,51 @@ fn render_yaak_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
             }
             Err(e) => {
                 app.toasts.error(format!("Yaak import failed: {e}"));
+            }
+        }
+    }
+}
+
+// ─── Postman Import Dialog ────────────────────────────────────────────────────
+
+fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
+    if !app.show_postman_import_dialog {
+        return;
+    }
+    app.show_postman_import_dialog = false;
+
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title("Select Postman Collection / Environment JSON file")
+        .add_filter("Postman JSON", &["json"])
+        .pick_file()
+    {
+        match import_from_postman(&path) {
+            Ok(result) => {
+                let imported_ids: std::collections::HashSet<String> = result
+                    .workspaces
+                    .iter()
+                    .map(|w| w.id.clone())
+                    .collect();
+
+                app.yaak_workspaces.retain(|w| !imported_ids.contains(&w.id));
+                app.yaak_workspaces.extend(result.workspaces.clone());
+                app.yaak_workspaces.sort_by(|a, b| a.name.cmp(&b.name));
+                save_workspaces(&result.workspaces);
+
+                let msg = format!(
+                    "Imported {} requests from Postman ({})",
+                    result.total_requests,
+                    result.workspaces.first().map(|w| w.name.as_str()).unwrap_or("Collection")
+                );
+                app.toasts.success(msg);
+                for w in result.warnings {
+                    app.toasts.warning(w);
+                }
+
+                app.selected_menu = "HTTP Clients".to_string();
+            }
+            Err(e) => {
+                app.toasts.error(format!("Postman import failed: {e}"));
             }
         }
     }
