@@ -221,12 +221,9 @@ impl AutoUpdater {
         let exe_str = current_exe.to_string_lossy();
 
         // Determine the current .app bundle path (if running from inside a .app)
-        let current_app_path: Option<PathBuf> =
-            if let Some(app_pos) = exe_str.find(".app/Contents/MacOS/") {
-                Some(PathBuf::from(&exe_str[..app_pos + 4]))
-            } else {
-                None
-            };
+        let current_app_path: Option<PathBuf> = exe_str
+            .find(".app/Contents/MacOS/")
+            .map(|app_pos| PathBuf::from(&exe_str[..app_pos + 4]));
 
         // Mount DMG via hdiutil
         let mount_point = self.temp_dir.join("mount");
@@ -269,7 +266,7 @@ impl AutoUpdater {
                     .output();
                 let _ = fs::remove_file(&dmg_path);
 
-                if cp_status.map_or(false, |s| s.success()) && staged_app.exists() {
+                if cp_status.is_ok_and(|s| s.success()) && staged_app.exists() {
                     // Determine install target (default to current .app location or /Applications)
                     let install_target = current_app_path
                         .as_deref()

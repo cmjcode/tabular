@@ -93,28 +93,32 @@ pub fn render_http_client(
         }
     }
 
-    ui.vertical(|ui| {
-        render_url_bar(ui, state, toasts);
-        ui.add_space(4.0);
-
-        let available = ui.available_size();
-        let left_w = (available.x * 0.5).max(300.0).min(available.x - 260.0);
-
-        ui.horizontal(|ui| {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.set_width(left_w);
-                ui.set_min_height(available.y);
-                render_request_panel(ui, state);
-            });
+                render_url_bar(ui, state, toasts);
+                ui.add_space(4.0);
 
-            ui.separator();
+                let available = ui.available_size();
+                let left_w = (available.x * 0.5).max(300.0).min(available.x - 260.0);
 
-            ui.vertical(|ui| {
-                ui.set_min_height(available.y);
-                render_response_panel(ui, state);
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(left_w);
+                        ui.set_min_height(available.y);
+                        render_request_panel(ui, state);
+                    });
+
+                    ui.separator();
+
+                    ui.vertical(|ui| {
+                        ui.set_min_height(available.y);
+                        render_response_panel(ui, state);
+                    });
+                });
             });
         });
-    });
 }
 
 // ─── URL bar ────────────────────────────────────────────────────────────────
@@ -126,6 +130,7 @@ fn render_url_bar(
 ) {
     ui.horizontal(|ui| {
         let send_w = 88.0;
+        let bar_h = 26.0;
 
         // Method selector
         egui::ComboBox::from_id_salt("http_method_combo")
@@ -150,7 +155,8 @@ fn render_url_bar(
         let url_resp = ui.add(
             egui::TextEdit::singleline(&mut state.url)
                 .hint_text("https://api.example.com/endpoint")
-                .desired_width((ui.available_width() - send_w - 8.0).max(120.0)),
+                .desired_width((ui.available_width() - send_w - 8.0).max(120.0))
+                .min_size(egui::vec2(0.0, bar_h)),
         );
 
         // Pasting a full curl command directly into the URL field auto-converts
@@ -181,7 +187,7 @@ fn render_url_bar(
             !state.is_loading && !state.url.is_empty(),
             egui::Button::new(egui::RichText::new(send_label).color(egui::Color32::WHITE))
                 .fill(crate::window_egui::style::theme_accent(ui.ctx()))
-                .min_size(egui::vec2(send_w - 10.0, 0.0)),
+                .min_size(egui::vec2(send_w - 10.0, bar_h)),
         );
         if send_btn.clicked() {
             execute_request(state);
@@ -270,7 +276,7 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
         ui.selectable_value(&mut state.body_type, HttpBodyType::NoBody, "No Body");
     });
 
-    ui.separator();
+    ui.add_space(6.0);
 
     match &state.body_type {
         HttpBodyType::NoBody => {
@@ -602,7 +608,7 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
         ui.selectable_value(&mut state.response_tab, HttpResponseTab::Headers, "Headers");
     });
 
-    ui.separator();
+    ui.add_space(6.0);
 
     match state.response_tab {
         HttpResponseTab::Body => {

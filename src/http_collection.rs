@@ -1,9 +1,9 @@
-/// http_collection.rs — Saved Request collections for Tabular HTTP client.
-///
-/// Provides:
-///   - Data model: `HttpWorkspace`, `HttpFolder`, `SavedRequest`, `YaakEnvironment`
-///   - Persistence: save/load collections to/from `{app_data}/http_collections/`
-///   - Yaak importer: read Yaak's SQLite database and populate the model
+//! http_collection.rs — Saved Request collections for Tabular HTTP client.
+//!
+//! Provides:
+//!   - Data model: `HttpWorkspace`, `HttpFolder`, `SavedRequest`, `YaakEnvironment`
+//!   - Persistence: save/load collections to/from `{app_data}/http_collections/`
+//!   - Yaak importer: read Yaak's SQLite database and populate the model
 
 use serde::{Deserialize, Serialize};
 
@@ -115,13 +115,16 @@ pub fn load_workspaces() -> Vec<HttpWorkspace> {
     let mut result = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(ws) = serde_json::from_str::<HttpWorkspace>(&contents) {
-                    result.push(ws);
-                }
-            }
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
         }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(ws) = serde_json::from_str::<HttpWorkspace>(&contents) else {
+            continue;
+        };
+        result.push(ws);
     }
     // Sort alphabetically by name for stable ordering.
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -491,19 +494,19 @@ fn build_folder_tree(
     mut folder: HttpFolder,
     flat_folders: &mut std::collections::HashMap<String, HttpFolder>,
     folder_parent: &std::collections::HashMap<String, Option<String>>,
-    workspace_id: &str,
+    _workspace_id: &str,
 ) -> HttpFolder {
     // Find child folders
     let child_ids: Vec<String> = folder_parent
         .iter()
         .filter(|(_, p)| p.as_deref() == Some(&folder.id))
         .map(|(id, _)| id.clone())
-        .filter(|id| !flat_folders.contains_key(id.as_str()) == false)
+        .filter(|id| flat_folders.contains_key(id.as_str()))
         .collect();
 
     for child_id in child_ids {
         if let Some(child) = flat_folders.remove(&child_id) {
-            let built = build_folder_tree(child, flat_folders, folder_parent, workspace_id);
+            let built = build_folder_tree(child, flat_folders, folder_parent, _workspace_id);
             folder.children.push(built);
         }
     }

@@ -2182,7 +2182,7 @@ impl Tabular {
                                     })
                                     .unwrap_or((None, None));
 
-                                if active_conn_type.as_ref().map_or(false, |t| t.supports_schemas()) {
+                                if active_conn_type.as_ref().is_some_and(|t| t.supports_schemas()) {
                                     add_divider(ui);
 
                                     let mut schemas = self.get_schemas_cached(cid, tab_db_name.as_deref());

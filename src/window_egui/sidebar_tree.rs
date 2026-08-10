@@ -3428,14 +3428,12 @@ impl super::Tabular {
                 }
 
                 // Tooltip with full query
-                if let Some(data) = &node.file_path {
-                    if let Some((_conn, rest)) = data.split_once("||") {
-                        let (_ts, original_query) = rest.split_once("||").unwrap_or(("", rest));
-                        row_response = row_response.on_hover_text_at_pointer(format!(
-                            "Full query:\n{}",
-                            original_query
-                        ));
-                    }
+                if let Some((_conn, rest)) = node.file_path.as_deref().and_then(|d| d.split_once("||")) {
+                    let (_ts, original_query) = rest.split_once("||").unwrap_or(("", rest));
+                    row_response = row_response.on_hover_text_at_pointer(format!(
+                        "Full query:\n{}",
+                        original_query
+                    ));
                 }
                 row_response
             } else {

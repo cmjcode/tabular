@@ -235,9 +235,31 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
 
 /// Open an HTTP Client tab pre-assigned to the given HTTP connection.
 fn open_http_connection_tab(app: &mut Tabular, conn_name: String, connection_id: Option<i64>) {
-    if let Some(conn_id) = connection_id {
-        if let Some(idx) = app.query_tabs.iter().position(|t| t.connection_id == Some(conn_id) && t.http_client_state.is_some()) {
-            app.active_tab_index = idx;
+    let existing_tab = connection_id.and_then(|conn_id| {
+        app.query_tabs.iter().position(|t| t.connection_id == Some(conn_id) && t.http_client_state.is_some())
+    });
+    if let Some(idx) = existing_tab {
+        app.active_tab_index = idx;
+        app.current_connection_id = connection_id;
+        return;
+    }
+
+    // Reuse active tab if it's an unused default blank tab
+    if let Some(tab) = app.query_tabs.get_mut(app.active_tab_index) {
+        if tab.content.trim().is_empty()
+            && !tab.is_modified
+            && !tab.has_executed_query
+            && tab.connection_id.is_none()
+            && tab.http_client_state.is_none()
+            && tab.redis_browser_state.is_none()
+            && tab.diagram_state.is_none()
+        {
+            tab.title = conn_name;
+            tab.connection_id = connection_id;
+            let loaded_state = connection_id
+                .and_then(crate::http_client::load_http_state)
+                .unwrap_or_default();
+            tab.http_client_state = Some(loaded_state);
             app.current_connection_id = connection_id;
             return;
         }
@@ -379,20 +401,62 @@ fn render_request_row(
 
 // ─── Apply saved request to the active HTTP client tab ───────────────────────
 
-/// Load a saved request into the HTTP client state of the currently active tab.
+/// Load a saved request into an HTTP client tab.
+/// Automatically creates or switches to an HTTP client tab if one isn't currently active.
 fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest) {
-    let tab_idx = app.active_tab_index;
-    if let Some(tab) = app.query_tabs.get_mut(tab_idx) {
-        if let Some(http_state) = &mut tab.http_client_state {
-            crate::http_collection::apply_saved_request(req, http_state);
+    // 1. If currently active tab is already an HTTP Client tab, load request into it and update title
+    if let Some(tab) = app.query_tabs.get_mut(app.active_tab_index) {
+        if tab.http_client_state.is_some() {
+            tab.title = req.name.clone();
+            if let Some(http_state) = tab.http_client_state.as_mut() {
+                crate::http_collection::apply_saved_request(req, http_state);
+                app.toasts.success(format!("Loaded: {}", req.name));
+                return;
+            }
+        }
+    }
+
+    // 2. If active tab is an unused default empty tab, transform it into an HTTP Client tab
+    if let Some(tab) = app.query_tabs.get_mut(app.active_tab_index) {
+        if tab.content.trim().is_empty()
+            && !tab.is_modified
+            && !tab.has_executed_query
+            && tab.connection_id.is_none()
+            && tab.http_client_state.is_none()
+            && tab.redis_browser_state.is_none()
+            && tab.diagram_state.is_none()
+        {
+            tab.title = req.name.clone();
+            let mut http_state = crate::models::structs::HttpClientState::default();
+            crate::http_collection::apply_saved_request(req, &mut http_state);
+            tab.http_client_state = Some(http_state);
             app.toasts.success(format!("Loaded: {}", req.name));
             return;
         }
     }
-    app.toasts.info(format!(
-        "Open an HTTP Client tab first to load '{}'.",
-        req.name
-    ));
+
+    // 3. Otherwise, if another open tab IS an HTTP Client tab, switch active tab index to that tab
+    if let Some(idx) = app.query_tabs.iter().position(|t| t.http_client_state.is_some()) {
+        app.active_tab_index = idx;
+        if let Some(tab) = app.query_tabs.get_mut(idx) {
+            tab.title = req.name.clone();
+            if let Some(http_state) = tab.http_client_state.as_mut() {
+                crate::http_collection::apply_saved_request(req, http_state);
+                app.toasts.success(format!("Loaded: {}", req.name));
+                return;
+            }
+        }
+    }
+
+    // 4. If no HTTP Client tab exists, create a new HTTP Client tab
+    crate::editor::create_new_tab(app, req.name.clone(), String::new());
+    let new_idx = app.active_tab_index;
+    if let Some(tab) = app.query_tabs.get_mut(new_idx) {
+        let mut http_state = crate::models::structs::HttpClientState::default();
+        crate::http_collection::apply_saved_request(req, &mut http_state);
+        tab.http_client_state = Some(http_state);
+        app.toasts.success(format!("Loaded: {}", req.name));
+    }
 }
 
 // ─── Filter helpers ───────────────────────────────────────────────────────────
@@ -427,7 +491,7 @@ fn folder_has_match(folder: &crate::http_collection::HttpFolder, filter: &str) -
 
 fn count_workspace_requests(ws: &crate::http_collection::HttpWorkspace) -> usize {
     let top = ws.requests.len();
-    let in_folders: usize = ws.folders.iter().map(|f| count_folder_requests(f)).sum();
+    let in_folders: usize = ws.folders.iter().map(count_folder_requests).sum();
     top + in_folders
 }
 
@@ -436,7 +500,7 @@ fn count_folder_requests(folder: &crate::http_collection::HttpFolder) -> usize {
         + folder
             .children
             .iter()
-            .map(|c| count_folder_requests(c))
+            .map(count_folder_requests)
             .sum::<usize>()
 }
 

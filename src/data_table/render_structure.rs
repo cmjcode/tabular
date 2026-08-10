@@ -783,8 +783,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 0.0;
 
-                                            for i in 0..6 {
-                                                let w = widths[i];
+                                            for (i, &w) in widths.iter().enumerate().take(6) {
                                                 let (rect, _) = ui.allocate_exact_size(
                                                     egui::vec2(w, row_h),
                                                     egui::Sense::hover(),
@@ -1183,8 +1182,7 @@ pub(crate) fn render_structure_columns_editor(
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
 
-                    for i in 0..6 {
-                        let w = widths[i];
+                    for (i, &w) in widths.iter().enumerate().take(6) {
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
                         ui.painter().rect_filled(rect, 0.0, edit_row_bg);
                         ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
@@ -1314,8 +1312,7 @@ pub(crate) fn render_structure_columns_editor(
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
 
-                    for i in 0..6 {
-                        let w = widths[i];
+                    for (i, &w) in widths.iter().enumerate().take(6) {
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
                         ui.painter().rect_filled(rect, 0.0, edit_row_bg);
                         ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
