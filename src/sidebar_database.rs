@@ -260,7 +260,7 @@ pub(crate) fn render_connection_dialog(
                             });
                         ui.end_row();
 
-                        
+
                         ui.label("Connection Name:");
                         ui.text_edit_singleline(&mut connection_data.name);
                         ui.end_row();
@@ -1039,7 +1039,7 @@ pub(crate) fn save_connection_to_database(
           false
       }
   }
-  
+
   // Externalize credentials to the secret store; columns get the
   // sentinel (or plaintext when no backend is available).
   fn externalize_credentials_for_update(
@@ -1595,7 +1595,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
             let backup_path = data_dir.join(format!("connections.db.corrupt_{}.bak", timestamp));
             warn!("⚠️ Recreating fresh connections.db after corruption (backing up to {:?})", backup_path);
             let _ = std::fs::rename(&db_path, &backup_path);
-            
+
             // Second attempt connect to fresh empty file
             let db_path_str = db_path.to_string_lossy();
             let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
