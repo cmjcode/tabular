@@ -1501,34 +1501,38 @@ impl Tabular {
 
                                 let show_plus = matches!(self.selected_menu.as_str(), "Database" | "HTTP Clients");
                                 if show_plus {
-                                    let plus_btn = ui.add_sized(
-                                        [24.0, 24.0],
-                                        egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE))
-                                            .fill(style::theme_accent(ctx)),
-                                    );
-                                    let plus_btn = plus_btn.on_hover_text("Add connection or import collection");
-                                    plus_btn.context_menu(|ui| {
-                                        if ui.button("🔌 Add Database Connection").clicked() {
+                                    let is_http_tab = self.selected_menu == "HTTP Clients";
+                                    if is_http_tab {
+                                        ui.menu_button(
+                                            egui::RichText::new("➕").color(egui::Color32::WHITE),
+                                            |ui| {
+                                                ui.set_min_width(140.0);
+                                                if ui.button("⬇ Import Yaak").clicked() {
+                                                    self.show_yaak_import_dialog = true;
+                                                    ui.close();
+                                                }
+                                                if ui.button("🌐 Add New Http").clicked() {
+                                                    self.test_connection_status = None;
+                                                    self.test_connection_in_progress = false;
+                                                    self.new_connection = models::structs::ConnectionConfig::default();
+                                                    self.new_connection.connection_type = models::enums::DatabaseType::ApiHttp;
+                                                    self.show_add_connection = true;
+                                                    ui.close();
+                                                }
+                                            },
+                                        ).response.on_hover_text("Import Yaak or Add New Http");
+                                    } else {
+                                        let plus_btn = ui.add_sized(
+                                            [24.0, 24.0],
+                                            egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE))
+                                                .fill(style::theme_accent(ctx)),
+                                        ).on_hover_text("Add Database Connection");
+
+                                        if plus_btn.clicked() {
                                             self.test_connection_status = None;
                                             self.test_connection_in_progress = false;
+                                            self.new_connection = models::structs::ConnectionConfig::default();
                                             self.show_add_connection = true;
-                                            ui.close();
-                                        }
-                                        ui.separator();
-                                        if ui.button("⬇ Import from Yaak").clicked() {
-                                            self.show_yaak_import_dialog = true;
-                                            ui.close();
-                                        }
-                                    });
-                                    if plus_btn.clicked() {
-                                        // Default: open connection dialog for Database tab,
-                                        // open import dialog for HTTP Clients tab
-                                        if self.selected_menu == "Database" {
-                                            self.test_connection_status = None;
-                                            self.test_connection_in_progress = false;
-                                            self.show_add_connection = true;
-                                        } else {
-                                            self.show_yaak_import_dialog = true;
                                         }
                                     }
                                 }

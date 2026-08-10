@@ -32,19 +32,83 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
         );
     });
 
-    ui.add_space(4.0);
+    let filter = app.collection_search.to_lowercase();
+    let accent = crate::window_egui::style::theme_accent(ui.ctx());
 
-    if app.yaak_workspaces.is_empty() {
+    // ── 1. HTTP Connections section ───────────────────────────────────────
+    let http_conns: Vec<crate::models::structs::ConnectionConfig> = app
+        .connections
+        .iter()
+        .filter(|c| c.connection_type == crate::models::enums::DatabaseType::ApiHttp)
+        .cloned()
+        .collect();
+
+    let mut conn_to_open: Option<(String, Option<i64>)> = None;
+    let mut conn_to_edit: Option<crate::models::structs::ConnectionConfig> = None;
+    let mut conn_to_delete: Option<i64> = None;
+
+    if !http_conns.is_empty() {
+        let matching_conns: Vec<&crate::models::structs::ConnectionConfig> = http_conns
+            .iter()
+            .filter(|c| filter.is_empty() || c.name.to_lowercase().contains(&filter))
+            .collect();
+
+        if !matching_conns.is_empty() {
+            egui::CollapsingHeader::new(
+                egui::RichText::new(format!("🌐  HTTP Connections ({})", matching_conns.len())).strong(),
+            )
+            .id_salt("sidebar_http_conns_header")
+            .default_open(true)
+            .show(ui, |ui| {
+                for conn in matching_conns {
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        let response = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("🌐  {}", conn.name))
+                                    .small()
+                                    .color(ui.style().visuals.text_color()),
+                            )
+                            .sense(egui::Sense::click())
+                            .truncate(),
+                        );
+
+                        if response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+
+                        if response.clicked() {
+                            conn_to_open = Some((conn.name.clone(), conn.id));
+                        }
+
+                        response.context_menu(|ui| {
+                            if ui.button("✏️ Edit Connection").clicked() {
+                                conn_to_edit = Some(conn.clone());
+                                ui.close();
+                            }
+                            if ui.button("🗑️ Delete Connection").clicked() {
+                                conn_to_delete = conn.id;
+                                ui.close();
+                            }
+                        });
+                    });
+                }
+            });
+            ui.add_space(4.0);
+        }
+    }
+
+    if http_conns.is_empty() && app.yaak_workspaces.is_empty() {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
             ui.label(
-                egui::RichText::new("No collections yet.")
+                egui::RichText::new("No HTTP connections or collections yet.")
                     .weak()
                     .small(),
             );
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("Click ➕ → Import from Yaak\nto import your Yaak collections.")
+                egui::RichText::new("Click ➕ to add a new HTTP connection\nor import a Yaak collection.")
                     .weak()
                     .small(),
             );
@@ -52,9 +116,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
         return;
     }
 
-    let filter = app.collection_search.to_lowercase();
-    let accent = crate::window_egui::style::theme_accent(ui.ctx());
-
+    // ── 2. Yaak Workspaces / Collections section ──────────────────────────
     // Collect workspace ids to avoid borrow issues
     let ws_ids: Vec<String> = app.yaak_workspaces.iter().map(|w| w.id.clone()).collect();
 
@@ -152,12 +214,41 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     }
 
     // Apply deferred actions after rendering loop
+    if let Some((name, id)) = conn_to_open {
+        open_http_connection_tab(app, name, id);
+    }
+    if let Some(conn) = conn_to_edit {
+        app.edit_connection = conn;
+        app.show_edit_connection = true;
+    }
+    if let Some(id) = conn_to_delete {
+        crate::connection::remove_connection(app, id);
+    }
     if let Some(req) = req_to_load {
         apply_collection_request_to_active_tab(app, &req);
     }
     if let Some(ws_id) = ws_to_delete {
         delete_workspace(&ws_id);
         app.yaak_workspaces.retain(|w| w.id != ws_id);
+    }
+}
+
+/// Open an HTTP Client tab pre-assigned to the given HTTP connection.
+fn open_http_connection_tab(app: &mut Tabular, conn_name: String, connection_id: Option<i64>) {
+    if let Some(conn_id) = connection_id {
+        if let Some(idx) = app.query_tabs.iter().position(|t| t.connection_id == Some(conn_id) && t.http_client_state.is_some()) {
+            app.active_tab_index = idx;
+            app.current_connection_id = connection_id;
+            return;
+        }
+    }
+
+    crate::editor::create_new_tab_with_connection(app, conn_name, String::new(), connection_id);
+    let loaded_state = connection_id
+        .and_then(crate::http_client::load_http_state)
+        .unwrap_or_default();
+    if let Some(tab) = app.query_tabs.get_mut(app.active_tab_index) {
+        tab.http_client_state = Some(loaded_state);
     }
 }
 
