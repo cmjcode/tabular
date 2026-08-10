@@ -1504,5 +1504,195 @@ impl super::Tabular {
             }
         }
     }
+
+    pub fn render_delete_http_request_confirmation(&mut self, ctx: &egui::Context) {
+        if let Some((req_id, req_name)) = self.pending_delete_http_request.clone() {
+            let mut close_dialog = false;
+            let mut confirm_delete = false;
+
+            egui::Window::new("Confirm Delete Request")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("⚠️ Confirm Delete Request")
+                                    .strong()
+                                    .color(super::style::theme_danger(ctx)),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.label(format!(
+                            "Are you sure you want to delete request '{}'?",
+                            req_name
+                        ));
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("This action cannot be undone.")
+                                .small()
+                                .weak(),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let delete_btn = egui::Button::new(
+                                    egui::RichText::new("Delete")
+                                        .color(egui::Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(super::style::theme_danger(ctx));
+                                if ui.add(delete_btn).clicked() {
+                                    confirm_delete = true;
+                                    close_dialog = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_dialog = true;
+                                }
+                            });
+                        });
+                    });
+                });
+
+            if confirm_delete {
+                if crate::sidebar_collection::delete_request_from_workspaces(&mut self.yaak_workspaces, &req_id) {
+                    crate::http_collection::save_workspaces(&self.yaak_workspaces);
+                    self.toasts.success(format!("Deleted request: {}", req_name));
+                }
+            }
+            if close_dialog {
+                self.pending_delete_http_request = None;
+            }
+        }
+    }
+
+    pub fn render_delete_http_folder_confirmation(&mut self, ctx: &egui::Context) {
+        if let Some((ws_id, folder_id, folder_name)) = self.pending_delete_http_folder.clone() {
+            let mut close_dialog = false;
+            let mut confirm_delete = false;
+
+            egui::Window::new("Confirm Delete Folder")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("⚠️ Confirm Delete Folder")
+                                    .strong()
+                                    .color(super::style::theme_danger(ctx)),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.label(format!(
+                            "Are you sure you want to delete folder '{}'?",
+                            folder_name
+                        ));
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("All requests inside this folder will also be deleted.")
+                                .small()
+                                .weak(),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let delete_btn = egui::Button::new(
+                                    egui::RichText::new("Delete")
+                                        .color(egui::Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(super::style::theme_danger(ctx));
+                                if ui.add(delete_btn).clicked() {
+                                    confirm_delete = true;
+                                    close_dialog = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_dialog = true;
+                                }
+                            });
+                        });
+                    });
+                });
+
+            if confirm_delete {
+                crate::sidebar_collection::delete_folder_from_workspaces(&mut self.yaak_workspaces, &ws_id, &folder_id);
+                crate::http_collection::save_workspaces(&self.yaak_workspaces);
+                self.toasts.success(format!("Deleted folder: {}", folder_name));
+            }
+            if close_dialog {
+                self.pending_delete_http_folder = None;
+            }
+        }
+    }
+
+    pub fn render_delete_http_workspace_confirmation(&mut self, ctx: &egui::Context) {
+        if let Some((ws_id, ws_name)) = self.pending_delete_http_workspace.clone() {
+            let mut close_dialog = false;
+            let mut confirm_delete = false;
+
+            egui::Window::new("Confirm Delete Workspace")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("⚠️ Confirm Delete Workspace")
+                                    .strong()
+                                    .color(super::style::theme_danger(ctx)),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.label(format!(
+                            "Are you sure you want to delete workspace '{}'?",
+                            ws_name
+                        ));
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("All requests and folders in this workspace will be deleted.")
+                                .small()
+                                .weak(),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let delete_btn = egui::Button::new(
+                                    egui::RichText::new("Delete")
+                                        .color(egui::Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(super::style::theme_danger(ctx));
+                                if ui.add(delete_btn).clicked() {
+                                    confirm_delete = true;
+                                    close_dialog = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_dialog = true;
+                                }
+                            });
+                        });
+                    });
+                });
+
+            if confirm_delete {
+                crate::http_collection::delete_workspace(&ws_id);
+                self.yaak_workspaces.retain(|w| w.id != ws_id);
+                self.toasts.success(format!("Deleted workspace: {}", ws_name));
+            }
+            if close_dialog {
+                self.pending_delete_http_workspace = None;
+            }
+        }
+    }
 }
 

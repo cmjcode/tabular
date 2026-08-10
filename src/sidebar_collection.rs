@@ -1,5 +1,5 @@
 use crate::http_collection::{
-    SavedRequest, delete_workspace, import_from_postman, import_from_yaak, save_workspaces,
+    SavedRequest, import_from_postman, import_from_yaak, save_workspaces,
 };
 use crate::window_egui::Tabular;
 /// sidebar_collection.rs
@@ -202,7 +202,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     // Track actions requested from top-level and folder requests
     let mut req_action: Option<(SavedRequest, RequestAction)> = None;
     let mut ws_to_delete: Option<String> = None;
-    let mut folder_to_delete: Option<(String, String)> = None;
+    let mut folder_to_delete: Option<(String, String, String)> = None;
     let mut new_req_target: Option<(String, Option<String>, String)> = None;
 
     for ws_id in &ws_ids {
@@ -333,23 +333,21 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     .info(format!("Duplicated request '{}'", req.display_name()));
             }
             RequestAction::Delete => {
-                let deleted_name = req.display_name();
-                if delete_request_from_workspaces(&mut app.yaak_workspaces, &req.id) {
-                    save_workspaces(&app.yaak_workspaces);
-                    app.toasts
-                        .info(format!("Deleted request '{}'", deleted_name));
-                }
+                app.pending_delete_http_request = Some((req.id.clone(), req.display_name()));
             }
         }
     }
-    if let Some((ws_id, folder_id)) = folder_to_delete {
-        delete_folder_from_workspaces(&mut app.yaak_workspaces, &ws_id, &folder_id);
-        save_workspaces(&app.yaak_workspaces);
-        app.toasts.info("Deleted folder");
+    if let Some((ws_id, folder_id, folder_name)) = folder_to_delete {
+        app.pending_delete_http_folder = Some((ws_id, folder_id, folder_name));
     }
     if let Some(ws_id) = ws_to_delete {
-        delete_workspace(&ws_id);
-        app.yaak_workspaces.retain(|w| w.id != ws_id);
+        let ws_name = app
+            .yaak_workspaces
+            .iter()
+            .find(|w| w.id == ws_id)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| "Workspace".to_string());
+        app.pending_delete_http_workspace = Some((ws_id, ws_name));
     }
     if let Some((ws_id, folder_id_opt, parent_name)) = new_req_target {
         let new_req_id = format!("sr_{}", chrono::Utc::now().timestamp_millis());
@@ -550,7 +548,7 @@ fn render_folder_node(
     accent: egui::Color32,
     req_action_out: &mut Option<(SavedRequest, RequestAction)>,
     new_req_target: &mut Option<(String, Option<String>, String)>,
-    folder_to_delete: &mut Option<(String, String)>,
+    folder_to_delete: &mut Option<(String, String, String)>,
 ) {
     let folder_resp =
         egui::CollapsingHeader::new(egui::RichText::new(format!("📂  {}", folder.name)))
@@ -594,7 +592,7 @@ fn render_folder_node(
             ui.close();
         }
         if ui.button("Delete Folder").clicked() {
-            *folder_to_delete = Some((ws_id.to_string(), folder.id.clone()));
+            *folder_to_delete = Some((ws_id.to_string(), folder.id.clone(), folder.name.clone()));
             ui.close();
         }
     });
@@ -682,7 +680,7 @@ fn render_request_row(
     action
 }
 
-fn delete_request_from_workspaces(
+pub(crate) fn delete_request_from_workspaces(
     workspaces: &mut [crate::http_collection::HttpWorkspace],
     req_id: &str,
 ) -> bool {
@@ -747,7 +745,7 @@ fn duplicate_request_in_workspaces(
     }
 }
 
-fn delete_folder_from_workspaces(
+pub(crate) fn delete_folder_from_workspaces(
     workspaces: &mut [crate::http_collection::HttpWorkspace],
     ws_id: &str,
     folder_id: &str,

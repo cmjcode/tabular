@@ -364,6 +364,9 @@ impl super::Tabular {
             pending_drop_collection: None,
             pending_drop_table: None,
             pending_delete_connection: None,
+            pending_delete_http_request: None,
+            pending_delete_http_folder: None,
+            pending_delete_http_workspace: None,
             dragged_http_conn_id: None,
 
             structure_col_widths: Vec::new(),
