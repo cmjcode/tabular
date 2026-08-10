@@ -65,6 +65,9 @@ pub fn load_http_state(connection_id: i64) -> Option<HttpClientState> {
         save_http_state(connection_id, &state);
     }
 
+    // Load saved workspaces (collections) from disk.
+    state.workspaces = crate::http_collection::load_workspaces();
+
     Some(state)
 }
 
@@ -94,12 +97,10 @@ pub fn render_http_client(
         render_url_bar(ui, state, toasts);
         ui.add_space(4.0);
 
-        // Horizontal split: request left, response right
         let available = ui.available_size();
         let left_w = (available.x * 0.5).max(300.0).min(available.x - 260.0);
 
         ui.horizontal(|ui| {
-            // ── LEFT: Request panel ──────────────────────────────────────
             ui.vertical(|ui| {
                 ui.set_width(left_w);
                 ui.set_min_height(available.y);
@@ -108,7 +109,6 @@ pub fn render_http_client(
 
             ui.separator();
 
-            // ── RIGHT: Response panel ────────────────────────────────────
             ui.vertical(|ui| {
                 ui.set_min_height(available.y);
                 render_response_panel(ui, state);

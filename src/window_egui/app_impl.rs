@@ -1242,7 +1242,7 @@ impl Tabular {
                             |ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 let btn_avail_width = ui.available_width();
-                                let button_width = ((btn_avail_width - 8.0) / 3.0).clamp(50.0, 130.0);
+                                let button_width = ((btn_avail_width - 8.0) / 4.0).clamp(40.0, 130.0);
                                 let button_height = 34.0;
 
 
@@ -1259,6 +1259,11 @@ impl Tabular {
                                 let is_h_active = self.selected_menu == "History";
                                 if style::render_custom_tab(ui, "History", is_h_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "History".to_string();
+                                }
+
+                                let is_c_active = self.selected_menu == "Collections";
+                                if style::render_custom_tab(ui, "Collections", is_c_active, egui::vec2(button_width, button_height)).clicked() {
+                                    self.selected_menu = "Collections".to_string();
                                 }
                             },
                         );
@@ -1477,6 +1482,11 @@ impl Tabular {
                                 }
                                 _ => {}
                             }
+
+                            // ── Collections tab ───────────────────────────────────────────
+                            if self.selected_menu == "Collections" {
+                                crate::sidebar_collection::render_collections_sidebar(self, ui);
+                            }
                         });
 
                         ui.separator();
@@ -1488,22 +1498,38 @@ impl Tabular {
 
                             ui.horizontal(|ui| {
                                 ui.add_space(5.0); // Right spacing (goes before button since layout is right-aligned)
-                                match self.selected_menu.as_str() {
-                                    "Database" if ui
-                                            .add_sized(
-                                                [24.0, 24.0], // Small square button
-                                                egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE)).fill(style::theme_accent(ctx)),
-                                            )
-                                            .on_hover_text("Add New Database Connection")
-                                            .clicked() =>
-                                    {
-                                        // Reset test connection status saat buka add dialog
-                                        self.test_connection_status = None;
-                                        self.test_connection_in_progress = false;
-                                        self.show_add_connection = true;
-                                    }
-                                    _ => {
-                                        // No button for History tab
+
+                                let show_plus = matches!(self.selected_menu.as_str(), "Database" | "Collections");
+                                if show_plus {
+                                    let plus_btn = ui.add_sized(
+                                        [24.0, 24.0],
+                                        egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE))
+                                            .fill(style::theme_accent(ctx)),
+                                    );
+                                    let plus_btn = plus_btn.on_hover_text("Add connection or import collection");
+                                    plus_btn.context_menu(|ui| {
+                                        if ui.button("🔌 Add Database Connection").clicked() {
+                                            self.test_connection_status = None;
+                                            self.test_connection_in_progress = false;
+                                            self.show_add_connection = true;
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui.button("⬇ Import from Yaak").clicked() {
+                                            self.show_yaak_import_dialog = true;
+                                            ui.close();
+                                        }
+                                    });
+                                    if plus_btn.clicked() {
+                                        // Default: open connection dialog for Database tab,
+                                        // open import dialog for Collections tab
+                                        if self.selected_menu == "Database" {
+                                            self.test_connection_status = None;
+                                            self.test_connection_in_progress = false;
+                                            self.show_add_connection = true;
+                                        } else {
+                                            self.show_yaak_import_dialog = true;
+                                        }
                                     }
                                 }
                             });

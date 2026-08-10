@@ -542,6 +542,10 @@ impl super::Tabular {
             sync_queries_push_receiver: None,
             sync_queries_pull_receiver: None,
             sync_history_last_ts: None,
+            yaak_workspaces: Vec::new(),
+            collection_search: String::new(),
+            collection_expanded_folders: std::collections::HashSet::new(),
+            show_yaak_import_dialog: false,
         };
 
         // Clear any old cached pools
@@ -553,6 +557,9 @@ impl super::Tabular {
 
         // Load saved queries from directory
         sidebar_query::load_queries_from_directory(&mut app);
+
+        // Load saved HTTP collections (Yaak imports) from disk
+        app.yaak_workspaces = crate::http_collection::load_workspaces();
 
         // Create initial query tab
         editor::create_new_tab(&mut app, "Untitled Query".to_string(), String::new());

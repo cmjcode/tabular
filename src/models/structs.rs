@@ -140,6 +140,22 @@ pub struct HttpClientState {
     /// Skipped during serialization — recreated at runtime.
     #[serde(skip)]
     pub response_receiver: Option<Arc<Mutex<mpsc::Receiver<HttpClientResponse>>>>,
+
+    // ── Collection / Saved-request sidebar ───────────────────────────────────
+    /// All imported/saved workspaces. Skipped from JSON (loaded separately).
+    #[serde(skip)]
+    pub workspaces: Vec<crate::http_collection::HttpWorkspace>,
+
+    /// UI state for the collection panel.
+    pub collection_panel: crate::http_collection::CollectionPanelState,
+
+    /// Transient flag: show the "Save Request" dialog.
+    #[serde(skip)]
+    pub show_save_dialog: bool,
+
+    /// Name typed in the save-request dialog.
+    #[serde(skip)]
+    pub save_dialog_name: String,
 }
 
 impl Default for HttpClientState {
@@ -172,6 +188,10 @@ impl Default for HttpClientState {
             response_tab: HttpResponseTab::Body,
             is_loading: false,
             response_receiver: None,
+            workspaces: Vec::new(),
+            collection_panel: crate::http_collection::CollectionPanelState::default(),
+            show_save_dialog: false,
+            save_dialog_name: String::new(),
         }
     }
 }

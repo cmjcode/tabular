@@ -527,6 +527,16 @@ pub struct Tabular {
     pub sync_queries_pull_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     /// Last time history was synced (Unix timestamp), persisted to check incremental sync
     pub sync_history_last_ts: Option<String>,
+
+    // ─── HTTP Collections (Yaak import) ──────────────────────────────────────
+    /// All imported/saved API collections (workspaces → folders → requests).
+    pub yaak_workspaces: Vec<crate::http_collection::HttpWorkspace>,
+    /// Search filter text for the Collections sidebar tab.
+    pub collection_search: String,
+    /// Which folder ids are expanded in the sidebar tree.
+    pub collection_expanded_folders: std::collections::HashSet<String>,
+    /// Flag: show the Yaak import file-picker dialog next frame.
+    pub show_yaak_import_dialog: bool,
 }
 
 // Preference tabs enumeration
