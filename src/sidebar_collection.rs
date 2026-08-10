@@ -204,8 +204,8 @@ fn render_yaak_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                     app.toasts.warning(w);
                 }
 
-                // Auto-switch to Collections tab so user sees the result
-                app.selected_menu = "Collections".to_string();
+                // Auto-switch to HTTP Clients tab so user sees the result
+                app.selected_menu = "HTTP Clients".to_string();
             }
             Err(e) => {
                 app.toasts.error(format!("Yaak import failed: {e}"));

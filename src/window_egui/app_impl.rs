@@ -1193,9 +1193,9 @@ impl Tabular {
             if self.sidebar_visible {
                 egui::Panel::left("sidebar")
                 .resizable(true)
-                .default_size(250.0)
-                .min_size(150.0)
-                .max_size(500.0)
+                .default_size(340.0)
+                .min_size(260.0)
+                .max_size(600.0)
                 // Reduce default inner padding so tree rows (connection/database/table) start closer to the left edge
                 .frame(
                     egui::Frame::default()
@@ -1240,9 +1240,9 @@ impl Tabular {
                             bar_rect.size(),
                             egui::Layout::left_to_right(egui::Align::TOP),
                             |ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
+                                ui.spacing_mut().item_spacing.x = 2.0;
                                 let btn_avail_width = ui.available_width();
-                                let button_width = ((btn_avail_width - 8.0) / 4.0).clamp(40.0, 130.0);
+                                let button_width = ((btn_avail_width - 6.0) / 4.0).clamp(40.0, 140.0);
                                 let button_height = 34.0;
 
 
@@ -1261,9 +1261,9 @@ impl Tabular {
                                     self.selected_menu = "History".to_string();
                                 }
 
-                                let is_c_active = self.selected_menu == "Collections";
-                                if style::render_custom_tab(ui, "Collections", is_c_active, egui::vec2(button_width, button_height)).clicked() {
-                                    self.selected_menu = "Collections".to_string();
+                                let is_c_active = self.selected_menu == "HTTP Clients";
+                                if style::render_custom_tab(ui, "HTTP Clients", is_c_active, egui::vec2(button_width, button_height)).clicked() {
+                                    self.selected_menu = "HTTP Clients".to_string();
                                 }
                             },
                         );
@@ -1483,8 +1483,8 @@ impl Tabular {
                                 _ => {}
                             }
 
-                            // ── Collections tab ───────────────────────────────────────────
-                            if self.selected_menu == "Collections" {
+                            // ── HTTP Clients tab ───────────────────────────────────────────
+                            if self.selected_menu == "HTTP Clients" {
                                 crate::sidebar_collection::render_collections_sidebar(self, ui);
                             }
                         });
@@ -1499,7 +1499,7 @@ impl Tabular {
                             ui.horizontal(|ui| {
                                 ui.add_space(5.0); // Right spacing (goes before button since layout is right-aligned)
 
-                                let show_plus = matches!(self.selected_menu.as_str(), "Database" | "Collections");
+                                let show_plus = matches!(self.selected_menu.as_str(), "Database" | "HTTP Clients");
                                 if show_plus {
                                     let plus_btn = ui.add_sized(
                                         [24.0, 24.0],
@@ -1522,7 +1522,7 @@ impl Tabular {
                                     });
                                     if plus_btn.clicked() {
                                         // Default: open connection dialog for Database tab,
-                                        // open import dialog for Collections tab
+                                        // open import dialog for HTTP Clients tab
                                         if self.selected_menu == "Database" {
                                             self.test_connection_status = None;
                                             self.test_connection_in_progress = false;
