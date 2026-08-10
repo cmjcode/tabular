@@ -746,3 +746,631 @@ fn parse_auth(
         api_key_in_header,
     )
 }
+
+// ─── Postman Import ──────────────────────────────────────────────────────────
+
+/// Result returned from a Postman import attempt.
+#[derive(Debug, Clone)]
+pub struct PostmanImportResult {
+    pub workspaces: Vec<HttpWorkspace>,
+    pub total_requests: usize,
+    pub warnings: Vec<String>,
+}
+
+/// Import workspaces/collections and requests from a Postman JSON file (Collection or Environment).
+pub fn import_from_postman(file_path: &std::path::Path) -> Result<PostmanImportResult, String> {
+    let json_str = std::fs::read_to_string(file_path)
+        .map_err(|e| format!("Failed to read Postman file: {}", e))?;
+    import_postman_json(&json_str)
+}
+
+/// Parse Postman Collection v2.0/v2.1 or Postman Environment JSON string.
+pub fn import_postman_json(json_str: &str) -> Result<PostmanImportResult, String> {
+    let val: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| format!("Invalid JSON format: {}", e))?;
+
+    let mut warnings = Vec::new();
+
+    // Check if it's a Postman Collection (has `info` or `item` or `_postman_id`)
+    if val.get("info").is_some() || val.get("item").is_some() {
+        return parse_postman_collection(&val, &mut warnings);
+    }
+
+    // Check if it's a Postman Environment (has `name` and `values` array)
+    if val.get("values").and_then(|v| v.as_array()).is_some() {
+        return parse_postman_environment(&val, &mut warnings);
+    }
+
+    Err("JSON structure is not recognized as a Postman Collection or Environment".to_string())
+}
+
+fn parse_postman_collection(
+    val: &serde_json::Value,
+    warnings: &mut Vec<String>,
+) -> Result<PostmanImportResult, String> {
+    let info = val.get("info");
+    let name = info
+        .and_then(|i| i.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("Imported Postman Collection")
+        .to_string();
+
+    let ws_id = format!("pm_ws_{}", chrono::Utc::now().timestamp_millis());
+
+    // Parse collection variables if present
+    let mut environments = Vec::new();
+    if let Some(vars) = val.get("variable").and_then(|v| v.as_array()) {
+        let mut key_values = Vec::new();
+        for v in vars {
+            let k = v.get("key").and_then(|x| x.as_str()).unwrap_or("");
+            let val_str = v.get("value").and_then(|x| x.as_str()).unwrap_or("");
+            if !k.is_empty() {
+                key_values.push((k.to_string(), val_str.to_string()));
+            }
+        }
+        if !key_values.is_empty() {
+            environments.push(YaakEnvironment {
+                id: format!("pm_env_{}", chrono::Utc::now().timestamp_millis()),
+                name: format!("{} Variables", name),
+                variables: key_values,
+            });
+        }
+    }
+
+    let items = val
+        .get("item")
+        .and_then(|i| i.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut requests = Vec::new();
+    let mut folders = Vec::new();
+    let mut total_requests = 0usize;
+
+    for item in items {
+        parse_postman_item(
+            &item,
+            &ws_id,
+            None,
+            &mut requests,
+            &mut folders,
+            &mut total_requests,
+            warnings,
+        );
+    }
+
+    let workspace = HttpWorkspace {
+        id: ws_id,
+        name,
+        requests,
+        folders,
+        environments,
+    };
+
+    Ok(PostmanImportResult {
+        workspaces: vec![workspace],
+        total_requests,
+        warnings: warnings.clone(),
+    })
+}
+
+fn parse_postman_item(
+    item: &serde_json::Value,
+    ws_id: &str,
+    parent_folder_id: Option<String>,
+    parent_requests: &mut Vec<SavedRequest>,
+    parent_folders: &mut Vec<HttpFolder>,
+    total_requests: &mut usize,
+    warnings: &mut Vec<String>,
+) {
+    let name = item
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("Untitled")
+        .to_string();
+
+    if let Some(sub_items) = item.get("item").and_then(|i| i.as_array()) {
+        // It's a folder
+        let folder_id = format!("pm_fld_{}_{}", total_requests, rand_id());
+        let mut child_requests = Vec::new();
+        let mut child_folders = Vec::new();
+
+        for child in sub_items {
+            parse_postman_item(
+                child,
+                ws_id,
+                Some(folder_id.clone()),
+                &mut child_requests,
+                &mut child_folders,
+                total_requests,
+                warnings,
+            );
+        }
+
+        parent_folders.push(HttpFolder {
+            id: folder_id,
+            name,
+            parent_folder_id,
+            requests: child_requests,
+            children: child_folders,
+        });
+    } else if let Some(req_val) = item.get("request") {
+        // It's a request
+        let req_id = format!("pm_req_{}_{}", total_requests, rand_id());
+        let saved_req = parse_postman_request(req_id, ws_id, parent_folder_id, name, req_val, warnings);
+        parent_requests.push(saved_req);
+        *total_requests += 1;
+    }
+}
+
+fn rand_id() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+fn parse_postman_request(
+    id: String,
+    workspace_id: &str,
+    folder_id: Option<String>,
+    name: String,
+    req_val: &serde_json::Value,
+    _warnings: &mut Vec<String>,
+) -> SavedRequest {
+    if let Some(url_str) = req_val.as_str() {
+        return SavedRequest {
+            id,
+            workspace_id: workspace_id.to_string(),
+            folder_id,
+            name,
+            url: url_str.to_string(),
+            method: HttpMethod::GET,
+            params: vec![("".to_string(), "".to_string(), true)],
+            headers: vec![("".to_string(), "".to_string(), true)],
+            body_type: HttpBodyType::NoBody,
+            body_text: String::new(),
+            form_data: default_form_data(),
+            auth_type: HttpAuthType::NoAuth,
+            bearer_token: String::new(),
+            basic_user: String::new(),
+            basic_pass: String::new(),
+            api_key_name: String::new(),
+            api_key_value: String::new(),
+            api_key_in_header: true,
+            description: String::new(),
+        };
+    }
+
+    let method_str = req_val
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("GET");
+    let method = parse_method(method_str);
+
+    let (url, params) = parse_postman_url(req_val.get("url"));
+    let headers = parse_postman_headers(req_val.get("header"));
+    let (body_type, body_text, form_data) = parse_postman_body(req_val.get("body"));
+    let (auth_type, bearer_token, basic_user, basic_pass, api_key_name, api_key_value, api_key_in_header) =
+        parse_postman_auth(req_val.get("auth"));
+
+    let description = req_val
+        .get("description")
+        .and_then(|d| {
+            if let Some(s) = d.as_str() {
+                Some(s.to_string())
+            } else {
+                d.get("content").and_then(|c| c.as_str()).map(|s| s.to_string())
+            }
+        })
+        .unwrap_or_default();
+
+    SavedRequest {
+        id,
+        workspace_id: workspace_id.to_string(),
+        folder_id,
+        name,
+        url,
+        method,
+        params,
+        headers,
+        body_type,
+        body_text,
+        form_data,
+        auth_type,
+        bearer_token,
+        basic_user,
+        basic_pass,
+        api_key_name,
+        api_key_value,
+        api_key_in_header,
+        description,
+    }
+}
+
+fn parse_postman_url(url_val: Option<&serde_json::Value>) -> (String, Vec<(String, String, bool)>) {
+    let Some(val) = url_val else {
+        return (String::new(), vec![("".to_string(), "".to_string(), true)]);
+    };
+
+    let mut params = Vec::new();
+
+    if let Some(s) = val.as_str() {
+        return (s.to_string(), vec![("".to_string(), "".to_string(), true)]);
+    }
+
+    let url_raw = val
+        .get("raw")
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if let Some(query_arr) = val.get("query").and_then(|q| q.as_array()) {
+        for q in query_arr {
+            let key = q.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
+            let value = q.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let enabled = q
+                .get("disabled")
+                .and_then(|d| d.as_bool())
+                .map(|disabled| !disabled)
+                .unwrap_or(true);
+            if !key.is_empty() || !value.is_empty() {
+                params.push((key, value, enabled));
+            }
+        }
+    }
+
+    params.push(("".to_string(), "".to_string(), true));
+
+    (url_raw, params)
+}
+
+fn parse_postman_headers(header_val: Option<&serde_json::Value>) -> Vec<(String, String, bool)> {
+    let mut headers = Vec::new();
+    if let Some(arr) = header_val.and_then(|h| h.as_array()) {
+        for item in arr {
+            let key = item.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
+            let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let enabled = item
+                .get("disabled")
+                .and_then(|d| d.as_bool())
+                .map(|disabled| !disabled)
+                .unwrap_or(true);
+            if !key.is_empty() || !value.is_empty() {
+                headers.push((key, value, enabled));
+            }
+        }
+    }
+    headers.push(("".to_string(), "".to_string(), true));
+    headers
+}
+
+fn parse_postman_body(
+    body_val: Option<&serde_json::Value>,
+) -> (HttpBodyType, String, Vec<(String, String, bool)>) {
+    let Some(val) = body_val else {
+        return (HttpBodyType::NoBody, String::new(), default_form_data());
+    };
+
+    let mode = val.get("mode").and_then(|m| m.as_str()).unwrap_or("");
+    match mode {
+        "raw" => {
+            let raw_text = val.get("raw").and_then(|r| r.as_str()).unwrap_or("").to_string();
+            let lang = val
+                .get("options")
+                .and_then(|o| o.get("raw"))
+                .and_then(|r| r.get("language"))
+                .and_then(|l| l.as_str())
+                .unwrap_or("");
+            let body_type = match lang {
+                "json" => HttpBodyType::Json,
+                "xml" => HttpBodyType::Xml,
+                "html" | "text" => HttpBodyType::OtherText,
+                _ => {
+                    let trimmed = raw_text.trim();
+                    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                        HttpBodyType::Json
+                    } else if trimmed.starts_with('<') {
+                        HttpBodyType::Xml
+                    } else {
+                        HttpBodyType::OtherText
+                    }
+                }
+            };
+            (body_type, raw_text, default_form_data())
+        }
+        "urlencoded" => {
+            let mut form = Vec::new();
+            if let Some(arr) = val.get("urlencoded").and_then(|u| u.as_array()) {
+                for item in arr {
+                    let k = item.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let v = item.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let enabled = item
+                        .get("disabled")
+                        .and_then(|d| d.as_bool())
+                        .map(|disabled| !disabled)
+                        .unwrap_or(true);
+                    form.push((k, v, enabled));
+                }
+            }
+            form.push(("".to_string(), "".to_string(), true));
+            (HttpBodyType::UrlEncoded, String::new(), form)
+        }
+        "formdata" => {
+            let mut form = Vec::new();
+            if let Some(arr) = val.get("formdata").and_then(|f| f.as_array()) {
+                for item in arr {
+                    let k = item.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let v = item.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let enabled = item
+                        .get("disabled")
+                        .and_then(|d| d.as_bool())
+                        .map(|disabled| !disabled)
+                        .unwrap_or(true);
+                    form.push((k, v, enabled));
+                }
+            }
+            form.push(("".to_string(), "".to_string(), true));
+            (HttpBodyType::MultiPart, String::new(), form)
+        }
+        "graphql" => {
+            let query = val
+                .get("graphql")
+                .and_then(|g| g.get("query"))
+                .and_then(|q| q.as_str())
+                .unwrap_or("")
+                .to_string();
+            (HttpBodyType::GraphQL, query, default_form_data())
+        }
+        _ => (HttpBodyType::NoBody, String::new(), default_form_data()),
+    }
+}
+
+fn parse_postman_auth(
+    auth_val: Option<&serde_json::Value>,
+) -> (HttpAuthType, String, String, String, String, String, bool) {
+    let Some(val) = auth_val else {
+        return (
+            HttpAuthType::NoAuth,
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            true,
+        );
+    };
+
+    let auth_type_str = val.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match auth_type_str {
+        "bearer" => {
+            let mut token = String::new();
+            if let Some(arr) = val.get("bearer").and_then(|b| b.as_array()) {
+                for item in arr {
+                    if item.get("key").and_then(|k| k.as_str()) == Some("token") {
+                        token = item.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    }
+                }
+            }
+            (
+                HttpAuthType::BearerToken,
+                token,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                true,
+            )
+        }
+        "basic" => {
+            let mut user = String::new();
+            let mut pass = String::new();
+            if let Some(arr) = val.get("basic").and_then(|b| b.as_array()) {
+                for item in arr {
+                    let k = item.get("key").and_then(|x| x.as_str());
+                    let v = item.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    if k == Some("username") {
+                        user = v;
+                    } else if k == Some("password") {
+                        pass = v;
+                    }
+                }
+            }
+            (
+                HttpAuthType::BasicAuth,
+                String::new(),
+                user,
+                pass,
+                String::new(),
+                String::new(),
+                true,
+            )
+        }
+        "apikey" => {
+            let mut key_name = String::new();
+            let mut key_val = String::new();
+            let mut in_header = true;
+            if let Some(arr) = val.get("apikey").and_then(|a| a.as_array()) {
+                for item in arr {
+                    let k = item.get("key").and_then(|x| x.as_str());
+                    let v = item.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    if k == Some("key") {
+                        key_name = v;
+                    } else if k == Some("value") {
+                        key_val = v;
+                    } else if k == Some("in") {
+                        in_header = v != "query";
+                    }
+                }
+            }
+            (
+                HttpAuthType::ApiKey,
+                String::new(),
+                String::new(),
+                String::new(),
+                key_name,
+                key_val,
+                in_header,
+            )
+        }
+        _ => (
+            HttpAuthType::NoAuth,
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            true,
+        ),
+    }
+}
+
+fn parse_postman_environment(
+    val: &serde_json::Value,
+    warnings: &mut Vec<String>,
+) -> Result<PostmanImportResult, String> {
+    let name = val
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("Imported Postman Environment")
+        .to_string();
+
+    let mut variables = Vec::new();
+    if let Some(arr) = val.get("values").and_then(|v| v.as_array()) {
+        for item in arr {
+            let key = item.get("key").and_then(|k| k.as_str()).unwrap_or("");
+            let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            let enabled = item.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true);
+            if enabled && !key.is_empty() {
+                variables.push((key.to_string(), value.to_string()));
+            }
+        }
+    }
+
+    let ws_id = format!("pm_env_ws_{}", chrono::Utc::now().timestamp_millis());
+    let env = YaakEnvironment {
+        id: format!("pm_env_{}", chrono::Utc::now().timestamp_millis()),
+        name: name.clone(),
+        variables,
+    };
+
+    let workspace = HttpWorkspace {
+        id: ws_id,
+        name: format!("{} (Environment)", name),
+        requests: Vec::new(),
+        folders: Vec::new(),
+        environments: vec![env],
+    };
+
+    Ok(PostmanImportResult {
+        workspaces: vec![workspace],
+        total_requests: 0,
+        warnings: warnings.clone(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_import_postman_collection_v21() {
+        let json = r#"{
+            "info": {
+                "_postman_id": "12345",
+                "name": "Test Postman Collection",
+                "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+            },
+            "item": [
+                {
+                    "name": "User Folder",
+                    "item": [
+                        {
+                            "name": "Get Users",
+                            "request": {
+                                "method": "GET",
+                                "header": [
+                                    { "key": "Accept", "value": "application/json" }
+                                ],
+                                "url": {
+                                    "raw": "https://api.example.com/users?page=1",
+                                    "query": [
+                                        { "key": "page", "value": "1" }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Create User",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            { "key": "Content-Type", "value": "application/json" }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\"name\": \"John\"}",
+                            "options": { "raw": { "language": "json" } }
+                        },
+                        "url": "https://api.example.com/users",
+                        "auth": {
+                            "type": "bearer",
+                            "bearer": [
+                                { "key": "token", "value": "secret-jwt-token" }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }"#;
+
+        let res = import_postman_json(json).expect("Failed to parse Postman collection");
+        assert_eq!(res.workspaces.len(), 1);
+        let ws = &res.workspaces[0];
+        assert_eq!(ws.name, "Test Postman Collection");
+        assert_eq!(res.total_requests, 2);
+        assert_eq!(ws.requests.len(), 1);
+        assert_eq!(ws.folders.len(), 1);
+
+        let create_req = &ws.requests[0];
+        assert_eq!(create_req.name, "Create User");
+        assert_eq!(create_req.method, HttpMethod::POST);
+        assert_eq!(create_req.body_type, HttpBodyType::Json);
+        assert_eq!(create_req.body_text, "{\"name\": \"John\"}");
+        assert_eq!(create_req.auth_type, HttpAuthType::BearerToken);
+        assert_eq!(create_req.bearer_token, "secret-jwt-token");
+
+        let folder = &ws.folders[0];
+        assert_eq!(folder.name, "User Folder");
+        assert_eq!(folder.requests.len(), 1);
+        let get_req = &folder.requests[0];
+        assert_eq!(get_req.name, "Get Users");
+        assert_eq!(get_req.method, HttpMethod::GET);
+        assert_eq!(get_req.url, "https://api.example.com/users?page=1");
+    }
+
+    #[test]
+    fn test_import_postman_environment() {
+        let json = r#"{
+            "id": "env-123",
+            "name": "Staging Environment",
+            "values": [
+                { "key": "baseUrl", "value": "https://staging.example.com", "enabled": true },
+                { "key": "apiKey", "value": "12345", "enabled": true }
+            ]
+        }"#;
+
+        let res = import_postman_json(json).expect("Failed to parse Postman environment");
+        assert_eq!(res.workspaces.len(), 1);
+        let ws = &res.workspaces[0];
+        assert_eq!(ws.environments.len(), 1);
+        let env = &ws.environments[0];
+        assert_eq!(env.name, "Staging Environment");
+        assert_eq!(env.variables.len(), 2);
+        assert_eq!(env.variables[0], ("baseUrl".to_string(), "https://staging.example.com".to_string()));
+    }
+}
+
