@@ -1226,6 +1226,7 @@ fn parse_postman_auth(
     }
 }
 
+#[allow(clippy::ptr_arg)]
 fn parse_postman_environment(
     val: &serde_json::Value,
     warnings: &mut Vec<String>,

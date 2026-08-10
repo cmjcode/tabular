@@ -22,7 +22,7 @@ pub fn render_collab_panel(tabular: &mut Tabular, ctx: &egui::Context) {
         });
 }
 
-fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
+pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     let session_expired = if let Some(err) = &tabular.sync_login_error {
         err.contains("401") || err.contains("Unauthorized") || err.contains("Session expired")
     } else {
