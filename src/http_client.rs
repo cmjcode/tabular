@@ -158,7 +158,7 @@ fn render_url_bar(
             [url_w, bar_h],
             egui::TextEdit::singleline(&mut state.url)
                 .hint_text("https://api.example.com/endpoint")
-                .margin(egui::Margin::symmetric(8.0, 5.0))
+                .margin(egui::Margin::symmetric(8, 5))
                 .vertical_align(egui::Align::Center),
         );
 
