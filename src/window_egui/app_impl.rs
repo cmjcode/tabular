@@ -1268,17 +1268,21 @@ impl Tabular {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             match self.selected_menu.as_str() {
                                 "Database" => {
-                                    // ── 1. Connections Accordion ─────────────────────────────
+                                    // ── 1. Connections Section ─────────────────────────────
                                     let conn_id = ui.make_persistent_id("sidebar_db_connections_accordion");
-                                    ui.spacing_mut().icon_width = 18.0;
-                                    ui.spacing_mut().icon_spacing = 6.0;
-                                    ui.spacing_mut().indent = 16.0;
-                                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), conn_id, true)
-                                        .show_header(ui, |ui| {
-                                            ui.label(egui::RichText::new("Connections").strong().size(20.0));
-                                        })
-                                        .body(|ui| {
-                                            ui.spacing_mut().icon_width = 14.0;
+                                    let mut conn_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), conn_id, true);
+
+                                    let conn_title = ui.add(
+                                        egui::Label::new(egui::RichText::new(" Connections").strong().size(16.0))
+                                            .sense(egui::Sense::click())
+                                    );
+                                    if conn_title.clicked() {
+                                        conn_state.toggle(ui);
+                                        conn_state.store(ui.ctx());
+                                    }
+
+                                    if conn_state.is_open() {
+                                        ui.indent("connections_indent", |ui| {
                                             ui.add_space(2.0);
                                             let db_area_response = ui.interact(
                                                 ui.available_rect_before_wrap(),
@@ -1306,20 +1310,25 @@ impl Tabular {
                                             }
                                             ui.add_space(4.0);
                                         });
+                                    }
 
-                                    ui.add_space(4.0);
+                                    ui.add_space(6.0);
 
-                                    // ── 2. Queries Accordion ──────────────────────────────────
+                                    // ── 2. Queries Section ──────────────────────────────────
                                     let queries_id = ui.make_persistent_id("sidebar_db_queries_accordion");
-                                    ui.spacing_mut().icon_width = 18.0;
-                                    ui.spacing_mut().icon_spacing = 6.0;
-                                    ui.spacing_mut().indent = 16.0;
-                                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), queries_id, true)
-                                        .show_header(ui, |ui| {
-                                            ui.label(egui::RichText::new("Queries").strong().size(20.0));
-                                        })
-                                        .body(|ui| {
-                                            ui.spacing_mut().icon_width = 14.0;
+                                    let mut queries_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), queries_id, true);
+
+                                    let queries_title = ui.add(
+                                        egui::Label::new(egui::RichText::new(" Queries").strong().size(16.0))
+                                            .sense(egui::Sense::click())
+                                    );
+                                    if queries_title.clicked() {
+                                        queries_state.toggle(ui);
+                                        queries_state.store(ui.ctx());
+                                    }
+
+                                    if queries_state.is_open() {
+                                        ui.indent("queries_indent", |ui| {
                                             ui.add_space(2.0);
                                             let queries_response = ui.interact(
                                                 ui.available_rect_before_wrap(),
@@ -1350,20 +1359,25 @@ impl Tabular {
                                             }
                                             ui.add_space(4.0);
                                         });
+                                    }
 
-                                    ui.add_space(4.0);
+                                    ui.add_space(6.0);
 
-                                    // ── 3. History Accordion ──────────────────────────────────
+                                    // ── 3. History Section ──────────────────────────────────
                                     let history_id = ui.make_persistent_id("sidebar_db_history_accordion");
-                                    ui.spacing_mut().icon_width = 18.0;
-                                    ui.spacing_mut().icon_spacing = 6.0;
-                                    ui.spacing_mut().indent = 16.0;
-                                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), history_id, true)
-                                        .show_header(ui, |ui| {
-                                            ui.label(egui::RichText::new("History").strong().size(20.0));
-                                        })
-                                        .body(|ui| {
-                                            ui.spacing_mut().icon_width = 14.0;
+                                    let mut history_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), history_id, true);
+
+                                    let history_title = ui.add(
+                                        egui::Label::new(egui::RichText::new(" History").strong().size(16.0))
+                                            .sense(egui::Sense::click())
+                                    );
+                                    if history_title.clicked() {
+                                        history_state.toggle(ui);
+                                        history_state.store(ui.ctx());
+                                    }
+
+                                    if history_state.is_open() {
+                                        ui.indent("history_indent", |ui| {
                                             ui.add_space(2.0);
                                             if self.auto_refresh_active {
                                                 egui::Frame::new()
@@ -1498,6 +1512,7 @@ impl Tabular {
                                             }
                                             ui.add_space(4.0);
                                         });
+                                    }
                                 }
                                 "Collaborations" => {
                                     crate::sync::ui_collab::render_collab_content(self, ui);
