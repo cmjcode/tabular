@@ -27,7 +27,7 @@ impl AutoUpdater {
     pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = std::env::temp_dir().join("tabular_update");
         fs::create_dir_all(&temp_dir)?;
-        
+
         // Silently clean up any leftover .exe.old files from previous updates on Windows
         #[cfg(target_os = "windows")]
         {
@@ -177,7 +177,8 @@ impl AutoUpdater {
     }
 }
 
-// Platform Specific Implementation: macOS
+// ─── Platform Specific: macOS ────────────────────────────────────────────────
+// TIDAK DIUBAH — identik dengan implementasi sebelumnya
 #[cfg(target_os = "macos")]
 impl AutoUpdater {
     /// Stage a macOS update safely WITHOUT replacing the currently-running binary.
@@ -337,7 +338,8 @@ impl AutoUpdater {
     }
 }
 
-// Platform Specific Implementation: Linux
+// ─── Platform Specific: Linux ────────────────────────────────────────────────
+// TIDAK DIUBAH — identik dengan implementasi sebelumnya
 #[cfg(target_os = "linux")]
 impl AutoUpdater {
     async fn stage_linux_update<F>(
@@ -411,77 +413,342 @@ impl AutoUpdater {
     }
 }
 
-// Platform Specific Implementation: Windows
+// ─── Platform Specific: Windows ──────────────────────────────────────────────
+// DIPERBAIKI — dual-path: MSI silent install ATAU ZIP in-place + PowerShell helper
 #[cfg(target_os = "windows")]
 impl AutoUpdater {
     async fn stage_windows_update<F>(
         &self,
         content: &[u8],
-        _update_info: &UpdateInfo,
+        update_info: &UpdateInfo,
         progress_cb: &F,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     where
         F: Fn(UpdateStage) + Send + Sync + 'static,
     {
+        use crate::self_update::WindowsUpdateKind;
+
         info!("🪟 Staging Windows update...");
         progress_cb(UpdateStage::Applying);
 
+        // ── Path A: MSI silent install ────────────────────────────────────
+        if matches!(update_info.windows_update_kind, Some(WindowsUpdateKind::Msi)) {
+            return self.apply_msi_update(content, update_info).await;
+        }
+
+        // ── Path B: ZIP / EXE in-place ────────────────────────────────────
+        self.apply_zip_update(content, update_info, progress_cb).await
+    }
+
+    /// Jalankan MSI installer secara silent menggunakan msiexec.
+    /// msiexec menangani semua kompleksitas UAC dan penggantian file secara aman.
+    async fn apply_msi_update(
+        &self,
+        content: &[u8],
+        update_info: &UpdateInfo,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let asset_name = update_info
+            .asset_name
+            .as_deref()
+            .unwrap_or("Tabular-update.msi");
+
+        let msi_path = self.temp_dir.join(asset_name);
+        info!("💾 Writing MSI to {:?}", msi_path);
+        fs::write(&msi_path, content)?;
+
+        info!("🔧 Running msiexec silent install: {:?}", msi_path);
+
+        // msiexec /i <file> /qn /norestart
+        //   /i        = install
+        //   /qn       = quiet, no UI
+        //   /norestart = tidak restart otomatis
+        let status = std::process::Command::new("msiexec.exe")
+            .args([
+                "/i",
+                msi_path.to_str().ok_or("MSI path tidak valid (non-UTF8)")?,
+                "/qn",
+                "/norestart",
+                "/l*v",
+                self.temp_dir.join("msi_install.log").to_str().unwrap_or("nul"),
+            ])
+            .status();
+
+        // Bersihkan file MSI setelah selesai
+        let _ = fs::remove_file(&msi_path);
+
+        match status {
+            Ok(s) if s.success() => {
+                info!("✅ MSI silent install berhasil");
+                Ok(())
+            }
+            Ok(s) => {
+                // Exit code 3010 = success tapi perlu restart (reboot required)
+                // Kita treat ini sebagai success; app akan restart sendiri via restart_app()
+                let code = s.code().unwrap_or(-1);
+                if code == 3010 {
+                    info!("✅ MSI install selesai (exit 3010 = reboot disarankan, diabaikan)");
+                    Ok(())
+                } else {
+                    let log_hint = self.temp_dir.join("msi_install.log");
+                    Err(format!(
+                        "msiexec gagal dengan exit code {}. Lihat log: {:?}",
+                        code, log_hint
+                    ).into())
+                }
+            }
+            Err(e) => Err(format!("Gagal menjalankan msiexec: {}", e).into()),
+        }
+    }
+
+    /// Ganti binary secara in-place dari ZIP archive.
+    ///
+    /// Strategi:
+    /// 1. Extract ZIP ke temp dir
+    /// 2. Jika exe di direktori user-writable → rename + copy langsung
+    /// 3. Jika di direktori sistem (C:\Program Files) → spawn PowerShell helper
+    ///    yang meminta elevasi UAC sekali, kemudian replace dan restart
+    async fn apply_zip_update<F>(
+        &self,
+        content: &[u8],
+        update_info: &UpdateInfo,
+        progress_cb: &F,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: Fn(UpdateStage) + Send + Sync + 'static,
+    {
         let current_exe = std::env::current_exe()?;
+
         let extract_dir = self.temp_dir.join("extracted");
         let _ = fs::remove_dir_all(&extract_dir);
         fs::create_dir_all(&extract_dir)?;
 
-        // Unzip windows archive using zip crate
+        // Unzip archive
         let mut zip_archive = zip::ZipArchive::new(Cursor::new(content))?;
         zip_archive.extract(&extract_dir)?;
 
-        let mut extracted_binary: Option<PathBuf> = None;
-        if let Ok(entries) = fs::read_dir(&extract_dir) {
+        // Cari file .exe di dalam archive (rekursif satu level)
+        let new_binary = Self::find_exe_in_dir(&extract_dir)?;
+        info!("📦 Binary ditemukan di archive: {:?}", new_binary);
+
+        // Deteksi apakah install dir membutuhkan admin (Program Files, dll.)
+        let needs_elevation = Self::path_needs_elevation(&current_exe);
+
+        if needs_elevation {
+            info!("🔒 Direktori install memerlukan elevasi UAC — menggunakan PowerShell helper");
+            self.apply_via_powershell_helper(&current_exe, &new_binary, update_info, progress_cb)?;
+        } else {
+            info!("✅ Direktori install dapat ditulis langsung — melakukan in-place replace");
+            self.replace_exe_in_place(&current_exe, &new_binary)?;
+            let _ = fs::remove_dir_all(&extract_dir);
+        }
+
+        Ok(())
+    }
+
+    /// Cari file .exe pertama yang ditemukan di dalam direktori (tidak rekursif).
+    fn find_exe_in_dir(dir: &std::path::Path) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+        // Cari di root directory dulu
+        if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                    if file_name.ends_with(".exe") {
-                        extracted_binary = Some(path);
-                        break;
+                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                    if name.ends_with(".exe") {
+                        return Ok(path);
                     }
                 }
             }
         }
 
-        let new_binary = extracted_binary
-            .ok_or("Could not find extracted tabular.exe in Windows zip archive")?;
-
-        let old_exe = current_exe.with_extension("exe.old");
-        let _ = fs::remove_file(&old_exe);
-
-        info!("Renaming active Windows executable {:?} -> {:?}", current_exe, old_exe);
-        if fs::rename(&current_exe, &old_exe).is_ok() {
-            if fs::copy(&new_binary, &current_exe).is_ok() {
-                info!("Windows executable replaced successfully in-place!");
-                let _ = fs::remove_dir_all(&extract_dir);
-                return Ok(());
-            } else {
-                // Rollback if copy failed
-                let _ = fs::rename(&old_exe, &current_exe);
+        // Cari satu level lebih dalam (zip mungkin punya subdirektori)
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Ok(sub_entries) = fs::read_dir(&path) {
+                        for sub_entry in sub_entries.flatten() {
+                            let sub_path = sub_entry.path();
+                            if sub_path.is_file() {
+                                let name = sub_path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                                if name.ends_with(".exe") {
+                                    return Ok(sub_path);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // Fallback: Write background batch script to swap files on process exit
-        warn!("Direct Windows rename failed; creating background update launcher script");
-        let bat_script_path = self.temp_dir.join("update_swap.bat");
-        let bat_content = format!(
-            "@echo off\r\ntimeout /t 1 /nobreak > NUL\r\ncopy /y \"{}\" \"{}\"\r\nstart \"\" \"{}\"\r\ndel \"%~f0\"\r\n",
-            new_binary.to_string_lossy(),
-            current_exe.to_string_lossy(),
-            current_exe.to_string_lossy()
+        Err("Tidak ada file .exe ditemukan di dalam ZIP archive".into())
+    }
+
+    /// Periksa apakah path memerlukan hak administrator untuk ditulis.
+    /// Path di bawah Program Files, Windows, atau ProgramData dianggap perlu elevasi.
+    fn path_needs_elevation(exe_path: &std::path::Path) -> bool {
+        let path_str = exe_path.to_string_lossy().to_lowercase();
+
+        // Cek apakah ada di direktori sistem Windows
+        let system_prefixes = [
+            "c:\\program files",
+            "c:\\program files (x86)",
+            "c:\\windows",
+            "c:\\programdata",
+        ];
+
+        for prefix in &system_prefixes {
+            if path_str.starts_with(prefix) {
+                return true;
+            }
+        }
+
+        // Coba tulis file dummy untuk memverifikasi izin secara langsung
+        if let Some(parent) = exe_path.parent() {
+            let test_file = parent.join(".tabular_write_test");
+            if fs::write(&test_file, b"test").is_ok() {
+                let _ = fs::remove_file(&test_file);
+                return false; // Bisa ditulis — tidak perlu elevasi
+            } else {
+                return true; // Tidak bisa ditulis — perlu elevasi
+            }
+        }
+
+        false
+    }
+
+    /// Replace exe langsung tanpa elevasi (untuk portable install).
+    ///
+    /// Windows memperbolehkan rename file yang sedang berjalan (tidak bisa overwrite),
+    /// sehingga kita rename yang lama ke .old, copy yang baru, lalu cleanup .old saat restart.
+    fn replace_exe_in_place(
+        &self,
+        current_exe: &std::path::Path,
+        new_binary: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let old_exe = current_exe.with_extension("exe.old");
+
+        // Hapus .old dari run sebelumnya jika ada
+        let _ = fs::remove_file(&old_exe);
+
+        info!("🔄 Rename {:?} → {:?}", current_exe, old_exe);
+        fs::rename(current_exe, &old_exe)
+            .map_err(|e| format!("Gagal rename exe lama: {}", e))?;
+
+        info!("📋 Copy binary baru {:?} → {:?}", new_binary, current_exe);
+        if let Err(e) = fs::copy(new_binary, current_exe) {
+            // Rollback: kembalikan exe lama
+            warn!("Copy gagal ({}), rolling back...", e);
+            let _ = fs::rename(&old_exe, current_exe);
+            return Err(format!("Gagal copy binary baru: {}", e).into());
+        }
+
+        info!("✅ Binary berhasil diganti in-place (Windows portable)");
+        // .old akan dibersihkan saat startup berikutnya di AutoUpdater::new()
+        Ok(())
+    }
+
+    /// Spawn PowerShell helper yang meminta elevasi UAC untuk mengganti binary
+    /// di direktori sistem (C:\Program Files).
+    ///
+    /// Script PowerShell:
+    /// 1. Tunggu proses Tabular lama selesai
+    /// 2. Rename exe lama → .old
+    /// 3. Copy binary baru → nama exe asli
+    /// 4. Jalankan instance baru
+    /// 5. Hapus .old dan script itu sendiri
+    fn apply_via_powershell_helper<F>(
+        &self,
+        current_exe: &std::path::Path,
+        new_binary: &std::path::Path,
+        _update_info: &UpdateInfo,
+        _progress_cb: &F,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: Fn(UpdateStage) + Send + Sync + 'static,
+    {
+        let current_pid = std::process::id();
+        let old_exe = current_exe.with_extension("exe.old");
+        let script_path = self.temp_dir.join("tabular_update_helper.ps1");
+
+        // Escape path untuk PowerShell (ganti backslash ganda dan kutip)
+        let cur_exe_str = current_exe.to_string_lossy().replace('\'', "''");
+        let old_exe_str = old_exe.to_string_lossy().replace('\'', "''");
+        let new_bin_str = new_binary.to_string_lossy().replace('\'', "''");
+        let script_str = script_path.to_string_lossy().replace('\'', "''");
+
+        let ps_script = format!(
+            r#"# Tabular Windows Auto-Update Helper
+# Dijalankan dengan elevasi UAC setelah proses utama keluar
+
+$ErrorActionPreference = 'Stop'
+
+# 1. Tunggu proses lama selesai (maks 30 detik)
+$pid_old = {pid}
+$waited = 0
+while ($waited -lt 30) {{
+    $proc = Get-Process -Id $pid_old -ErrorAction SilentlyContinue
+    if ($null -eq $proc) {{ break }}
+    Start-Sleep -Milliseconds 500
+    $waited += 0.5
+}}
+
+# 2. Rename exe lama agar bisa ditulis
+$oldPath = '{old_exe}'
+$curPath = '{cur_exe}'
+$newBin  = '{new_bin}'
+
+if (Test-Path $oldPath) {{ Remove-Item -Force $oldPath }}
+Rename-Item -Path $curPath -NewName $oldPath -Force
+
+# 3. Copy binary baru ke lokasi asli
+Copy-Item -Path $newBin -Destination $curPath -Force
+
+# 4. Hapus .old
+if (Test-Path $oldPath) {{ Remove-Item -Force $oldPath -ErrorAction SilentlyContinue }}
+
+# 5. Jalankan versi baru
+Start-Process -FilePath $curPath
+
+# 6. Hapus script ini
+Remove-Item -Path '{script}' -Force -ErrorAction SilentlyContinue
+"#,
+            pid = current_pid,
+            cur_exe = cur_exe_str,
+            old_exe = old_exe_str,
+            new_bin = new_bin_str,
+            script = script_str,
         );
 
-        fs::write(&bat_script_path, bat_content)?;
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", &bat_script_path.to_string_lossy()])
-            .spawn();
+        fs::write(&script_path, ps_script.as_bytes())
+            .map_err(|e| format!("Gagal menulis PowerShell helper script: {}", e))?;
 
-        Ok(())
+        info!("🚀 Spawning PowerShell helper dengan UAC elevation: {:?}", script_path);
+
+        // Start-Process dengan -Verb RunAs meminta elevasi UAC
+        // -WindowStyle Hidden agar tidak muncul jendela console
+        let status = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-Command",
+                &format!(
+                    "Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"{}\"'",
+                    script_path.to_string_lossy()
+                ),
+            ])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                info!("✅ PowerShell helper berhasil di-spawn, menunggu proses selesai...");
+                Ok(())
+            }
+            Ok(s) => Err(format!(
+                "PowerShell helper gagal di-spawn (exit code: {:?}). \
+                 Coba update manual dari halaman release GitHub.",
+                s.code()
+            ).into()),
+            Err(e) => Err(format!("Gagal menjalankan PowerShell: {}", e).into()),
+        }
     }
 }

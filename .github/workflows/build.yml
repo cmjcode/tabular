@@ -12,7 +12,7 @@ env:
   APP_NAME: Tabular
 
 jobs:
-  # Build for macOS
+  # Build for macOS — TIDAK DIUBAH
   build-macos:
     runs-on: macos-latest
     strategy:
@@ -45,7 +45,7 @@ jobs:
         name: tabular-${{ matrix.target }}
         path: target/${{ matrix.target }}/release/tabular
 
-  # Create macOS universal binary and bundle
+  # Create macOS universal binary and bundle — TIDAK DIUBAH
   bundle-macos:
     needs: build-macos
     runs-on: macos-latest
@@ -105,7 +105,7 @@ jobs:
           dist/macos/${{ env.APP_NAME }}.app
           dist/macos/${{ env.APP_NAME }}.dmg
 
-  # Build for Linux
+  # Build for Linux — TIDAK DIUBAH
   build-linux:
     runs-on: ubuntu-latest
     strategy:
@@ -168,21 +168,31 @@ jobs:
         name: tabular-linux-${{ matrix.target }}
         path: dist/linux/tabular-${{ matrix.target }}.tar.gz
 
-  # Build for Windows
+  # ─── Build for Windows (DIPERBAIKI) ────────────────────────────────────────
+  # Menghasilkan: ZIP (portable) + MSI installer (via WiX v4)
+  # Asset naming konsisten dengan auto_updater di src/self_update.rs:
+  #   tabular-<ver>-windows-x86_64.zip   ← ZIP portable
+  #   Tabular-<ver>-windows-x86_64.msi   ← MSI installer (diprioritaskan untuk auto-update)
   build-windows:
     runs-on: windows-latest
     strategy:
       matrix:
-        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
-    
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch_name: x86_64
+            wix_arch: x64
+          - target: aarch64-pc-windows-msvc
+            arch_name: aarch64
+            wix_arch: arm64
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ matrix.target }}
-    
+
     - name: Cache cargo dependencies
       uses: actions/cache@v3
       with:
@@ -191,24 +201,71 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-    
+
+    - name: Read version from Cargo.toml
+      id: version
+      shell: pwsh
+      run: |
+        $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+        echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+
     - name: Build for ${{ matrix.target }}
       run: cargo build --release --target ${{ matrix.target }}
-    
-    - name: Create zip archive
+
+    # ── ZIP portable ──────────────────────────────────────────────────────────
+    - name: Create ZIP archive
+      shell: pwsh
       run: |
-        mkdir -p dist/windows
-        copy target/${{ matrix.target }}/release/tabular.exe dist/windows/tabular-${{ matrix.target }}.exe
-        cd dist/windows
-        powershell Compress-Archive -Path tabular-${{ matrix.target }}.exe -DestinationPath tabular-${{ matrix.target }}.zip
-    
-    - name: Upload Windows artifact
+        $ver      = '${{ steps.version.outputs.VERSION }}'
+        $arch     = '${{ matrix.arch_name }}'
+        $exeSrc   = "target\${{ matrix.target }}\release\tabular.exe"
+        $distDir  = "dist\windows"
+        $zipName  = "tabular-$ver-windows-$arch.zip"
+
+        New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+
+        # Buat ZIP langsung dari binary (nama entry: tabular.exe)
+        Compress-Archive -Path $exeSrc -DestinationPath "$distDir\$zipName"
+        Write-Host "✅ ZIP: $distDir\$zipName"
+
+    # ── MSI via WiX v4 ────────────────────────────────────────────────────────
+    - name: Install WiX Toolset v4
+      shell: pwsh
+      run: dotnet tool install --global wix
+
+    - name: Build MSI installer
+      shell: pwsh
+      run: |
+        $ver      = '${{ steps.version.outputs.VERSION }}'
+        $arch     = '${{ matrix.arch_name }}'
+        $wixArch  = '${{ matrix.wix_arch }}'
+        $exeSrc   = "$PWD\target\${{ matrix.target }}\release\tabular.exe"
+        $iconPath = "$PWD\assets\tabular.ico"
+        $distDir  = "dist\windows"
+        $msiName  = "Tabular-$ver-windows-$arch.msi"
+
+        wix build wix\main.wxs `
+          -arch $wixArch `
+          -d "Version=$ver" `
+          -d "ExePath=$exeSrc" `
+          -d "IconPath=$iconPath" `
+          -o "$distDir\$msiName"
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "MSI build gagal untuk $arch"
+          exit 1
+        }
+        Write-Host "✅ MSI: $distDir\$msiName"
+
+    - name: Upload Windows artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: tabular-windows-${{ matrix.target }}
-        path: dist/windows/tabular-${{ matrix.target }}.zip
+        name: tabular-windows-${{ matrix.arch_name }}
+        path: |
+          dist/windows/tabular-*-windows-${{ matrix.arch_name }}.zip
+          dist/windows/Tabular-*-windows-${{ matrix.arch_name }}.msi
 
-  # Create release on tag push
+  # Create release on tag push — DIPERBARUI (tambahkan MSI ke upload)
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [bundle-macos, build-linux, build-windows]
@@ -223,7 +280,7 @@ jobs:
         path: dist/
     
     - name: Display structure
-      run: ls -la dist/
+      run: ls -la dist/ && ls -la dist/tabular-windows-x86_64/ || true
     
     - name: Create Release
       uses: softprops/action-gh-release@v1
@@ -232,8 +289,10 @@ jobs:
           dist/tabular-macos-universal/${{ env.APP_NAME }}.dmg
           dist/tabular-linux-x86_64-unknown-linux-gnu/tabular-x86_64-unknown-linux-gnu.tar.gz
           dist/tabular-linux-aarch64-unknown-linux-gnu/tabular-aarch64-unknown-linux-gnu.tar.gz
-          dist/tabular-windows-x86_64-pc-windows-msvc/tabular-x86_64-pc-windows-msvc.zip
-          dist/tabular-windows-aarch64-pc-windows-msvc/tabular-aarch64-pc-windows-msvc.zip
+          dist/tabular-windows-x86_64/tabular-*-windows-x86_64.zip
+          dist/tabular-windows-x86_64/Tabular-*-windows-x86_64.msi
+          dist/tabular-windows-aarch64/tabular-*-windows-aarch64.zip
+          dist/tabular-windows-aarch64/Tabular-*-windows-aarch64.msi
         body: |
           ## 🎉 Release Notes
           
@@ -247,14 +306,17 @@ jobs:
           - `tabular-aarch64-unknown-linux-gnu.tar.gz` - ARM64
           
           **Windows:**
-          - `tabular-x86_64-pc-windows-msvc.zip` - x86_64
-          - `tabular-aarch64-pc-windows-msvc.zip` - ARM64
+          - `Tabular-*-windows-x86_64.msi` - x86_64 Installer *(direkomendasikan, support auto-update)*
+          - `tabular-*-windows-x86_64.zip` - x86_64 Portable
+          - `Tabular-*-windows-aarch64.msi` - ARM64 Installer
+          - `tabular-*-windows-aarch64.zip` - ARM64 Portable
           
           ### 🚀 Installation
           
-          **macOS:** Download and open the DMG file, then drag Tabular to Applications
-          **Linux:** Extract the tarball and run the binary
-          **Windows:** Extract the zip file and run the executable
+          **macOS:** Download dan buka DMG, drag Tabular ke Applications
+          **Linux:** Extract tarball dan jalankan binary
+          **Windows (MSI):** Jalankan `.msi` → auto-update akan bekerja otomatis
+          **Windows (Portable):** Extract zip ke folder mana saja → auto-update bekerja jika folder dapat ditulis
           
           Built with ❤️ using Rust 🦀
         draft: false

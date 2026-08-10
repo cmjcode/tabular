@@ -147,17 +147,25 @@ foreach ($target in $targets) {
         exit 1
     }
 
-    # Plain binary (nama sama dengan output Makefile)
+    # --- Kemas artifact ---------------------------------------------------
+    # PENTING: nama file harus cocok dengan PlatformInfo::matches() di src/self_update.rs
+    #   ZIP portable : tabular-<ver>-windows-<arch>.zip  (berisi tabular.exe)
+    #   MSI installer: Tabular-<ver>-windows-<arch>.msi  (diprioritaskan auto-update)
+    #   EXE plain    : tabular-<arch>.exe               (untuk Makefile / testing)
+
+    # Plain binary (untuk Makefile / script lain)
     $exePlain = Join-Path $DistDir "tabular-$archName.exe"
     Copy-Item $exeSrc $exePlain -Force
 
-    # Zip archive (manual installation)
+    # ZIP portable — ZIP berisi tabular.exe (bukan nama panjang)
+    # auto_updater::find_exe_in_dir() mencari file *.exe di dalam ZIP
     $zipPath = Join-Path $DistDir "tabular-$Version-windows-$archName.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-    Compress-Archive -Path $exePlain -DestinationPath $zipPath
-
-    # Standalone executable (auto-updater)
-    Copy-Item $exePlain (Join-Path $DistDir "$AppName-$Version-windows-$archName.exe") -Force
+    # Buat salinan sementara bernama tabular.exe agar ZIP entry juga bernama tabular.exe
+    $exeForZip = Join-Path $DistDir "tabular.exe"
+    Copy-Item $exeSrc $exeForZip -Force
+    Compress-Archive -Path $exeForZip -DestinationPath $zipPath
+    Remove-Item $exeForZip -Force
 
     # MSI installer (WiX v4+)
     if (-not $NoMsi) {

@@ -22,6 +22,17 @@ struct GitHubAsset {
     browser_download_url: String,
 }
 
+/// Jenis paket yang diunduh untuk update di Windows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WindowsUpdateKind {
+    /// MSI installer — di-install via `msiexec /i /qn`
+    Msi,
+    /// ZIP archive — replace binary in-place
+    Zip,
+    /// EXE standalone (jika di-release langsung)
+    Exe,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateInfo {
     pub current_version: String,
@@ -32,6 +43,8 @@ pub struct UpdateInfo {
     pub asset_name: Option<String>,
     pub release_url: String,
     pub published_at: Option<String>,
+    /// Windows only: tipe installer yang akan dipakai
+    pub windows_update_kind: Option<WindowsUpdateKind>,
 }
 
 #[derive(Debug)]
@@ -128,10 +141,10 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
     let update_available = latest_version > current_version;
 
     // Find appropriate asset for current platform
-    let (download_url, asset_name) = if update_available {
+    let (download_url, asset_name, windows_update_kind) = if update_available {
         find_asset_for_platform(&release.assets)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     Ok(UpdateInfo {
@@ -143,6 +156,7 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
         asset_name,
         release_url: release.html_url,
         published_at: release.published_at,
+        windows_update_kind,
     })
 }
 
@@ -218,10 +232,12 @@ pub async fn check_for_updates_web_fallback() -> Result<UpdateInfo, UpdateError>
         asset_name: None,
         release_url,
         published_at: None,
+        windows_update_kind: None,
     })
 }
 
-fn find_asset_for_platform(assets: &[GitHubAsset]) -> (Option<String>, Option<String>) {
+/// Returns `(download_url, asset_name, windows_update_kind)`
+fn find_asset_for_platform(assets: &[GitHubAsset]) -> (Option<String>, Option<String>, Option<WindowsUpdateKind>) {
     let platform = get_platform_info();
 
     debug!("🔍 Searching for asset matching platform: {}", platform);
@@ -230,33 +246,111 @@ fn find_asset_for_platform(assets: &[GitHubAsset]) -> (Option<String>, Option<St
         debug!("  - {}", asset.name);
     }
 
-    for asset in assets {
-        let asset_name_lower = asset.name.to_lowercase();
-
-        if platform.matches(&asset_name_lower) {
-            debug!("✅ Found matching asset: {}", asset.name);
-            return (
-                Some(asset.browser_download_url.clone()),
-                Some(asset.name.clone()),
-            );
-        }
-    }
-
-    // Fallback: for macOS, try to find any .dmg file
-    if platform.os == "macos" {
+    // ── Windows: prioritaskan MSI > ZIP > EXE standalone ──────────────────
+    #[cfg(target_os = "windows")]
+    {
+        // Tahap 1: cari MSI yang cocok dengan arch
         for asset in assets {
-            if asset.name.to_lowercase().ends_with(".dmg") {
-                warn!("🔄 Using fallback .dmg asset: {}", asset.name);
+            let name = asset.name.to_lowercase();
+            if name.ends_with(".msi") && platform.arch_matches(&name) {
+                debug!("✅ Found MSI asset: {}", asset.name);
                 return (
                     Some(asset.browser_download_url.clone()),
                     Some(asset.name.clone()),
+                    Some(WindowsUpdateKind::Msi),
                 );
             }
         }
+
+        // Tahap 2: cari MSI tanpa filter arch (universal)
+        for asset in assets {
+            let name = asset.name.to_lowercase();
+            if name.ends_with(".msi") && name.contains("windows") {
+                debug!("🔄 Using fallback MSI (no arch filter): {}", asset.name);
+                return (
+                    Some(asset.browser_download_url.clone()),
+                    Some(asset.name.clone()),
+                    Some(WindowsUpdateKind::Msi),
+                );
+            }
+        }
+
+        // Tahap 3: cari ZIP yang cocok
+        for asset in assets {
+            let name = asset.name.to_lowercase();
+            if name.ends_with(".zip") && name.contains("windows") && platform.arch_matches(&name) {
+                debug!("✅ Found ZIP asset: {}", asset.name);
+                return (
+                    Some(asset.browser_download_url.clone()),
+                    Some(asset.name.clone()),
+                    Some(WindowsUpdateKind::Zip),
+                );
+            }
+        }
+
+        // Tahap 4: ZIP tanpa filter arch
+        for asset in assets {
+            let name = asset.name.to_lowercase();
+            if name.ends_with(".zip") && name.contains("windows") {
+                debug!("🔄 Using fallback ZIP (no arch filter): {}", asset.name);
+                return (
+                    Some(asset.browser_download_url.clone()),
+                    Some(asset.name.clone()),
+                    Some(WindowsUpdateKind::Zip),
+                );
+            }
+        }
+
+        // Tahap 5: EXE standalone
+        for asset in assets {
+            let name = asset.name.to_lowercase();
+            if name.ends_with(".exe") && name.contains("windows") {
+                debug!("🔄 Using EXE standalone: {}", asset.name);
+                return (
+                    Some(asset.browser_download_url.clone()),
+                    Some(asset.name.clone()),
+                    Some(WindowsUpdateKind::Exe),
+                );
+            }
+        }
+
+        warn!("❌ No matching Windows asset found");
+        return (None, None, None);
     }
 
-    warn!("❌ No matching asset found for platform: {}", platform);
-    (None, None)
+    // ── macOS / Linux: path lama ───────────────────────────────────────────
+    #[cfg(not(target_os = "windows"))]
+    {
+        for asset in assets {
+            let asset_name_lower = asset.name.to_lowercase();
+
+            if platform.matches(&asset_name_lower) {
+                debug!("✅ Found matching asset: {}", asset.name);
+                return (
+                    Some(asset.browser_download_url.clone()),
+                    Some(asset.name.clone()),
+                    None,
+                );
+            }
+        }
+
+        // Fallback: for macOS, try to find any .dmg file
+        if platform.os == "macos" {
+            for asset in assets {
+                if asset.name.to_lowercase().ends_with(".dmg") {
+                    warn!("🔄 Using fallback .dmg asset: {}", asset.name);
+                    return (
+                        Some(asset.browser_download_url.clone()),
+                        Some(asset.name.clone()),
+                        None,
+                    );
+                }
+            }
+        }
+
+        warn!("❌ No matching asset found for platform: {}", platform);
+        (None, None, None)
+    }
 }
 
 #[derive(Debug)]
@@ -266,10 +360,19 @@ struct PlatformInfo {
 }
 
 impl PlatformInfo {
+    /// Apakah nama asset cocok dengan arch saat ini?
+    fn arch_matches(&self, asset_name: &str) -> bool {
+        match self.arch {
+            "x86_64" => asset_name.contains("x86_64") || asset_name.contains("amd64"),
+            "aarch64" => asset_name.contains("aarch64") || asset_name.contains("arm64"),
+            _ => true,
+        }
+    }
+
+    /// Cocokkan nama asset dengan platform (macOS/Linux legacy).
     fn matches(&self, asset_name: &str) -> bool {
         let os_matches = match self.os {
             "macos" => {
-                // More flexible matching for macOS
                 asset_name.contains("macos")
                     || asset_name.contains("darwin")
                     || asset_name.ends_with(".dmg")
@@ -289,11 +392,7 @@ impl PlatformInfo {
             return true;
         }
 
-        let arch_matches = match self.arch {
-            "x86_64" => asset_name.contains("x86_64") || asset_name.contains("amd64"),
-            "aarch64" => asset_name.contains("aarch64") || asset_name.contains("arm64"),
-            _ => true, // Fallback to any architecture if not specified
-        };
+        let arch_matches = self.arch_matches(asset_name);
 
         os_matches && (arch_matches || asset_name.ends_with(".dmg"))
     }
@@ -346,7 +445,7 @@ pub fn open_url(url: &str) {
 
     #[cfg(target_os = "windows")]
     {
-        if let Err(e) = std::process::Command::new("cmd").args(["/c", "start", url]).status() {
+        if let Err(e) = std::process::Command::new("cmd").args(["/c", "start", "", url]).status() {
             error!("Failed to open URL on Windows: {}", e);
         }
     }
@@ -361,7 +460,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_platform_matching() {
+    fn test_platform_matching_legacy() {
         let macos_arm = PlatformInfo {
             os: "macos",
             arch: "aarch64",
@@ -376,6 +475,18 @@ mod tests {
         };
         assert!(linux_x64.matches("tabular-0.3.0-linux-x86_64.tar.gz"));
         assert!(!linux_x64.matches("tabular-0.3.0-windows-x86_64.zip"));
+    }
+
+    #[test]
+    fn test_arch_matches() {
+        let win_x64 = PlatformInfo { os: "windows", arch: "x86_64" };
+        assert!(win_x64.arch_matches("tabular-0.10.5-windows-x86_64.msi"));
+        assert!(win_x64.arch_matches("tabular-x86_64-pc-windows-msvc.zip"));
+        assert!(!win_x64.arch_matches("tabular-aarch64-pc-windows-msvc.zip"));
+
+        let win_arm = PlatformInfo { os: "windows", arch: "aarch64" };
+        assert!(win_arm.arch_matches("tabular-0.10.5-windows-aarch64.msi"));
+        assert!(!win_arm.arch_matches("tabular-0.10.5-windows-x86_64.msi"));
     }
 
     #[test]
