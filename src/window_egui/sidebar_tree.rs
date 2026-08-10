@@ -1869,16 +1869,21 @@ impl super::Tabular {
                 let connection_id = -context_id;
                 if !processed_removals.contains(&connection_id) {
                     processed_removals.insert(connection_id);
-                    connection::remove_connection(self, connection_id);
+                    let conn_name = self
+                        .connections
+                        .iter()
+                        .find(|c| c.id == Some(connection_id))
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| "Connection".to_string());
+                    self.pending_delete_connection = Some((connection_id, conn_name));
 
-                    // No need for full tree refresh - remove_connection already does incremental update
                     needs_full_refresh = true;
                     ui.ctx().request_repaint();
 
-                    // Break early to prevent further processing
                     break;
                 }
             }
+
         }
 
         // Force complete UI refresh after any removal

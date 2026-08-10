@@ -73,11 +73,15 @@ pub fn load_http_state(connection_id: i64) -> Option<HttpClientState> {
 
 // ─── Public entry-point called from window_egui ─────────────────────────────
 
+/// Render the HTTP client panel.
+/// Returns `true` if the user just saved a request to a collection workspace
+/// (so the caller can reload `app.yaak_workspaces` from disk).
 pub fn render_http_client(
     ui: &mut egui::Ui,
     state: &mut HttpClientState,
     toasts: &mut crate::window_egui::notifications::ToastManager,
-) {
+    connection_id: Option<i64>,
+) -> bool {
     ui.style_mut().visuals.selection.bg_fill = crate::window_egui::style::theme_accent(ui.ctx());
     ui.style_mut().visuals.selection.stroke.color = egui::Color32::WHITE;
 
@@ -93,11 +97,15 @@ pub fn render_http_client(
         }
     }
 
+    let mut workspaces_saved = false;
+
     egui::Frame::NONE
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                render_url_bar(ui, state, toasts);
+                if render_url_bar(ui, state, toasts, connection_id) {
+                    workspaces_saved = true;
+                }
                 ui.add_space(4.0);
 
                 let available = ui.available_size();
@@ -119,6 +127,13 @@ pub fn render_http_client(
                 });
             });
         });
+
+    // Render the save dialog (outside the Frame so it can float as a Window)
+    if render_save_dialog(ui, state, toasts) {
+        workspaces_saved = true;
+    }
+
+    workspaces_saved
 }
 
 // ─── URL bar ────────────────────────────────────────────────────────────────
@@ -127,9 +142,13 @@ fn render_url_bar(
     ui: &mut egui::Ui,
     state: &mut HttpClientState,
     toasts: &mut crate::window_egui::notifications::ToastManager,
-) {
+    connection_id: Option<i64>,
+) -> bool {
+    let mut workspaces_saved = false;
+
     ui.horizontal(|ui| {
         let send_w = 88.0;
+        let save_w = 72.0; // Reserve space for the Save button so it is never clipped
         let bar_h = 28.0;
         ui.spacing_mut().interact_size.y = bar_h;
 
@@ -152,8 +171,8 @@ fn render_url_bar(
                 }
             });
 
-        // URL input
-        let url_w = (ui.available_width() - send_w - 8.0).max(120.0);
+        // URL input — subtract both Send and Save button widths so neither is clipped
+        let url_w = (ui.available_width() - send_w - save_w - 8.0).max(120.0);
         let url_resp = ui.add_sized(
             [url_w, bar_h],
             egui::TextEdit::singleline(&mut state.url)
@@ -196,6 +215,18 @@ fn render_url_bar(
             execute_request(state);
         }
 
+        // SAVE button — explicitly sized to match the reserved `save_w` above
+        let save_btn = ui.add(
+            egui::Button::new(egui::RichText::new("💾 Save").color(ui.visuals().text_color()))
+                .min_size(egui::vec2(save_w - 4.0, bar_h)),
+        ).on_hover_text("Save / Update request (Cmd+S)");
+
+        if save_btn.clicked() {
+            if save_or_update_http_tab(connection_id, state, toasts) {
+                workspaces_saved = true;
+            }
+        }
+
         // Allow pressing Enter in the URL field to send
         if url_resp.lost_focus()
             && ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -205,7 +236,252 @@ fn render_url_bar(
             execute_request(state);
         }
     });
+
+    workspaces_saved
 }
+
+/// Render the floating save-to-collection dialog.
+/// Returns `true` the frame that a request was successfully persisted to disk
+/// (so the caller can reload `app.yaak_workspaces` from disk into memory).
+fn render_save_dialog(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) -> bool {
+    if !state.show_save_dialog {
+        return false;
+    }
+
+    let mut close = false;
+    let mut save = false;
+
+    if state.workspaces.is_empty() {
+        state.workspaces = crate::http_collection::load_workspaces();
+    }
+
+    egui::Window::new("💾 Save Request to Collection")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(380.0)
+        .show(ui.ctx(), |ui| {
+            ui.vertical(|ui| {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Request Name:").strong());
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.save_dialog_name)
+                        .hint_text("e.g. Get User Profile")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Workspace:");
+                    if state.workspaces.is_empty() {
+                        ui.label(egui::RichText::new("Default Collection").weak());
+                    } else {
+                        let current_ws = state
+                            .collection_panel
+                            .active_workspace_id
+                            .clone()
+                            .unwrap_or_else(|| state.workspaces[0].id.clone());
+
+                        let selected_name = state
+                            .workspaces
+                            .iter()
+                            .find(|w| w.id == current_ws)
+                            .map(|w| w.name.as_str())
+                            .unwrap_or("Default Workspace");
+
+                        egui::ComboBox::from_id_salt("save_dialog_ws_combo")
+                            .selected_text(selected_name)
+                            .show_ui(ui, |ui| {
+                                for ws in &state.workspaces {
+                                    ui.selectable_value(
+                                        &mut state.collection_panel.active_workspace_id,
+                                        Some(ws.id.clone()),
+                                        &ws.name,
+                                    );
+                                }
+                            });
+                    }
+                });
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let save_btn = egui::Button::new(
+                            egui::RichText::new("Save").color(egui::Color32::WHITE).strong(),
+                        )
+                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                        if ui.add(save_btn).clicked() {
+                            save = true;
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        });
+
+    if save {
+        let ws_id = state
+            .collection_panel
+            .active_workspace_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+
+        let req_name = if state.save_dialog_name.trim().is_empty() {
+            "New Request".to_string()
+        } else {
+            state.save_dialog_name.trim().to_string()
+        };
+
+        let new_req_id = format!("sr_{}", chrono::Utc::now().timestamp_millis());
+        let new_req = crate::http_collection::SavedRequest {
+            id: new_req_id,
+            workspace_id: ws_id.clone(),
+            folder_id: None,
+            name: req_name.clone(),
+            url: state.url.clone(),
+            method: state.method.clone(),
+            params: state.params.clone(),
+            headers: state.headers.clone(),
+            body_type: state.body_type.clone(),
+            body_text: state.body_text.clone(),
+            form_data: state.form_data.clone(),
+            auth_type: state.auth_type.clone(),
+            bearer_token: state.bearer_token.clone(),
+            basic_user: state.basic_user.clone(),
+            basic_pass: state.basic_pass.clone(),
+            api_key_name: state.api_key_name.clone(),
+            api_key_value: state.api_key_value.clone(),
+            api_key_in_header: state.api_key_in_header,
+            description: String::new(),
+        };
+
+        let mut workspaces = crate::http_collection::load_workspaces();
+        if let Some(ws) = workspaces.iter_mut().find(|w| w.id == ws_id) {
+            ws.requests.push(new_req.clone());
+        } else {
+            let new_ws = crate::http_collection::HttpWorkspace {
+                id: ws_id.clone(),
+                name: "Collection".to_string(),
+                requests: vec![new_req.clone()],
+                folders: Vec::new(),
+                environments: Vec::new(),
+            };
+            workspaces.push(new_ws);
+        }
+        crate::http_collection::save_workspaces(&workspaces);
+        state.saved_request_id = Some(new_req.id.clone());
+        state.saved_workspace_id = Some(ws_id.clone());
+        state.saved_folder_id = None;
+        state.save_dialog_name = req_name.clone();
+
+        toasts.success(format!("Saved request '{}' to collection!", req_name));
+    }
+
+    if close {
+        state.show_save_dialog = false;
+    }
+
+    save
+}
+
+/// Save or update an HTTP client tab.
+/// - If associated with an HTTP connection (`connection_id`), saves connection state to disk.
+/// - Else if associated with an existing collection request (`state.saved_request_id`), updates the request in collection.
+/// - Else (unsaved request), triggers the "Save Request to Collection" dialog.
+/// Returns `true` if workspace collection was modified (requires reloading `app.yaak_workspaces`).
+pub fn save_or_update_http_tab(
+    connection_id: Option<i64>,
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) -> bool {
+    if let Some(conn_id) = connection_id {
+        save_http_state(conn_id, state);
+        toasts.success("HTTP connection state disimpan ✓");
+        false
+    } else if let Some(req_id) = state.saved_request_id.clone() {
+        let mut workspaces = crate::http_collection::load_workspaces();
+        let mut updated = false;
+
+        fn update_saved_req(req: &mut crate::http_collection::SavedRequest, state: &HttpClientState) {
+            req.url = state.url.clone();
+            req.method = state.method.clone();
+            req.params = state.params.clone();
+            req.headers = state.headers.clone();
+            req.body_type = state.body_type.clone();
+            req.body_text = state.body_text.clone();
+            req.form_data = state.form_data.clone();
+            req.auth_type = state.auth_type.clone();
+            req.bearer_token = state.bearer_token.clone();
+            req.basic_user = state.basic_user.clone();
+            req.basic_pass = state.basic_pass.clone();
+            req.api_key_name = state.api_key_name.clone();
+            req.api_key_value = state.api_key_value.clone();
+            req.api_key_in_header = state.api_key_in_header;
+        }
+
+        fn update_in_folders(
+            folders: &mut [crate::http_collection::HttpFolder],
+            req_id: &str,
+            state: &HttpClientState,
+        ) -> bool {
+            for folder in folders.iter_mut() {
+                if let Some(req) = folder.requests.iter_mut().find(|r| r.id == req_id) {
+                    update_saved_req(req, state);
+                    return true;
+                }
+                if update_in_folders(&mut folder.children, req_id, state) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        for ws in workspaces.iter_mut() {
+            if let Some(req) = ws.requests.iter_mut().find(|r| r.id == req_id) {
+                update_saved_req(req, state);
+                updated = true;
+                break;
+            }
+            if update_in_folders(&mut ws.folders, &req_id, state) {
+                updated = true;
+                break;
+            }
+        }
+
+        if updated {
+            crate::http_collection::save_workspaces(&workspaces);
+            let display_name = if state.save_dialog_name.is_empty() {
+                "request"
+            } else {
+                &state.save_dialog_name
+            };
+            toasts.success(format!("Tersimpan '{}' ✓", display_name));
+            true
+        } else {
+            // Request missing from workspaces, fallback to save dialog
+            state.show_save_dialog = true;
+            if state.save_dialog_name.is_empty() {
+                state.save_dialog_name = "New Request".to_string();
+            }
+            false
+        }
+    } else {
+        state.show_save_dialog = true;
+        if state.save_dialog_name.is_empty() {
+            state.save_dialog_name = "New Request".to_string();
+        }
+        false
+    }
+}
+
 
 // ─── Request panel (tabs + content) ─────────────────────────────────────────
 

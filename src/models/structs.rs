@@ -149,6 +149,14 @@ pub struct HttpClientState {
     /// UI state for the collection panel.
     pub collection_panel: crate::http_collection::CollectionPanelState,
 
+    /// If this state comes from or was saved to a collection request, store its tracking metadata.
+    #[serde(skip)]
+    pub saved_request_id: Option<String>,
+    #[serde(skip)]
+    pub saved_workspace_id: Option<String>,
+    #[serde(skip)]
+    pub saved_folder_id: Option<String>,
+
     /// Transient flag: show the "Save Request" dialog.
     #[serde(skip)]
     pub show_save_dialog: bool,
@@ -190,6 +198,9 @@ impl Default for HttpClientState {
             response_receiver: None,
             workspaces: Vec::new(),
             collection_panel: crate::http_collection::CollectionPanelState::default(),
+            saved_request_id: None,
+            saved_workspace_id: None,
+            saved_folder_id: None,
             show_save_dialog: false,
             save_dialog_name: String::new(),
         }

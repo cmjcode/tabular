@@ -115,6 +115,22 @@ pub(crate) fn create_new_tab_with_connection_and_database(
     tab_id
 }
 
+/// Convenience: create a new HTTP Client tab pre-assigned with optional connection
+pub(crate) fn create_new_http_tab(
+    tabular: &mut window_egui::Tabular,
+    title: String,
+    connection_id: Option<i64>,
+) -> usize {
+    let tab_id = create_new_tab(tabular, title, String::new());
+    if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        active_tab.connection_id = connection_id;
+        active_tab.http_client_state = Some(models::structs::HttpClientState::default());
+        tabular.current_connection_id = connection_id;
+    }
+    tab_id
+}
+
+
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     if tabular.query_tabs.len() <= 1 {
         // Don't close the last tab, just clear it
@@ -315,14 +331,23 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
 }
 
 pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(), String> {
-    // HTTP API tabs: save the HTTP client state to disk instead of showing SQL save dialog
-    if let Some(tab) = tabular.query_tabs.get(tabular.active_tab_index)
-        && tab.http_client_state.is_some() {
-            if let (Some(conn_id), Some(state)) = (tab.connection_id, &tab.http_client_state) {
-                crate::http_client::save_http_state(conn_id, state);
+    // HTTP API tabs: save or update state directly, or trigger save dialog if brand new request
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index)
+        && tab.http_client_state.is_some()
+    {
+        let conn_id = tab.connection_id;
+        if let Some(http_state) = tab.http_client_state.as_mut() {
+            let workspaces_changed = crate::http_client::save_or_update_http_tab(
+                conn_id,
+                http_state,
+                &mut tabular.toasts,
+            );
+            if workspaces_changed {
+                tabular.yaak_workspaces = crate::http_collection::load_workspaces();
             }
-            return Ok(());
         }
+        return Ok(());
+    }
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         // Ensure content holds editor text plus metadata header (id + optional db)
         let mut final_content = tabular.editor.text.clone();
@@ -417,6 +442,7 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
         }
 
         if let Some(path) = &tab.file_path {
+
             // File already exists, save directly
             let file_path = path.clone();
             std::fs::write(&file_path, &tab.content)

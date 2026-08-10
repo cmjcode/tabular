@@ -48,6 +48,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     let mut conn_to_edit: Option<crate::models::structs::ConnectionConfig> = None;
     let mut conn_to_delete: Option<i64> = None;
 
+    let mut conn_to_reorder: Option<(i64, i64)> = None;
+    let pointer_released = ui.input(|i| i.pointer.any_released());
+
     if !http_conns.is_empty() {
         let matching_conns: Vec<&crate::models::structs::ConnectionConfig> = http_conns
             .iter()
@@ -61,43 +64,95 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             .id_salt("sidebar_http_conns_header")
             .default_open(true)
             .show(ui, |ui| {
-                for conn in matching_conns {
-                    ui.horizontal(|ui| {
+                for conn in &matching_conns {
+                    let conn_id = conn.id.unwrap_or(0);
+                    let is_being_dragged = app.dragged_http_conn_id == Some(conn_id);
+
+                    let row_rect = ui.horizontal(|ui| {
                         ui.add_space(4.0);
+                        let icon = if is_being_dragged { "🖐️" } else { "🌐" };
+                        let text_color = if is_being_dragged {
+                            accent
+                        } else {
+                            ui.style().visuals.text_color()
+                        };
+
                         let response = ui.add(
                             egui::Label::new(
-                                egui::RichText::new(format!("🌐  {}", conn.name))
+                                egui::RichText::new(format!("{}  {}", icon, conn.name))
                                     .small()
-                                    .color(ui.style().visuals.text_color()),
+                                    .color(text_color),
                             )
-                            .sense(egui::Sense::click())
+                            .sense(egui::Sense::click_and_drag())
                             .truncate(),
                         );
 
-                        if response.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        if response.drag_started() && conn_id != 0 {
+                            app.dragged_http_conn_id = Some(conn_id);
                         }
 
-                        if response.clicked() {
+                        if response.hovered() {
+                            ui.ctx().set_cursor_icon(if is_being_dragged {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::PointingHand
+                            });
+
+                            if let Some(src_id) = app.dragged_http_conn_id {
+                                if src_id != conn_id {
+                                    ui.painter().line_segment(
+                                        [response.rect.left_top(), response.rect.right_top()],
+                                        egui::Stroke::new(2.0, accent),
+                                    );
+                                    if pointer_released {
+                                        conn_to_reorder = Some((src_id, conn_id));
+                                    }
+                                }
+                            }
+                        }
+
+                        if response.clicked() && app.dragged_http_conn_id.is_none() {
                             conn_to_open = Some((conn.name.clone(), conn.id));
                         }
+                    }).response.rect;
 
-                        response.context_menu(|ui| {
-                            if ui.button("✏️ Edit Connection").clicked() {
-                                conn_to_edit = Some(conn.clone());
-                                ui.close();
-                            }
-                            if ui.button("🗑️ Delete Connection").clicked() {
-                                conn_to_delete = conn.id;
-                                ui.close();
-                            }
-                        });
+                    // Use interact() on the full row rect so right-click is captured reliably
+                    let row_id = egui::Id::new("http_conn_row").with(conn_id);
+                    let row_interact = ui.interact(row_rect, row_id, egui::Sense::click());
+                    let conn_clone = (*conn).clone();
+                    let conn_id_opt = conn.id;
+                    row_interact.context_menu(|ui| {
+                        if ui.button("✏️ Edit Connection").clicked() {
+                            conn_to_edit = Some(conn_clone.clone());
+                            ui.close();
+                        }
+                        if ui.button("🗑️ Delete Connection").clicked() {
+                            conn_to_delete = conn_id_opt;
+                            ui.close();
+                        }
                     });
-                }
+
+}
             });
             ui.add_space(4.0);
         }
     }
+
+    if pointer_released {
+        app.dragged_http_conn_id = None;
+    }
+
+    if let Some((src_id, target_id)) = conn_to_reorder {
+        if let (Some(src_idx), Some(target_idx)) = (
+            app.connections.iter().position(|c| c.id == Some(src_id)),
+            app.connections.iter().position(|c| c.id == Some(target_id)),
+        ) {
+            let item = app.connections.remove(src_idx);
+            app.connections.insert(target_idx, item);
+            app.toasts.info("Reordered HTTP connection");
+        }
+    }
+
 
     if http_conns.is_empty() && app.yaak_workspaces.is_empty() {
         ui.vertical_centered(|ui| {
@@ -124,6 +179,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     // Track what request to load (to avoid borrowing issues inside closures)
     let mut req_to_load: Option<SavedRequest> = None;
     let mut ws_to_delete: Option<String> = None;
+    let mut new_req_target: Option<(String, Option<String>, String)> = None;
 
     for ws_id in &ws_ids {
         let ws_idx = match app.yaak_workspaces.iter().position(|w| &w.id == ws_id) {
@@ -141,7 +197,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
 
         let default_open = app.yaak_workspaces.len() == 1;
 
-        egui::CollapsingHeader::new(
+        let ws_header_resp = egui::CollapsingHeader::new(
             egui::RichText::new(format!("📁  {}  ({})", ws_name, request_count)).strong(),
         )
         .id_salt(format!("sidebar_coll_ws_{}", ws_id))
@@ -195,24 +251,22 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 if !filter.is_empty() && !folder_has_match(&folder, &filter) {
                     continue;
                 }
-                render_folder_node(ui, &folder, &filter, accent, &mut req_to_load);
+                render_folder_node(ui, ws_id, &folder, &filter, accent, &mut req_to_load, &mut new_req_target);
             }
+        });
 
-            // ── Delete workspace button ───────────────────────────────────
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button(egui::RichText::new("🗑").small())
-                        .on_hover_text("Remove this workspace from Tabular (doesn't affect Yaak)")
-                        .clicked()
-                    {
-                        ws_to_delete = Some(ws_id.clone());
-                    }
-                });
-            });
+        ws_header_resp.header_response.context_menu(|ui| {
+            if ui.button("🌐 Add New Http").clicked() {
+                new_req_target = Some((ws_id.clone(), None, ws_name.clone()));
+                ui.close();
+            }
+            if ui.button("🗑️ Delete Workspace").clicked() {
+                ws_to_delete = Some(ws_id.clone());
+                ui.close();
+            }
         });
     }
+
 
     // Apply deferred actions after rendering loop
     if let Some((name, id)) = conn_to_open {
@@ -223,7 +277,13 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
         app.show_edit_connection = true;
     }
     if let Some(id) = conn_to_delete {
-        crate::connection::remove_connection(app, id);
+        let conn_name = app
+            .connections
+            .iter()
+            .find(|c| c.id == Some(id))
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "HTTP Connection".to_string());
+        app.pending_delete_connection = Some((id, conn_name));
     }
     if let Some(req) = req_to_load {
         apply_collection_request_to_active_tab(app, &req);
@@ -232,7 +292,43 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
         delete_workspace(&ws_id);
         app.yaak_workspaces.retain(|w| w.id != ws_id);
     }
+    if let Some((ws_id, folder_id_opt, parent_name)) = new_req_target {
+        let new_req_id = format!("sr_{}", chrono::Utc::now().timestamp_millis());
+        let new_req = SavedRequest {
+            id: new_req_id,
+            workspace_id: ws_id.clone(),
+            folder_id: folder_id_opt.clone(),
+            name: "New Request".to_string(),
+            url: "".to_string(),
+            method: crate::models::structs::HttpMethod::GET,
+            ..Default::default()
+        };
+
+        if let Some(ws) = app.yaak_workspaces.iter_mut().find(|w| w.id == ws_id) {
+            if let Some(f_id) = &folder_id_opt {
+                fn add_req_to_folder(folders: &mut [crate::http_collection::HttpFolder], f_id: &str, req: SavedRequest) -> bool {
+                    for folder in folders.iter_mut() {
+                        if folder.id == f_id {
+                            folder.requests.push(req);
+                            return true;
+                        }
+                        if add_req_to_folder(&mut folder.children, f_id, req.clone()) {
+                            return true;
+                        }
+                    }
+                    false
+                }
+                add_req_to_folder(&mut ws.folders, f_id, new_req.clone());
+            } else {
+                ws.requests.push(new_req.clone());
+            }
+            save_workspaces(&app.yaak_workspaces);
+            apply_collection_request_to_active_tab(app, &new_req);
+            app.toasts.success(format!("Added new HTTP request to '{}'", parent_name));
+        }
+    }
 }
+
 
 /// Open an HTTP Client tab pre-assigned to the given HTTP connection.
 fn open_http_connection_tab(app: &mut Tabular, conn_name: String, connection_id: Option<i64>) {
@@ -376,12 +472,14 @@ fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
 
 fn render_folder_node(
     ui: &mut egui::Ui,
+    ws_id: &str,
     folder: &crate::http_collection::HttpFolder,
     filter: &str,
     accent: egui::Color32,
     to_load: &mut Option<SavedRequest>,
+    new_req_target: &mut Option<(String, Option<String>, String)>,
 ) {
-    egui::CollapsingHeader::new(
+    let folder_resp = egui::CollapsingHeader::new(
         egui::RichText::new(format!("📂  {}", folder.name)),
     )
     .id_salt(format!("sidebar_coll_folder_{}", folder.id))
@@ -401,10 +499,18 @@ fn render_folder_node(
             if !filter.is_empty() && !folder_has_match(child, filter) {
                 continue;
             }
-            render_folder_node(ui, child, filter, accent, to_load);
+            render_folder_node(ui, ws_id, child, filter, accent, to_load, new_req_target);
+        }
+    });
+
+    folder_resp.header_response.context_menu(|ui| {
+        if ui.button("🌐 Add New Http").clicked() {
+            *new_req_target = Some((ws_id.to_string(), Some(folder.id.clone()), folder.name.clone()));
+            ui.close();
         }
     });
 }
+
 
 /// Render a single saved-request row. Returns true if the user clicked it.
 fn render_request_row(

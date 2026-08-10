@@ -363,6 +363,9 @@ impl super::Tabular {
             pending_drop_column_stmt: None,
             pending_drop_collection: None,
             pending_drop_table: None,
+            pending_delete_connection: None,
+            dragged_http_conn_id: None,
+
             structure_col_widths: Vec::new(),
             structure_idx_col_widths: Vec::new(),
             structure_sub_view: models::structs::StructureSubView::Columns,

@@ -305,6 +305,10 @@ pub struct Tabular {
     pub pending_drop_collection: Option<(i64, String, String)>, // (connection_id, db, collection)
     // Pending drop table confirmation
     pub pending_drop_table: Option<(i64, String, String, String)>, // (connection_id, database, table, stmt)
+    // Pending delete connection confirmation
+    pub pending_delete_connection: Option<(i64, String)>, // (connection_id, connection_name)
+    // Drag and drop tracking for HTTP Connections in sidebar
+    pub dragged_http_conn_id: Option<i64>,
     // Structure view column widths (separate from data grid)
     pub structure_col_widths: Vec<f32>,     // for columns table
     pub structure_idx_col_widths: Vec<f32>, // for indexes table

@@ -239,6 +239,12 @@ pub fn apply_saved_request(saved: &SavedRequest, state: &mut HttpClientState) {
     state.api_key_value = saved.api_key_value.clone();
     state.api_key_in_header = saved.api_key_in_header;
 
+    // Track original saved request metadata for direct updates
+    state.saved_request_id = Some(saved.id.clone());
+    state.saved_workspace_id = Some(saved.workspace_id.clone());
+    state.saved_folder_id = saved.folder_id.clone();
+    state.save_dialog_name = saved.name.clone();
+
     // Clear previous response
     state.response_status = None;
     state.response_status_text.clear();

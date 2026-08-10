@@ -2,7 +2,7 @@
 //!
 //! Replaces the scattered `error_message` + `show_error_message` dialog pattern
 //! (which was also misused for *success* messages) with a single, non-blocking,
-//! auto-dismissing, stackable toast surface anchored to the top-right corner.
+//! auto-dismissing, stackable toast surface anchored to the bottom-right corner.
 //!
 //! Usage from anywhere on `Tabular`:
 //! ```ignore
@@ -145,7 +145,7 @@ impl ToastManager {
 
         let mut dismiss: Option<usize> = None;
         egui::Area::new(egui::Id::new("tabular_toasts"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 56.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
             .interactable(true)
             .show(ctx, |ui| {
                 ui.set_max_width(360.0);

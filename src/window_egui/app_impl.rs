@@ -1564,16 +1564,13 @@ impl Tabular {
                                                     self.show_postman_import_dialog = true;
                                                     ui.close();
                                                 }
-                                                if ui.button("🌐 Add New Http").clicked() {
-                                                    self.test_connection_status = None;
-                                                    self.test_connection_in_progress = false;
-                                                    self.new_connection = models::structs::ConnectionConfig::default();
-                                                    self.new_connection.connection_type = models::enums::DatabaseType::ApiHttp;
-                                                    self.show_add_connection = true;
+                                                if ui.button("🌐 Add New Connection").clicked() {
+                                                    editor::create_new_http_tab(self, "New HTTP Connection".to_string(), None);
                                                     ui.close();
                                                 }
                                             },
-                                        ).response.on_hover_text("Import Yaak/Postman or Add New Http");
+                                        ).response.on_hover_text("Import Yaak/Postman or Add New Connection");
+
                                     } else {
                                         let plus_btn = ui.add_sized(
                                             [24.0, 24.0],
@@ -1887,6 +1884,24 @@ impl Tabular {
                                         }
                                         self.scroll_to_active_tab = false;
 
+                                        let is_http_active = self.selected_menu == "HTTP Clients"
+                                            || self
+                                                .current_connection_id
+                                                .and_then(|id| self.connections.iter().find(|c| c.id == Some(id)))
+                                                .map(|c| c.connection_type == models::enums::DatabaseType::ApiHttp)
+                                                .unwrap_or(false)
+                                            || self
+                                                .query_tabs
+                                                .get(self.active_tab_index)
+                                                .map(|t| t.http_client_state.is_some())
+                                                .unwrap_or(false);
+
+                                        let hover_text = if is_http_active {
+                                            "Add New Http"
+                                        } else {
+                                            "New query tab"
+                                        };
+
                                         let plus_bg = if ui.visuals().dark_mode {
                                             egui::Color32::from_rgb(55, 55, 55)
                                         } else {
@@ -1900,11 +1915,16 @@ impl Tabular {
                                                     .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
                                                     .corner_radius(0.0),
                                             )
-                                            .on_hover_text("New query tab")
+                                            .on_hover_text(hover_text)
                                             .clicked()
                                         {
-                                            editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
+                                            if is_http_active {
+                                                editor::create_new_http_tab(self, "New Request".to_string(), self.current_connection_id);
+                                            } else {
+                                                editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
+                                            }
                                         }
+
                                         if let Some(i) = to_close {
                                             editor::close_tab(self, i);
                                         }
@@ -2480,8 +2500,13 @@ impl Tabular {
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && tab.http_client_state.is_some()
                         {
+                            let conn_id = tab.connection_id;
                             if let Some(state) = &mut tab.http_client_state {
-                                crate::http_client::render_http_client(ui, state, &mut self.toasts);
+                                let workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id);
+                                if workspaces_saved {
+                                    // Reload in-memory collection so sidebar reflects the newly saved request
+                                    self.yaak_workspaces = crate::http_collection::load_workspaces();
+                                }
                             }
                             rendered_http = true;
                         }
@@ -2629,6 +2654,9 @@ impl Tabular {
 
                     // Custom View Dialog
                     self.render_add_view_dialog(ui.ctx());
+
+                    // Delete Connection confirmation dialog
+                    self.render_delete_connection_confirmation(ui.ctx());
 
                     // Render context menu for row operations
                     if self.show_row_context_menu {
@@ -3885,6 +3913,7 @@ impl App for Tabular {
             } else if !self.query_tabs.is_empty() {
                 println!("🔥 No spreadsheet operations, saving query tab instead");
                 debug!("🔥 No spreadsheet operations, saving query tab instead");
+
                 if let Err(error) = editor::save_current_tab(self) {
                     self.error_message = format!("Save failed: {}", error);
                     self.show_error_message = true;
