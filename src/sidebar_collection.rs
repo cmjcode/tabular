@@ -165,7 +165,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 };
                 let req = app.yaak_workspaces[ws_idx].requests[req_idx].clone();
                 if !filter.is_empty()
-                    && !req.name.to_lowercase().contains(&filter)
+                    && !req.display_name().to_lowercase().contains(&filter)
                     && !req.url.to_lowercase().contains(&filter)
                 {
                     continue;
@@ -388,7 +388,7 @@ fn render_folder_node(
     .show(ui, |ui| {
         for req in &folder.requests {
             if !filter.is_empty()
-                && !req.name.to_lowercase().contains(filter)
+                && !req.display_name().to_lowercase().contains(filter)
                 && !req.url.to_lowercase().contains(filter)
             {
                 continue;
@@ -424,10 +424,11 @@ fn render_request_row(
                 .small()
                 .strong(),
         );
-        // Request name, clickable
+        // Request name or endpoint URL, clickable
+        let display_name = req.display_name();
         let lbl = ui.add(
             egui::Label::new(
-                egui::RichText::new(&req.name)
+                egui::RichText::new(&display_name)
                     .small()
                     .color(ui.style().visuals.text_color()),
             )
@@ -449,14 +450,16 @@ fn render_request_row(
 /// Load a saved request into an HTTP client tab.
 /// Automatically creates or switches to an HTTP client tab if one isn't currently active.
 fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest) {
+    let display_title = req.display_name();
+
     // 1. If currently active tab is already an HTTP Client tab, load request into it and update title
     if let Some(tab) = app.query_tabs.get_mut(app.active_tab_index)
         && tab.http_client_state.is_some()
     {
-        tab.title = req.name.clone();
+        tab.title = display_title.clone();
         if let Some(http_state) = tab.http_client_state.as_mut() {
             crate::http_collection::apply_saved_request(req, http_state);
-            app.toasts.success(format!("Loaded: {}", req.name));
+            app.toasts.success(format!("Loaded: {}", display_title));
             return;
         }
     }
@@ -471,11 +474,11 @@ fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest)
         && tab.redis_browser_state.is_none()
         && tab.diagram_state.is_none()
     {
-        tab.title = req.name.clone();
+        tab.title = display_title.clone();
         let mut http_state = crate::models::structs::HttpClientState::default();
         crate::http_collection::apply_saved_request(req, &mut http_state);
         tab.http_client_state = Some(http_state);
-        app.toasts.success(format!("Loaded: {}", req.name));
+        app.toasts.success(format!("Loaded: {}", display_title));
         return;
     }
 
@@ -483,23 +486,23 @@ fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest)
     if let Some(idx) = app.query_tabs.iter().position(|t| t.http_client_state.is_some()) {
         app.active_tab_index = idx;
         if let Some(tab) = app.query_tabs.get_mut(idx) {
-            tab.title = req.name.clone();
+            tab.title = display_title.clone();
             if let Some(http_state) = tab.http_client_state.as_mut() {
                 crate::http_collection::apply_saved_request(req, http_state);
-                app.toasts.success(format!("Loaded: {}", req.name));
+                app.toasts.success(format!("Loaded: {}", display_title));
                 return;
             }
         }
     }
 
     // 4. If no HTTP Client tab exists, create a new HTTP Client tab
-    crate::editor::create_new_tab(app, req.name.clone(), String::new());
+    crate::editor::create_new_tab(app, display_title.clone(), String::new());
     let new_idx = app.active_tab_index;
     if let Some(tab) = app.query_tabs.get_mut(new_idx) {
         let mut http_state = crate::models::structs::HttpClientState::default();
         crate::http_collection::apply_saved_request(req, &mut http_state);
         tab.http_client_state = Some(http_state);
-        app.toasts.success(format!("Loaded: {}", req.name));
+        app.toasts.success(format!("Loaded: {}", display_title));
     }
 }
 
@@ -507,7 +510,7 @@ fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest)
 
 fn workspace_has_match(ws: &crate::http_collection::HttpWorkspace, filter: &str) -> bool {
     for req in &ws.requests {
-        if req.name.to_lowercase().contains(filter) || req.url.to_lowercase().contains(filter) {
+        if req.display_name().to_lowercase().contains(filter) || req.url.to_lowercase().contains(filter) {
             return true;
         }
     }
@@ -521,7 +524,7 @@ fn workspace_has_match(ws: &crate::http_collection::HttpWorkspace, filter: &str)
 
 fn folder_has_match(folder: &crate::http_collection::HttpFolder, filter: &str) -> bool {
     for req in &folder.requests {
-        if req.name.to_lowercase().contains(filter) || req.url.to_lowercase().contains(filter) {
+        if req.display_name().to_lowercase().contains(filter) || req.url.to_lowercase().contains(filter) {
             return true;
         }
     }

@@ -37,6 +37,89 @@ pub struct SavedRequest {
     pub description: String,
 }
 
+/// Extracts the endpoint path from a URL (e.g. "https://api.example.com/v1/users?a=1" -> "/v1/users").
+/// Strips protocol, domain/port, query string, and hash fragment.
+pub fn extract_endpoint_url(raw_url: &str) -> String {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return "Untitled Request".to_string();
+    }
+
+    // 1. Strip query parameters and fragment
+    let url_no_query = trimmed.split('?').next().unwrap_or(trimmed);
+    let url_clean = url_no_query.split('#').next().unwrap_or(url_no_query);
+
+    // 2. Check and strip scheme (http://, https://, ws://, wss://, etc.)
+    let has_scheme = url_clean.contains("://");
+    let after_scheme = if let Some(idx) = url_clean.find("://") {
+        &url_clean[idx + 3..]
+    } else {
+        url_clean
+    };
+
+    // 3. Strip leading template variables if present (e.g. {{base_url}}/v1/users)
+    let (after_var, stripped_var) = if after_scheme.starts_with("{{") {
+        if let Some(end_var) = after_scheme.find("}}") {
+            (&after_scheme[end_var + 2..], true)
+        } else {
+            (after_scheme, false)
+        }
+    } else {
+        (after_scheme, false)
+    };
+
+    let target = after_var.trim();
+
+    if target.is_empty() {
+        return "/".to_string();
+    }
+
+    // If target already starts with '/', return it
+    if target.starts_with('/') {
+        return target.to_string();
+    }
+
+    // If scheme was present or template variable stripped, find first '/'
+    if has_scheme || stripped_var {
+        if let Some(slash_idx) = target.find('/') {
+            return target[slash_idx..].to_string();
+        } else {
+            return "/".to_string();
+        }
+    }
+
+    // If no scheme and no template variable:
+    if let Some(slash_idx) = target.find('/') {
+        let first_seg = &target[..slash_idx];
+        if first_seg.contains('.') || first_seg.contains(':') || first_seg == "localhost" {
+            return target[slash_idx..].to_string();
+        } else {
+            return format!("/{}", target);
+        }
+    }
+
+    // No slash at all
+    if target.contains('.') || target.contains(':') || target == "localhost" {
+        "/".to_string()
+    } else {
+        format!("/{}", target)
+    }
+}
+
+impl SavedRequest {
+    /// Returns the display name for the request.
+    /// If `name` is non-empty, returns `name`.
+    /// Otherwise, extracts the endpoint URL path from `url`.
+    pub fn display_name(&self) -> String {
+        let trimmed_name = self.name.trim();
+        if !trimmed_name.is_empty() {
+            trimmed_name.to_string()
+        } else {
+            extract_endpoint_url(&self.url)
+        }
+    }
+}
+
 /// A sub-folder that groups requests inside a workspace.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HttpFolder {
@@ -1372,6 +1455,36 @@ mod tests {
         assert_eq!(env.name, "Staging Environment");
         assert_eq!(env.variables.len(), 2);
         assert_eq!(env.variables[0], ("baseUrl".to_string(), "https://staging.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_extract_endpoint_url() {
+        assert_eq!(extract_endpoint_url("https://api.example.com/v1/users/profile?query=1#ref"), "/v1/users/profile");
+        assert_eq!(extract_endpoint_url("http://localhost:8080/api/v1/orders"), "/api/v1/orders");
+        assert_eq!(extract_endpoint_url("https://api.example.com"), "/");
+        assert_eq!(extract_endpoint_url("https://api.example.com/"), "/");
+        assert_eq!(extract_endpoint_url("/v1/auth/login"), "/v1/auth/login");
+        assert_eq!(extract_endpoint_url("{{base_url}}/v1/users"), "/v1/users");
+        assert_eq!(extract_endpoint_url("{{base_url}}"), "/");
+        assert_eq!(extract_endpoint_url(""), "Untitled Request");
+        assert_eq!(extract_endpoint_url("   "), "Untitled Request");
+    }
+
+    #[test]
+    fn test_saved_request_display_name() {
+        let req_with_name = SavedRequest {
+            name: "GetUserProfile".to_string(),
+            url: "https://api.example.com/v1/users/profile".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(req_with_name.display_name(), "GetUserProfile");
+
+        let req_without_name = SavedRequest {
+            name: "".to_string(),
+            url: "https://api.example.com/v1/users/profile?a=1".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(req_without_name.display_name(), "/v1/users/profile");
     }
 }
 
