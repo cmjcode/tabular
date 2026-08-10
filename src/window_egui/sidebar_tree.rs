@@ -3828,45 +3828,6 @@ impl super::Tabular {
 
 
     pub fn render_tree_for_database_section(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(-2.0);
-        // Add responsive search box
-        ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            let search_bg = if ui.visuals().dark_mode {
-                egui::Color32::from_rgb(40, 40, 40)
-            } else {
-                egui::Color32::from_rgb(210, 210, 210)
-            };
-            // Make search box responsive to sidebar width
-            let available_width = ui.available_width() - 5.0; // Leave space for clear button and padding
-            let search_response = ui.add_sized(
-                [available_width, 20.0],
-                egui::TextEdit::singleline(&mut self.database_search_text)
-                    .hint_text("Search Databases, Table, etc...")
-                    .background_color(search_bg),
-            );
-            if search_response.has_focus() {
-                ui.painter().rect_stroke(
-                    search_response.rect,
-                    0.0,
-                    egui::Stroke::new(1.0, super::style::theme_accent(ui.ctx())),
-                    egui::StrokeKind::Outside,
-                );
-            }
-
-            // // Make search box responsive to sidebar width
-            // let available_width = ui.available_width() - 5.0; // Leave space for clear button and padding
-            // let search_response = ui.add_sized(
-            //     [available_width, 20.0],
-            //     egui::TextEdit::singleline(&mut self.database_search_text)
-            //         .hint_text("Search databases, tables, keys..."),
-            // );
-
-            if search_response.changed() {
-                self.update_search_results();
-            }
-        });
-
         // Use search results if search is active, otherwise use normal tree
         if self.show_search_results && !self.database_search_text.trim().is_empty() {
             // Show search results

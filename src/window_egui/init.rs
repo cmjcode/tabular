@@ -292,6 +292,7 @@ impl super::Tabular {
             show_search_results: false,
             history_search_text: String::new(),
             filtered_history_tree: Vec::new(),
+            filtered_queries_tree: Vec::new(),
             // Query folder management
             show_create_folder_dialog: false,
             new_folder_name: String::new(),

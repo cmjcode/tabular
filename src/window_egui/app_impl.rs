@@ -4,7 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 use super::{Tabular, PrefTab, style};
 
 const TAB_BUTTON_HEIGHT: f32 = 36.0;
-use crate::{models, connection, editor, data_table, sidebar_database, sidebar_history,
+use crate::{models, connection, editor, data_table, sidebar_database,
             sidebar_query, spreadsheet::SpreadsheetOperations, dialog,
             cache_data};
 
@@ -1268,6 +1268,45 @@ impl Tabular {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             match self.selected_menu.as_str() {
                                 "Database" => {
+                                    // ── General Search Box ──────────────────────────────────
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(4.0);
+                                        let search_bg = if ui.visuals().dark_mode {
+                                            egui::Color32::from_rgb(30, 32, 42)
+                                        } else {
+                                            egui::Color32::from_rgb(235, 238, 243)
+                                        };
+                                        let available_width = (ui.available_width() - 8.0).max(40.0);
+
+                                        let search_response = ui.add_sized(
+                                            [available_width, 24.0],
+                                            egui::TextEdit::singleline(&mut self.database_search_text)
+                                                .desired_width(f32::INFINITY)
+                                                .hint_text("🔍 Search Connections, Queries, History...")
+                                                .background_color(search_bg),
+                                        );
+
+                                        if search_response.has_focus() {
+                                            let focus_color = if ui.visuals().dark_mode {
+                                                egui::Color32::from_rgb(80, 90, 120)
+                                            } else {
+                                                egui::Color32::from_rgb(150, 165, 200)
+                                            };
+                                            ui.painter().rect_stroke(
+                                                search_response.rect,
+                                                3.0,
+                                                egui::Stroke::new(1.0, focus_color),
+                                                egui::StrokeKind::Outside,
+                                            );
+                                        }
+
+                                        if search_response.changed() {
+                                            self.update_all_database_search_results();
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+
                                     // ── 1. Connections Section ─────────────────────────────
                                     let conn_id = ui.make_persistent_id("sidebar_db_connections_accordion");
                                     let mut conn_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), conn_id, true);
@@ -1342,9 +1381,20 @@ impl Tabular {
                                                 }
                                             });
 
-                                            let mut queries_tree = std::mem::take(&mut self.queries_tree);
+                                            let is_searching_queries = !self.database_search_text.trim().is_empty();
+                                            let mut queries_tree = if is_searching_queries {
+                                                std::mem::take(&mut self.filtered_queries_tree)
+                                            } else {
+                                                std::mem::take(&mut self.queries_tree)
+                                            };
+
                                             let query_files_to_open = self.render_tree(ui, &mut queries_tree, false);
-                                            self.queries_tree = queries_tree;
+
+                                            if is_searching_queries {
+                                                self.filtered_queries_tree = queries_tree;
+                                            } else {
+                                                self.queries_tree = queries_tree;
+                                            }
 
                                             for (filename, content, file_path, _) in query_files_to_open {
                                                 if file_path.is_empty() {
@@ -1427,44 +1477,9 @@ impl Tabular {
                                                     });
                                             }
 
-                                            ui.horizontal(|ui| {
-                                                ui.add_space(4.0);
-                                                let search_bg = if ui.visuals().dark_mode {
-                                                    egui::Color32::from_rgb(30, 32, 42)
-                                                } else {
-                                                    egui::Color32::from_rgb(235, 238, 243)
-                                                };
-                                                let available_width = ui.available_width() - 5.0;
-                                                let search_response = ui.add_sized(
-                                                    [available_width, 24.0],
-                                                    egui::TextEdit::singleline(&mut self.history_search_text)
-                                                        .desired_width(f32::INFINITY)
-                                                        .hint_text("Search history...")
-                                                        .background_color(search_bg)
-                                                );
+                                            let is_searching_history = !self.database_search_text.trim().is_empty();
 
-                                                if search_response.has_focus() {
-                                                    let focus_color = if ui.visuals().dark_mode {
-                                                        egui::Color32::from_rgb(80, 90, 120)
-                                                    } else {
-                                                        egui::Color32::from_rgb(150, 165, 200)
-                                                    };
-                                                    ui.painter().rect_stroke(
-                                                        search_response.rect,
-                                                        3.0,
-                                                        egui::Stroke::new(1.0, focus_color),
-                                                        egui::StrokeKind::Outside,
-                                                    );
-                                                }
-
-                                                if search_response.changed() {
-                                                    sidebar_history::filter_history_tree(self);
-                                                }
-                                            });
-
-                                            let is_searching = !self.history_search_text.is_empty();
-
-                                            let mut history_tree = if is_searching {
+                                            let mut history_tree = if is_searching_history {
                                                 std::mem::take(&mut self.filtered_history_tree)
                                             } else {
                                                 std::mem::take(&mut self.history_tree)
@@ -1472,7 +1487,7 @@ impl Tabular {
 
                                             let query_files_to_open = self.render_tree(ui, &mut history_tree, false);
 
-                                            if is_searching {
+                                            if is_searching_history {
                                                 self.filtered_history_tree = history_tree;
                                             } else {
                                                 self.history_tree = history_tree;

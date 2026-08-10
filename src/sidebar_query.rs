@@ -54,6 +54,47 @@ pub(crate) fn load_queries_from_directory(tabular: &mut window_egui::Tabular) {
             _ => a.name.cmp(&b.name), // Alphabetical within same type
         }
     });
+
+    if !tabular.database_search_text.trim().is_empty() {
+        filter_queries_tree(tabular);
+    }
+}
+
+/// Filter queries tree based on database_search_text
+pub(crate) fn filter_queries_tree(tabular: &mut window_egui::Tabular) {
+    let search_text = tabular.database_search_text.trim().to_lowercase();
+    if search_text.is_empty() {
+        tabular.filtered_queries_tree.clear();
+        return;
+    }
+
+    fn filter_node(node: &models::structs::TreeNode, search_text: &str) -> Option<models::structs::TreeNode> {
+        let name_lower = node.name.to_lowercase();
+        let matches = name_lower.contains(search_text);
+
+        let mut filtered_children = Vec::new();
+        for child in &node.children {
+            if let Some(filtered_child) = filter_node(child, search_text) {
+                filtered_children.push(filtered_child);
+            }
+        }
+
+        if matches || !filtered_children.is_empty() {
+            let mut filtered_node = node.clone();
+            if !filtered_children.is_empty() {
+                filtered_node.children = filtered_children;
+            }
+            Some(filtered_node)
+        } else {
+            None
+        }
+    }
+
+    tabular.filtered_queries_tree = tabular
+        .queries_tree
+        .iter()
+        .filter_map(|node| filter_node(node, &search_text))
+        .collect();
 }
 
 pub(crate) fn create_query_folder(
@@ -481,4 +522,49 @@ pub(crate) fn find_query_file_by_hash(hash: i64) -> Option<String> {
     }
 
     search_in_dir(&query_dir, hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::enums::NodeType;
+    use crate::models::structs::TreeNode;
+
+    #[test]
+    fn test_filter_queries_tree() {
+        let mut tabular = window_egui::Tabular::default();
+
+        let mut child1 = TreeNode::new("Select Users.sql".to_string(), NodeType::Query);
+        child1.file_path = Some("/queries/Select Users.sql".to_string());
+
+        let mut child2 = TreeNode::new("Insert Products.sql".to_string(), NodeType::Query);
+        child2.file_path = Some("/queries/Insert Products.sql".to_string());
+
+        let mut folder = TreeNode::new("Admin Queries".to_string(), NodeType::QueryFolder);
+        folder.children = vec![child1, child2];
+
+        tabular.queries_tree = vec![folder];
+
+        // 1. Search for "users"
+        tabular.database_search_text = "users".to_string();
+        filter_queries_tree(&mut tabular);
+
+        assert_eq!(tabular.filtered_queries_tree.len(), 1);
+        assert_eq!(tabular.filtered_queries_tree[0].name, "Admin Queries");
+        assert_eq!(tabular.filtered_queries_tree[0].children.len(), 1);
+        assert_eq!(
+            tabular.filtered_queries_tree[0].children[0].name,
+            "Select Users.sql"
+        );
+
+        // 2. Search for non-existent text
+        tabular.database_search_text = "nonexistent".to_string();
+        filter_queries_tree(&mut tabular);
+        assert!(tabular.filtered_queries_tree.is_empty());
+
+        // 3. Clear search
+        tabular.database_search_text = "".to_string();
+        filter_queries_tree(&mut tabular);
+        assert!(tabular.filtered_queries_tree.is_empty());
+    }
 }

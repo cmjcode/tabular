@@ -1,8 +1,15 @@
 use eframe::egui;
-use crate::{models, connection};
+use crate::models;
 use log::debug;
 
 impl super::Tabular {
+    pub fn update_all_database_search_results(&mut self) {
+        self.update_search_results();
+        self.history_search_text = self.database_search_text.clone();
+        crate::sidebar_history::filter_history_tree(self);
+        crate::sidebar_query::filter_queries_tree(self);
+    }
+
     pub fn update_search_results(&mut self) {
         // Clone search text to avoid borrowing issues
         let search_text = self.database_search_text.trim().to_string();
@@ -16,18 +23,20 @@ impl super::Tabular {
         self.show_search_results = true;
         self.filtered_items_tree.clear();
 
-        // Search through the main items_tree with LIKE functionality
+        // Search through the main items_tree with instant in-memory LIKE functionality
         for node in &self.items_tree {
             if let Some(filtered_node) = self.filter_node_with_like_search(node, &search_text) {
                 self.filtered_items_tree.push(filtered_node);
             }
         }
 
-        // Search in all connections' cached data
-        let connection_ids: Vec<i64> = self.connections.iter().filter_map(|c| c.id).collect();
+        // Search in cached connection data (only when search text length >= 2)
+        if search_text.len() >= 2 {
+            let connection_ids: Vec<i64> = self.connections.iter().filter_map(|c| c.id).collect();
 
-        for connection_id in connection_ids {
-            self.search_in_connection_data(connection_id, &search_text);
+            for connection_id in connection_ids {
+                self.search_in_connection_data(connection_id, &search_text);
+            }
         }
     }
     pub fn filter_node_with_like_search(
@@ -38,9 +47,9 @@ impl super::Tabular {
         let mut matches = false;
         let mut filtered_children = Vec::new();
 
-        // Check if current node matches using case-sensitive LIKE search
-        // LIKE search: if search text is contained anywhere in the node name
-        if node.name.contains(search_text) {
+        // Case-insensitive LIKE search
+        let search_lower = search_text.to_lowercase();
+        if node.name.to_lowercase().contains(&search_lower) {
             matches = true;
         }
 
@@ -115,52 +124,45 @@ impl super::Tabular {
         }
     }
     pub fn search_redis_keys(&mut self, connection_id: i64, search_text: &str) {
-        // Search through Redis keys using SCAN with flexible pattern
+        // Only search connected Redis instances to avoid network connection timeouts on typing
+        let redis_manager = match self.connection_pools.get(&connection_id) {
+            Some(models::enums::DatabasePool::Redis(m)) => m.clone(),
+            _ => return,
+        };
+
         let rt = self.get_runtime();
-
         let search_results = rt.block_on(async {
-            if let Some(models::enums::DatabasePool::Redis(redis_manager)) =
-                connection::pool_if_connected_or_start(self, connection_id).await
-            {
-                let mut conn = redis_manager.as_ref().clone();
+            let mut conn = redis_manager.as_ref().clone();
+            let pattern = format!("*{}*", search_text);
+            let mut cursor = 0u64;
+            let mut found_keys = Vec::new();
 
-                // Use flexible pattern for LIKE search - search text can appear anywhere
-                let pattern = format!("*{}*", search_text);
-                let mut cursor = 0u64;
-                let mut found_keys = Vec::new();
+            for _iteration in 0..3 {
+                let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(&pattern)
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(&mut conn)
+                    .await;
 
-                // First try exact pattern match
-                for _iteration in 0..20 {
-                    // Increase iterations for more comprehensive search
-                    let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
-                        .arg(cursor)
-                        .arg("MATCH")
-                        .arg(&pattern)
-                        .arg("COUNT")
-                        .arg(100) // Increase count for better performance
-                        .query_async(&mut conn)
-                        .await;
-
-                    if let Ok((new_cursor, keys)) = scan_result {
-                        // Additional filtering for case-sensitive LIKE search
-                        for key in keys {
-                            if key.contains(search_text) {
-                                found_keys.push(key);
-                            }
+                if let Ok((new_cursor, keys)) = scan_result {
+                    for key in keys {
+                        if key.contains(search_text) {
+                            found_keys.push(key);
                         }
-                        cursor = new_cursor;
-                        if cursor == 0 {
-                            break;
-                        }
-                    } else {
+                    }
+                    cursor = new_cursor;
+                    if cursor == 0 || found_keys.len() >= 50 {
                         break;
                     }
+                } else {
+                    break;
                 }
-
-                found_keys
-            } else {
-                Vec::new()
             }
+
+            found_keys
         });
 
         // Add search results to filtered tree

@@ -177,6 +177,8 @@ pub struct Tabular {
     // History search functionality
     pub history_search_text: String,
     pub filtered_history_tree: Vec<models::structs::TreeNode>,
+    // Queries search functionality
+    pub filtered_queries_tree: Vec<models::structs::TreeNode>,
     // Query folder management
     pub show_create_folder_dialog: bool,
     pub new_folder_name: String,
