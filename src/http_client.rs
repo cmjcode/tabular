@@ -503,8 +503,10 @@ fn render_request_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
     ui.separator();
 
-    // Text-body editors fill the remaining height without a scroll area wrapper
-    // (the TextEdit widget itself handles internal scrolling)
+    // Text-body editors are rendered outside this outer ScrollArea because
+    // render_body_panel wraps its own TextEdit in an inner ScrollArea (the
+    // TextEdit widget itself never scrolls on its own) — nesting it inside
+    // this outer one too would produce two competing scrollbars.
     let is_text_body = matches!(state.active_tab, HttpRequestTab::Body)
         && matches!(
             state.body_type,
@@ -587,8 +589,12 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 HttpBodyType::Json | HttpBodyType::GraphQL | HttpBodyType::Xml
             );
             // ── Editor filling remaining space ──────────────────────────
-            let editor_h = ui.available_height().max(80.0);
-            let editor_w = ui.available_width();
+            // Panel's fixed viewport rect, captured before the ScrollArea so the
+            // floating "Beautify" button stays pinned to the visible bottom-right
+            // corner instead of scrolling away with long content.
+            let panel_rect = ui.available_rect_before_wrap();
+            let editor_w = panel_rect.width();
+            let editor_h = panel_rect.height().max(80.0);
 
             let dark = ui.visuals().dark_mode;
             let body_type_cap = state.body_type.clone();
@@ -625,20 +631,24 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 ui.fonts_mut(|f| f.layout_job(job))
             };
 
-            let editor_resp = ui.add_sized(
-                [editor_w, editor_h],
-                egui::TextEdit::multiline(&mut state.body_text)
-                    .hint_text(hint)
-                    .desired_width(f32::INFINITY)
-                    .layouter(&mut layouter),
-            );
+            egui::ScrollArea::vertical()
+                .id_salt("http_request_body_scroll")
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.add_sized(
+                        [editor_w, editor_h],
+                        egui::TextEdit::multiline(&mut state.body_text)
+                            .hint_text(hint)
+                            .desired_width(f32::INFINITY)
+                            .layouter(&mut layouter),
+                    );
+                });
 
             if can_beautify {
                 let ctx = ui.ctx().clone();
-                let rect = editor_resp.rect;
                 egui::Area::new(egui::Id::new("http_req_beautify_overlay"))
                     .order(egui::Order::Foreground)
-                    .fixed_pos(egui::pos2(rect.right() - 28.0, rect.bottom() - 28.0))
+                    .fixed_pos(egui::pos2(panel_rect.right() - 28.0, panel_rect.bottom() - 28.0))
                     .show(&ctx, |ui| {
                     let btn = ui.add_sized(
                         [22.0, 22.0],
@@ -697,7 +707,7 @@ fn render_kv_table(
             ui.checkbox(enabled, "");
             ui.add(egui::TextEdit::singleline(key).desired_width(field_w).hint_text("key"));
             ui.add(egui::TextEdit::singleline(value).desired_width(field_w).hint_text("value"));
-            if ui.small_button("✕").clicked() {
+            if ui.small_button("×").on_hover_text("Remove row").clicked() {
                 to_remove.push(idx);
             }
         });
@@ -935,22 +945,31 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 ui.fonts_mut(|f| f.layout_job(job))
             };
 
-            let h = ui.available_height().max(80.0);
-            let w = ui.available_width();
-            let editor_resp = ui.add_sized(
-                [w, h],
-                egui::TextEdit::multiline(&mut state.response_body)
-                    .desired_width(f32::INFINITY)
-                    .interactive(true)
-                    .layouter(&mut layouter),
-            );
+            // Panel's fixed viewport rect, captured before the ScrollArea so the
+            // floating "Beautify" button stays pinned to the visible bottom-right
+            // corner instead of scrolling away with long content.
+            let panel_rect = ui.available_rect_before_wrap();
+            let w = panel_rect.width();
+            let h = panel_rect.height().max(80.0);
+
+            egui::ScrollArea::vertical()
+                .id_salt("http_response_body_scroll")
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.add_sized(
+                        [w, h],
+                        egui::TextEdit::multiline(&mut state.response_body)
+                            .desired_width(f32::INFINITY)
+                            .interactive(true)
+                            .layouter(&mut layouter),
+                    );
+                });
 
             if is_json || is_xml {
                 let ctx = ui.ctx().clone();
-                let rect = editor_resp.rect;
                 egui::Area::new(egui::Id::new("http_resp_beautify_overlay"))
                     .order(egui::Order::Foreground)
-                    .fixed_pos(egui::pos2(rect.right() - 28.0, rect.bottom() - 28.0))
+                    .fixed_pos(egui::pos2(panel_rect.right() - 28.0, panel_rect.bottom() - 28.0))
                     .show(&ctx, |ui| {
                     let btn = ui.add_sized(
                         [22.0, 22.0],
