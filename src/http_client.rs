@@ -425,58 +425,71 @@ fn render_code_dialog(
         .default_size(egui::vec2(560.0, 440.0))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for lang in CodeLang::all() {
-                    let label = lang.label();
-                    ui.selectable_value(&mut state.code_dialog_lang, lang, label);
-                }
-            });
-
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(6.0);
-
+            // Generated once per frame, up front, so both the footer (Copy button)
+            // and the central content (code preview) can use it without any
+            // manual `available_height()` arithmetic — that pattern is what caused
+            // the dialog to grow every frame (self-referential sizing feedback
+            // loop) and the Beautify button to render in a broken spot. Panels
+            // reserve their own space via egui's normal layout pass instead.
             let mut code = crate::http_code_export::generate(&state.code_dialog_lang, state);
 
-            let dark = ui.visuals().dark_mode;
-            let lang_for_highlight = state.code_dialog_lang.clone();
-            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                let s = buf.as_str();
-                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
-                let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
-                job.wrap.max_width = wrap_width;
-                ui.fonts_mut(|f| f.layout_job(job))
-            };
-
-            egui::ScrollArea::both()
-                .id_salt("http_code_preview_scroll")
-                .auto_shrink([false; 2])
-                .max_height(ui.available_height() - 36.0)
+            egui::Panel::bottom("http_code_dialog_footer")
                 .show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut code)
-                            .code_editor()
-                            .desired_width(f32::INFINITY)
-                            .layouter(&mut layouter),
-                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let copy_btn = egui::Button::new(
+                                egui::RichText::new("📋 Copy to Clipboard")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                            if ui.add(copy_btn).clicked() {
+                                ui.ctx().copy_text(code.clone());
+                                copy_clicked = true;
+                            }
+                            if ui.button("Close").clicked() {
+                                close_requested = true;
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
                 });
 
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let copy_btn = egui::Button::new(
-                        egui::RichText::new("📋 Copy to Clipboard").color(egui::Color32::WHITE).strong(),
-                    )
-                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
-
-                    if ui.add(copy_btn).clicked() {
-                        ui.ctx().copy_text(code.clone());
-                        copy_clicked = true;
-                    }
-                    if ui.button("Close").clicked() {
-                        close_requested = true;
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for lang in CodeLang::all() {
+                        let label = lang.label();
+                        ui.selectable_value(&mut state.code_dialog_lang, lang, label);
                     }
                 });
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                let dark = ui.visuals().dark_mode;
+                let lang_for_highlight = state.code_dialog_lang.clone();
+                let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                    let s = buf.as_str();
+                    let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                    let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
+                    job.wrap.max_width = wrap_width;
+                    ui.fonts_mut(|f| f.layout_job(job))
+                };
+
+                egui::ScrollArea::both()
+                    .id_salt("http_code_preview_scroll")
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut code)
+                                .code_editor()
+                                .desired_width(f32::INFINITY)
+                                .layouter(&mut layouter),
+                        );
+                    });
             });
         });
 
@@ -741,7 +754,7 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     );
                 });
 
-            if can_beautify {
+            if can_beautify && !state.show_code_dialog {
                 let ctx = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("http_req_beautify_overlay"))
                     .order(egui::Order::Foreground)
@@ -749,8 +762,12 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     .show(&ctx, |ui| {
                     let btn = ui.add_sized(
                         [22.0, 22.0],
-                        egui::Button::new(egui::RichText::new("⚡").color(egui::Color32::WHITE))
-                            .fill(crate::window_egui::style::theme_accent(ui.ctx())),
+                        egui::Button::new(
+                            egui::RichText::new("⚡")
+                                .color(crate::window_egui::style::theme_accent(ui.ctx())),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::NONE),
                     );
                     if btn.clicked() {
                         match state.body_type {
@@ -1062,7 +1079,7 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     );
                 });
 
-            if is_json || is_xml {
+            if (is_json || is_xml) && !state.show_code_dialog {
                 let ctx = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("http_resp_beautify_overlay"))
                     .order(egui::Order::Foreground)
@@ -1070,8 +1087,12 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     .show(&ctx, |ui| {
                     let btn = ui.add_sized(
                         [22.0, 22.0],
-                        egui::Button::new(egui::RichText::new("⚡").color(egui::Color32::WHITE))
-                            .fill(crate::window_egui::style::theme_accent(ui.ctx())),
+                        egui::Button::new(
+                            egui::RichText::new("⚡")
+                                .color(crate::window_egui::style::theme_accent(ui.ctx())),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::NONE),
                     );
                     if btn.clicked() {
                         if is_json {
