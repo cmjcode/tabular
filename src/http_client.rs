@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use eframe::egui;
 use crate::models::structs::{
     HttpClientState, HttpClientResponse,
-    HttpMethod, HttpBodyType, HttpAuthType, HttpRequestTab, HttpResponseTab,
+    HttpMethod, HttpBodyType, HttpAuthType, HttpRequestTab, HttpResponseTab, CodeLang,
 };
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
@@ -133,6 +133,9 @@ pub fn render_http_client(
         workspaces_saved = true;
     }
 
+    // Render the "Copy as Code" dialog (outside the Frame so it can float as a Window)
+    render_code_dialog(ui, state, toasts);
+
     workspaces_saved
 }
 
@@ -149,6 +152,7 @@ fn render_url_bar(
     ui.horizontal(|ui| {
         let send_w = 88.0;
         let save_w = 72.0; // Reserve space for the Save button so it is never clipped
+        let code_w = 40.0; // Reserve space for the "Copy as Code" button
         let bar_h = 28.0;
         ui.spacing_mut().interact_size.y = bar_h;
 
@@ -171,8 +175,8 @@ fn render_url_bar(
                 }
             });
 
-        // URL input — subtract both Send and Save button widths so neither is clipped
-        let url_w = (ui.available_width() - send_w - save_w - 8.0).max(120.0);
+        // URL input — subtract Send, Save, and Code button widths so none is clipped
+        let url_w = (ui.available_width() - send_w - save_w - code_w - 12.0).max(120.0);
         let url_resp = ui.add_sized(
             [url_w, bar_h],
             egui::TextEdit::singleline(&mut state.url)
@@ -225,6 +229,15 @@ fn render_url_bar(
             if save_or_update_http_tab(connection_id, state, toasts) {
                 workspaces_saved = true;
             }
+        }
+
+        // CODE button — opens the "Copy as Code" dialog (curl / Python / Go / …)
+        let code_btn = ui.add(
+            egui::Button::new(egui::RichText::new("</>").color(ui.visuals().text_color()))
+                .min_size(egui::vec2(code_w - 4.0, bar_h)),
+        ).on_hover_text("Copy request as code (curl, Python, Go, …)");
+        if code_btn.clicked() {
+            state.show_code_dialog = true;
         }
 
         // Allow pressing Enter in the URL field to send
@@ -390,6 +403,90 @@ fn render_save_dialog(
     }
 
     save
+}
+
+/// Render the floating "Copy as Code" dialog: pick a target language and get
+/// a live-generated, ready-to-run snippet reproducing the current request.
+fn render_code_dialog(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
+    if !state.show_code_dialog {
+        return;
+    }
+
+    let mut close_requested = false;
+    let mut copy_clicked = false;
+
+    egui::Window::new("👨‍💻 Copy as Code")
+        .collapsible(false)
+        .resizable(true)
+        .default_size(egui::vec2(560.0, 440.0))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for lang in CodeLang::all() {
+                    let label = lang.label();
+                    ui.selectable_value(&mut state.code_dialog_lang, lang, label);
+                }
+            });
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            let mut code = crate::http_code_export::generate(&state.code_dialog_lang, state);
+
+            let dark = ui.visuals().dark_mode;
+            let lang_for_highlight = state.code_dialog_lang.clone();
+            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let s = buf.as_str();
+                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
+                job.wrap.max_width = wrap_width;
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
+
+            egui::ScrollArea::both()
+                .id_salt("http_code_preview_scroll")
+                .auto_shrink([false; 2])
+                .max_height(ui.available_height() - 36.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut code)
+                            .code_editor()
+                            .desired_width(f32::INFINITY)
+                            .layouter(&mut layouter),
+                    );
+                });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let copy_btn = egui::Button::new(
+                        egui::RichText::new("📋 Copy to Clipboard").color(egui::Color32::WHITE).strong(),
+                    )
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                    if ui.add(copy_btn).clicked() {
+                        ui.ctx().copy_text(code.clone());
+                        copy_clicked = true;
+                    }
+                    if ui.button("Close").clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+        });
+
+    if copy_clicked {
+        toasts.success(format!("Copied as {} ✓", state.code_dialog_lang.label()));
+    }
+
+    if close_requested {
+        state.show_code_dialog = false;
+    }
 }
 
 /// Save or update an HTTP client tab.
@@ -1668,5 +1765,170 @@ fn is_graphql_keyword(word: &str) -> bool {
         | "true" | "false" | "null"
         | "if" | "include" | "skip" | "repeatable"
     )
+}
+
+// ─── "Copy as Code" preview syntax highlighting ──────────────────────────────
+
+/// Generic multi-language syntax highlighter for the "Copy as Code" preview.
+/// Not a full parser — same heuristic byte-scanning approach as the
+/// JSON/XML/GraphQL body highlighters above, tuned per target language via a
+/// small (comment-style, keyword-list) profile.
+/// Colors: green = strings, muted-green = comments, orange = numbers,
+///         purple = keywords / curl flags, yellow = Capitalized identifiers,
+///         cyan = $variables (PHP), gray = punctuation.
+fn highlight_code(
+    text: &str,
+    lang: &CodeLang,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
+    use egui::{text::LayoutJob, Color32, TextFormat};
+    let mut job = LayoutJob::default();
+
+    let str_col     = Color32::from_rgb(152, 195, 121); // green   – strings
+    let comment_col = Color32::from_rgb(106, 153,  85); // muted green – comments
+    let num_col     = Color32::from_rgb(209, 154, 102); // orange  – numbers
+    let kw_col      = Color32::from_rgb(198, 120, 221); // purple  – keywords / curl flags
+    let type_col    = Color32::from_rgb(230, 180,  80); // yellow  – Capitalized identifiers
+    let var_col     = Color32::from_rgb(130, 200, 255); // cyan    – $variables (PHP)
+    let punct_col   = Color32::from_rgb(171, 178, 191); // gray    – punctuation
+    let norm_col    = if dark { Color32::from_rgb(220, 220, 220) } else { Color32::from_rgb(30, 30, 30) };
+
+    macro_rules! tf {
+        ($c:expr) => {
+            TextFormat { font_id: font_id.clone(), color: $c, ..Default::default() }
+        };
+    }
+
+    let (line_comment, block_comment, keywords): (Option<&str>, Option<(&str, &str)>, &[&str]) = match lang {
+        CodeLang::Curl => (Some("#"), None, &[]),
+        CodeLang::Python => (
+            Some("#"),
+            None,
+            &[
+                "import", "as", "def", "return", "if", "else", "elif", "for", "while", "in",
+                "True", "False", "None", "and", "or", "not", "print",
+            ],
+        ),
+        CodeLang::JavaScript | CodeLang::NodeJs => (
+            Some("//"),
+            Some(("/*", "*/")),
+            &[
+                "const", "let", "var", "function", "return", "new", "require", "then",
+                "catch", "true", "false", "null", "undefined", "async", "await",
+            ],
+        ),
+        CodeLang::Go => (
+            Some("//"),
+            Some(("/*", "*/")),
+            &[
+                "package", "import", "func", "return", "if", "err", "nil", "var", "true",
+                "false", "defer", "struct", "type",
+            ],
+        ),
+        CodeLang::Php => (
+            Some("//"),
+            Some(("/*", "*/")),
+            &["php", "echo", "if", "else", "true", "false", "null"],
+        ),
+        CodeLang::Rust => (
+            Some("//"),
+            Some(("/*", "*/")),
+            &[
+                "use", "fn", "let", "mut", "match", "struct", "impl", "return", "if", "else",
+                "true", "false", "Some", "None", "Ok", "Err", "panic",
+            ],
+        ),
+    };
+
+    let bs = text.as_bytes();
+    let n = bs.len();
+    let mut i = 0;
+
+    while i < n {
+        // ── line comment ─────────────────────────────────────────────
+        if let Some(lc) = line_comment
+            && text[i..].starts_with(lc)
+        {
+            let start = i;
+            while i < n && bs[i] != b'\n' { i += 1; }
+            if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(comment_col)); }
+            continue;
+        }
+
+        // ── block comment ────────────────────────────────────────────
+        if let Some((bstart, bend)) = block_comment
+            && text[i..].starts_with(bstart)
+        {
+            let start = i;
+            i += bstart.len();
+            while i < n && !text[i..].starts_with(bend) { i += 1; }
+            i = (i + bend.len()).min(n);
+            if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(comment_col)); }
+            continue;
+        }
+
+        match bs[i] {
+            // ── string literal (single/double/backtick) ─────────────────
+            b'"' | b'\'' | b'`' => {
+                let quote = bs[i];
+                let start = i;
+                i += 1;
+                while i < n {
+                    if quote != b'`' && bs[i] == b'\\' { i += 2; continue; }
+                    if bs[i] == quote { i += 1; break; }
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(str_col)); }
+            }
+            // ── number ────────────────────────────────────────────────
+            b'0'..=b'9' => {
+                let start = i;
+                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+            }
+            // ── curl-style flag (-X, --header, …) ────────────────────────
+            b'-' if matches!(lang, CodeLang::Curl)
+                && i + 1 < n
+                && (bs[i + 1] == b'-' || bs[i + 1].is_ascii_alphabetic()) =>
+            {
+                let start = i;
+                i += 1;
+                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'-' || bs[i] == b'.') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(kw_col)); }
+            }
+            // ── identifier / keyword / $variable ─────────────────────────
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => {
+                let start = i;
+                i += 1;
+                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'_') { i += 1; }
+                let word = text.get(start..i).unwrap_or("");
+                let col = if word.starts_with('$') {
+                    var_col
+                } else if keywords.contains(&word) {
+                    kw_col
+                } else if word.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    type_col
+                } else {
+                    norm_col
+                };
+                job.append(word, 0.0, tf!(col));
+            }
+            // ── punctuation ───────────────────────────────────────────────
+            b'{' | b'}' | b'[' | b']' | b'(' | b')' | b':' | b',' | b';' | b'=' | b'.'
+            | b'<' | b'>' | b'&' | b'|' | b'!' | b'+' | b'*' | b'/' | b'@' | b'#' => {
+                if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+                i += 1;
+            }
+            // ── whitespace / other ────────────────────────────────────────
+            _ => {
+                let start = i;
+                i += 1;
+                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') { i += 1; }
+                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(norm_col)); }
+            }
+        }
+    }
+    job
 }
 

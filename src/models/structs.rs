@@ -85,6 +85,45 @@ pub enum HttpResponseTab {
     Headers,
 }
 
+/// Target language/tool for the "Copy as Code" request-export dialog.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum CodeLang {
+    #[default]
+    Curl,
+    Python,
+    JavaScript,
+    NodeJs,
+    Go,
+    Php,
+    Rust,
+}
+
+impl CodeLang {
+    pub fn label(&self) -> &'static str {
+        match self {
+            CodeLang::Curl => "cURL",
+            CodeLang::Python => "Python",
+            CodeLang::JavaScript => "JavaScript (fetch)",
+            CodeLang::NodeJs => "Node.js (axios)",
+            CodeLang::Go => "Go",
+            CodeLang::Php => "PHP",
+            CodeLang::Rust => "Rust (reqwest)",
+        }
+    }
+
+    pub fn all() -> [CodeLang; 7] {
+        [
+            CodeLang::Curl,
+            CodeLang::Python,
+            CodeLang::JavaScript,
+            CodeLang::NodeJs,
+            CodeLang::Go,
+            CodeLang::Php,
+            CodeLang::Rust,
+        ]
+    }
+}
+
 
 /// Sent from the background thread back to the UI thread.
 pub struct HttpClientResponse {
@@ -164,6 +203,14 @@ pub struct HttpClientState {
     /// Name typed in the save-request dialog.
     #[serde(skip)]
     pub save_dialog_name: String,
+
+    /// Transient flag: show the "Copy as Code" dialog.
+    #[serde(skip)]
+    pub show_code_dialog: bool,
+
+    /// Language currently selected in the "Copy as Code" dialog.
+    #[serde(skip)]
+    pub code_dialog_lang: CodeLang,
 }
 
 impl Default for HttpClientState {
@@ -203,6 +250,8 @@ impl Default for HttpClientState {
             saved_folder_id: None,
             show_save_dialog: false,
             save_dialog_name: String::new(),
+            show_code_dialog: false,
+            code_dialog_lang: CodeLang::default(),
         }
     }
 }
