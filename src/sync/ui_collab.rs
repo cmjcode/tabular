@@ -108,10 +108,17 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 .hint_text("Room name…")
         );
 
-        if ui.add_sized(
-            [btn_width, 24.0],
-            egui::Button::new(egui::RichText::new("+").strong()).corner_radius(4.0)
-        ).on_hover_text("Create room").clicked() {
+        let can_create = !tabular.new_collab_room_name.trim().is_empty();
+        let create_btn = egui::Button::new(egui::RichText::new("+").strong()).corner_radius(4.0);
+        let create_resp = ui.add_enabled_ui(can_create, |ui| {
+            ui.add_sized([btn_width, 24.0], create_btn)
+        }).inner;
+        let create_resp = if can_create {
+            create_resp.on_hover_text("Create room")
+        } else {
+            create_resp.on_hover_text("Ketik nama room dulu")
+        };
+        if create_resp.clicked() {
             create_room(tabular);
         }
 
