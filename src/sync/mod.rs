@@ -78,6 +78,8 @@ pub struct CollabRoom {
     pub name: String,
     pub description: Option<String>,
     pub owner_id: String,
+    #[serde(default)]
+    pub team_id: Option<String>,
     pub created_at: String,
 }
 

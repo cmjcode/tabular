@@ -252,6 +252,30 @@ impl ApiClient {
         Ok(())
     }
 
+    pub async fn list_team_rooms(&self, token: &str, team_id: &str) -> anyhow::Result<Vec<super::CollabRoom>> {
+        let resp = self.http
+            .get(self.url(&format!("/api/v1/teams/{}/rooms", team_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<super::CollabRoom>>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn create_team_room(
+        &self,
+        token: &str,
+        team_id: &str,
+        req: &CreateTeamRoomReq,
+    ) -> anyhow::Result<super::CollabRoom> {
+        let resp = self.http
+            .post(self.url(&format!("/api/v1/teams/{}/rooms", team_id)))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<super::CollabRoom>>().await?;
+        Ok(resp.data)
+    }
+
     // ── User profile ─────────────────────────────────────────────────────────
 
     /// PUT /api/v1/users/me — `None` leaves a field untouched, `Some("")` clears it.
@@ -452,4 +476,10 @@ pub struct UpdateHttpRequestReq {
     pub body_json: Option<String>,
     pub auth_json: Option<String>,
     pub client_checksum: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateTeamRoomReq {
+    pub name: Option<String>,
+    pub description: Option<String>,
 }
