@@ -238,13 +238,19 @@ fn join_room(tabular: &mut Tabular, room: &CollabRoom) {
 
 fn create_room(tabular: &mut Tabular) {
     let name = tabular.new_collab_room_name.trim().to_string();
+    log::debug!("[collab] create_room clicked, name='{}'", name);
     if name.is_empty() {
+        tabular.toasts.warning("Room name tidak boleh kosong");
         return;
     }
 
     let account = match &tabular.sync_account {
         Some(a) => a.clone(),
-        None => return,
+        None => {
+            log::warn!("[collab] create_room: sync_account is None, aborting");
+            tabular.toasts.warning("Silakan login terlebih dahulu");
+            return;
+        }
     };
 
     let token = account.access_token.clone();
