@@ -170,6 +170,54 @@ impl ApiClient {
         Ok(())
     }
 
+    // ── HTTP Requests ────────────────────────────────────────────────────────
+
+    pub async fn list_http_requests(&self, token: &str) -> anyhow::Result<Vec<RemoteHttpRequest>> {
+        let resp = self.http
+            .get(self.url("/api/v1/http-requests"))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteHttpRequest>>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn create_http_request(
+        &self,
+        token: &str,
+        req: &CreateHttpRequestReq,
+    ) -> anyhow::Result<RemoteHttpRequest> {
+        let resp = self.http
+            .post(self.url("/api/v1/http-requests"))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<RemoteHttpRequest>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn update_http_request(
+        &self,
+        token: &str,
+        id: &str,
+        req: &UpdateHttpRequestReq,
+    ) -> anyhow::Result<RemoteHttpRequest> {
+        let resp = self.http
+            .put(self.url(&format!("/api/v1/http-requests/{}", id)))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<RemoteHttpRequest>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn delete_http_request(&self, token: &str, id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/http-requests/{}", id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
     // ── Collab Rooms ─────────────────────────────────────────────────────────
 
     pub async fn list_rooms(&self, token: &str) -> anyhow::Result<Vec<super::CollabRoom>> {
@@ -359,5 +407,49 @@ pub struct CreateQueryReq {
     pub folder_path: Option<String>,
     pub query_text: String,
     pub connection_name: Option<String>,
+    pub client_checksum: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteHttpRequest {
+    pub id: String,
+    pub user_id: String,
+    pub workspace_name: String,
+    pub folder_path: String,
+    pub name: String,
+    pub method: String,
+    pub url: String,
+    pub headers_json: Option<String>,
+    pub body_json: Option<String>,
+    pub auth_json: Option<String>,
+    pub client_checksum: Option<String>,
+    pub updated_at: String,
+    #[serde(default)]
+    pub access: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateHttpRequestReq {
+    pub workspace_name: String,
+    pub folder_path: Option<String>,
+    pub name: String,
+    pub method: String,
+    pub url: String,
+    pub headers_json: Option<String>,
+    pub body_json: Option<String>,
+    pub auth_json: Option<String>,
+    pub client_checksum: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateHttpRequestReq {
+    pub workspace_name: Option<String>,
+    pub folder_path: Option<String>,
+    pub name: Option<String>,
+    pub method: Option<String>,
+    pub url: Option<String>,
+    pub headers_json: Option<String>,
+    pub body_json: Option<String>,
+    pub auth_json: Option<String>,
     pub client_checksum: Option<String>,
 }

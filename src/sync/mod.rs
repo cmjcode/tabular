@@ -11,6 +11,7 @@ pub mod auth;
 pub mod crdt_editor;
 pub mod sync_connections;
 pub mod sync_history;
+pub mod sync_http_requests;
 pub mod sync_queries;
 pub mod ui_collab;
 pub mod ui_login;
