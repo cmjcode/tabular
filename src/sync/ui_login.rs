@@ -153,6 +153,42 @@ fn render_logged_in(tabular: &mut Tabular, ui: &mut egui::Ui) {
         ui.separator();
         ui.add_space(8.0);
 
+        // Profile (username / phone) — used later to add you to a Team by handle
+        ui.label(egui::RichText::new("Profile").strong());
+        ui.small("Username and phone let teammates add you to a Team without knowing your email.");
+        ui.add_space(4.0);
+        egui::Grid::new("profile_fields_grid")
+            .num_columns(2)
+            .spacing([8.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Username:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut tabular.profile_username_input)
+                        .hint_text("e.g. jane_doe")
+                        .desired_width(220.0),
+                );
+                ui.end_row();
+
+                ui.label("Phone:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut tabular.profile_phone_input)
+                        .hint_text("e.g. +6281234567890")
+                        .desired_width(220.0),
+                );
+                ui.end_row();
+            });
+        ui.add_space(4.0);
+        let saving = tabular.profile_update_receiver.is_some();
+        ui.add_enabled_ui(!saving, |ui| {
+            if ui.add(style::btn_secondary(if saving { "Saving…" } else { "💾  Save Profile" })).clicked() {
+                save_profile(tabular);
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
         // Manual sync buttons
         ui.label(egui::RichText::new("Manual Sync").strong());
         ui.add_space(4.0);
@@ -214,6 +250,8 @@ fn try_submit_token(tabular: &mut Tabular) {
             let email = root["user"]["email"].as_str().unwrap_or("").to_string();
             let display_name = root["user"]["display_name"].as_str().map(|s| s.to_string());
             let avatar_url = root["user"]["avatar_url"].as_str().map(|s| s.to_string());
+            let username = root["user"]["username"].as_str().map(|s| s.to_string());
+            let phone = root["user"]["phone"].as_str().map(|s| s.to_string());
 
             if access_token.is_empty() || email.is_empty() {
                 tabular.sync_login_error = Some("Invalid token JSON — missing access_token or email".to_string());
@@ -225,6 +263,8 @@ fn try_submit_token(tabular: &mut Tabular) {
                 email,
                 display_name,
                 avatar_url,
+                username,
+                phone,
                 access_token,
                 refresh_token,
                 token_expires_at: chrono::Utc::now().timestamp() + expires_in,
@@ -241,6 +281,31 @@ fn try_submit_token(tabular: &mut Tabular) {
             tabular.sync_login_error = Some(format!("Invalid JSON: {}", e));
         }
     }
+}
+
+fn save_profile(tabular: &mut Tabular) {
+    let account = match &tabular.sync_account {
+        Some(a) => a.clone(),
+        None => return,
+    };
+
+    let username = tabular.profile_username_input.trim().to_string();
+    let phone = tabular.profile_phone_input.trim().to_string();
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client
+            .update_profile(&token, Some(username.as_str()), Some(phone.as_str()))
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    tabular.profile_update_receiver = Some(rx);
 }
 
 fn do_logout(tabular: &mut Tabular) {

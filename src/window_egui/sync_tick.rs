@@ -27,6 +27,34 @@ impl super::Tabular {
 
         // ── Poll room list receiver ───────────────────────────────────────────
         self.poll_collab_receivers();
+
+        // ── Poll profile (username/phone) save receiver ────────────────────────
+        self.poll_profile_receiver();
+    }
+
+    fn poll_profile_receiver(&mut self) {
+        if let Some(rx) = &self.profile_update_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(user) => {
+                    if let Some(account) = &mut self.sync_account {
+                        account.username = user.username.clone();
+                        account.phone = user.phone.clone();
+                        crate::sync::api_client::save_account(account);
+                    }
+                    self.profile_username_input = user.username.unwrap_or_default();
+                    self.profile_phone_input = user.phone.unwrap_or_default();
+                    self.toasts.info("Profile saved");
+                }
+                Err(e) => {
+                    warn!("[sync] Profile update error: {}", e);
+                    self.toasts.info(format!("Failed to save profile: {}", e));
+                    self.check_401_error(&e);
+                }
+            }
+            self.profile_update_receiver = None;
+        }
     }
 
     fn poll_crdt_messages(&mut self, ctx: &egui::Context) {

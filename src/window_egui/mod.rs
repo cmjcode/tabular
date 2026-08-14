@@ -510,6 +510,12 @@ pub struct Tabular {
     pub collab_rooms: Vec<crate::sync::CollabRoom>,
     /// Show the floating collab panel
     pub show_collab_panel: bool,
+    /// Editable buffer for the Username field in Settings → Sync & Account
+    pub profile_username_input: String,
+    /// Editable buffer for the Phone field in Settings → Sync & Account
+    pub profile_phone_input: String,
+    /// Async receiver for the profile (username/phone) save result
+    pub profile_update_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::RemoteUser, String>>>,
     /// Input for creating a new collab room
     pub new_collab_room_name: String,
     /// Async receiver for room list refresh

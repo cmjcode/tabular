@@ -204,6 +204,35 @@ impl ApiClient {
         Ok(())
     }
 
+    // ── User profile ─────────────────────────────────────────────────────────
+
+    /// PUT /api/v1/users/me — `None` leaves a field untouched, `Some("")` clears it.
+    pub async fn update_profile(
+        &self,
+        token: &str,
+        username: Option<&str>,
+        phone: Option<&str>,
+    ) -> anyhow::Result<RemoteUser> {
+        let resp = self.http
+            .put(self.url("/api/v1/users/me"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "username": username, "phone": phone }))
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<RemoteUser>>().await?;
+        Ok(resp.data)
+    }
+
+    /// GET /api/v1/users/search?q= — exact match on email, username, or phone.
+    pub async fn search_users(&self, token: &str, q: &str) -> anyhow::Result<Vec<RemoteUser>> {
+        let url = format!("{}?q={}", self.url("/api/v1/users/search"), percent_encode(q));
+        let resp = self.http
+            .get(&url)
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteUser>>>().await?;
+        Ok(resp.data)
+    }
+
     // ── Health check ─────────────────────────────────────────────────────────
 
     pub async fn health_check(&self) -> bool {
@@ -215,6 +244,21 @@ impl ApiClient {
             .map(|r| r.status().is_success())
             .unwrap_or(false)
     }
+}
+
+/// Minimal query-string value encoder (search identifiers are email/username/phone —
+/// only space and the URL-reserved chars need escaping).
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 // ─── Persisted account helpers ────────────────────────────────────────────────
@@ -259,6 +303,10 @@ pub struct RemoteUser {
     pub email: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

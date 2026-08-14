@@ -184,6 +184,16 @@ impl super::Tabular {
             None
         };
 
+        let loaded_account = crate::sync::api_client::load_account();
+        let profile_username_input = loaded_account
+            .as_ref()
+            .and_then(|a| a.username.clone())
+            .unwrap_or_default();
+        let profile_phone_input = loaded_account
+            .as_ref()
+            .and_then(|a| a.phone.clone())
+            .unwrap_or_default();
+
         let mut app = Self {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
@@ -524,7 +534,7 @@ impl super::Tabular {
             schema_diff_state: None,
             schema_diff_receiver: None,
             // ── Sync & Collaboration ─────────────────────────────────────────
-            sync_account: crate::sync::api_client::load_account(),
+            sync_account: loaded_account,
             sync_server_url: std::env::var("TABULAR_SERVER_URL")
                 .unwrap_or_else(|_| "https://api.tabular.id".to_string()),
             sync_enabled: true,
@@ -532,6 +542,9 @@ impl super::Tabular {
             crdt_state: None,
             collab_rooms: Vec::new(),
             show_collab_panel: false,
+            profile_username_input,
+            profile_phone_input,
+            profile_update_receiver: None,
             new_collab_room_name: String::new(),
             collab_rooms_receiver: None,
             collab_room_create_receiver: None,

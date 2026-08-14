@@ -223,6 +223,8 @@ pub fn token_to_account(resp: &TokenResponse) -> TabularAccount {
         email: resp.user.email.clone(),
         display_name: resp.user.display_name.clone(),
         avatar_url: resp.user.avatar_url.clone(),
+        username: resp.user.username.clone(),
+        phone: resp.user.phone.clone(),
         access_token: resp.access_token.clone(),
         refresh_token: resp.refresh_token.clone(),
         token_expires_at: expires_at,

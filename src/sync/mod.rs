@@ -51,6 +51,12 @@ pub struct TabularAccount {
     pub email: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    /// User-chosen handle, settable in Settings → Sync & Account (used to add Team members by username).
+    #[serde(default)]
+    pub username: Option<String>,
+    /// User-supplied phone number, settable in Settings → Sync & Account (used to add Team members by phone).
+    #[serde(default)]
+    pub phone: Option<String>,
     pub access_token: String,
     pub refresh_token: String,
     pub token_expires_at: i64, // Unix timestamp
