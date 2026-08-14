@@ -16,6 +16,9 @@ impl super::Tabular {
         // ── Render collab panel (floating window) ───────────────────────────
         crate::sync::ui_collab::render_collab_panel(self, ctx);
 
+        // ── Render share folder dialog ────────────────────────────────────────
+        crate::sync::ui_teams::render_share_folder_dialog(self, ctx);
+
         // ── Poll CRDT messages ───────────────────────────────────────────────
         self.poll_crdt_messages(ctx);
 
@@ -533,6 +536,41 @@ impl super::Tabular {
                 }
             }
             self.team_add_member_receiver = None;
+        }
+
+        // Share/Unshare folder result
+        if let Some(rx) = &self.share_folder_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(_) => {
+                    self.toasts.info("Folder share updated");
+                    crate::sync::ui_teams::refresh_all_shared_folders(self);
+                }
+                Err(e) => {
+                    warn!("[sync] Share folder error: {}", e);
+                    self.toasts.info(format!("Failed to update share: {}", e));
+                    self.check_401_error(&e.to_string());
+                }
+            }
+            self.share_folder_receiver = None;
+        }
+
+        // Shared folders cache refresh
+        if let Some(rx) = &self.shared_folders_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(folders) => {
+                    self.shared_folders_cache = folders;
+                    info!("[sync] Refreshed {} shared folders", self.shared_folders_cache.len());
+                }
+                Err(e) => {
+                    warn!("[sync] Shared folders list error: {}", e);
+                    self.check_401_error(&e.to_string());
+                }
+            }
+            self.shared_folders_receiver = None;
         }
     }
 

@@ -331,6 +331,33 @@ impl ApiClient {
         Ok(())
     }
 
+    pub async fn list_shared_folders(&self, token: &str, team_id: &str) -> anyhow::Result<Vec<RemoteSharedFolder>> {
+        let resp = self.http
+            .get(self.url(&format!("/api/v1/teams/{}/shared-folders", team_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteSharedFolder>>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn share_folder(&self, token: &str, team_id: &str, req: &ShareFolderReq) -> anyhow::Result<RemoteSharedFolder> {
+        let resp = self.http
+            .post(self.url(&format!("/api/v1/teams/{}/shared-folders", team_id)))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<RemoteSharedFolder>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn unshare_folder(&self, token: &str, team_id: &str, folder_id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/teams/{}/shared-folders/{}", team_id, folder_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
     // ── User profile ─────────────────────────────────────────────────────────
 
     /// PUT /api/v1/users/me — `None` leaves a field untouched, `Some("")` clears it.
@@ -572,4 +599,19 @@ pub struct AddTeamMemberReq {
     pub identifier: String,
     pub identifier_type: String,
     pub role: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteSharedFolder {
+    pub id: String,
+    pub team_id: String,
+    pub resource_type: String,
+    pub folder_path: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ShareFolderReq {
+    pub resource_type: String,
+    pub folder_path: String,
 }

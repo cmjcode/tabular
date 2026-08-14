@@ -1961,6 +1961,19 @@ impl super::Tabular {
             sidebar_database::delete_connection_folder(self, &folder_path);
         }
 
+        // Handle "Share to Team" context menu request
+        let share_req: Option<(String, String)> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("share_folder_req")));
+        if let Some((res_type, folder_path)) = share_req {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<(String, String)>(egui::Id::new("share_folder_req"));
+            });
+            self.share_folder_target = Some((res_type, folder_path));
+            self.show_share_folder_dialog = true;
+            crate::sync::ui_teams::refresh_all_shared_folders(self);
+        }
+
         // Return query files that were clicked
         results
     }
@@ -2646,6 +2659,14 @@ impl super::Tabular {
                             ui.close();
                         }
 
+                        if ui.button("🤝 Share to Team…").clicked() {
+                            let fpath = node.file_path.clone().unwrap_or_else(|| format!("/{}", node.name));
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("share_folder_req"), ("query".to_string(), fpath));
+                            });
+                            ui.close();
+                        }
+
                         if ui.button("🗑️ Remove Folder").clicked() {
                             // Store the full folder path for removal (relative to query dir)
                             if let Some(full_path) = &node.file_path {
@@ -2703,6 +2724,12 @@ impl super::Tabular {
                                     egui::Id::new("conn_add_to_folder"),
                                     folder_path.clone(),
                                 );
+                            });
+                            ui.close();
+                        }
+                        if ui.button("🤝 Share to Team…").clicked() {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("share_folder_req"), ("connection".to_string(), folder_path.clone()));
                             });
                             ui.close();
                         }

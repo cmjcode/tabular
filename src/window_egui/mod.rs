@@ -536,6 +536,13 @@ pub struct Tabular {
     pub team_delete_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
     pub team_members_receiver: Option<std::sync::mpsc::Receiver<(String, anyhow::Result<Vec<crate::sync::api_client::RemoteTeamMember>>)>>,
     pub team_add_member_receiver: Option<std::sync::mpsc::Receiver<(String, anyhow::Result<()>)>>,
+    // Share Folder state
+    pub show_share_folder_dialog: bool,
+    pub share_folder_target: Option<(String, String)>,
+    pub share_folder_selected_team_id: Option<String>,
+    pub share_folder_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<()>>>,
+    pub shared_folders_cache: Vec<crate::sync::api_client::RemoteSharedFolder>,
+    pub shared_folders_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteSharedFolder>>>>,
     // Login dialog state
     pub sync_login_pending: bool,
     pub sync_token_input: String,

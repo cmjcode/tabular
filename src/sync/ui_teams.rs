@@ -407,3 +407,202 @@ fn create_room_from_team(tabular: &mut Tabular, team: &RemoteTeam) {
 
     tabular.collab_room_create_receiver = Some(rx);
 }
+
+pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
+    if !tabular.show_share_folder_dialog {
+        return;
+    }
+
+    let (res_type, folder_path) = match &tabular.share_folder_target {
+        Some(t) => t.clone(),
+        None => {
+            tabular.show_share_folder_dialog = false;
+            return;
+        }
+    };
+
+    let mut close_requested = false;
+    let mut share_clicked = false;
+    let mut unshare_id: Option<(String, String)> = None;
+
+    egui::Window::new("🤝 Share Folder to Team")
+        .id(egui::Id::new("share_folder_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.set_width(360.0);
+
+            ui.label(egui::RichText::new(format!("Share {} folder:", res_type.to_uppercase())).strong());
+            ui.label(egui::RichText::new(&folder_path).monospace().color(egui::Color32::from_rgb(100, 180, 255)));
+
+            ui.add_space(8.0);
+
+            if tabular.teams.is_empty() {
+                ui.label(egui::RichText::new("Anda belum memiliki atau bergabung di Team manapun.").weak().small());
+            } else {
+                ui.label(egui::RichText::new("Pilih Team:").small().strong());
+
+                let selected_team_id = tabular.share_folder_selected_team_id
+                    .clone()
+                    .unwrap_or_else(|| tabular.teams[0].id.clone());
+
+                let selected_team_name = tabular.teams
+                    .iter()
+                    .find(|t| t.id == selected_team_id)
+                    .map(|t| t.name.as_str())
+                    .unwrap_or("Pilih Team...");
+
+                egui::ComboBox::from_id_salt("share_target_team")
+                    .selected_text(selected_team_name)
+                    .show_ui(ui, |ui| {
+                        for team in &tabular.teams {
+                            if ui.selectable_value(
+                                &mut tabular.share_folder_selected_team_id,
+                                Some(team.id.clone()),
+                                &team.name,
+                            ).clicked() {}
+                        }
+                    });
+
+                ui.add_space(6.0);
+
+                if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "🤝 Share to Team")).clicked() {
+                    share_clicked = true;
+                }
+            }
+
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Shared dengan Team:").small().strong());
+
+            let current_shares: Vec<_> = tabular.shared_folders_cache
+                .iter()
+                .filter(|sf| sf.resource_type == res_type && sf.folder_path == folder_path)
+                .cloned()
+                .collect();
+
+            if current_shares.is_empty() {
+                ui.label(egui::RichText::new("Belum dibagikan ke Team manapun.").small().weak());
+            } else {
+                for sf in &current_shares {
+                    let team_name = tabular.teams
+                        .iter()
+                        .find(|t| t.id == sf.team_id)
+                        .map(|t| t.name.as_str())
+                        .unwrap_or(&sf.team_id);
+
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("• {}", team_name)).small());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(egui::RichText::new("Unshare").small()).clicked() {
+                                unshare_id = Some((sf.team_id.clone(), sf.id.clone()));
+                            }
+                        });
+                    });
+                }
+            }
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Tutup").clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+        });
+
+    if close_requested {
+        tabular.show_share_folder_dialog = false;
+        tabular.share_folder_target = None;
+    }
+
+    if share_clicked && !tabular.teams.is_empty() {
+        let team_id = tabular.share_folder_selected_team_id
+            .clone()
+            .unwrap_or_else(|| tabular.teams[0].id.clone());
+
+        share_folder_action(tabular, &team_id, &res_type, &folder_path);
+    }
+
+    if let Some((team_id, folder_id)) = unshare_id {
+        unshare_folder_action(tabular, &team_id, &folder_id);
+    }
+}
+
+pub fn share_folder_action(tabular: &mut Tabular, team_id: &str, resource_type: &str, folder_path: &str) {
+    let account = match &tabular.sync_account {
+        Some(a) => a.clone(),
+        None => return,
+    };
+
+    let req = super::api_client::ShareFolderReq {
+        resource_type: resource_type.to_string(),
+        folder_path: folder_path.to_string(),
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let team_id_clone = team_id.to_string();
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client.share_folder(&token, &team_id_clone, &req).await.map(|_| ());
+        let _ = tx.send(result);
+    });
+
+    tabular.share_folder_receiver = Some(rx);
+}
+
+pub fn unshare_folder_action(tabular: &mut Tabular, team_id: &str, folder_id: &str) {
+    let account = match &tabular.sync_account {
+        Some(a) => a.clone(),
+        None => return,
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let team_id_clone = team_id.to_string();
+    let folder_id_clone = folder_id.to_string();
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client.unshare_folder(&token, &team_id_clone, &folder_id_clone).await;
+        let _ = tx.send(result);
+    });
+
+    tabular.share_folder_receiver = Some(rx);
+}
+
+pub fn refresh_all_shared_folders(tabular: &mut Tabular) {
+    let account = match &tabular.sync_account {
+        Some(a) => a.clone(),
+        None => return,
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let teams = tabular.teams.clone();
+
+    if teams.is_empty() {
+        return;
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let mut all_shared = Vec::new();
+        for t in &teams {
+            if let Ok(folders) = client.list_shared_folders(&token, &t.id).await {
+                all_shared.extend(folders);
+            }
+        }
+        let _ = tx.send(Ok(all_shared));
+    });
+
+    tabular.shared_folders_receiver = Some(rx);
+}
