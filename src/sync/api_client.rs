@@ -276,6 +276,61 @@ impl ApiClient {
         Ok(resp.data)
     }
 
+    // ── Teams ─────────────────────────────────────────────────────────────────
+
+    pub async fn list_teams(&self, token: &str) -> anyhow::Result<Vec<RemoteTeam>> {
+        let resp = self.http
+            .get(self.url("/api/v1/teams"))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteTeam>>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn create_team(&self, token: &str, req: &CreateTeamReq) -> anyhow::Result<RemoteTeam> {
+        let resp = self.http
+            .post(self.url("/api/v1/teams"))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<RemoteTeam>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn delete_team(&self, token: &str, team_id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/teams/{}", team_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn list_team_members(&self, token: &str, team_id: &str) -> anyhow::Result<Vec<RemoteTeamMember>> {
+        let resp = self.http
+            .get(self.url(&format!("/api/v1/teams/{}/members", team_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteTeamMember>>>().await?;
+        Ok(resp.data)
+    }
+
+    pub async fn add_team_member(&self, token: &str, team_id: &str, req: &AddTeamMemberReq) -> anyhow::Result<()> {
+        self.http
+            .post(self.url(&format!("/api/v1/teams/{}/members", team_id)))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn remove_team_member(&self, token: &str, team_id: &str, user_id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/teams/{}/members/{}", team_id, user_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
     // ── User profile ─────────────────────────────────────────────────────────
 
     /// PUT /api/v1/users/me — `None` leaves a field untouched, `Some("")` clears it.
@@ -482,4 +537,39 @@ pub struct UpdateHttpRequestReq {
 pub struct CreateTeamRoomReq {
     pub name: Option<String>,
     pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteTeam {
+    pub id: String,
+    pub owner_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteTeamMember {
+    pub user_id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub username: Option<String>,
+    pub phone: Option<String>,
+    pub role: String,
+    pub joined_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateTeamReq {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddTeamMemberReq {
+    pub identifier: String,
+    pub identifier_type: String,
+    pub role: Option<String>,
 }

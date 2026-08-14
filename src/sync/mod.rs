@@ -15,6 +15,7 @@ pub mod sync_http_requests;
 pub mod sync_queries;
 pub mod ui_collab;
 pub mod ui_login;
+pub mod ui_teams;
 
 use serde::{Deserialize, Serialize};
 

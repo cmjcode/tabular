@@ -28,6 +28,9 @@ impl super::Tabular {
         // ── Poll room list receiver ───────────────────────────────────────────
         self.poll_collab_receivers();
 
+        // ── Poll teams receivers ──────────────────────────────────────────────
+        self.poll_teams_receivers();
+
         // ── Poll profile (username/phone) save receiver ────────────────────────
         self.poll_profile_receiver();
     }
@@ -271,6 +274,7 @@ impl super::Tabular {
                     self.sync_trigger_history = true;
                     self.sync_trigger_queries = true;
                     crate::sync::ui_collab::refresh_rooms(self);
+                    crate::sync::ui_teams::refresh_teams(self);
                 }
                 Err(e) => {
                     self.sync_refresh_attempt_count += 1;
@@ -440,6 +444,95 @@ impl super::Tabular {
                 }
             }
             self.collab_room_delete_receiver = None;
+        }
+    }
+
+    fn poll_teams_receivers(&mut self) {
+        // Teams list refresh
+        if let Some(rx) = &self.teams_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(teams) => {
+                    self.teams = teams;
+                    info!("[sync] Refreshed {} teams", self.teams.len());
+                }
+                Err(e) => {
+                    warn!("[sync] Teams list error: {}", e);
+                    self.check_401_error(&e.to_string());
+                }
+            }
+            self.teams_receiver = None;
+        }
+
+        // Team creation
+        if let Some(rx) = &self.team_create_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(team) => {
+                    self.toasts.info(format!("Team '{}' created!", team.name));
+                    self.teams.push(team);
+                }
+                Err(e) => {
+                    warn!("[sync] Team create error: {}", e);
+                    self.toasts.info(format!("Failed to create team: {}", e));
+                    self.check_401_error(&e.to_string());
+                }
+            }
+            self.team_create_receiver = None;
+        }
+
+        // Team deletion
+        if let Some(rx) = &self.team_delete_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(team_id) => {
+                    self.teams.retain(|t| t.id != team_id);
+                    self.toasts.info("Team deleted");
+                }
+                Err(e) => {
+                    warn!("[sync] Team delete error: {}", e);
+                    self.toasts.info(format!("Failed to delete team: {}", e));
+                    self.check_401_error(&e.to_string());
+                }
+            }
+            self.team_delete_receiver = None;
+        }
+
+        // Team members list
+        if let Some(rx) = &self.team_members_receiver
+            && let Ok((team_id, result)) = rx.try_recv()
+        {
+            match result {
+                Ok(members) => {
+                    self.team_members.insert(team_id, members);
+                }
+                Err(e) => {
+                    warn!("[sync] Team members error: {}", e);
+                    self.check_401_error(&e.to_string());
+                }
+            }
+            self.team_members_receiver = None;
+        }
+
+        // Add/remove member result
+        if let Some(rx) = &self.team_add_member_receiver
+            && let Ok((_team_id, result)) = rx.try_recv()
+        {
+            match result {
+                Ok(_) => {
+                    self.toasts.info("Team member updated");
+                    crate::sync::ui_teams::refresh_teams(self);
+                }
+                Err(e) => {
+                    warn!("[sync] Team member error: {}", e);
+                    self.toasts.info(format!("Failed to update member: {}", e));
+                    self.check_401_error(&e.to_string());
+                }
+            }
+            self.team_add_member_receiver = None;
         }
     }
 

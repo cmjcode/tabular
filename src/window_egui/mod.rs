@@ -524,6 +524,18 @@ pub struct Tabular {
     pub collab_room_create_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::CollabRoom>>>,
     /// Async receiver for room deletion result
     pub collab_room_delete_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
+    // Teams state
+    pub teams: Vec<crate::sync::api_client::RemoteTeam>,
+    pub new_team_name: String,
+    pub new_team_desc: String,
+    pub expanded_team_ids: std::collections::HashSet<String>,
+    pub team_members: std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
+    pub team_add_member_inputs: std::collections::HashMap<String, (String, usize, usize)>,
+    pub teams_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteTeam>>>>,
+    pub team_create_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::api_client::RemoteTeam>>>,
+    pub team_delete_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
+    pub team_members_receiver: Option<std::sync::mpsc::Receiver<(String, anyhow::Result<Vec<crate::sync::api_client::RemoteTeamMember>>)>>,
+    pub team_add_member_receiver: Option<std::sync::mpsc::Receiver<(String, anyhow::Result<()>)>>,
     // Login dialog state
     pub sync_login_pending: bool,
     pub sync_token_input: String,
