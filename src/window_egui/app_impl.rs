@@ -1188,6 +1188,46 @@ impl Tabular {
 
     /// Render the resizable left sidebar (connections/queries/history tree).
     /// Extracted verbatim from `update()`.
+    /// Shared search box used by the Connections/Queries/History tabs. Text is stored
+    /// in one field (`database_search_text`) so switching tabs doesn't reset the query.
+    fn render_sidebar_search_box(&mut self, ui: &mut egui::Ui, hint: &str) {
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let search_bg = if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(30, 32, 42)
+            } else {
+                egui::Color32::from_rgb(235, 238, 243)
+            };
+            let available_width = (ui.available_width() - 8.0).max(40.0);
+
+            let search_response = ui.add_sized(
+                [available_width, 24.0],
+                egui::TextEdit::singleline(&mut self.database_search_text)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(hint)
+                    .background_color(search_bg),
+            );
+
+            if search_response.has_focus() {
+                let focus_color = if ui.visuals().dark_mode {
+                    egui::Color32::from_rgb(80, 90, 120)
+                } else {
+                    egui::Color32::from_rgb(150, 165, 200)
+                };
+                ui.painter().rect_stroke(
+                    search_response.rect,
+                    3.0,
+                    egui::Stroke::new(1.0, focus_color),
+                    egui::StrokeKind::Outside,
+                );
+            }
+
+            if search_response.changed() {
+                self.update_all_database_search_results();
+            }
+        });
+    }
+
     fn render_left_sidebar(&mut self, root_ui: &mut egui::Ui) {
             let ctx = &root_ui.ctx().clone();
             if self.sidebar_visible {
@@ -1262,271 +1302,229 @@ impl Tabular {
                             },
                         );
 
-                        ui.add_space(2.0);
-
                         // Middle section with scrollable content
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             match self.selected_menu.as_str() {
                                 "Database" => {
-                                    // ── General Search Box ──────────────────────────────────
-                                    ui.add_space(4.0);
+                                    // ── Sub-tabs: Connections / Queries / History ──────────
+                                    // These used to be stacked accordions sharing one scroll
+                                    // area. They're now compact icon sub-tabs nested right
+                                    // under "Database" (like VS Code's view-container
+                                    // sub-views) so each gets full space + a contextual "+".
                                     ui.horizontal(|ui| {
-                                        ui.add_space(4.0);
-                                        let search_bg = if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(30, 32, 42)
-                                        } else {
-                                            egui::Color32::from_rgb(235, 238, 243)
-                                        };
-                                        let available_width = (ui.available_width() - 8.0).max(40.0);
+                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        let sub_avail_width = ui.available_width();
+                                        let sub_button_width = (sub_avail_width - 4.0) / 3.0;
+                                        let sub_button_size = egui::vec2(sub_button_width, 22.0);
 
-                                        let search_response = ui.add_sized(
-                                            [available_width, 24.0],
-                                            egui::TextEdit::singleline(&mut self.database_search_text)
-                                                .desired_width(f32::INFINITY)
-                                                .hint_text("🔍 Search Connections, Queries, History...")
-                                                .background_color(search_bg),
-                                        );
+                                        let sub_tabs: [(&str, &str); 3] = [
+                                            ("Connections", "🔌"),
+                                            ("Queries", "📝"),
+                                            ("History", "🕒"),
+                                        ];
 
-                                        if search_response.has_focus() {
-                                            let focus_color = if ui.visuals().dark_mode {
-                                                egui::Color32::from_rgb(80, 90, 120)
-                                            } else {
-                                                egui::Color32::from_rgb(150, 165, 200)
-                                            };
-                                            ui.painter().rect_stroke(
-                                                search_response.rect,
-                                                3.0,
-                                                egui::Stroke::new(1.0, focus_color),
-                                                egui::StrokeKind::Outside,
-                                            );
-                                        }
-
-                                        if search_response.changed() {
-                                            self.update_all_database_search_results();
+                                        for (key, icon) in sub_tabs {
+                                            let is_active = self.selected_database_sub_menu == key;
+                                            let resp = style::render_sidebar_subtab(ui, icon, is_active, sub_button_size)
+                                                .on_hover_text(key);
+                                            if resp.clicked() {
+                                                self.selected_database_sub_menu = key.to_string();
+                                            }
                                         }
                                     });
+                                    ui.add_space(3.0);
+
+                                    match self.selected_database_sub_menu.as_str() {
+                                "Connections" => {
+                                    self.render_sidebar_search_box(ui, "🔍 Search connections...");
                                     ui.add_space(4.0);
 
-                                    // ── 1. Connections Section ─────────────────────────────
-                                    let conn_id = ui.make_persistent_id("sidebar_db_connections_accordion");
-                                    let mut conn_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), conn_id, true);
-
-                                    let conn_title = ui.add(
-                                        egui::Label::new(egui::RichText::new(" Connections").strong().size(16.0))
-                                            .sense(egui::Sense::click())
+                                    let db_area_response = ui.interact(
+                                        ui.available_rect_before_wrap(),
+                                        egui::Id::new("database_area"),
+                                        egui::Sense::click(),
                                     );
-                                    if conn_title.clicked() {
-                                        conn_state.toggle(ui);
-                                        conn_state.store(ui.ctx());
+                                    db_area_response.context_menu(|ui| {
+                                        if ui.button("📁 Create Folder").clicked() {
+                                            self.subfolder_parent_path = String::new();
+                                            self.new_subfolder_name.clear();
+                                            self.show_create_subfolder_dialog = true;
+                                            ui.close();
+                                        }
+                                        if ui.button("➕ Add Connection").clicked() {
+                                            self.new_connection.folder = Some("Default".to_string());
+                                            self.show_add_connection = true;
+                                            ui.close();
+                                        }
+                                    });
+                                    if self.connections.is_empty() && self.items_tree.is_empty() {
+                                        ui.label("No connections configured");
+                                        ui.label("Click ➕ to add a new connection");
+                                    } else {
+                                        self.render_tree_for_database_section(ui);
                                     }
+                                    ui.add_space(4.0);
+                                }
+                                "Queries" => {
+                                    self.render_sidebar_search_box(ui, "🔍 Search queries...");
+                                    ui.add_space(4.0);
 
-                                    if conn_state.is_open() {
-                                        ui.indent("connections_indent", |ui| {
-                                            ui.add_space(2.0);
-                                            let db_area_response = ui.interact(
-                                                ui.available_rect_before_wrap(),
-                                                egui::Id::new("database_area"),
-                                                egui::Sense::click(),
-                                            );
-                                            db_area_response.context_menu(|ui| {
-                                                if ui.button("📁 Create Folder").clicked() {
-                                                    self.subfolder_parent_path = String::new();
-                                                    self.new_subfolder_name.clear();
-                                                    self.show_create_subfolder_dialog = true;
-                                                    ui.close();
-                                                }
-                                                if ui.button("➕ Add Connection").clicked() {
-                                                    self.new_connection.folder = Some("Default".to_string());
-                                                    self.show_add_connection = true;
-                                                    ui.close();
-                                                }
-                                            });
-                                            if self.connections.is_empty() && self.items_tree.is_empty() {
-                                                ui.label("No connections configured");
-                                                ui.label("Click ➕ to add a new connection");
-                                            } else {
-                                                self.render_tree_for_database_section(ui);
-                                            }
-                                            ui.add_space(4.0);
-                                        });
-                                    }
-
-                                    ui.add_space(6.0);
-
-                                    // ── 2. Queries Section ──────────────────────────────────
-                                    let queries_id = ui.make_persistent_id("sidebar_db_queries_accordion");
-                                    let mut queries_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), queries_id, true);
-
-                                    let queries_title = ui.add(
-                                        egui::Label::new(egui::RichText::new(" Queries").strong().size(16.0))
-                                            .sense(egui::Sense::click())
+                                    let queries_response = ui.interact(
+                                        ui.available_rect_before_wrap(),
+                                        egui::Id::new("queries_area"),
+                                        egui::Sense::click(),
                                     );
-                                    if queries_title.clicked() {
-                                        queries_state.toggle(ui);
-                                        queries_state.store(ui.ctx());
+                                    queries_response.context_menu(|ui| {
+                                        if ui.button("📂 Create Folder").clicked() {
+                                            self.show_create_folder_dialog = true;
+                                            ui.close();
+                                        }
+                                    });
+
+                                    let is_searching_queries = !self.database_search_text.trim().is_empty();
+                                    let mut queries_tree = if is_searching_queries {
+                                        std::mem::take(&mut self.filtered_queries_tree)
+                                    } else {
+                                        std::mem::take(&mut self.queries_tree)
+                                    };
+
+                                    let query_files_to_open = self.render_tree(ui, &mut queries_tree, false);
+
+                                    if is_searching_queries {
+                                        self.filtered_queries_tree = queries_tree;
+                                    } else {
+                                        self.queries_tree = queries_tree;
                                     }
 
-                                    if queries_state.is_open() {
-                                        ui.indent("queries_indent", |ui| {
-                                            ui.add_space(2.0);
-                                            let queries_response = ui.interact(
-                                                ui.available_rect_before_wrap(),
-                                                egui::Id::new("queries_area"),
-                                                egui::Sense::click(),
-                                            );
-                                            queries_response.context_menu(|ui| {
-                                                if ui.button("📂 Create Folder").clicked() {
-                                                    self.show_create_folder_dialog = true;
-                                                    ui.close();
-                                                }
-                                            });
-
-                                            let is_searching_queries = !self.database_search_text.trim().is_empty();
-                                            let mut queries_tree = if is_searching_queries {
-                                                std::mem::take(&mut self.filtered_queries_tree)
-                                            } else {
-                                                std::mem::take(&mut self.queries_tree)
-                                            };
-
-                                            let query_files_to_open = self.render_tree(ui, &mut queries_tree, false);
-
-                                            if is_searching_queries {
-                                                self.filtered_queries_tree = queries_tree;
-                                            } else {
-                                                self.queries_tree = queries_tree;
+                                    for (filename, content, file_path, _) in query_files_to_open {
+                                        if file_path.is_empty() {
+                                            log::debug!("✅ Processing query click: New unsaved tab '{}'", filename);
+                                            crate::editor::create_new_tab(self, filename, content);
+                                        } else {
+                                            log::debug!("✅ Processing query click: Opening file '{}'", file_path);
+                                            if let Err(err) = sidebar_query::open_query_file(self, &file_path) {
+                                                log::debug!("❌ Failed to open query file '{}': {}", file_path, err);
                                             }
-
-                                            for (filename, content, file_path, _) in query_files_to_open {
-                                                if file_path.is_empty() {
-                                                    log::debug!("✅ Processing query click: New unsaved tab '{}'", filename);
-                                                    crate::editor::create_new_tab(self, filename, content);
-                                                } else {
-                                                    log::debug!("✅ Processing query click: Opening file '{}'", file_path);
-                                                    if let Err(err) = sidebar_query::open_query_file(self, &file_path) {
-                                                        log::debug!("❌ Failed to open query file '{}': {}", file_path, err);
-                                                    }
-                                                }
-                                            }
-                                            ui.add_space(4.0);
-                                        });
+                                        }
                                     }
+                                    ui.add_space(4.0);
 
-                                    ui.add_space(6.0);
-
-                                    // ── 3. History Section ──────────────────────────────────
-                                    let history_id = ui.make_persistent_id("sidebar_db_history_accordion");
-                                    let mut history_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), history_id, true);
-
-                                    let history_title = ui.add(
-                                        egui::Label::new(egui::RichText::new(" History").strong().size(16.0))
-                                            .sense(egui::Sense::click())
-                                    );
-                                    if history_title.clicked() {
-                                        history_state.toggle(ui);
-                                        history_state.store(ui.ctx());
+                                    if self.queries_tree.is_empty() && !is_searching_queries {
+                                        ui.add_space(8.0);
+                                        ui.label("No saved queries yet");
+                                        ui.label("Click ➕ to create a new query");
                                     }
+                                }
+                                "History" => {
+                                    self.render_sidebar_search_box(ui, "🔍 Search history...");
+                                    ui.add_space(4.0);
 
-                                    if history_state.is_open() {
-                                        ui.indent("history_indent", |ui| {
-                                            ui.add_space(2.0);
-                                            if self.auto_refresh_active {
-                                                egui::Frame::new()
-                                                    .stroke(egui::Stroke::new(
-                                                        1.0,
-                                                        egui::Color32::from_rgb(255, 0, 0),
-                                                    ))
-                                                    .corner_radius(3.0)
-                                                    .inner_margin(egui::Margin::symmetric(4, 4))
-                                                    .show(ui, |ui| {
-                                                        ui.vertical(|ui| {
-                                                            ui.horizontal(|ui| {
-                                                                let remaining = if let Some(last) = self.auto_refresh_last_run {
-                                                                    let elapsed = last.elapsed().as_secs();
-                                                                    let interval = self.auto_refresh_interval_seconds.max(1) as u64;
-                                                                    if elapsed >= interval {
-                                                                        0
-                                                                    } else {
-                                                                        (interval - elapsed) as u32
-                                                                    }
-                                                                } else {
-                                                                    self.auto_refresh_interval_seconds
-                                                                };
-                                                                ui.label(format!(
-                                                                    "Auto Query {} second(s)",
-                                                                    remaining
-                                                                ));
-                                                                ui.add_space(ui.available_width() - 60.0);
-                                                                let stop_button = egui::Button::new(
-                                                                    egui::RichText::new("⏹ STOP")
-                                                                        .color(egui::Color32::WHITE),
-                                                                )
-                                                                .fill(style::theme_danger(ctx));
-                                                                if ui.add(stop_button).clicked() {
-                                                                    self.stop_auto_refresh();
-                                                                }
-                                                            });
-                                                            if let Some(q) = &self.auto_refresh_query {
-                                                                ui.add(
-                                                                    egui::TextEdit::multiline(&mut q.clone())
-                                                                        .desired_rows(3)
-                                                                        .desired_width(f32::INFINITY)
-                                                                        .interactive(false),
-                                                                );
+                                    if self.auto_refresh_active {
+                                        egui::Frame::new()
+                                            .stroke(egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_rgb(255, 0, 0),
+                                            ))
+                                            .corner_radius(3.0)
+                                            .inner_margin(egui::Margin::symmetric(4, 4))
+                                            .show(ui, |ui| {
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        let remaining = if let Some(last) = self.auto_refresh_last_run {
+                                                            let elapsed = last.elapsed().as_secs();
+                                                            let interval = self.auto_refresh_interval_seconds.max(1) as u64;
+                                                            if elapsed >= interval {
+                                                                0
+                                                            } else {
+                                                                (interval - elapsed) as u32
                                                             }
-                                                        });
+                                                        } else {
+                                                            self.auto_refresh_interval_seconds
+                                                        };
+                                                        ui.label(format!(
+                                                            "Auto Query {} second(s)",
+                                                            remaining
+                                                        ));
+                                                        ui.add_space(ui.available_width() - 60.0);
+                                                        let stop_button = egui::Button::new(
+                                                            egui::RichText::new("⏹ STOP")
+                                                                .color(egui::Color32::WHITE),
+                                                        )
+                                                        .fill(style::theme_danger(ctx));
+                                                        if ui.add(stop_button).clicked() {
+                                                            self.stop_auto_refresh();
+                                                        }
                                                     });
-                                            }
-
-                                            let is_searching_history = !self.database_search_text.trim().is_empty();
-
-                                            let mut history_tree = if is_searching_history {
-                                                std::mem::take(&mut self.filtered_history_tree)
-                                            } else {
-                                                std::mem::take(&mut self.history_tree)
-                                            };
-
-                                            let query_files_to_open = self.render_tree(ui, &mut history_tree, false);
-
-                                            if is_searching_history {
-                                                self.filtered_history_tree = history_tree;
-                                            } else {
-                                                self.history_tree = history_tree;
-                                            }
-
-                                            for (filename, content, file_data, _) in query_files_to_open {
-                                                if let Some((connection_name, _query)) = file_data.split_once("||") {
-                                                    let conn_id = self
-                                                        .connections
-                                                        .iter()
-                                                        .find(|c| c.name == connection_name)
-                                                        .and_then(|c| c.id);
-                                                    if let Some(cid) = conn_id {
-                                                        log::debug!(
-                                                            "✅ Processing history click: New tab '{}' with connection '{}' (id={})",
-                                                            filename, connection_name, cid
-                                                        );
-                                                        crate::editor::create_new_tab_with_connection(
-                                                            self,
-                                                            filename,
-                                                            content,
-                                                            Some(cid),
-                                                        );
-                                                        continue;
-                                                    } else if !connection_name.is_empty() {
-                                                        log::debug!(
-                                                            "⚠️ Connection '{}' from history not found. Opening tab without binding.",
-                                                            connection_name
+                                                    if let Some(q) = &self.auto_refresh_query {
+                                                        ui.add(
+                                                            egui::TextEdit::multiline(&mut q.clone())
+                                                                .desired_rows(3)
+                                                                .desired_width(f32::INFINITY)
+                                                                .interactive(false),
                                                         );
                                                     }
-                                                }
+                                                });
+                                            });
+                                        ui.add_space(4.0);
+                                    }
+
+                                    let is_searching_history = !self.database_search_text.trim().is_empty();
+
+                                    let mut history_tree = if is_searching_history {
+                                        std::mem::take(&mut self.filtered_history_tree)
+                                    } else {
+                                        std::mem::take(&mut self.history_tree)
+                                    };
+
+                                    let query_files_to_open = self.render_tree(ui, &mut history_tree, false);
+
+                                    if is_searching_history {
+                                        self.filtered_history_tree = history_tree;
+                                    } else {
+                                        self.history_tree = history_tree;
+                                    }
+
+                                    for (filename, content, file_data, _) in query_files_to_open {
+                                        if let Some((connection_name, _query)) = file_data.split_once("||") {
+                                            let conn_id = self
+                                                .connections
+                                                .iter()
+                                                .find(|c| c.name == connection_name)
+                                                .and_then(|c| c.id);
+                                            if let Some(cid) = conn_id {
                                                 log::debug!(
-                                                    "✅ Processing history click: Creating new tab for '{}' (no connection binding)",
-                                                    filename
+                                                    "✅ Processing history click: New tab '{}' with connection '{}' (id={})",
+                                                    filename, connection_name, cid
                                                 );
-                                                crate::editor::create_new_tab(self, filename, content);
+                                                crate::editor::create_new_tab_with_connection(
+                                                    self,
+                                                    filename,
+                                                    content,
+                                                    Some(cid),
+                                                );
+                                                continue;
+                                            } else if !connection_name.is_empty() {
+                                                log::debug!(
+                                                    "⚠️ Connection '{}' from history not found. Opening tab without binding.",
+                                                    connection_name
+                                                );
                                             }
-                                            ui.add_space(4.0);
-                                        });
+                                        }
+                                        log::debug!(
+                                            "✅ Processing history click: Creating new tab for '{}' (no connection binding)",
+                                            filename
+                                        );
+                                        crate::editor::create_new_tab(self, filename, content);
+                                    }
+                                    ui.add_space(4.0);
+
+                                    if self.history_tree.is_empty() && !is_searching_history {
+                                        ui.add_space(8.0);
+                                        ui.label("No query history yet");
+                                        ui.label("Executed queries will show up here");
+                                    }
+                                }
+                                _ => {}
                                     }
                                 }
                                 "Collaborations" => {
@@ -1548,10 +1546,49 @@ impl Tabular {
                             ui.horizontal(|ui| {
                                 ui.add_space(5.0); // Right spacing (goes before button since layout is right-aligned)
 
-                                let show_plus = matches!(self.selected_menu.as_str(), "Database" | "HTTP Clients");
-                                if show_plus {
-                                    let is_http_tab = self.selected_menu == "HTTP Clients";
-                                    if is_http_tab {
+                                match self.selected_menu.as_str() {
+                                    "Database" => {
+                                        match self.selected_database_sub_menu.as_str() {
+                                            "Connections" => {
+                                                let plus_btn = ui.add_sized(
+                                                    [24.0, 24.0],
+                                                    egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE))
+                                                        .fill(style::theme_accent(ctx)),
+                                                ).on_hover_text("Add Database Connection");
+
+                                                if plus_btn.clicked() {
+                                                    self.test_connection_status = None;
+                                                    self.test_connection_in_progress = false;
+                                                    self.new_connection = models::structs::ConnectionConfig::default();
+                                                    self.show_add_connection = true;
+                                                }
+                                            }
+                                            "Queries" => {
+                                                let plus_btn = ui.add_sized(
+                                                    [24.0, 24.0],
+                                                    egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE))
+                                                        .fill(style::theme_accent(ctx)),
+                                                ).on_hover_text("New Query");
+
+                                                if plus_btn.clicked() {
+                                                    editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
+                                                }
+                                            }
+                                            "History" if !self.history_tree.is_empty() => {
+                                                let clear_btn = ui.add_sized(
+                                                    [24.0, 24.0],
+                                                    egui::Button::new(egui::RichText::new("🗑").color(egui::Color32::WHITE))
+                                                        .fill(style::theme_danger(ctx)),
+                                                ).on_hover_text("Clear History");
+
+                                                if clear_btn.clicked() {
+                                                    self.show_clear_history_confirm = true;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    "HTTP Clients" => {
                                         ui.menu_button(
                                             egui::RichText::new("➕").color(egui::Color32::WHITE),
                                             |ui| {
@@ -1570,21 +1607,8 @@ impl Tabular {
                                                 }
                                             },
                                         ).response.on_hover_text("Import Yaak/Postman or Add New Connection");
-
-                                    } else {
-                                        let plus_btn = ui.add_sized(
-                                            [24.0, 24.0],
-                                            egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE))
-                                                .fill(style::theme_accent(ctx)),
-                                        ).on_hover_text("Add Database Connection");
-
-                                        if plus_btn.clicked() {
-                                            self.test_connection_status = None;
-                                            self.test_connection_in_progress = false;
-                                            self.new_connection = models::structs::ConnectionConfig::default();
-                                            self.show_add_connection = true;
-                                        }
                                     }
+                                    _ => {}
                                 }
                             });
                         });
@@ -2657,6 +2681,7 @@ impl Tabular {
 
                     // Delete Connection confirmation dialog
                     self.render_delete_connection_confirmation(ui.ctx());
+                    self.render_clear_history_confirmation(ui.ctx());
                     self.render_delete_http_request_confirmation(ui.ctx());
                     self.render_rename_http_request_dialog(ui.ctx());
                     self.render_delete_http_folder_confirmation(ui.ctx());

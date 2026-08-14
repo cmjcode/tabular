@@ -302,3 +302,27 @@ pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
         }
     }
 }
+
+/// Delete all saved query history rows and reset the in-memory/UI state.
+pub(crate) fn clear_query_history(tabular: &mut window_egui::Tabular) {
+    if let Some(pool) = &tabular.db_pool {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async {
+            sqlx::query("DELETE FROM query_history")
+                .execute(pool.as_ref())
+                .await
+        });
+
+        if let Err(e) = result {
+            error!("Failed to clear query history: {}", e);
+            tabular.toasts.error("Failed to clear query history".to_string());
+            return;
+        }
+    }
+
+    tabular.history_items.clear();
+    tabular.history_tree.clear();
+    tabular.filtered_history_tree.clear();
+    tabular.history_search_text.clear();
+    tabular.toasts.success("Query history cleared".to_string());
+}

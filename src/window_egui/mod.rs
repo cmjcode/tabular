@@ -33,6 +33,8 @@ pub struct Tabular {
     // Transitional multi-selection model (will move to lapce-core selection)
     pub multi_selection: crate::editor_selection::MultiSelection,
     pub selected_menu: String,
+    // Sub-tab within the "Database" menu: "Connections" | "Queries" | "History"
+    pub selected_database_sub_menu: String,
     pub items_tree: Vec<models::structs::TreeNode>,
     pub queries_tree: Vec<models::structs::TreeNode>,
     pub history_tree: Vec<models::structs::TreeNode>,
@@ -177,6 +179,7 @@ pub struct Tabular {
     // History search functionality
     pub history_search_text: String,
     pub filtered_history_tree: Vec<models::structs::TreeNode>,
+    pub show_clear_history_confirm: bool,
     // Queries search functionality
     pub filtered_queries_tree: Vec<models::structs::TreeNode>,
     // Query folder management

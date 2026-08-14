@@ -1505,6 +1505,65 @@ impl super::Tabular {
         }
     }
 
+    /// Render the confirmation popup dialog when attempting to clear all query history.
+    pub fn render_clear_history_confirmation(&mut self, ctx: &egui::Context) {
+        if self.show_clear_history_confirm {
+            let mut close_dialog = false;
+            let mut confirm_clear = false;
+
+            egui::Window::new("Confirm Clear History")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("⚠️ Confirm Clear History")
+                                    .strong()
+                                    .color(super::style::theme_danger(ctx)),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.label("Are you sure you want to clear all query history?");
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("This action cannot be undone.")
+                                .small()
+                                .weak(),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let clear_btn = egui::Button::new(
+                                    egui::RichText::new("Clear History")
+                                        .color(egui::Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(super::style::theme_danger(ctx));
+                                if ui.add(clear_btn).clicked() {
+                                    confirm_clear = true;
+                                    close_dialog = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_dialog = true;
+                                }
+                            });
+                        });
+                    });
+                });
+
+            if confirm_clear {
+                crate::sidebar_history::clear_query_history(self);
+            }
+            if close_dialog {
+                self.show_clear_history_confirm = false;
+            }
+        }
+    }
+
     pub fn render_delete_http_request_confirmation(&mut self, ctx: &egui::Context) {
         if let Some((req_id, req_name)) = self.pending_delete_http_request.clone() {
             let mut close_dialog = false;

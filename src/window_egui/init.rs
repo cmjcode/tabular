@@ -188,6 +188,7 @@ impl super::Tabular {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
             selected_menu: "Database".to_string(),
+            selected_database_sub_menu: "Connections".to_string(),
             items_tree: Vec::new(),
             queries_tree: Vec::new(),
             history_tree: Vec::new(),
@@ -292,6 +293,7 @@ impl super::Tabular {
             show_search_results: false,
             history_search_text: String::new(),
             filtered_history_tree: Vec::new(),
+            show_clear_history_confirm: false,
             filtered_queries_tree: Vec::new(),
             // Query folder management
             show_create_folder_dialog: false,

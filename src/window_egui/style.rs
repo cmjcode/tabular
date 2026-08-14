@@ -326,6 +326,78 @@ pub fn render_custom_tab(
     response
 }
 
+/// Compact icon-only sub-tab used for secondary navigation nested inside a main tab
+/// (e.g. Connections/Queries/History inside "Database"). Deliberately flat — no
+/// elevated card background, no border, no rounded-top-corner shape — so its active
+/// state reads differently from `render_custom_tab` and the two levels don't get
+/// confused. Mirrors VS Code's flat, underline-accented secondary tabs.
+pub fn render_sidebar_subtab(
+    ui: &mut egui::Ui,
+    icon: &str,
+    is_active: bool,
+    size: egui::Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let is_dark = ui.visuals().dark_mode;
+        let is_hovered = response.hovered();
+
+        // Soft, fully-rounded highlight (not a card) — only on hover/active.
+        if is_active || is_hovered {
+            let bg = if is_active {
+                if is_dark {
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 14)
+                }
+            } else if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 8)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 6)
+            };
+            ui.painter().rect_filled(rect, 4.0, bg);
+        }
+
+        let icon_color = if is_active {
+            if is_dark {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_rgb(15, 23, 42)
+            }
+        } else if is_hovered {
+            if is_dark {
+                egui::Color32::from_rgb(210, 216, 226)
+            } else {
+                egui::Color32::from_rgb(50, 60, 75)
+            }
+        } else if is_dark {
+            egui::Color32::from_rgb(130, 138, 150)
+        } else {
+            egui::Color32::from_rgb(140, 148, 162)
+        };
+
+        let font_id = egui::FontId::new(13.0, egui::FontFamily::Proportional);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            font_id,
+            icon_color,
+        );
+
+        // Thin, short underline accent — distinct from the main tab's thicker,
+        // full-width bottom line.
+        if is_active {
+            let underline_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.center().x, rect.bottom() - 1.0),
+                egui::vec2(rect.width() * 0.5, 2.0),
+            );
+            ui.painter().rect_filled(underline_rect, 1.0, theme_accent(ui.ctx()));
+        }
+    }
+    response
+}
+
 pub fn theme_danger(ctx: &egui::Context) -> egui::Color32 {
     if ctx.global_style().visuals.dark_mode {
         egui::Color32::from_rgb(220, 70, 70) // Soft ergonomic red
