@@ -695,6 +695,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     ui.scope_builder(
                                                         egui::UiBuilder::new().max_rect(text_edit_rect),
                                                         |ui| {
+                                                            // Safety net: keep the cell editor (ComboBox,
+                                                            // date pickers, etc.) from painting outside the
+                                                            // row it belongs to.
+                                                            ui.set_clip_rect(text_edit_rect);
                                                             let valid_options = tabular.spreadsheet_state.enum_options.clone();
                                                             // Determine if column is Date/DateTime
                                                             let mut is_date_type = false;
@@ -712,6 +716,9 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                                                             if let Some(options) = valid_options {
                                                                 // Render ComboBox for ENUM types
+                                                                // Compact padding so the combo fits the row
+                                                                // height instead of the toolbar-sized default.
+                                                                ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
                                                                 let mut current_val = edit_text.clone();
                                                                 let combo = egui::ComboBox::from_id_salt("enum_combo")
                                                                     .selected_text(&current_val)

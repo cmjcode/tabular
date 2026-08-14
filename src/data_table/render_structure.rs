@@ -802,6 +802,12 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                                                 );
                                                 child_ui.spacing_mut().item_spacing.x = 2.0;
+                                                // Compact widget padding so ComboBox/Button controls
+                                                // fit inside the fixed row height instead of the
+                                                // app-wide toolbar-sized padding (12,7).
+                                                child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                                                // Safety net: never let a control paint outside its cell.
+                                                child_ui.set_clip_rect(rect);
 
                                                 match i {
                                                     0 => {
@@ -835,7 +841,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                     2 => {
                                                         child_ui.add_space(3.0);
                                                         let algos = ["", "btree", "hash", "gin", "gist"];
-                                                        let combo_w = (w - 8.0).max(20.0);
+                                                        let combo_w = (w
+                                                            - 8.0
+                                                            - 2.0 * child_ui.spacing().button_padding.x)
+                                                            .max(20.0);
                                                         egui::ComboBox::from_id_salt("new_index_algo")
                                                             .selected_text(
                                                                 if tabular.new_index_method.is_empty() {
@@ -865,7 +874,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                     }
                                                     3 => {
                                                         child_ui.add_space(3.0);
-                                                        let combo_w = (w - 8.0).max(20.0);
+                                                        let combo_w = (w
+                                                            - 8.0
+                                                            - 2.0 * child_ui.spacing().button_padding.x)
+                                                            .max(20.0);
                                                         egui::ComboBox::from_id_salt("new_index_unique")
                                                             .selected_text(if tabular.new_index_unique {
                                                                 "YES"
@@ -1193,6 +1205,11 @@ pub(crate) fn render_structure_columns_editor(
                                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         );
                         child_ui.spacing_mut().item_spacing.x = 2.0;
+                        // Compact widget padding so ComboBox/Button controls fit inside the
+                        // fixed row height instead of the app-wide toolbar-sized padding (12,7).
+                        child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                        // Safety net: never let a control paint outside its cell.
+                        child_ui.set_clip_rect(rect);
 
                         match i {
                             0 => {
@@ -1212,7 +1229,7 @@ pub(crate) fn render_structure_columns_editor(
                             }
                             2 => {
                                 child_ui.add_space(3.0);
-                                let picker_w = 18.0;
+                                let picker_w = 30.0;
                                 let text_w = (w - picker_w - 8.0).max(20.0);
 
                                 child_ui.add(
@@ -1240,7 +1257,10 @@ pub(crate) fn render_structure_columns_editor(
                             }
                             3 => {
                                 child_ui.add_space(3.0);
-                                let combo_w = (w - 8.0).max(20.0);
+                                let combo_w = (w
+                                    - 8.0
+                                    - 2.0 * child_ui.spacing().button_padding.x)
+                                    .max(20.0);
                                 egui::ComboBox::from_id_salt("new_col_nullable")
                                     .selected_text(if tabular.new_column_nullable {
                                         "YES"
@@ -1323,6 +1343,11 @@ pub(crate) fn render_structure_columns_editor(
                                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         );
                         child_ui.spacing_mut().item_spacing.x = 2.0;
+                        // Compact widget padding so ComboBox/Button controls fit inside the
+                        // fixed row height instead of the app-wide toolbar-sized padding (12,7).
+                        child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                        // Safety net: never let a control paint outside its cell.
+                        child_ui.set_clip_rect(rect);
 
                         match i {
                             0 => {
@@ -1340,7 +1365,7 @@ pub(crate) fn render_structure_columns_editor(
                             }
                             2 => {
                                 child_ui.add_space(3.0);
-                                let picker_w = 18.0;
+                                let picker_w = 30.0;
                                 let text_w = (w - picker_w - 8.0).max(20.0);
 
                                 child_ui.add(
@@ -1368,7 +1393,10 @@ pub(crate) fn render_structure_columns_editor(
                             }
                             3 => {
                                 child_ui.add_space(3.0);
-                                let combo_w = (w - 8.0).max(20.0);
+                                let combo_w = (w
+                                    - 8.0
+                                    - 2.0 * child_ui.spacing().button_padding.x)
+                                    .max(20.0);
                                 egui::ComboBox::from_id_salt("edit_col_nullable")
                                     .selected_text(if tabular.edit_column_nullable {
                                         "YES"
