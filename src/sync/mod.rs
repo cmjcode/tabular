@@ -13,6 +13,7 @@ pub mod sync_connections;
 pub mod sync_history;
 pub mod sync_http_requests;
 pub mod sync_queries;
+pub mod sync_teams_cache;
 pub mod ui_collab;
 pub mod ui_login;
 pub mod ui_teams;

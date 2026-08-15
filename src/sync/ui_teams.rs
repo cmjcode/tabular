@@ -1,8 +1,8 @@
 //! Teams UI panel and sidebar section — manage Teams, members, and create rooms.
 
-use eframe::egui;
-use crate::window_egui::Tabular;
 use super::api_client::{AddTeamMemberReq, CreateTeamReq, CreateTeamRoomReq, RemoteTeam};
+use crate::window_egui::Tabular;
+use eframe::egui;
 
 /// Inline sidebar section for Teams — accordion version
 pub fn render_sidebar_teams_section(tabular: &mut Tabular, ui: &mut egui::Ui) {
@@ -22,7 +22,8 @@ pub fn render_sidebar_teams_section(tabular: &mut Tabular, ui: &mut egui::Ui) {
     };
 
     let id = ui.make_persistent_id("sidebar_teams_accordion");
-    let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
     let is_open_before = state.is_open();
 
     let header_res = state
@@ -35,7 +36,11 @@ pub fn render_sidebar_teams_section(tabular: &mut Tabular, ui: &mut egui::Ui) {
             ui.add_space(4.0);
         });
 
-    if header_res.0.clicked() && !is_open_before && tabular.sync_account.is_some() && !session_expired {
+    if header_res.0.clicked()
+        && !is_open_before
+        && tabular.sync_account.is_some()
+        && !session_expired
+    {
         refresh_teams(tabular);
     }
 }
@@ -50,7 +55,11 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     let account = match &tabular.sync_account {
         Some(a) if !session_expired => a.clone(),
         _ => {
-            ui.label(egui::RichText::new("🔒 Login untuk mengakses Teams.").small().weak());
+            ui.label(
+                egui::RichText::new("🔒 Login untuk mengakses Teams.")
+                    .small()
+                    .weak(),
+            );
             return;
         }
     };
@@ -67,15 +76,14 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
         ui.add_sized(
             [input_width, 24.0],
-            egui::TextEdit::singleline(&mut tabular.new_team_name)
-                .hint_text("Team name…")
+            egui::TextEdit::singleline(&mut tabular.new_team_name).hint_text("Team name…"),
         );
 
         let can_create = !tabular.new_team_name.trim().is_empty();
         let create_btn = egui::Button::new(egui::RichText::new("+").strong()).corner_radius(4.0);
-        let create_resp = ui.add_enabled_ui(can_create, |ui| {
-            ui.add_sized([btn_width, 24.0], create_btn)
-        }).inner;
+        let create_resp = ui
+            .add_enabled_ui(can_create, |ui| ui.add_sized([btn_width, 24.0], create_btn))
+            .inner;
 
         let create_resp = if can_create {
             create_resp.on_hover_text("Create Team")
@@ -87,10 +95,14 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             create_team(tabular);
         }
 
-        if ui.add_sized(
-            [refresh_width, 24.0],
-            egui::Button::new(egui::RichText::new("🔄").small()).corner_radius(4.0)
-        ).on_hover_text("Refresh Teams").clicked() {
+        if ui
+            .add_sized(
+                [refresh_width, 24.0],
+                egui::Button::new(egui::RichText::new("🔄").small()).corner_radius(4.0),
+            )
+            .on_hover_text("Refresh Teams")
+            .clicked()
+        {
             refresh_teams(tabular);
         }
     });
@@ -99,7 +111,11 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     // ── Team list tree ────────────────────────────────────────────────────
     if tabular.teams.is_empty() {
-        ui.label(egui::RichText::new("Belum ada Team. Buat Team untuk berbagi folder & Room.").small().weak());
+        ui.label(
+            egui::RichText::new("Belum ada Team. Buat Team untuk berbagi folder & Room.")
+                .small()
+                .weak(),
+        );
     } else {
         let teams = tabular.teams.clone();
         for team in &teams {
@@ -373,7 +389,10 @@ fn create_team(tabular: &mut Tabular) {
         Some(tabular.new_team_desc.trim().to_string())
     };
 
-    let req = CreateTeamReq { name, description: desc };
+    let req = CreateTeamReq {
+        name,
+        description: desc,
+    };
     let token = account.access_token.clone();
     let server = tabular.sync_server_url.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -402,7 +421,10 @@ fn delete_team(tabular: &mut Tabular, team_id: &str) {
     let team_id_clone = team_id.to_string();
     super::spawn_async(async move {
         let client = super::api_client::ApiClient::new(&server);
-        let result = client.delete_team(&token, &team_id_clone).await.map(|_| team_id_clone);
+        let result = client
+            .delete_team(&token, &team_id_clone)
+            .await
+            .map(|_| team_id_clone);
         let _ = tx.send(result);
     });
 
@@ -429,8 +451,6 @@ pub fn refresh_team_members(tabular: &mut Tabular, team_id: &str) {
     tabular.team_members_receiver = Some(rx);
 }
 
-
-
 fn remove_team_member(tabular: &mut Tabular, team_id: &str, user_id: &str) {
     let account = match &tabular.sync_account {
         Some(a) => a.clone(),
@@ -446,7 +466,9 @@ fn remove_team_member(tabular: &mut Tabular, team_id: &str, user_id: &str) {
 
     super::spawn_async(async move {
         let client = super::api_client::ApiClient::new(&server);
-        let result = client.remove_team_member(&token, &team_id_clone, &user_id_clone).await;
+        let result = client
+            .remove_team_member(&token, &team_id_clone, &user_id_clone)
+            .await;
         let _ = tx.send((team_id_clone, result));
     });
 
@@ -498,17 +520,14 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         return;
     }
 
-    let (res_type, folder_path) = match &tabular.share_folder_target {
-        Some(t) => t.clone(),
-        None => {
-            tabular.show_share_folder_dialog = false;
-            return;
-        }
-    };
+    let preset_target = tabular.share_folder_target.clone();
 
     let mut close_requested = false;
     let mut share_clicked = false;
     let mut unshare_id: Option<(String, String)> = None;
+
+    let resource_types = ["connection", "query", "http"];
+    let resource_labels = ["Connection", "Query", "HTTP Request"];
 
     egui::Window::new("🤝 Share Folder to Team")
         .id(egui::Id::new("share_folder_dialog"))
@@ -518,21 +537,79 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(360.0);
 
-            ui.label(egui::RichText::new(format!("Share {} folder:", res_type.to_uppercase())).strong());
-            ui.label(egui::RichText::new(&folder_path).monospace().color(egui::Color32::from_rgb(100, 180, 255)));
+            if let Some((res_type, folder_path)) = &preset_target {
+                ui.label(
+                    egui::RichText::new(format!("Share {} folder:", res_type.to_uppercase())).strong(),
+                );
+                ui.label(
+                    egui::RichText::new(folder_path)
+                        .monospace()
+                        .color(egui::Color32::from_rgb(100, 180, 255)),
+                );
+            } else {
+                ui.label(egui::RichText::new("Tipe Resource:").small().strong());
+                egui::ComboBox::from_id_salt("share_folder_dialog_res_type")
+                    .selected_text(resource_labels[tabular.share_folder_type_idx.min(2)])
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut tabular.share_folder_type_idx, 0, "Connection");
+                        ui.selectable_value(&mut tabular.share_folder_type_idx, 1, "Query");
+                        ui.selectable_value(&mut tabular.share_folder_type_idx, 2, "HTTP Request");
+                    });
+
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Folder Path:").small().strong());
+
+                let active_res_type = resource_types[tabular.share_folder_type_idx.min(2)];
+                let available_folders = get_available_folder_suggestions(tabular, active_res_type);
+
+                let selected_folder_text = if tabular.share_folder_path_input.trim().is_empty() {
+                    "Pilih Folder dari daftar...".to_string()
+                } else {
+                    tabular.share_folder_path_input.clone()
+                };
+
+                egui::ComboBox::from_id_salt("share_folder_path_combobox")
+                    .selected_text(&selected_folder_text)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        if available_folders.is_empty() {
+                            ui.label(egui::RichText::new("Belum ada folder lokal").small().weak());
+                        } else {
+                            for folder in &available_folders {
+                                let is_selected = tabular.share_folder_path_input == *folder;
+                                if ui.selectable_label(is_selected, folder).clicked() {
+                                    tabular.share_folder_path_input = folder.clone();
+                                }
+                            }
+                        }
+                    });
+
+                ui.add_space(2.0);
+                ui.add_sized(
+                    [ui.available_width(), 24.0],
+                    egui::TextEdit::singleline(&mut tabular.share_folder_path_input)
+                        .hint_text("Atau ketik folder baru (cth: /Production)"),
+                );
+            }
 
             ui.add_space(8.0);
 
             if tabular.teams.is_empty() {
-                ui.label(egui::RichText::new("Anda belum memiliki atau bergabung di Team manapun.").weak().small());
+                ui.label(
+                    egui::RichText::new("Anda belum memiliki atau bergabung di Team manapun.")
+                        .weak()
+                        .small(),
+                );
             } else {
                 ui.label(egui::RichText::new("Pilih Team:").small().strong());
 
-                let selected_team_id = tabular.share_folder_selected_team_id
+                let selected_team_id = tabular
+                    .share_folder_selected_team_id
                     .clone()
                     .unwrap_or_else(|| tabular.teams[0].id.clone());
 
-                let selected_team_name = tabular.teams
+                let selected_team_name = tabular
+                    .teams
                     .iter()
                     .find(|t| t.id == selected_team_id)
                     .map(|t| t.name.as_str())
@@ -542,17 +619,26 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     .selected_text(selected_team_name)
                     .show_ui(ui, |ui| {
                         for team in &tabular.teams {
-                            if ui.selectable_value(
-                                &mut tabular.share_folder_selected_team_id,
-                                Some(team.id.clone()),
-                                &team.name,
-                            ).clicked() {}
+                            if ui
+                                .selectable_value(
+                                    &mut tabular.share_folder_selected_team_id,
+                                    Some(team.id.clone()),
+                                    &team.name,
+                                )
+                                .clicked()
+                            {}
                         }
                     });
 
                 ui.add_space(6.0);
 
-                if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "🤝 Share to Team")).clicked() {
+                if ui
+                    .add(crate::window_egui::style::btn_primary_ctx(
+                        ui.ctx(),
+                        "🤝 Share to Team",
+                    ))
+                    .clicked()
+                {
                     share_clicked = true;
                 }
             }
@@ -561,26 +647,58 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Shared dengan Team:").small().strong());
 
-            let current_shares: Vec<_> = tabular.shared_folders_cache
+            let (active_res_type, active_folder_path) = match &preset_target {
+                Some((rt, fp)) => (rt.clone(), fp.clone()),
+                None => (
+                    resource_types[tabular.share_folder_type_idx.min(2)].to_string(),
+                    tabular.share_folder_path_input.trim().to_string(),
+                ),
+            };
+
+            let current_shares: Vec<_> = tabular
+                .shared_folders_cache
                 .iter()
-                .filter(|sf| sf.resource_type == res_type && sf.folder_path == folder_path)
+                .filter(|sf| {
+                    if active_folder_path.is_empty() {
+                        true
+                    } else {
+                        sf.resource_type == active_res_type && sf.folder_path == active_folder_path
+                    }
+                })
                 .cloned()
                 .collect();
 
             if current_shares.is_empty() {
-                ui.label(egui::RichText::new("Belum dibagikan ke Team manapun.").small().weak());
+                ui.label(
+                    egui::RichText::new("Belum ada folder yang dibagikan.")
+                        .small()
+                        .weak(),
+                );
             } else {
                 for sf in &current_shares {
-                    let team_name = tabular.teams
+                    let team_name = tabular
+                        .teams
                         .iter()
                         .find(|t| t.id == sf.team_id)
                         .map(|t| t.name.as_str())
                         .unwrap_or(&sf.team_id);
 
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("• {}", team_name)).small());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "• [{}] {} ➔ {}",
+                                sf.resource_type.to_uppercase(),
+                                sf.folder_path,
+                                team_name
+                            ))
+                            .small(),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                            if ui
+                                .add(
+                                    egui::Button::new(egui::RichText::new("🗑").small())
+                                        .frame(false),
+                                )
                                 .on_hover_text("Unshare folder")
                                 .clicked()
                             {
@@ -607,11 +725,27 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     }
 
     if share_clicked && !tabular.teams.is_empty() {
-        let team_id = tabular.share_folder_selected_team_id
-            .clone()
-            .unwrap_or_else(|| tabular.teams[0].id.clone());
+        let (res_type, folder_path) = match &preset_target {
+            Some((rt, fp)) => (rt.clone(), fp.clone()),
+            None => (
+                resource_types[tabular.share_folder_type_idx.min(2)].to_string(),
+                tabular.share_folder_path_input.trim().to_string(),
+            ),
+        };
 
-        share_folder_action(tabular, &team_id, &res_type, &folder_path);
+        if folder_path.is_empty() {
+            tabular.toasts.warning("Folder path tidak boleh kosong");
+        } else {
+            let team_id = tabular
+                .share_folder_selected_team_id
+                .clone()
+                .unwrap_or_else(|| tabular.teams[0].id.clone());
+
+            share_folder_action(tabular, &team_id, &res_type, &folder_path);
+            if preset_target.is_none() {
+                tabular.share_folder_path_input.clear();
+            }
+        }
     }
 
     if let Some((team_id, folder_id)) = unshare_id {
@@ -619,7 +753,12 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     }
 }
 
-pub fn share_folder_action(tabular: &mut Tabular, team_id: &str, resource_type: &str, folder_path: &str) {
+pub fn share_folder_action(
+    tabular: &mut Tabular,
+    team_id: &str,
+    resource_type: &str,
+    folder_path: &str,
+) {
     let account = match &tabular.sync_account {
         Some(a) => a.clone(),
         None => return,
@@ -637,7 +776,10 @@ pub fn share_folder_action(tabular: &mut Tabular, team_id: &str, resource_type: 
     let team_id_clone = team_id.to_string();
     super::spawn_async(async move {
         let client = super::api_client::ApiClient::new(&server);
-        let result = client.share_folder(&token, &team_id_clone, &req).await.map(|_| ());
+        let result = client
+            .share_folder(&token, &team_id_clone, &req)
+            .await
+            .map(|_| ());
         let _ = tx.send(result);
     });
 
@@ -658,7 +800,9 @@ pub fn unshare_folder_action(tabular: &mut Tabular, team_id: &str, folder_id: &s
     let folder_id_clone = folder_id.to_string();
     super::spawn_async(async move {
         let client = super::api_client::ApiClient::new(&server);
-        let result = client.unshare_folder(&token, &team_id_clone, &folder_id_clone).await;
+        let result = client
+            .unshare_folder(&token, &team_id_clone, &folder_id_clone)
+            .await;
         let _ = tx.send(result);
     });
 
@@ -719,7 +863,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let mut add_clicked = false;
     let mut search_triggered_query: Option<String> = None;
 
-    egui::Window::new("👥 Add Team Member")
+    egui::Window::new(format!("👥 Add Member to {}", team_name))
         .id(egui::Id::new("add_team_member_dialog"))
         .collapsible(false)
         .resizable(false)
@@ -728,22 +872,26 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             ui.set_width(380.0);
             ui.spacing_mut().item_spacing.y = 8.0;
 
-            ui.label(egui::RichText::new(format!("Tambah Member ke Team '{}'", team_name)).strong().size(13.0));
-            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new("Cari Member (Min. 5 Karakter Email / Name / Phone):")
+                    .small()
+                    .strong(),
+            );
 
-            ui.label(egui::RichText::new("Cari Member (Min. 5 Karakter Email / Name / Phone):").small().strong());
-            
             ui.add_sized(
                 [ui.available_width(), 26.0],
                 egui::TextEdit::singleline(&mut tabular.add_member_identifier)
-                    .hint_text("Ketik min. 5 karakter untuk mencari…")
+                    .hint_text("Ketik min. 5 karakter untuk mencari…"),
             );
 
             let trimmed_input = tabular.add_member_identifier.trim().to_string();
             let char_count = trimmed_input.chars().count();
 
             // Trigger search if >= 5 chars and query changed
-            if char_count >= 5 && trimmed_input != tabular.add_member_search_query && !tabular.add_member_search_in_progress {
+            if char_count >= 5
+                && trimmed_input != tabular.add_member_search_query
+                && !tabular.add_member_search_in_progress
+            {
                 search_triggered_query = Some(trimmed_input.clone());
             }
 
@@ -761,37 +909,66 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             // Autocomplete Candidate Dropdown / Box
             if char_count < 5 {
-                ui.label(egui::RichText::new(format!("Ketik {} karakter lagi untuk mencari…", 5 - char_count)).small().weak());
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Ketik {} karakter lagi untuk mencari…",
+                        5 - char_count
+                    ))
+                    .small()
+                    .weak(),
+                );
             } else if tabular.add_member_search_in_progress {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(egui::RichText::new("Mencari member di server…").small().weak());
+                    ui.label(
+                        egui::RichText::new("Mencari member di server…")
+                            .small()
+                            .weak(),
+                    );
                 });
             } else if !tabular.add_member_search_results.is_empty() {
                 ui.group(|ui| {
                     ui.set_max_height(140.0);
-                    ui.label(egui::RichText::new("Hasil Pencarian (Pilih Pengguna):").small().strong());
+                    ui.label(
+                        egui::RichText::new("Hasil Pencarian (Pilih Pengguna):")
+                            .small()
+                            .strong(),
+                    );
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let candidates = tabular.add_member_search_results.clone();
                         for u in &candidates {
                             let display_name = u.display_name.as_deref().unwrap_or(&u.email);
-                            let username_or_phone = u.phone.as_deref().or(u.username.as_deref()).unwrap_or("");
-                            
+                            let username_or_phone =
+                                u.phone.as_deref().or(u.username.as_deref()).unwrap_or("");
+
                             let item_text = if username_or_phone.is_empty() {
                                 format!("👤 {} | ✉️ {}", display_name, u.email)
                             } else {
-                                format!("👤 {} | ✉️ {} | 📞 {}", display_name, u.email, username_or_phone)
+                                format!(
+                                    "👤 {} | ✉️ {} | 📞 {}",
+                                    display_name, u.email, username_or_phone
+                                )
                             };
 
                             let is_selected = tabular.add_member_identifier == u.email;
-                            if ui.selectable_label(is_selected, egui::RichText::new(item_text).small()).clicked() {
+                            if ui
+                                .selectable_label(
+                                    is_selected,
+                                    egui::RichText::new(item_text).small(),
+                                )
+                                .clicked()
+                            {
                                 tabular.add_member_identifier = u.email.clone();
                             }
                         }
                     });
                 });
             } else if char_count >= 5 {
-                ui.label(egui::RichText::new("Tidak ada pengguna yang cocok.").small().weak());
+                ui.label(
+                    egui::RichText::new("Tidak ada pengguna yang cocok.")
+                        .small()
+                        .weak(),
+                );
             }
 
             ui.add_space(8.0);
@@ -801,7 +978,16 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let can_add = !tabular.add_member_identifier.trim().is_empty();
-                    if ui.add_enabled(can_add, crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Tambah Member")).clicked() {
+                    if ui
+                        .add_enabled(
+                            can_add,
+                            crate::window_egui::style::btn_primary_ctx(
+                                ui.ctx(),
+                                "➕ Tambah Member",
+                            ),
+                        )
+                        .clicked()
+                    {
                         add_clicked = true;
                     }
 
@@ -875,3 +1061,79 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         tabular.add_member_search_in_progress = false;
     }
 }
+
+// ─── Folder Suggestion Helpers ────────────────────────────────────────────────
+
+fn get_available_folder_suggestions(tabular: &Tabular, resource_type: &str) -> Vec<String> {
+    let mut folders = std::collections::BTreeSet::new();
+
+    match resource_type {
+        "connection" => {
+            for f in &tabular.connection_folders {
+                if !f.trim().is_empty() {
+                    folders.insert(f.clone());
+                }
+            }
+            for conn in &tabular.connections {
+                if let Some(f) = &conn.folder {
+                    if !f.trim().is_empty() {
+                        folders.insert(f.clone());
+                    }
+                }
+            }
+        }
+        "query" => {
+            let query_dir = crate::directory::get_query_dir();
+            collect_query_subfolders(&query_dir, &query_dir, &mut folders);
+        }
+        "http" => {
+            for ws in &tabular.yaak_workspaces {
+                collect_http_subfolders(&ws.folders, &mut folders);
+            }
+        }
+        _ => {}
+    }
+
+    for sf in &tabular.shared_folders_cache {
+        if sf.resource_type == resource_type && !sf.folder_path.trim().is_empty() {
+            folders.insert(sf.folder_path.clone());
+        }
+    }
+
+    folders.into_iter().collect()
+}
+
+fn collect_query_subfolders(
+    base_dir: &std::path::Path,
+    current_dir: &std::path::Path,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    if let Ok(entries) = std::fs::read_dir(current_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Ok(rel) = path.strip_prefix(base_dir) {
+                    let rel_str = rel.to_string_lossy().to_string();
+                    if !rel_str.is_empty() {
+                        out.insert(format!("/{}", rel_str.replace('\\', "/")));
+                    }
+                }
+                collect_query_subfolders(base_dir, &path, out);
+            }
+        }
+    }
+}
+
+fn collect_http_subfolders(
+    folders: &[crate::http_collection::HttpFolder],
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    for f in folders {
+        if !f.name.trim().is_empty() {
+            let name = f.name.trim_start_matches('/');
+            out.insert(format!("/{}", name));
+        }
+        collect_http_subfolders(&f.children, out);
+    }
+}
+

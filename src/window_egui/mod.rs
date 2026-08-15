@@ -551,6 +551,8 @@ pub struct Tabular {
     pub show_share_folder_dialog: bool,
     pub share_folder_target: Option<(String, String)>,
     pub share_folder_selected_team_id: Option<String>,
+    pub share_folder_type_idx: usize,
+    pub share_folder_path_input: String,
     pub share_folder_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<()>>>,
     pub shared_folders_cache: Vec<crate::sync::api_client::RemoteSharedFolder>,
     pub shared_folders_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteSharedFolder>>>>,

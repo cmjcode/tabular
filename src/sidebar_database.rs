@@ -1578,6 +1578,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                 )
                 .execute(pool.as_ref())
                 .await;
+                let _ = crate::sync::sync_teams_cache::init_teams_cache_tables(pool.as_ref()).await;
             });
         }
         // Load existing connections from database
@@ -1586,6 +1587,22 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
         load_connection_folders(tabular);
         // Load query history from database
         sidebar_history::load_query_history(tabular);
+
+        // Load cached Teams, Members, and Shared Folders from SQLite
+        if let Some(ref pool) = tabular.db_pool.clone() {
+            let teams = rt.block_on(crate::sync::sync_teams_cache::load_teams_from_cache(pool.as_ref()));
+            let members = rt.block_on(crate::sync::sync_teams_cache::load_team_members_from_cache(pool.as_ref()));
+            let shares = rt.block_on(crate::sync::sync_teams_cache::load_shared_folders_from_cache(pool.as_ref()));
+            if !teams.is_empty() {
+                tabular.teams = teams;
+            }
+            if !members.is_empty() {
+                tabular.team_members = members;
+            }
+            if !shares.is_empty() {
+                tabular.shared_folders_cache = shares;
+            }
+        }
     } else {
         // Backup corrupt file and re-create fresh database if startup failed due to corruption
         let data_dir = directory::get_data_dir();

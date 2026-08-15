@@ -573,6 +573,8 @@ impl super::Tabular {
             show_share_folder_dialog: false,
             share_folder_target: None,
             share_folder_selected_team_id: None,
+            share_folder_type_idx: 0,
+            share_folder_path_input: String::new(),
             share_folder_receiver: None,
             shared_folders_cache: Vec::new(),
             shared_folders_receiver: None,

@@ -458,8 +458,13 @@ impl super::Tabular {
         {
             match result {
                 Ok(teams) => {
-                    self.teams = teams;
+                    self.teams = teams.clone();
                     info!("[sync] Refreshed {} teams", self.teams.len());
+                    if let Some(pool) = self.db_pool.clone() {
+                        crate::sync::spawn_async(async move {
+                            crate::sync::sync_teams_cache::save_teams_cache(pool.as_ref(), &teams).await;
+                        });
+                    }
                 }
                 Err(e) => {
                     warn!("[sync] Teams list error: {}", e);
@@ -476,6 +481,12 @@ impl super::Tabular {
             match result {
                 Ok(team) => {
                     self.toasts.info(format!("Team '{}' created!", team.name));
+                    if let Some(pool) = self.db_pool.clone() {
+                        let t_clone = team.clone();
+                        crate::sync::spawn_async(async move {
+                            crate::sync::sync_teams_cache::save_single_team_cache(pool.as_ref(), &t_clone).await;
+                        });
+                    }
                     self.teams.push(team);
                 }
                 Err(e) => {
@@ -495,6 +506,12 @@ impl super::Tabular {
                 Ok(team_id) => {
                     self.teams.retain(|t| t.id != team_id);
                     self.toasts.info("Team deleted");
+                    if let Some(pool) = self.db_pool.clone() {
+                        let t_id = team_id.clone();
+                        crate::sync::spawn_async(async move {
+                            crate::sync::sync_teams_cache::delete_team_cache(pool.as_ref(), &t_id).await;
+                        });
+                    }
                 }
                 Err(e) => {
                     warn!("[sync] Team delete error: {}", e);
@@ -511,7 +528,13 @@ impl super::Tabular {
         {
             match result {
                 Ok(members) => {
-                    self.team_members.insert(team_id, members);
+                    self.team_members.insert(team_id.clone(), members.clone());
+                    if let Some(pool) = self.db_pool.clone() {
+                        let t_id = team_id.clone();
+                        crate::sync::spawn_async(async move {
+                            crate::sync::sync_teams_cache::save_team_members_cache(pool.as_ref(), &t_id, &members).await;
+                        });
+                    }
                 }
                 Err(e) => {
                     warn!("[sync] Team members error: {}", e);
@@ -579,8 +602,13 @@ impl super::Tabular {
         {
             match result {
                 Ok(folders) => {
-                    self.shared_folders_cache = folders;
+                    self.shared_folders_cache = folders.clone();
                     info!("[sync] Refreshed {} shared folders", self.shared_folders_cache.len());
+                    if let Some(pool) = self.db_pool.clone() {
+                        crate::sync::spawn_async(async move {
+                            crate::sync::sync_teams_cache::save_shared_folders_cache(pool.as_ref(), &folders).await;
+                        });
+                    }
                 }
                 Err(e) => {
                     warn!("[sync] Shared folders list error: {}", e);
