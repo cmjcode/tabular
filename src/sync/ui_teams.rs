@@ -177,12 +177,15 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                             ui.label(egui::RichText::new(format!("• {}", label)).small());
                                             ui.label(egui::RichText::new(format!("[{}]", m.role)).small().weak());
 
-                                            if (is_owner && m.user_id != account.user_id)
-                                                && ui.add(egui::Button::new(egui::RichText::new("×").small()).frame(false))
-                                                    .on_hover_text("Remove member")
-                                                    .clicked()
-                                            {
-                                                remove_team_member(tabular, &team.id, &m.user_id);
+                                            if is_owner && m.user_id != account.user_id {
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                                                        .on_hover_text("Remove member")
+                                                        .clicked()
+                                                    {
+                                                        remove_team_member(tabular, &team.id, &m.user_id);
+                                                    }
+                                                });
                                             }
                                         });
                                     }
@@ -236,7 +239,10 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(format!("📁 [{}] {}", sf.resource_type.to_uppercase(), sf.folder_path)).small());
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.button(egui::RichText::new("Unshare").small()).clicked() {
+                                            if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                                                .on_hover_text("Unshare folder")
+                                                .clicked()
+                                            {
                                                 unshare_folder_action(tabular, &team.id, &sf.id);
                                             }
                                         });
@@ -287,6 +293,25 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                 for r in &team_rooms {
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(format!("☁ {}", r.name)).small());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                                                .on_hover_text("Delete room")
+                                                .clicked()
+                                            {
+                                                super::ui_collab::delete_room(tabular, &r.id);
+                                            }
+
+                                            let is_current = tabular.crdt_state
+                                                .as_ref()
+                                                .map(|c| c.room_id == r.id)
+                                                .unwrap_or(false);
+
+                                            if is_current {
+                                                ui.label(egui::RichText::new("● Connected").color(egui::Color32::from_rgb(72, 199, 116)).small());
+                                            } else if ui.small_button("Join").clicked() {
+                                                super::ui_collab::join_room(tabular, r);
+                                            }
+                                        });
                                     });
                                 }
                             }
@@ -555,7 +580,10 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(format!("• {}", team_name)).small());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(egui::RichText::new("Unshare").small()).clicked() {
+                            if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                                .on_hover_text("Unshare folder")
+                                .clicked()
+                            {
                                 unshare_id = Some((sf.team_id.clone(), sf.id.clone()));
                             }
                         });

@@ -217,7 +217,7 @@ pub fn render_sidebar_collab_section(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
-fn join_room(tabular: &mut Tabular, room: &CollabRoom) {
+pub fn join_room(tabular: &mut Tabular, room: &CollabRoom) {
     let account = match &tabular.sync_account {
         Some(a) => a.clone(),
         None => return,
@@ -275,7 +275,7 @@ fn create_room(tabular: &mut Tabular) {
     tabular.collab_room_create_receiver = Some(rx);
 }
 
-fn delete_room(tabular: &mut Tabular, room_id: &str) {
+pub fn delete_room(tabular: &mut Tabular, room_id: &str) {
     let account = match &tabular.sync_account {
         Some(a) => a.clone(),
         None => return,
