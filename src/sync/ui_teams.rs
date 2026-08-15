@@ -150,94 +150,53 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                         true,
                     );
 
-                    let mut toggle_add_member = false;
+                    let mut open_add_dialog = false;
                     members_state.show_header(ui, |ui| {
                         ui.label(egui::RichText::new(members_header_title).strong().small());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(egui::Button::new(egui::RichText::new("+").strong().small()).corner_radius(3.0))
-                                .on_hover_text("Add Member")
+                                .on_hover_text("Tambah Member (Popup)")
                                 .clicked()
                             {
-                                toggle_add_member = true;
+                                open_add_dialog = true;
                             }
                         });
                     }).body(|ui| {
                         ui.indent(format!("members_body_{}", team.id), |ui| {
                             if let Some(members) = tabular.team_members.get(&team.id).cloned() {
-                                for m in &members {
-                                    ui.horizontal(|ui| {
-                                        let label = if let Some(un) = &m.username {
-                                            format!("{} (@{})", m.display_name.as_deref().unwrap_or(&m.email), un)
-                                        } else {
-                                            m.display_name.as_deref().unwrap_or(&m.email).to_string()
-                                        };
-                                        ui.label(egui::RichText::new(format!("• {}", label)).small());
-                                        ui.label(egui::RichText::new(format!("[{}]", m.role)).small().weak());
+                                if members.is_empty() {
+                                    ui.label(egui::RichText::new("Belum ada member.").small().weak());
+                                } else {
+                                    for m in &members {
+                                        ui.horizontal(|ui| {
+                                            let label = if let Some(un) = &m.username {
+                                                format!("{} (@{})", m.display_name.as_deref().unwrap_or(&m.email), un)
+                                            } else {
+                                                m.display_name.as_deref().unwrap_or(&m.email).to_string()
+                                            };
+                                            ui.label(egui::RichText::new(format!("• {}", label)).small());
+                                            ui.label(egui::RichText::new(format!("[{}]", m.role)).small().weak());
 
-                                        if (is_owner && m.user_id != account.user_id)
-                                            && ui.add(egui::Button::new(egui::RichText::new("×").small()).frame(false))
-                                                .on_hover_text("Remove member")
-                                                .clicked()
-                                        {
-                                            remove_team_member(tabular, &team.id, &m.user_id);
-                                        }
-                                    });
+                                            if (is_owner && m.user_id != account.user_id)
+                                                && ui.add(egui::Button::new(egui::RichText::new("×").small()).frame(false))
+                                                    .on_hover_text("Remove member")
+                                                    .clicked()
+                                            {
+                                                remove_team_member(tabular, &team.id, &m.user_id);
+                                            }
+                                        });
+                                    }
                                 }
                             } else {
                                 ui.label(egui::RichText::new("Loading members…").small().weak());
                             }
-
-                            // Add member row if toggled or input already started
-                            let show_input = tabular.show_add_member_team_ids.contains(&team.id);
-                            if show_input {
-                                ui.add_space(4.0);
-                                let mut add_clicked = false;
-                                let (mut identifier, mut type_idx, mut role_idx) = tabular
-                                    .team_add_member_inputs
-                                    .get(&team.id)
-                                    .cloned()
-                                    .unwrap_or_default();
-
-                                ui.horizontal(|ui| {
-                                    ui.add_sized([100.0, 20.0], egui::TextEdit::singleline(&mut identifier).hint_text("Identifier…"));
-
-                                    let id_types = ["email", "username", "phone"];
-                                    egui::ComboBox::from_id_salt(format!("id_type_{}", team.id))
-                                        .selected_text(id_types[type_idx])
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut type_idx, 0, "email");
-                                            ui.selectable_value(&mut type_idx, 1, "username");
-                                            ui.selectable_value(&mut type_idx, 2, "phone");
-                                        });
-
-                                    let roles = ["member", "admin"];
-                                    egui::ComboBox::from_id_salt(format!("role_{}", team.id))
-                                        .selected_text(roles[role_idx])
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut role_idx, 0, "member");
-                                            ui.selectable_value(&mut role_idx, 1, "admin");
-                                        });
-
-                                    if ui.button("+ Add").clicked() {
-                                        add_clicked = true;
-                                    }
-                                });
-
-                                tabular.team_add_member_inputs.insert(team.id.clone(), (identifier, type_idx, role_idx));
-
-                                if add_clicked {
-                                    add_team_member(tabular, &team.id);
-                                }
-                            }
                         });
                     });
 
-                    if toggle_add_member {
-                        if tabular.show_add_member_team_ids.contains(&team.id) {
-                            tabular.show_add_member_team_ids.remove(&team.id);
-                        } else {
-                            tabular.show_add_member_team_ids.insert(team.id.clone());
-                        }
+                    if open_add_dialog {
+                        tabular.add_member_target_team_id = Some(team.id.clone());
+                        tabular.add_member_identifier.clear();
+                        tabular.show_add_member_dialog = true;
                     }
 
                     ui.add_space(4.0);
@@ -425,7 +384,7 @@ fn delete_team(tabular: &mut Tabular, team_id: &str) {
     tabular.team_delete_receiver = Some(rx);
 }
 
-fn refresh_team_members(tabular: &mut Tabular, team_id: &str) {
+pub fn refresh_team_members(tabular: &mut Tabular, team_id: &str) {
     let account = match &tabular.sync_account {
         Some(a) => a.clone(),
         None => return,
@@ -445,49 +404,7 @@ fn refresh_team_members(tabular: &mut Tabular, team_id: &str) {
     tabular.team_members_receiver = Some(rx);
 }
 
-fn add_team_member(tabular: &mut Tabular, team_id: &str) {
-    let (identifier, type_idx, role_idx) = match tabular.team_add_member_inputs.get(team_id) {
-        Some(tuple) => tuple.clone(),
-        None => return,
-    };
 
-    let identifier = identifier.trim().to_string();
-    if identifier.is_empty() {
-        tabular.toasts.warning("Isi identifier member terlebih dahulu");
-        return;
-    }
-
-    let account = match &tabular.sync_account {
-        Some(a) => a.clone(),
-        None => return,
-    };
-
-    let id_types = ["email", "username", "phone"];
-    let roles = ["member", "admin"];
-
-    let req = AddTeamMemberReq {
-        identifier,
-        identifier_type: id_types[type_idx].to_string(),
-        role: Some(roles[role_idx].to_string()),
-    };
-
-    let token = account.access_token.clone();
-    let server = tabular.sync_server_url.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-
-    let team_id_clone = team_id.to_string();
-    super::spawn_async(async move {
-        let client = super::api_client::ApiClient::new(&server);
-        let result = client.add_team_member(&token, &team_id_clone, &req).await;
-        let _ = tx.send((team_id_clone, result));
-    });
-
-    if let Some(tuple) = tabular.team_add_member_inputs.get_mut(team_id) {
-        tuple.0.clear();
-    }
-
-    tabular.team_add_member_receiver = Some(rx);
-}
 
 fn remove_team_member(tabular: &mut Tabular, team_id: &str, user_id: &str) {
     let account = match &tabular.sync_account {
@@ -748,4 +665,185 @@ pub fn refresh_all_shared_folders(tabular: &mut Tabular) {
     });
 
     tabular.shared_folders_receiver = Some(rx);
+}
+
+pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
+    if !tabular.show_add_member_dialog {
+        return;
+    }
+
+    let team_id = match &tabular.add_member_target_team_id {
+        Some(id) => id.clone(),
+        None => {
+            tabular.show_add_member_dialog = false;
+            return;
+        }
+    };
+
+    let team_name = tabular
+        .teams
+        .iter()
+        .find(|t| t.id == team_id)
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| "Team".to_string());
+
+    let mut close_requested = false;
+    let mut add_clicked = false;
+    let mut search_triggered_query: Option<String> = None;
+
+    egui::Window::new("👥 Add Team Member")
+        .id(egui::Id::new("add_team_member_dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.spacing_mut().item_spacing.y = 8.0;
+
+            ui.label(egui::RichText::new(format!("Tambah Member ke Team '{}'", team_name)).strong().size(13.0));
+            ui.add_space(2.0);
+
+            ui.label(egui::RichText::new("Cari Member (Min. 5 Karakter Email / Name / Phone):").small().strong());
+            
+            ui.add_sized(
+                [ui.available_width(), 26.0],
+                egui::TextEdit::singleline(&mut tabular.add_member_identifier)
+                    .hint_text("Ketik min. 5 karakter untuk mencari…")
+            );
+
+            let trimmed_input = tabular.add_member_identifier.trim().to_string();
+            let char_count = trimmed_input.chars().count();
+
+            // Trigger search if >= 5 chars and query changed
+            if char_count >= 5 && trimmed_input != tabular.add_member_search_query && !tabular.add_member_search_in_progress {
+                search_triggered_query = Some(trimmed_input.clone());
+            }
+
+            // Role selection row (Tipe dropdown is removed)
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Role:").small().strong());
+                let roles = ["member", "admin"];
+                egui::ComboBox::from_id_salt("add_member_dialog_role")
+                    .selected_text(roles[tabular.add_member_role_idx])
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut tabular.add_member_role_idx, 0, "member");
+                        ui.selectable_value(&mut tabular.add_member_role_idx, 1, "admin");
+                    });
+            });
+
+            // Autocomplete Candidate Dropdown / Box
+            if char_count < 5 {
+                ui.label(egui::RichText::new(format!("Ketik {} karakter lagi untuk mencari…", 5 - char_count)).small().weak());
+            } else if tabular.add_member_search_in_progress {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new("Mencari member di server…").small().weak());
+                });
+            } else if !tabular.add_member_search_results.is_empty() {
+                ui.group(|ui| {
+                    ui.set_max_height(140.0);
+                    ui.label(egui::RichText::new("Hasil Pencarian (Pilih Pengguna):").small().strong());
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let candidates = tabular.add_member_search_results.clone();
+                        for u in &candidates {
+                            let display_name = u.display_name.as_deref().unwrap_or(&u.email);
+                            let username_or_phone = u.phone.as_deref().or(u.username.as_deref()).unwrap_or("");
+                            
+                            let item_text = if username_or_phone.is_empty() {
+                                format!("👤 {} | ✉️ {}", display_name, u.email)
+                            } else {
+                                format!("👤 {} | ✉️ {} | 📞 {}", display_name, u.email, username_or_phone)
+                            };
+
+                            let is_selected = tabular.add_member_identifier == u.email;
+                            if ui.selectable_label(is_selected, egui::RichText::new(item_text).small()).clicked() {
+                                tabular.add_member_identifier = u.email.clone();
+                            }
+                        }
+                    });
+                });
+            } else if char_count >= 5 {
+                ui.label(egui::RichText::new("Tidak ada pengguna yang cocok.").small().weak());
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let can_add = !tabular.add_member_identifier.trim().is_empty();
+                    if ui.add_enabled(can_add, crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Tambah Member")).clicked() {
+                        add_clicked = true;
+                    }
+
+                    if ui.button("Batal").clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+        });
+
+    if let Some(query) = search_triggered_query {
+        if let Some(account) = &tabular.sync_account {
+            tabular.add_member_search_query = query.clone();
+            tabular.add_member_search_in_progress = true;
+
+            let token = account.access_token.clone();
+            let server = tabular.sync_server_url.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+
+            super::spawn_async(async move {
+                let client = super::api_client::ApiClient::new(&server);
+                let result = client.search_users(&token, &query).await;
+                let _ = tx.send(result);
+            });
+
+            tabular.add_member_search_receiver = Some(rx);
+        }
+    }
+
+    if close_requested {
+        tabular.show_add_member_dialog = false;
+        tabular.add_member_target_team_id = None;
+        tabular.add_member_identifier.clear();
+        tabular.add_member_search_results.clear();
+        tabular.add_member_search_query.clear();
+        tabular.add_member_search_in_progress = false;
+    }
+
+    if add_clicked {
+        let identifier = tabular.add_member_identifier.trim().to_string();
+        if !identifier.is_empty() {
+            let roles = ["member", "admin"];
+
+            let req = AddTeamMemberReq {
+                identifier,
+                identifier_type: "auto".to_string(),
+                role: Some(roles[tabular.add_member_role_idx].to_string()),
+            };
+
+            if let Some(account) = &tabular.sync_account {
+                let token = account.access_token.clone();
+                let server = tabular.sync_server_url.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+
+                let team_id_clone = team_id.clone();
+                super::spawn_async(async move {
+                    let client = super::api_client::ApiClient::new(&server);
+                    let result = client.add_team_member(&token, &team_id_clone, &req).await;
+                    let _ = tx.send((team_id_clone, result));
+                });
+
+                tabular.team_add_member_receiver = Some(rx);
+            }
+        }
+
+        tabular.show_add_member_dialog = false;
+        tabular.add_member_target_team_id = None;
+        tabular.add_member_identifier.clear();
+        tabular.add_member_search_results.clear();
+        tabular.add_member_search_query.clear();
+        tabular.add_member_search_in_progress = false;
+    }
 }

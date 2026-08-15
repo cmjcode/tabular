@@ -16,8 +16,9 @@ impl super::Tabular {
         // ── Render collab panel (floating window) ───────────────────────────
         crate::sync::ui_collab::render_collab_panel(self, ctx);
 
-        // ── Render share folder dialog ────────────────────────────────────────
+        // ── Render share folder dialog & add member dialog ─────────────────────
         crate::sync::ui_teams::render_share_folder_dialog(self, ctx);
+        crate::sync::ui_teams::render_add_member_dialog(self, ctx);
 
         // ── Poll CRDT messages ───────────────────────────────────────────────
         self.poll_crdt_messages(ctx);
@@ -520,22 +521,38 @@ impl super::Tabular {
             self.team_members_receiver = None;
         }
 
-        // Add/remove member result
+        // Add member team receiver
         if let Some(rx) = &self.team_add_member_receiver
-            && let Ok((_team_id, result)) = rx.try_recv()
+            && let Ok((team_id, result)) = rx.try_recv()
         {
             match result {
-                Ok(_) => {
-                    self.toasts.info("Team member updated");
-                    crate::sync::ui_teams::refresh_teams(self);
+                Ok(()) => {
+                    self.toasts.info("Member added to team!");
+                    crate::sync::ui_teams::refresh_team_members(self, &team_id);
                 }
                 Err(e) => {
-                    warn!("[sync] Team member error: {}", e);
-                    self.toasts.info(format!("Failed to update member: {}", e));
+                    warn!("[sync] Add member error: {}", e);
+                    self.toasts.info(format!("Failed to add member: {}", e));
                     self.check_401_error(&e.to_string());
                 }
             }
             self.team_add_member_receiver = None;
+        }
+
+        // Add member user search autocomplete
+        if let Some(rx) = &self.add_member_search_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            self.add_member_search_in_progress = false;
+            match result {
+                Ok(users) => {
+                    self.add_member_search_results = users;
+                }
+                Err(e) => {
+                    warn!("[sync] User search error: {}", e);
+                }
+            }
+            self.add_member_search_receiver = None;
         }
 
         // Share/Unshare folder result
