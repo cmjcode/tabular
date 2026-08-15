@@ -1528,7 +1528,9 @@ impl Tabular {
                                     }
                                 }
                                 "Collaborations" => {
-                                    crate::sync::ui_collab::render_collab_content(self, ui);
+                                    crate::sync::ui_teams::render_sidebar_teams_section(self, ui);
+                                    ui.add_space(8.0);
+                                    crate::sync::ui_collab::render_sidebar_collab_section(self, ui);
                                 }
                                 _ => {}
                             }
