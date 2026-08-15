@@ -97,7 +97,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     ui.add_space(6.0);
 
-    // ── Team list ─────────────────────────────────────────────────────────
+    // ── Team list tree ────────────────────────────────────────────────────
     if tabular.teams.is_empty() {
         ui.label(egui::RichText::new("Belum ada Team. Buat Team untuk berbagi folder & Room.").small().weak());
     } else {
@@ -105,119 +105,247 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         for team in &teams {
             let is_owner = team.owner_id == account.user_id;
 
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    let is_expanded = tabular.expanded_team_ids.contains(&team.id);
-                    let toggle_symbol = if is_expanded { "⏷" } else { "⏸" };
-                    if ui.selectable_label(is_expanded, format!("{} {}", toggle_symbol, team.name)).clicked() {
-                        if is_expanded {
-                            tabular.expanded_team_ids.remove(&team.id);
-                        } else {
-                            tabular.expanded_team_ids.insert(team.id.clone());
-                            refresh_team_members(tabular, &team.id);
-                        }
-                    }
+            let team_header_text = if is_owner {
+                format!("👥 {} (Owner)", team.name)
+            } else {
+                format!("👥 {}", team.name)
+            };
 
-                    if is_owner {
-                        ui.label(egui::RichText::new("(Owner)").small().weak());
-                    }
+            let team_node_id = ui.make_persistent_id(format!("team_node_{}", team.id));
+            let team_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                team_node_id,
+                true,
+            );
+            let is_open_before = team_state.is_open();
 
+            let team_res = team_state.show_header(ui, |ui| {
+                ui.label(egui::RichText::new(team_header_text).strong().size(13.0));
+                if is_owner {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if is_owner && ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                        if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
                             .on_hover_text("Delete Team")
                             .clicked()
                         {
                             delete_team(tabular, &team.id);
                         }
-
-                        if ui.button(egui::RichText::new("+ Room").small())
-                            .on_hover_text("Buat Room dari Team ini")
-                            .clicked()
-                        {
-                            create_room_from_team(tabular, team);
-                        }
                     });
-                });
-
-                if let Some(desc) = &team.description
-                    && !desc.is_empty()
-                {
-                    ui.label(egui::RichText::new(desc).small().weak());
                 }
+            }).body(|ui| {
+                ui.indent(format!("team_body_{}", team.id), |ui| {
+                    if let Some(desc) = &team.description
+                        && !desc.is_empty()
+                    {
+                        ui.label(egui::RichText::new(desc).small().weak());
+                        ui.add_space(2.0);
+                    }
 
-                // If expanded: show members & add member inputs
-                if tabular.expanded_team_ids.contains(&team.id) {
-                    ui.separator();
+                    // ── 1. Members Sub-Tree Node ──────────────────────────────────
+                    let member_count = tabular.team_members.get(&team.id).map(|m| m.len()).unwrap_or(0);
+                    let members_header_title = format!("Members ({})", member_count);
+                    let members_node_id = ui.make_persistent_id(format!("team_members_node_{}", team.id));
+                    let members_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                        ui.ctx(),
+                        members_node_id,
+                        true,
+                    );
 
-                    ui.label(egui::RichText::new("Members:").small().strong());
+                    let mut toggle_add_member = false;
+                    members_state.show_header(ui, |ui| {
+                        ui.label(egui::RichText::new(members_header_title).strong().small());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new(egui::RichText::new("+").strong().small()).corner_radius(3.0))
+                                .on_hover_text("Add Member")
+                                .clicked()
+                            {
+                                toggle_add_member = true;
+                            }
+                        });
+                    }).body(|ui| {
+                        ui.indent(format!("members_body_{}", team.id), |ui| {
+                            if let Some(members) = tabular.team_members.get(&team.id).cloned() {
+                                for m in &members {
+                                    ui.horizontal(|ui| {
+                                        let label = if let Some(un) = &m.username {
+                                            format!("{} (@{})", m.display_name.as_deref().unwrap_or(&m.email), un)
+                                        } else {
+                                            m.display_name.as_deref().unwrap_or(&m.email).to_string()
+                                        };
+                                        ui.label(egui::RichText::new(format!("• {}", label)).small());
+                                        ui.label(egui::RichText::new(format!("[{}]", m.role)).small().weak());
 
-                    if let Some(members) = tabular.team_members.get(&team.id).cloned() {
-                        for m in &members {
-                            ui.horizontal(|ui| {
-                                let label = if let Some(un) = &m.username {
-                                    format!("{} (@{})", m.display_name.as_deref().unwrap_or(&m.email), un)
-                                } else {
-                                    m.display_name.as_deref().unwrap_or(&m.email).to_string()
-                                };
-                                ui.label(egui::RichText::new(format!("• {}", label)).small());
-                                ui.label(egui::RichText::new(format!("[{}]", m.role)).small().weak());
-
-                                if (is_owner && m.user_id != account.user_id)
-                                    && ui.add(egui::Button::new(egui::RichText::new("×").small()).frame(false))
-                                        .on_hover_text("Remove member")
-                                        .clicked()
-                                {
-                                    remove_team_member(tabular, &team.id, &m.user_id);
+                                        if (is_owner && m.user_id != account.user_id)
+                                            && ui.add(egui::Button::new(egui::RichText::new("×").small()).frame(false))
+                                                .on_hover_text("Remove member")
+                                                .clicked()
+                                        {
+                                            remove_team_member(tabular, &team.id, &m.user_id);
+                                        }
+                                    });
                                 }
-                            });
+                            } else {
+                                ui.label(egui::RichText::new("Loading members…").small().weak());
+                            }
+
+                            // Add member row if toggled or input already started
+                            let show_input = tabular.show_add_member_team_ids.contains(&team.id);
+                            if show_input {
+                                ui.add_space(4.0);
+                                let mut add_clicked = false;
+                                let (mut identifier, mut type_idx, mut role_idx) = tabular
+                                    .team_add_member_inputs
+                                    .get(&team.id)
+                                    .cloned()
+                                    .unwrap_or_default();
+
+                                ui.horizontal(|ui| {
+                                    ui.add_sized([100.0, 20.0], egui::TextEdit::singleline(&mut identifier).hint_text("Identifier…"));
+
+                                    let id_types = ["email", "username", "phone"];
+                                    egui::ComboBox::from_id_salt(format!("id_type_{}", team.id))
+                                        .selected_text(id_types[type_idx])
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut type_idx, 0, "email");
+                                            ui.selectable_value(&mut type_idx, 1, "username");
+                                            ui.selectable_value(&mut type_idx, 2, "phone");
+                                        });
+
+                                    let roles = ["member", "admin"];
+                                    egui::ComboBox::from_id_salt(format!("role_{}", team.id))
+                                        .selected_text(roles[role_idx])
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut role_idx, 0, "member");
+                                            ui.selectable_value(&mut role_idx, 1, "admin");
+                                        });
+
+                                    if ui.button("+ Add").clicked() {
+                                        add_clicked = true;
+                                    }
+                                });
+
+                                tabular.team_add_member_inputs.insert(team.id.clone(), (identifier, type_idx, role_idx));
+
+                                if add_clicked {
+                                    add_team_member(tabular, &team.id);
+                                }
+                            }
+                        });
+                    });
+
+                    if toggle_add_member {
+                        if tabular.show_add_member_team_ids.contains(&team.id) {
+                            tabular.show_add_member_team_ids.remove(&team.id);
+                        } else {
+                            tabular.show_add_member_team_ids.insert(team.id.clone());
                         }
-                    } else {
-                        ui.label(egui::RichText::new("Loading members…").small().weak());
                     }
 
                     ui.add_space(4.0);
 
-                    // Add member row
-                    let mut add_clicked = false;
-                    let (mut identifier, mut type_idx, mut role_idx) = tabular
-                        .team_add_member_inputs
-                        .get(&team.id)
+                    // ── 2. Shares Sub-Tree Node ───────────────────────────────────
+                    let team_shares: Vec<_> = tabular.shared_folders_cache
+                        .iter()
+                        .filter(|sf| sf.team_id == team.id)
                         .cloned()
-                        .unwrap_or_default();
+                        .collect();
 
-                    ui.horizontal(|ui| {
-                        ui.add_sized([100.0, 20.0], egui::TextEdit::singleline(&mut identifier).hint_text("Identifier…"));
+                    let shares_header_title = format!("Shares ({})", team_shares.len());
+                    let shares_node_id = ui.make_persistent_id(format!("team_shares_node_{}", team.id));
+                    let shares_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                        ui.ctx(),
+                        shares_node_id,
+                        true,
+                    );
 
-                        let id_types = ["email", "username", "phone"];
-                        egui::ComboBox::from_id_salt(format!("id_type_{}", team.id))
-                            .selected_text(id_types[type_idx])
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut type_idx, 0, "email");
-                                ui.selectable_value(&mut type_idx, 1, "username");
-                                ui.selectable_value(&mut type_idx, 2, "phone");
-                            });
-
-                        let roles = ["member", "admin"];
-                        egui::ComboBox::from_id_salt(format!("role_{}", team.id))
-                            .selected_text(roles[role_idx])
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut role_idx, 0, "member");
-                                ui.selectable_value(&mut role_idx, 1, "admin");
-                            });
-
-                        if ui.button("+ Add").clicked() {
-                            add_clicked = true;
-                        }
+                    let mut add_share_clicked = false;
+                    shares_state.show_header(ui, |ui| {
+                        ui.label(egui::RichText::new(shares_header_title).strong().small());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new(egui::RichText::new("+").strong().small()).corner_radius(3.0))
+                                .on_hover_text("Share Folder (Connection/Query/HTTP)")
+                                .clicked()
+                            {
+                                add_share_clicked = true;
+                            }
+                        });
+                    }).body(|ui| {
+                        ui.indent(format!("shares_body_{}", team.id), |ui| {
+                            if team_shares.is_empty() {
+                                ui.label(egui::RichText::new("Belum ada folder Connection, Query, atau HTTP yang dibagikan.").small().weak());
+                            } else {
+                                for sf in &team_shares {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(format!("📁 [{}] {}", sf.resource_type.to_uppercase(), sf.folder_path)).small());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.button(egui::RichText::new("Unshare").small()).clicked() {
+                                                unshare_folder_action(tabular, &team.id, &sf.id);
+                                            }
+                                        });
+                                    });
+                                }
+                            }
+                        });
                     });
 
-                    tabular.team_add_member_inputs.insert(team.id.clone(), (identifier, type_idx, role_idx));
-
-                    if add_clicked {
-                        add_team_member(tabular, &team.id);
+                    if add_share_clicked {
+                        tabular.share_folder_selected_team_id = Some(team.id.clone());
+                        tabular.show_share_folder_dialog = true;
                     }
-                }
+
+                    ui.add_space(4.0);
+
+                    // ── 3. Rooms Sub-Tree Node ────────────────────────────────────
+                    let team_rooms: Vec<_> = tabular.collab_rooms
+                        .iter()
+                        .filter(|r| r.team_id.as_deref() == Some(&team.id))
+                        .cloned()
+                        .collect();
+
+                    let rooms_header_title = format!("Rooms ({})", team_rooms.len());
+                    let rooms_node_id = ui.make_persistent_id(format!("team_rooms_node_{}", team.id));
+                    let rooms_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                        ui.ctx(),
+                        rooms_node_id,
+                        true,
+                    );
+
+                    let mut add_room_clicked = false;
+                    rooms_state.show_header(ui, |ui| {
+                        ui.label(egui::RichText::new(rooms_header_title).strong().small());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new(egui::RichText::new("+").strong().small()).corner_radius(3.0))
+                                .on_hover_text("Buat Room baru untuk Team ini")
+                                .clicked()
+                            {
+                                add_room_clicked = true;
+                            }
+                        });
+                    }).body(|ui| {
+                        ui.indent(format!("rooms_body_{}", team.id), |ui| {
+                            if team_rooms.is_empty() {
+                                ui.label(egui::RichText::new("Belum ada Room untuk Team ini.").small().weak());
+                            } else {
+                                for r in &team_rooms {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(format!("☁ {}", r.name)).small());
+                                    });
+                                }
+                            }
+                        });
+                    });
+
+                    if add_room_clicked {
+                        create_room_from_team(tabular, team);
+                    }
+                });
             });
-            ui.add_space(2.0);
+
+            if team_res.0.clicked() && !is_open_before {
+                refresh_team_members(tabular, &team.id);
+                refresh_all_shared_folders(tabular);
+            }
+
+            ui.add_space(4.0);
         }
     }
 }
@@ -389,8 +517,23 @@ fn create_room_from_team(tabular: &mut Tabular, team: &RemoteTeam) {
         None => return,
     };
 
+    let base_name = team.name.clone();
+    let existing_names: Vec<String> = tabular
+        .collab_rooms
+        .iter()
+        .filter(|r| r.team_id.as_deref() == Some(&team.id))
+        .map(|r| r.name.clone())
+        .collect();
+
+    let mut room_name = base_name.clone();
+    let mut counter = 2;
+    while existing_names.contains(&room_name) {
+        room_name = format!("{} {}", base_name, counter);
+        counter += 1;
+    }
+
     let req = CreateTeamRoomReq {
-        name: Some(team.name.clone()),
+        name: Some(room_name),
         description: team.description.clone(),
     };
 

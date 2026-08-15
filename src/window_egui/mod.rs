@@ -35,6 +35,8 @@ pub struct Tabular {
     pub selected_menu: String,
     // Sub-tab within the "Database" menu: "Connections" | "Queries" | "History"
     pub selected_database_sub_menu: String,
+    // Sub-tab within the "Collaborations" menu: "Teams" | "Collaboration"
+    pub selected_collab_sub_menu: String,
     pub items_tree: Vec<models::structs::TreeNode>,
     pub queries_tree: Vec<models::structs::TreeNode>,
     pub history_tree: Vec<models::structs::TreeNode>,
@@ -529,6 +531,7 @@ pub struct Tabular {
     pub new_team_name: String,
     pub new_team_desc: String,
     pub expanded_team_ids: std::collections::HashSet<String>,
+    pub show_add_member_team_ids: std::collections::HashSet<String>,
     pub team_members: std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
     pub team_add_member_inputs: std::collections::HashMap<String, (String, usize, usize)>,
     pub teams_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteTeam>>>>,

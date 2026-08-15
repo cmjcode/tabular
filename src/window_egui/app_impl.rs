@@ -1528,9 +1528,46 @@ impl Tabular {
                                     }
                                 }
                                 "Collaborations" => {
-                                    crate::sync::ui_teams::render_sidebar_teams_section(self, ui);
-                                    ui.add_space(8.0);
-                                    crate::sync::ui_collab::render_sidebar_collab_section(self, ui);
+                                    // ── Sub-tabs: Teams / Collaboration ──────────
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        let sub_avail_width = ui.available_width();
+                                        let sub_button_width = (sub_avail_width - 2.0) / 2.0;
+                                        let sub_button_size = egui::vec2(sub_button_width, 22.0);
+
+                                        let sub_tabs: [(&str, &str); 2] = [
+                                            ("Teams", "👥"),
+                                            ("Collaboration", "☁"),
+                                        ];
+
+                                        for (key, icon) in sub_tabs {
+                                            let is_active = self.selected_collab_sub_menu == key;
+                                            let resp = style::render_sidebar_subtab(ui, icon, is_active, sub_button_size)
+                                                .on_hover_text(key);
+                                            if resp.clicked() {
+                                                let was_active = self.selected_collab_sub_menu == key;
+                                                self.selected_collab_sub_menu = key.to_string();
+                                                if !was_active {
+                                                    if key == "Teams" {
+                                                        crate::sync::ui_teams::refresh_teams(self);
+                                                    } else if key == "Collaboration" {
+                                                        crate::sync::ui_collab::refresh_rooms(self);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                    ui.add_space(3.0);
+
+                                    match self.selected_collab_sub_menu.as_str() {
+                                        "Teams" => {
+                                            crate::sync::ui_teams::render_teams_content(self, ui);
+                                        }
+                                        "Collaboration" => {
+                                            crate::sync::ui_collab::render_collab_content(self, ui);
+                                        }
+                                        _ => {}
+                                    }
                                 }
                                 _ => {}
                             }
