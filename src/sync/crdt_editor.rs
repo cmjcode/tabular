@@ -130,6 +130,7 @@ async fn run_ws_session(
 ) {
     use tokio_tungstenite::{connect_async, tungstenite::Message};
     use futures_util::{SinkExt, StreamExt};
+    use log::{info, warn};
 
     // Build WS URL: ws(s)://server/ws/collab/{room_id}?token=...
     let ws_url = server_url
@@ -223,11 +224,13 @@ async fn run_ws_session(
                     2 => {
                         // Awareness update from peer — parse cursor info
                         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload) {
+                            let cid = doc.client_id();
+                            let cid_u64: u64 = cid.get();
                             let peer = CollabPeer {
-                                client_id: doc.client_id(),
+                                client_id: cid_u64,
                                 display_name: json["name"].as_str().unwrap_or("Unknown").to_string(),
                                 cursor_pos: json["cursor"].as_u64().map(|v| v as usize),
-                                color: pick_peer_color(doc.client_id()),
+                                color: pick_peer_color(cid_u64),
                             };
                             let _ = message_tx.send(CrdtMessage::PeersUpdate(vec![peer]));
                         }

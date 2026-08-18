@@ -20,24 +20,25 @@ use super::api_client::{ApiClient, CreateConnectionReq, RemoteConnection};
 #[cfg(feature = "collab")]
 pub fn encrypt_config(plaintext: &str, user_id: &str) -> Result<String, String> {
     use aes_gcm::{
-        aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
+        aead::{Aead, KeyInit},
         Aes256Gcm, Key, Nonce,
     };
+    use rand::RngExt;
     use sha2::{Sha256, Digest};
 
     let mut key_bytes = [0u8; 32];
     let hash = Sha256::digest(user_id.as_bytes());
     key_bytes.copy_from_slice(&hash);
 
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-    let cipher = Aes256Gcm::new(key);
+    let key: Key<Aes256Gcm> = key_bytes.into();
+    let cipher = Aes256Gcm::new(&key);
 
     let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    rand::rng().fill(&mut nonce_bytes);
+    let nonce: Nonce<_> = nonce_bytes.into();
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
+        .encrypt(&nonce, plaintext.as_bytes())
         .map_err(|e| e.to_string())?;
 
     let mut combined = nonce_bytes.to_vec();
@@ -73,12 +74,12 @@ pub fn decrypt_config(encrypted: &str, user_id: &str) -> Result<String, String> 
     let hash = Sha256::digest(user_id.as_bytes());
     key_bytes.copy_from_slice(&hash);
 
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let key: Key<Aes256Gcm> = key_bytes.into();
+    let cipher = Aes256Gcm::new(&key);
+    let nonce: Nonce<_> = nonce_bytes.try_into().map_err(|_| "Invalid nonce length".to_string())?;
 
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|e| e.to_string())?;
 
     String::from_utf8(plaintext).map_err(|e| e.to_string())

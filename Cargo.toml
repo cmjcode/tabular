@@ -17,7 +17,7 @@ copyright = "Copyright © 2025 Y.N Pamungkas Jayuda"
 info = "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient."
 
 [dependencies]
-eframe = "0.35"
+eframe = "0.36"
 image = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sqlx = { version = "0.9", features = [
@@ -36,13 +36,13 @@ sqlx = { version = "0.9", features = [
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
 sqlparser = { version = "0.62", optional = true }
 sqlformat = "0.5.0"
-redis = { version = "1.5.0", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.6.0", features = ["tokio-comp", "connection-manager"] }
 bson = { version = "3", features = ["uuid-1"] }
 mongodb = { version = "3.8.0", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-egui_extras = { version = "0.35", features = ["datepicker"] }
-egui_commonmark = { version = "0.24", features = ["pulldown_cmark"] }
+egui_extras = { version = "0.36", features = ["datepicker"] }
+egui_commonmark = { version = "0.25", features = ["pulldown_cmark"] }
 # Date type consumed by egui_extras' DatePickerButton (chrono elsewhere).
 jiff = "0.2"
 colorful = "0.3.2"
@@ -52,7 +52,7 @@ dirs = "6.0"
 regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
-rust_xlsxwriter = "0.96"                           # Pure-Rust xlsx writer (no libclang/C toolchain)
+rust_xlsxwriter = "0.98"                           # Pure-Rust xlsx writer (no libclang/C toolchain)
 rfd = "0.17"                                       # For file dialog
 hex = "0.4.3"
 rust_decimal = "1.42.1"
@@ -76,7 +76,7 @@ reqwest = { version = "0.13", features = [
 semver = "1.0"
 flate2 = "1.1"
 tar = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-sequel = { version = "0.3.11", optional = true }
@@ -94,14 +94,15 @@ chacha20poly1305 = "0.11"
 
 # ─── Sync & Collaboration (optional, feature-gated) ─────────────────────────
 # CRDT engine (Yjs port for Rust)
-yrs = { version = "0.21", optional = true }
+# small-client keeps 32-bit ClientID for wire-compat with tabular-server until server is also on 0.27
+yrs = { version = "0.27", features = ["small-client"], optional = true }
 # WebSocket client for collab rooms
-tokio-tungstenite = { version = "0.26", features = ["native-tls"], optional = true }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"], optional = true }
 # AES-256-GCM encryption for connection credentials before server upload
-aes-gcm = { version = "0.10", optional = true }
-sha2 = { version = "0.10", optional = true }
-base64 = "0.22"
-rand = { version = "0.8", optional = true }
+aes-gcm = { version = "0.11", optional = true }
+sha2 = { version = "0.11", optional = true }
+base64 = "0.23"
+rand = { version = "0.10", optional = true }
 
 # OS keychain backends (see src/secrets.rs). Linux is opt-in via the
 # `linux-keyring` feature because Secret Service pulls a D-Bus build/runtime
