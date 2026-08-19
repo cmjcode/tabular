@@ -599,6 +599,14 @@ pub struct Tabular {
     pub show_yaak_import_dialog: bool,
     /// Flag: show the Postman import file-picker dialog next frame.
     pub show_postman_import_dialog: bool,
+
+    // ─── Async Startup Loaders ───────────────────────────────────────────────
+    /// Background receiver for loading saved queries from directory
+    pub queries_load_receiver: Option<std::sync::mpsc::Receiver<Vec<models::structs::TreeNode>>>,
+    /// Background receiver for decoding database icon textures
+    pub db_icons_receiver: Option<std::sync::mpsc::Receiver<(String, egui::ColorImage)>>,
+    /// Background receiver for decoding application window icon
+    pub app_icon_receiver: Option<std::sync::mpsc::Receiver<egui::IconData>>,
 }
 
 // Preference tabs enumeration

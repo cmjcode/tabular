@@ -591,6 +591,9 @@ impl super::Tabular {
             collection_expanded_folders: std::collections::HashSet::new(),
             show_yaak_import_dialog: false,
             show_postman_import_dialog: false,
+            queries_load_receiver: None,
+            db_icons_receiver: None,
+            app_icon_receiver: None,
         };
 
         // Clear any old cached pools
@@ -606,10 +609,14 @@ impl super::Tabular {
             }
         });
 
-        // Load saved queries from directory
-        crate::log_startup_step("calling sidebar_query::load_queries_from_directory(&mut app)");
-        sidebar_query::load_queries_from_directory(&mut app);
-        crate::log_startup_step("sidebar_query::load_queries_from_directory finished");
+        // Asynchronously load saved queries from directory in background thread
+        crate::log_startup_step("spawning async background thread for sidebar_query::load_queries_tree");
+        let (q_tx, q_rx) = std::sync::mpsc::channel();
+        app.queries_load_receiver = Some(q_rx);
+        std::thread::spawn(move || {
+            let tree = sidebar_query::load_queries_tree();
+            let _ = q_tx.send(tree);
+        });
 
         // Asynchronously load saved HTTP collections (Yaak imports) in background thread
         crate::log_startup_step("spawning async background thread for http_collection::load_workspaces");
@@ -618,6 +625,46 @@ impl super::Tabular {
         std::thread::spawn(move || {
             let ws = crate::http_collection::load_workspaces();
             let _ = ws_tx.send(ws);
+        });
+
+        // Asynchronously decode app window icon in background thread
+        crate::log_startup_step("spawning async background thread for modules::load_icon");
+        let (icon_tx, icon_rx) = std::sync::mpsc::channel();
+        app.app_icon_receiver = Some(icon_rx);
+        std::thread::spawn(move || {
+            if let Some(icon) = crate::modules::load_icon() {
+                let _ = icon_tx.send(icon);
+            }
+        });
+
+        // Asynchronously load and decode DB icon textures in background thread
+        crate::log_startup_step("spawning async background thread for db_icons");
+        let (icons_tx, icons_rx) = std::sync::mpsc::channel();
+        app.db_icons_receiver = Some(icons_rx);
+        std::thread::spawn(move || {
+            use models::enums::DatabaseType;
+            let types = [
+                DatabaseType::MySQL,
+                DatabaseType::PostgreSQL,
+                DatabaseType::SQLite,
+                DatabaseType::Redis,
+                DatabaseType::MsSQL,
+                DatabaseType::MongoDB,
+                DatabaseType::ApiHttp,
+            ];
+            for db_type in &types {
+                let key = db_type.icon_key();
+                let path = format!("assets/db_icons/{}.png", key);
+                if let Ok(bytes) = std::fs::read(&path)
+                    && let Ok(img) = image::load_from_memory(&bytes) {
+                        let rgba = img.to_rgba8();
+                        let size = [img.width() as usize, img.height() as usize];
+                        let pixels = rgba.as_flat_samples();
+                        let color_image =
+                            egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                        let _ = icons_tx.send((key.to_string(), color_image));
+                    }
+            }
         });
 
         // Create initial query tab

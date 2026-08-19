@@ -36,14 +36,12 @@ fn parse_query_metadata(content: &str) -> QueryMetadata {
     meta
 }
 
-pub(crate) fn load_queries_from_directory(tabular: &mut window_egui::Tabular) {
-    tabular.queries_tree.clear();
-
+pub(crate) fn load_queries_tree() -> Vec<models::structs::TreeNode> {
     let query_dir = directory::get_query_dir();
-    tabular.queries_tree = directory::load_directory_recursive(&query_dir);
+    let mut tree = directory::load_directory_recursive(&query_dir);
 
     // Sort folders and files alphabetically
-    tabular.queries_tree.sort_by(|a, b| {
+    tree.sort_by(|a, b| {
         match (&a.node_type, &b.node_type) {
             (models::enums::NodeType::QueryFolder, models::enums::NodeType::Query) => {
                 std::cmp::Ordering::Less
@@ -54,6 +52,12 @@ pub(crate) fn load_queries_from_directory(tabular: &mut window_egui::Tabular) {
             _ => a.name.cmp(&b.name), // Alphabetical within same type
         }
     });
+
+    tree
+}
+
+pub(crate) fn load_queries_from_directory(tabular: &mut window_egui::Tabular) {
+    tabular.queries_tree = load_queries_tree();
 
     if !tabular.database_search_text.trim().is_empty() {
         filter_queries_tree(tabular);

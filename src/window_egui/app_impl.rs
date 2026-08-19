@@ -3320,8 +3320,43 @@ impl App for Tabular {
             }
         }
 
-        // Load DB-type PNG icons once from assets/db_icons/ if files are present
-        self.load_db_icon_textures(ctx);
+        // Drain background queries tree loading receiver
+        if let Some(ref rx) = self.queries_load_receiver {
+            if let Ok(tree) = rx.try_recv() {
+                self.queries_tree = tree;
+                self.queries_load_receiver = None;
+                if !self.database_search_text.trim().is_empty() {
+                    sidebar_query::filter_queries_tree(self);
+                }
+                crate::log_startup_step("async background loading of queries_tree completed");
+            }
+        }
+
+        // Drain background DB icon textures receiver
+        if let Some(ref rx) = self.db_icons_receiver {
+            let mut count = 0;
+            while let Ok((key, color_image)) = rx.try_recv() {
+                let handle = ctx.load_texture(&key, color_image, Default::default());
+                self.db_icon_textures.insert(key, handle);
+                count += 1;
+            }
+            if self.db_icon_textures.len() >= 7 {
+                self.db_icons_receiver = None;
+                crate::log_startup_step("async background loading of db_icons completed");
+            } else if count > 0 {
+                ctx.request_repaint();
+            }
+        }
+
+        // Drain background application window icon receiver
+        if let Some(ref rx) = self.app_icon_receiver {
+            if let Ok(icon) = rx.try_recv() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(icon))));
+                self.app_icon_receiver = None;
+                crate::log_startup_step("async background setting of app_icon completed");
+            }
+        }
+
         // Drive sync & collaboration tick
         self.tick_sync(ctx);
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)
@@ -3340,7 +3375,13 @@ impl App for Tabular {
         // egui only repaints on input, so without this the "Connecting… (Ns)"
         // counter would sit frozen and look exactly like the hang it is meant to
         // rule out. Also keeps the watchdog above ticking while the app is idle.
-        if !self.pending_connection_pools.is_empty() || self.db_init_receiver.is_some() || self.workspaces_load_receiver.is_some() {
+        if !self.pending_connection_pools.is_empty()
+            || self.db_init_receiver.is_some()
+            || self.workspaces_load_receiver.is_some()
+            || self.queries_load_receiver.is_some()
+            || self.db_icons_receiver.is_some()
+            || self.app_icon_receiver.is_some()
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
