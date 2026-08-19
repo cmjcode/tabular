@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.11.0"
+version = "0.11.1"
 edition = "2024"
 
 [lib]
@@ -61,7 +61,11 @@ env_logger = "0.11"
 dotenv = "0.15.0"
 md5 = "0.8"
 # Pinned exact: pre-1.0 API moves between minors (replaces tiberius + deadpool-tiberius)
-mssql-client = { version = ">=0.20.0", features = ["chrono", "decimal", "uuid"] }
+mssql-client = { version = ">=0.20.0", features = [
+       "chrono",
+       "decimal",
+       "uuid",
+] }
 mssql-driver-pool = ">=0.20.0"
 futures-util = "0.3"
 # Self-update dependencies
@@ -97,7 +101,9 @@ chacha20poly1305 = "0.11"
 # small-client keeps 32-bit ClientID for wire-compat with tabular-server until server is also on 0.27
 yrs = { version = "0.27", features = ["small-client"], optional = true }
 # WebSocket client for collab rooms
-tokio-tungstenite = { version = "0.30", features = ["native-tls"], optional = true }
+tokio-tungstenite = { version = "0.30", features = [
+       "native-tls",
+], optional = true }
 # AES-256-GCM encryption for connection credentials before server upload
 aes-gcm = { version = "0.11", optional = true }
 sha2 = { version = "0.11", optional = true }
@@ -132,7 +138,13 @@ query_ast = ["sqlparser"]
 sqlparser = ["dep:sqlparser"]
 
 # Enable real-time collaboration and cloud sync features
-collab = ["dep:yrs", "dep:tokio-tungstenite", "dep:aes-gcm", "dep:sha2", "dep:rand"]
+collab = [
+       "dep:yrs",
+       "dep:tokio-tungstenite",
+       "dep:aes-gcm",
+       "dep:sha2",
+       "dep:rand",
+]
 
 # removed lapce_core in egui-only mode
 

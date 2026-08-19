@@ -196,6 +196,13 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     }
 
     // ── 2. Yaak Workspaces / Collections section ──────────────────────────
+    // Active DnD source for HTTP requests or folders
+    let active_dnd_source = ui
+        .ctx()
+        .data(|d| d.get_temp::<HttpDndSource>(egui::Id::new("http_dnd_source")))
+        .filter(|s| !matches!(s, HttpDndSource::None));
+    let is_dnd_active = active_dnd_source.is_some();
+
     // Collect workspace ids to avoid borrow issues
     let ws_ids: Vec<String> = app.yaak_workspaces.iter().map(|w| w.id.clone()).collect();
 
@@ -203,6 +210,8 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     let mut req_action: Option<(SavedRequest, RequestAction)> = None;
     let mut ws_to_delete: Option<String> = None;
     let mut folder_to_delete: Option<(String, String, String)> = None;
+    let mut folder_to_create: Option<(String, Option<String>, String)> = None;
+    let mut folder_to_rename: Option<(String, String, String)> = None;
     let mut new_req_target: Option<(String, Option<String>, String)> = None;
 
     for ws_id in &ws_ids {
@@ -250,7 +259,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 {
                     continue;
                 }
-                if let Some(act) = render_request_row(ui, &req, accent) {
+                if let Some(act) = render_request_row(ui, ws_id, &req, accent, active_dnd_source.as_ref()) {
                     req_action = Some((req, act));
                 }
             }
@@ -281,19 +290,72 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     &folder,
                     &filter,
                     accent,
+                    active_dnd_source.as_ref(),
                     &mut req_action,
                     &mut new_req_target,
+                    &mut folder_to_create,
+                    &mut folder_to_rename,
                     &mut folder_to_delete,
                 );
             }
         });
 
+        // Drop target check for workspace root
+        if is_dnd_active {
+            let row_rect = ws_header_resp.header_response.rect;
+            let ptr_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+            let pointer_over = ptr_pos.is_some_and(|p| {
+                p.y >= row_rect.min.y
+                    && p.y <= row_rect.max.y
+                    && p.x >= ui.clip_rect().min.x
+                    && p.x <= ui.clip_rect().max.x
+            });
+
+            if pointer_over {
+                let clip = ui.clip_rect();
+                let highlight_rect = egui::Rect::from_min_max(
+                    egui::pos2(clip.min.x, row_rect.min.y - 1.0),
+                    egui::pos2(clip.max.x, row_rect.max.y + 1.0),
+                );
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("http_dnd_highlight"),
+                ));
+                painter.rect_filled(
+                    highlight_rect,
+                    2.0,
+                    egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 35),
+                );
+                painter.rect_stroke(
+                    highlight_rect,
+                    2.0,
+                    egui::Stroke::new(2.0, accent),
+                    egui::StrokeKind::Outside,
+                );
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new("http_dnd_pending_target"),
+                        HttpDndTarget::Workspace {
+                            ws_id: ws_id.clone(),
+                            ws_name: ws_name.clone(),
+                        },
+                    );
+                });
+                ui.ctx().request_repaint();
+            }
+        }
+
         ws_header_resp.header_response.context_menu(|ui| {
-            if ui.button("Add New Http").clicked() {
+            if ui.button("➕ Add New Http").clicked() {
                 new_req_target = Some((ws_id.clone(), None, ws_name.clone()));
                 ui.close();
             }
-            if ui.button("Delete Workspace").clicked() {
+            if ui.button("📁 Add New Folder").clicked() {
+                folder_to_create = Some((ws_id.clone(), None, ws_name.clone()));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("🗑 Delete Workspace").clicked() {
                 ws_to_delete = Some(ws_id.clone());
                 ui.close();
             }
@@ -344,6 +406,12 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     if let Some((ws_id, folder_id, folder_name)) = folder_to_delete {
         app.pending_delete_http_folder = Some((ws_id, folder_id, folder_name));
     }
+    if let Some((ws_id, parent_id_opt, parent_name)) = folder_to_create {
+        app.pending_create_http_folder = Some((ws_id, parent_id_opt, parent_name, String::new()));
+    }
+    if let Some((ws_id, folder_id, folder_name)) = folder_to_rename {
+        app.pending_rename_http_folder = Some((ws_id, folder_id, folder_name.clone(), folder_name));
+    }
     if let Some(ws_id) = ws_to_delete {
         let ws_name = app
             .yaak_workspaces
@@ -391,6 +459,155 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             apply_collection_request_to_active_tab(app, &new_req);
             app.toasts
                 .success(format!("Added new HTTP request to '{}'", parent_name));
+        }
+    }
+
+    // Floating ghost badge while dragging
+    if let Some(ref source) = active_dnd_source {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+            let badge_text = match source {
+                HttpDndSource::Request { req_name, .. } => format!("📄 {}", req_name),
+                HttpDndSource::Folder { folder_name, .. } => format!("📁 {}", folder_name),
+                HttpDndSource::None => String::new(),
+            };
+            if !badge_text.is_empty() {
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    egui::Id::new("http_dnd_badge"),
+                ));
+                let font_id = egui::FontId::proportional(12.0);
+                let galley = painter.layout_no_wrap(badge_text, font_id, ui.visuals().text_color());
+                let badge_rect = egui::Rect::from_min_size(
+                    pos + egui::vec2(12.0, -10.0),
+                    galley.size() + egui::vec2(12.0, 8.0),
+                );
+                painter.rect_filled(
+                    badge_rect,
+                    4.0,
+                    if ui.visuals().dark_mode {
+                        egui::Color32::from_rgb(35, 38, 48)
+                    } else {
+                        egui::Color32::from_rgb(240, 243, 248)
+                    },
+                );
+                painter.rect_stroke(
+                    badge_rect,
+                    4.0,
+                    egui::Stroke::new(1.0, accent),
+                    egui::StrokeKind::Outside,
+                );
+                painter.galley(
+                    badge_rect.min + egui::vec2(6.0, 4.0),
+                    galley,
+                    ui.visuals().text_color(),
+                );
+            }
+        }
+    }
+
+    if pointer_released {
+        app.dragged_http_conn_id = None;
+
+        let pending_target = ui
+            .ctx()
+            .data(|d| d.get_temp::<HttpDndTarget>(egui::Id::new("http_dnd_pending_target")))
+            .filter(|t| !matches!(t, HttpDndTarget::None));
+
+        if let (Some(src), Some(target)) = (active_dnd_source, pending_target) {
+            match src {
+                HttpDndSource::Request {
+                    req_id,
+                    req_name,
+                    ..
+                } => match target {
+                    HttpDndTarget::Workspace { ws_id, ws_name } => {
+                        if crate::http_collection::move_request(
+                            &mut app.yaak_workspaces,
+                            &req_id,
+                            &ws_id,
+                            None,
+                        ) {
+                            app.toasts.success(format!(
+                                "Moved request '{}' to workspace '{}'",
+                                req_name, ws_name
+                            ));
+                        }
+                    }
+                    HttpDndTarget::Folder {
+                        ws_id,
+                        folder_id,
+                        folder_name,
+                    } => {
+                        if crate::http_collection::move_request(
+                            &mut app.yaak_workspaces,
+                            &req_id,
+                            &ws_id,
+                            Some(&folder_id),
+                        ) {
+                            app.toasts.success(format!(
+                                "Moved request '{}' to folder '{}'",
+                                req_name, folder_name
+                            ));
+                        }
+                    }
+                    HttpDndTarget::None => {}
+                },
+                HttpDndSource::Folder {
+                    folder_id,
+                    folder_name,
+                    ..
+                } => match target {
+                    HttpDndTarget::Workspace { ws_id, ws_name } => {
+                        if crate::http_collection::move_folder(
+                            &mut app.yaak_workspaces,
+                            &folder_id,
+                            &ws_id,
+                            None,
+                        ) {
+                            app.toasts.success(format!(
+                                "Moved folder '{}' to workspace '{}'",
+                                folder_name, ws_name
+                            ));
+                        }
+                    }
+                    HttpDndTarget::Folder {
+                        ws_id,
+                        folder_id: target_folder_id,
+                        folder_name: target_folder_name,
+                    } => {
+                        if crate::http_collection::move_folder(
+                            &mut app.yaak_workspaces,
+                            &folder_id,
+                            &ws_id,
+                            Some(&target_folder_id),
+                        ) {
+                            app.toasts.success(format!(
+                                "Moved folder '{}' into '{}'",
+                                folder_name, target_folder_name
+                            ));
+                        }
+                    }
+                    HttpDndTarget::None => {}
+                },
+                HttpDndSource::None => {}
+            }
+        }
+
+        ui.ctx().data_mut(|d| {
+            d.remove_temp::<HttpDndSource>(egui::Id::new("http_dnd_source"));
+            d.remove_temp::<HttpDndTarget>(egui::Id::new("http_dnd_pending_target"));
+        });
+    }
+
+    if let Some((src_id, target_id)) = conn_to_reorder {
+        if let (Some(src_idx), Some(target_idx)) = (
+            app.connections.iter().position(|c| c.id == Some(src_id)),
+            app.connections.iter().position(|c| c.id == Some(target_id)),
+        ) {
+            let item = app.connections.remove(src_idx);
+            app.connections.insert(target_idx, item);
+            app.toasts.info("Reordered HTTP connection");
         }
     }
 }
@@ -537,6 +754,37 @@ fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
 
 // ─── Tree rendering helpers ───────────────────────────────────────────────────
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum HttpDndSource {
+    #[default]
+    None,
+    Request {
+        req_id: String,
+        req_name: String,
+        from_ws_id: String,
+    },
+    Folder {
+        folder_id: String,
+        folder_name: String,
+        from_ws_id: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum HttpDndTarget {
+    #[default]
+    None,
+    Workspace {
+        ws_id: String,
+        ws_name: String,
+    },
+    Folder {
+        ws_id: String,
+        folder_id: String,
+        folder_name: String,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestAction {
     Open,
@@ -545,14 +793,26 @@ pub enum RequestAction {
     Duplicate,
 }
 
+fn is_descendant_folder(folder: &crate::http_collection::HttpFolder, target_id: &str) -> bool {
+    for child in &folder.children {
+        if child.id == target_id || is_descendant_folder(child, target_id) {
+            return true;
+        }
+    }
+    false
+}
+
 fn render_folder_node(
     ui: &mut egui::Ui,
     ws_id: &str,
     folder: &crate::http_collection::HttpFolder,
     filter: &str,
     accent: egui::Color32,
+    active_dnd_source: Option<&HttpDndSource>,
     req_action_out: &mut Option<(SavedRequest, RequestAction)>,
     new_req_target: &mut Option<(String, Option<String>, String)>,
+    folder_to_create: &mut Option<(String, Option<String>, String)>,
+    folder_to_rename: &mut Option<(String, String, String)>,
     folder_to_delete: &mut Option<(String, String, String)>,
 ) {
     let folder_resp =
@@ -566,7 +826,7 @@ fn render_folder_node(
                     {
                         continue;
                     }
-                    if let Some(act) = render_request_row(ui, req, accent) {
+                    if let Some(act) = render_request_row(ui, ws_id, req, accent, active_dnd_source) {
                         *req_action_out = Some((req.clone(), act));
                     }
                 }
@@ -580,15 +840,90 @@ fn render_folder_node(
                         child,
                         filter,
                         accent,
+                        active_dnd_source,
                         req_action_out,
                         new_req_target,
+                        folder_to_create,
+                        folder_to_rename,
                         folder_to_delete,
                     );
                 }
             });
 
+    let folder_row_rect = folder_resp.header_response.rect;
+    let folder_interact_id = egui::Id::new("folder_dnd").with(&folder.id);
+    let folder_interact =
+        ui.interact(folder_row_rect, folder_interact_id, egui::Sense::click_and_drag());
+
+    if folder_interact.drag_started() {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("http_dnd_source"),
+                HttpDndSource::Folder {
+                    folder_id: folder.id.clone(),
+                    folder_name: folder.name.clone(),
+                    from_ws_id: ws_id.to_string(),
+                },
+            );
+        });
+    }
+
+    if let Some(src) = active_dnd_source {
+        let ptr_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+        let pointer_over = ptr_pos.is_some_and(|p| {
+            p.y >= folder_row_rect.min.y
+                && p.y <= folder_row_rect.max.y
+                && p.x >= ui.clip_rect().min.x
+                && p.x <= ui.clip_rect().max.x
+        });
+
+        if pointer_over {
+            let is_valid = match src {
+                HttpDndSource::Request { .. } => true,
+                HttpDndSource::Folder {
+                    folder_id: src_fid, ..
+                } => src_fid != &folder.id && !is_descendant_folder(folder, src_fid),
+                HttpDndSource::None => false,
+            };
+
+            if is_valid {
+                let clip = ui.clip_rect();
+                let highlight_rect = egui::Rect::from_min_max(
+                    egui::pos2(clip.min.x, folder_row_rect.min.y - 1.0),
+                    egui::pos2(clip.max.x, folder_row_rect.max.y + 1.0),
+                );
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("http_dnd_highlight"),
+                ));
+                painter.rect_filled(
+                    highlight_rect,
+                    2.0,
+                    egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 35),
+                );
+                painter.rect_stroke(
+                    highlight_rect,
+                    2.0,
+                    egui::Stroke::new(2.0, accent),
+                    egui::StrokeKind::Outside,
+                );
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new("http_dnd_pending_target"),
+                        HttpDndTarget::Folder {
+                            ws_id: ws_id.to_string(),
+                            folder_id: folder.id.clone(),
+                            folder_name: folder.name.clone(),
+                        },
+                    );
+                });
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
     folder_resp.header_response.context_menu(|ui| {
-        if ui.button("Add New Http").clicked() {
+        if ui.button("➕ Add New Http").clicked() {
             *new_req_target = Some((
                 ws_id.to_string(),
                 Some(folder.id.clone()),
@@ -596,7 +931,24 @@ fn render_folder_node(
             ));
             ui.close();
         }
-        if ui.button("Delete Folder").clicked() {
+        if ui.button("📁 Add New Subfolder").clicked() {
+            *folder_to_create = Some((
+                ws_id.to_string(),
+                Some(folder.id.clone()),
+                folder.name.clone(),
+            ));
+            ui.close();
+        }
+        if ui.button("✏️ Rename Folder").clicked() {
+            *folder_to_rename = Some((
+                ws_id.to_string(),
+                folder.id.clone(),
+                folder.name.clone(),
+            ));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("🗑 Delete Folder").clicked() {
             *folder_to_delete = Some((ws_id.to_string(), folder.id.clone(), folder.name.clone()));
             ui.close();
         }
@@ -606,12 +958,18 @@ fn render_folder_node(
 /// Render a single saved-request row. Returns Some(RequestAction) if the user interacted with it.
 fn render_request_row(
     ui: &mut egui::Ui,
+    ws_id: &str,
     req: &SavedRequest,
-    _accent: egui::Color32,
+    accent: egui::Color32,
+    active_dnd_source: Option<&HttpDndSource>,
 ) -> Option<RequestAction> {
     let method_color = method_color_for(req.method.label());
     let mut action = None;
     let display_name = req.display_name();
+
+    let is_being_dragged = active_dnd_source.is_some_and(|src| {
+        matches!(src, HttpDndSource::Request { req_id, .. } if req_id == &req.id)
+    });
 
     let inner_resp = ui.horizontal(|ui| {
         ui.add_space(4.0);
@@ -623,21 +981,41 @@ fn render_request_row(
                 .small()
                 .strong(),
         );
-        // Request name or endpoint URL, clickable
+        // Request name or endpoint URL, clickable and draggable
         let mut lbl = ui.add(
             egui::Label::new(
                 egui::RichText::new(&display_name)
                     .small()
-                    .color(ui.style().visuals.text_color()),
+                    .color(if is_being_dragged {
+                        accent
+                    } else {
+                        ui.style().visuals.text_color()
+                    }),
             )
-            .sense(egui::Sense::click())
+            .sense(egui::Sense::click_and_drag())
             .truncate(),
         );
         if lbl.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.ctx().set_cursor_icon(if is_being_dragged {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::PointingHand
+            });
         }
         lbl = lbl.on_hover_text(&req.url);
-        if lbl.clicked() {
+        if lbl.drag_started() {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(
+                    egui::Id::new("http_dnd_source"),
+                    HttpDndSource::Request {
+                        req_id: req.id.clone(),
+                        req_name: display_name.clone(),
+                        from_ws_id: ws_id.to_string(),
+                    },
+                );
+            });
+        }
+        if lbl.clicked() && !is_being_dragged {
             action = Some(RequestAction::Open);
         }
         lbl
@@ -646,9 +1024,25 @@ fn render_request_row(
     let row_rect = inner_resp.response.rect;
     let label_response = inner_resp.inner;
     let row_id = egui::Id::new("http_req_row").with(&req.id);
-    let row_interact = ui.interact(row_rect, row_id, egui::Sense::click());
+    let row_interact = ui.interact(row_rect, row_id, egui::Sense::click_and_drag());
 
-    if (label_response.clicked() || row_interact.clicked()) && action.is_none() {
+    if row_interact.drag_started() {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("http_dnd_source"),
+                HttpDndSource::Request {
+                    req_id: req.id.clone(),
+                    req_name: display_name.clone(),
+                    from_ws_id: ws_id.to_string(),
+                },
+            );
+        });
+    }
+
+    if (label_response.clicked() || row_interact.clicked())
+        && action.is_none()
+        && !is_being_dragged
+    {
         action = Some(RequestAction::Open);
     }
 

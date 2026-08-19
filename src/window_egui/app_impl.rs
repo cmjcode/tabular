@@ -1631,7 +1631,16 @@ impl Tabular {
                                         ui.menu_button(
                                             egui::RichText::new("➕").color(egui::Color32::WHITE),
                                             |ui| {
-                                                ui.set_min_width(140.0);
+                                                ui.set_min_width(160.0);
+                                                if ui.button("📁 Add New Collection").clicked() {
+                                                    self.pending_create_http_workspace = Some(String::new());
+                                                    ui.close();
+                                                }
+                                                if ui.button("🌐 Add New Connection").clicked() {
+                                                    editor::create_new_http_tab(self, "New HTTP Connection".to_string(), None);
+                                                    ui.close();
+                                                }
+                                                ui.separator();
                                                 if ui.button("⬇ Import Yaak").clicked() {
                                                     self.show_yaak_import_dialog = true;
                                                     ui.close();
@@ -1640,12 +1649,8 @@ impl Tabular {
                                                     self.show_postman_import_dialog = true;
                                                     ui.close();
                                                 }
-                                                if ui.button("🌐 Add New Connection").clicked() {
-                                                    editor::create_new_http_tab(self, "New HTTP Connection".to_string(), None);
-                                                    ui.close();
-                                                }
                                             },
-                                        ).response.on_hover_text("Import Yaak/Postman or Add New Connection");
+                                        ).response.on_hover_text("Add Collection/Connection or Import Yaak/Postman");
                                     }
                                     _ => {}
                                 }
@@ -2724,6 +2729,9 @@ impl Tabular {
                     self.render_delete_http_request_confirmation(ui.ctx());
                     self.render_rename_http_request_dialog(ui.ctx());
                     self.render_delete_http_folder_confirmation(ui.ctx());
+                    self.render_create_http_folder_dialog(ui.ctx());
+                    self.render_rename_http_folder_dialog(ui.ctx());
+                    self.render_create_http_workspace_dialog(ui.ctx());
                     self.render_delete_http_workspace_confirmation(ui.ctx());
 
                     // Render context menu for row operations

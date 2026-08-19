@@ -1821,5 +1821,235 @@ impl super::Tabular {
             }
         }
     }
+
+    pub fn render_create_http_folder_dialog(&mut self, ctx: &egui::Context) {
+        if let Some((ws_id, parent_id_opt, parent_name, mut folder_name)) =
+            self.pending_create_http_folder.clone()
+        {
+            let mut close_dialog = false;
+            let mut confirm_create = false;
+
+            let is_subfolder = parent_id_opt.is_some();
+            let title = if is_subfolder {
+                format!("📁 Add New Subfolder in '{}'", parent_name)
+            } else {
+                format!("📁 Add New Folder in '{}'", parent_name)
+            };
+
+            egui::Window::new(title)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(380.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        let heading_label = if is_subfolder {
+                            "📁 Create Subfolder"
+                        } else {
+                            "📁 Create Folder"
+                        };
+                        ui.label(egui::RichText::new(heading_label).strong());
+                        ui.add_space(8.0);
+                        ui.label(format!("Parent: {}", parent_name));
+                        ui.add_space(6.0);
+                        ui.label("Folder Name:");
+                        ui.add_space(2.0);
+                        let text_edit = ui.add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::TextEdit::singleline(&mut folder_name)
+                                .hint_text("Enter folder name"),
+                        );
+                        if text_edit.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            confirm_create = true;
+                            close_dialog = true;
+                        }
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Create").clicked() {
+                                        confirm_create = true;
+                                        close_dialog = true;
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        close_dialog = true;
+                                    }
+                                },
+                            );
+                        });
+                    });
+                });
+
+            if confirm_create {
+                let trimmed = folder_name.trim();
+                if !trimmed.is_empty() {
+                    if let Some(_) = crate::http_collection::create_folder_in_workspace(
+                        &mut self.yaak_workspaces,
+                        &ws_id,
+                        parent_id_opt.as_deref(),
+                        trimmed,
+                    ) {
+                        self.toasts
+                            .success(format!("Created folder '{}'", trimmed));
+                    } else {
+                        self.toasts.error("Failed to create folder");
+                    }
+                }
+            } else if !close_dialog {
+                self.pending_create_http_folder =
+                    Some((ws_id, parent_id_opt, parent_name, folder_name));
+            }
+
+            if close_dialog {
+                self.pending_create_http_folder = None;
+            }
+        }
+    }
+
+    pub fn render_rename_http_folder_dialog(&mut self, ctx: &egui::Context) {
+        if let Some((ws_id, folder_id, current_name, mut edit_name)) =
+            self.pending_rename_http_folder.clone()
+        {
+            let mut close_dialog = false;
+            let mut confirm_rename = false;
+
+            egui::Window::new("Rename HTTP Folder")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(380.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("✏️ Rename Folder").strong());
+                        ui.add_space(8.0);
+                        ui.label("Folder Name:");
+                        ui.add_space(2.0);
+                        let text_edit = ui.add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::TextEdit::singleline(&mut edit_name)
+                                .hint_text("Enter new folder name"),
+                        );
+                        if text_edit.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            confirm_rename = true;
+                            close_dialog = true;
+                        }
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Save").clicked() {
+                                        confirm_rename = true;
+                                        close_dialog = true;
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        close_dialog = true;
+                                    }
+                                },
+                            );
+                        });
+                    });
+                });
+
+            if confirm_rename {
+                let trimmed = edit_name.trim();
+                if !trimmed.is_empty() {
+                    if crate::http_collection::rename_folder_in_workspaces(
+                        &mut self.yaak_workspaces,
+                        &ws_id,
+                        &folder_id,
+                        trimmed,
+                    ) {
+                        self.toasts
+                            .success(format!("Renamed folder to '{}'", trimmed));
+                    }
+                }
+            } else if !close_dialog {
+                self.pending_rename_http_folder =
+                    Some((ws_id, folder_id, current_name, edit_name));
+            }
+
+            if close_dialog {
+                self.pending_rename_http_folder = None;
+            }
+        }
+    }
+
+    pub fn render_create_http_workspace_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(mut ws_name) = self.pending_create_http_workspace.clone() {
+            let mut close_dialog = false;
+            let mut confirm_create = false;
+
+            egui::Window::new("Create New HTTP Collection")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(380.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("📁 Create New Collection (Workspace)")
+                                .strong(),
+                        );
+                        ui.add_space(8.0);
+                        ui.label("Collection Name:");
+                        ui.add_space(2.0);
+                        let text_edit = ui.add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::TextEdit::singleline(&mut ws_name)
+                                .hint_text("Enter collection name"),
+                        );
+                        if text_edit.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            confirm_create = true;
+                            close_dialog = true;
+                        }
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Create").clicked() {
+                                        confirm_create = true;
+                                        close_dialog = true;
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        close_dialog = true;
+                                    }
+                                },
+                            );
+                        });
+                    });
+                });
+
+            if confirm_create {
+                let trimmed = ws_name.trim();
+                if !trimmed.is_empty() {
+                    let new_ws = crate::http_collection::create_workspace(
+                        &mut self.yaak_workspaces,
+                        trimmed,
+                    );
+                    self.toasts
+                        .success(format!("Created collection '{}'", new_ws.name));
+                }
+            } else if !close_dialog {
+                self.pending_create_http_workspace = Some(ws_name);
+            }
+
+            if close_dialog {
+                self.pending_create_http_workspace = None;
+            }
+        }
+    }
 }
+
 

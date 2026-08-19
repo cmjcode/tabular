@@ -220,6 +220,284 @@ pub fn delete_workspace(workspace_id: &str) {
     let _ = std::fs::remove_file(path);
 }
 
+static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn unique_id(prefix: &str) -> String {
+    let count = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}_{}_{}", prefix, chrono::Utc::now().timestamp_millis(), count)
+}
+
+/// Create a new workspace/collection, persist it, and return the new workspace.
+pub fn create_workspace(workspaces: &mut Vec<HttpWorkspace>, ws_name: &str) -> HttpWorkspace {
+    let ws_id = unique_id("ws");
+    let new_ws = HttpWorkspace {
+        id: ws_id,
+        name: ws_name.trim().to_string(),
+        requests: Vec::new(),
+        folders: Vec::new(),
+        environments: Vec::new(),
+    };
+    workspaces.push(new_ws.clone());
+    save_workspaces(workspaces);
+    new_ws
+}
+
+/// Add a new folder or subfolder inside a workspace.
+pub fn create_folder_in_workspace(
+    workspaces: &mut [HttpWorkspace],
+    ws_id: &str,
+    parent_folder_id: Option<&str>,
+    folder_name: &str,
+) -> Option<HttpFolder> {
+    let new_id = unique_id("fld");
+    let new_folder = HttpFolder {
+        id: new_id,
+        name: folder_name.trim().to_string(),
+        parent_folder_id: parent_folder_id.map(|s| s.to_string()),
+        requests: Vec::new(),
+        children: Vec::new(),
+    };
+
+    let ws = workspaces.iter_mut().find(|w| w.id == ws_id)?;
+
+    if let Some(p_id) = parent_folder_id {
+        fn insert_into_folder(
+            folders: &mut [HttpFolder],
+            target_id: &str,
+            folder_to_insert: HttpFolder,
+        ) -> bool {
+            for f in folders.iter_mut() {
+                if f.id == target_id {
+                    f.children.push(folder_to_insert);
+                    return true;
+                }
+                if insert_into_folder(&mut f.children, target_id, folder_to_insert.clone()) {
+                    return true;
+                }
+            }
+            false
+        }
+        if !insert_into_folder(&mut ws.folders, p_id, new_folder.clone()) {
+            return None;
+        }
+    } else {
+        ws.folders.push(new_folder.clone());
+    }
+
+    save_workspaces(workspaces);
+    Some(new_folder)
+}
+
+/// Rename an existing folder inside a workspace.
+pub fn rename_folder_in_workspaces(
+    workspaces: &mut [HttpWorkspace],
+    ws_id: &str,
+    folder_id: &str,
+    new_name: &str,
+) -> bool {
+    let Some(ws) = workspaces.iter_mut().find(|w| w.id == ws_id) else {
+        return false;
+    };
+
+    fn rename_in_tree(folders: &mut [HttpFolder], folder_id: &str, new_name: &str) -> bool {
+        for f in folders.iter_mut() {
+            if f.id == folder_id {
+                f.name = new_name.trim().to_string();
+                return true;
+            }
+            if rename_in_tree(&mut f.children, folder_id, new_name) {
+                return true;
+            }
+        }
+        false
+    }
+
+    if rename_in_tree(&mut ws.folders, folder_id, new_name) {
+        save_workspaces(workspaces);
+        true
+    } else {
+        false
+    }
+}
+
+/// Move a saved request to a new parent folder or workspace root.
+pub fn move_request(
+    workspaces: &mut [HttpWorkspace],
+    req_id: &str,
+    target_ws_id: &str,
+    target_folder_id: Option<&str>,
+) -> bool {
+    let mut found_req = None;
+
+    fn extract_from_folders(folders: &mut [HttpFolder], req_id: &str) -> Option<SavedRequest> {
+        for f in folders.iter_mut() {
+            if let Some(pos) = f.requests.iter().position(|r| r.id == req_id) {
+                return Some(f.requests.remove(pos));
+            }
+            if let Some(r) = extract_from_folders(&mut f.children, req_id) {
+                return Some(r);
+            }
+        }
+        None
+    }
+
+    for ws in workspaces.iter_mut() {
+        if let Some(pos) = ws.requests.iter().position(|r| r.id == req_id) {
+            found_req = Some(ws.requests.remove(pos));
+            break;
+        }
+        if let Some(r) = extract_from_folders(&mut ws.folders, req_id) {
+            found_req = Some(r);
+            break;
+        }
+    }
+
+    let Some(mut req) = found_req else {
+        return false;
+    };
+
+    req.workspace_id = target_ws_id.to_string();
+    req.folder_id = target_folder_id.map(|s| s.to_string());
+
+    let Some(target_ws) = workspaces.iter_mut().find(|w| w.id == target_ws_id) else {
+        return false;
+    };
+
+    if let Some(tf_id) = target_folder_id {
+        fn insert_into_folder(folders: &mut [HttpFolder], target_id: &str, req: SavedRequest) -> bool {
+            for f in folders.iter_mut() {
+                if f.id == target_id {
+                    f.requests.push(req);
+                    return true;
+                }
+                if insert_into_folder(&mut f.children, target_id, req.clone()) {
+                    return true;
+                }
+            }
+            false
+        }
+        if !insert_into_folder(&mut target_ws.folders, tf_id, req) {
+            return false;
+        }
+    } else {
+        target_ws.requests.push(req);
+    }
+
+    save_workspaces(workspaces);
+    true
+}
+
+/// Move an HTTP folder to another folder (as a subfolder) or to the workspace root.
+/// Returns false if target parent folder is invalid (e.g. self or a descendant of folder_id).
+pub fn move_folder(
+    workspaces: &mut [HttpWorkspace],
+    folder_id: &str,
+    target_ws_id: &str,
+    target_parent_folder_id: Option<&str>,
+) -> bool {
+    // Prevent moving into itself
+    if target_parent_folder_id == Some(folder_id) {
+        return false;
+    }
+
+    // Check if target_parent_folder_id is a descendant of folder_id
+    fn is_descendant(folders: &[HttpFolder], root_id: &str, target_id: &str) -> bool {
+        for f in folders {
+            if f.id == root_id {
+                return contains_folder(&f.children, target_id);
+            }
+            if is_descendant(&f.children, root_id, target_id) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn contains_folder(folders: &[HttpFolder], target_id: &str) -> bool {
+        for f in folders {
+            if f.id == target_id || contains_folder(&f.children, target_id) {
+                return true;
+            }
+        }
+        false
+    }
+
+    if let Some(t_parent_id) = target_parent_folder_id {
+        for ws in workspaces.iter() {
+            if is_descendant(&ws.folders, folder_id, t_parent_id) {
+                return false;
+            }
+        }
+    }
+
+    // Extract folder from its current location
+    let mut found_folder = None;
+
+    fn extract_folder(folders: &mut Vec<HttpFolder>, folder_id: &str) -> Option<HttpFolder> {
+        if let Some(pos) = folders.iter().position(|f| f.id == folder_id) {
+            return Some(folders.remove(pos));
+        }
+        for f in folders.iter_mut() {
+            if let Some(extracted) = extract_folder(&mut f.children, folder_id) {
+                return Some(extracted);
+            }
+        }
+        None
+    }
+
+    for ws in workspaces.iter_mut() {
+        if let Some(extracted) = extract_folder(&mut ws.folders, folder_id) {
+            found_folder = Some(extracted);
+            break;
+        }
+    }
+
+    let Some(mut folder) = found_folder else {
+        return false;
+    };
+
+    folder.parent_folder_id = target_parent_folder_id.map(|s| s.to_string());
+
+    fn update_ws_id_recursive(folder: &mut HttpFolder, new_ws_id: &str) {
+        for req in &mut folder.requests {
+            req.workspace_id = new_ws_id.to_string();
+        }
+        for child in &mut folder.children {
+            update_ws_id_recursive(child, new_ws_id);
+        }
+    }
+    update_ws_id_recursive(&mut folder, target_ws_id);
+
+    let Some(target_ws) = workspaces.iter_mut().find(|w| w.id == target_ws_id) else {
+        return false;
+    };
+
+    if let Some(tf_id) = target_parent_folder_id {
+        fn insert_folder_into_parent(folders: &mut [HttpFolder], target_id: &str, folder: HttpFolder) -> bool {
+            for f in folders.iter_mut() {
+                if f.id == target_id {
+                    f.children.push(folder);
+                    return true;
+                }
+                if insert_folder_into_parent(&mut f.children, target_id, folder.clone()) {
+                    return true;
+                }
+            }
+            false
+        }
+        if !insert_folder_into_parent(&mut target_ws.folders, tf_id, folder) {
+            return false;
+        }
+    } else {
+        target_ws.folders.push(folder);
+    }
+
+    save_workspaces(workspaces);
+    true
+}
+
+
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Load a `SavedRequest` into an `HttpClientState`, preserving runtime fields.
@@ -1492,5 +1770,163 @@ mod tests {
         };
         assert_eq!(req_without_name.display_name(), "/v1/users/profile");
     }
+
+    #[test]
+    fn test_create_and_rename_folder_and_subfolder() {
+        let mut workspaces = vec![HttpWorkspace {
+            id: "ws-test".to_string(),
+            name: "Test Workspace".to_string(),
+            requests: vec![],
+            folders: vec![],
+            environments: vec![],
+        }];
+
+        // 1. Create root folder
+        let root_folder = create_folder_in_workspace(
+            &mut workspaces,
+            "ws-test",
+            None,
+            "Auth",
+        ).expect("Failed to create root folder");
+
+        assert_eq!(root_folder.name, "Auth");
+        assert_eq!(workspaces[0].folders.len(), 1);
+        assert_eq!(workspaces[0].folders[0].name, "Auth");
+        let root_folder_id = root_folder.id.clone();
+
+        // 2. Create subfolder inside root folder
+        let subfolder = create_folder_in_workspace(
+            &mut workspaces,
+            "ws-test",
+            Some(&root_folder_id),
+            "OAuth2",
+        ).expect("Failed to create subfolder");
+
+        assert_eq!(subfolder.name, "OAuth2");
+        assert_eq!(workspaces[0].folders[0].children.len(), 1);
+        assert_eq!(workspaces[0].folders[0].children[0].name, "OAuth2");
+        let subfolder_id = subfolder.id.clone();
+
+        // 3. Rename subfolder
+        let renamed = rename_folder_in_workspaces(
+            &mut workspaces,
+            "ws-test",
+            &subfolder_id,
+            "OAuth2 Providers",
+        );
+        assert!(renamed);
+        assert_eq!(workspaces[0].folders[0].children[0].name, "OAuth2 Providers");
+
+        // 4. Rename root folder
+        let renamed_root = rename_folder_in_workspaces(
+            &mut workspaces,
+            "ws-test",
+            &root_folder_id,
+            "Authentication & Security",
+        );
+        assert!(renamed_root);
+        assert_eq!(workspaces[0].folders[0].name, "Authentication & Security");
+    }
+
+    #[test]
+    fn test_create_workspace() {
+        let mut workspaces = Vec::new();
+        let ws = create_workspace(&mut workspaces, "New API Collection");
+        assert_eq!(ws.name, "New API Collection");
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].name, "New API Collection");
+    }
+
+    #[test]
+    fn test_move_request() {
+        let mut workspaces = vec![HttpWorkspace {
+            id: "ws-test".to_string(),
+            name: "Test Workspace".to_string(),
+            requests: vec![SavedRequest {
+                id: "req-1".to_string(),
+                workspace_id: "ws-test".to_string(),
+                name: "Get Profile".to_string(),
+                ..Default::default()
+            }],
+            folders: vec![HttpFolder {
+                id: "fld-1".to_string(),
+                name: "Users".to_string(),
+                parent_folder_id: None,
+                requests: vec![],
+                children: vec![],
+            }],
+            environments: vec![],
+        }];
+
+        // 1. Move request from workspace root to folder
+        let moved = move_request(&mut workspaces, "req-1", "ws-test", Some("fld-1"));
+        assert!(moved);
+        assert_eq!(workspaces[0].requests.len(), 0);
+        assert_eq!(workspaces[0].folders[0].requests.len(), 1);
+        assert_eq!(workspaces[0].folders[0].requests[0].id, "req-1");
+        assert_eq!(workspaces[0].folders[0].requests[0].folder_id.as_deref(), Some("fld-1"));
+
+        // 2. Move request back from folder to workspace root
+        let moved_back = move_request(&mut workspaces, "req-1", "ws-test", None);
+        assert!(moved_back);
+        assert_eq!(workspaces[0].requests.len(), 1);
+        assert_eq!(workspaces[0].folders[0].requests.len(), 0);
+        assert_eq!(workspaces[0].requests[0].id, "req-1");
+        assert_eq!(workspaces[0].requests[0].folder_id, None);
+    }
+
+    #[test]
+    fn test_move_folder_and_prevent_cycles() {
+        let mut workspaces = vec![HttpWorkspace {
+            id: "ws-test".to_string(),
+            name: "Test Workspace".to_string(),
+            requests: vec![],
+            folders: vec![
+                HttpFolder {
+                    id: "fld-parent".to_string(),
+                    name: "Parent Folder".to_string(),
+                    parent_folder_id: None,
+                    requests: vec![],
+                    children: vec![HttpFolder {
+                        id: "fld-child".to_string(),
+                        name: "Child Folder".to_string(),
+                        parent_folder_id: Some("fld-parent".to_string()),
+                        requests: vec![],
+                        children: vec![],
+                    }],
+                },
+                HttpFolder {
+                    id: "fld-sibling".to_string(),
+                    name: "Sibling Folder".to_string(),
+                    parent_folder_id: None,
+                    requests: vec![],
+                    children: vec![],
+                },
+            ],
+            environments: vec![],
+        }];
+
+        // 1. Moving folder into itself must fail
+        assert!(!move_folder(&mut workspaces, "fld-parent", "ws-test", Some("fld-parent")));
+
+        // 2. Moving parent folder into its descendant must fail
+        assert!(!move_folder(&mut workspaces, "fld-parent", "ws-test", Some("fld-child")));
+
+        // 3. Moving child folder to sibling folder must succeed
+        let moved = move_folder(&mut workspaces, "fld-child", "ws-test", Some("fld-sibling"));
+        assert!(moved);
+        assert_eq!(workspaces[0].folders[0].children.len(), 0);
+        assert_eq!(workspaces[0].folders[1].children.len(), 1);
+        assert_eq!(workspaces[0].folders[1].children[0].id, "fld-child");
+
+        // 4. Moving child folder to workspace root must succeed
+        let moved_root = move_folder(&mut workspaces, "fld-child", "ws-test", None);
+        assert!(moved_root);
+        assert_eq!(workspaces[0].folders.len(), 3);
+        assert_eq!(workspaces[0].folders[2].id, "fld-child");
+        assert_eq!(workspaces[0].folders[2].parent_folder_id, None);
+    }
 }
+
+
 

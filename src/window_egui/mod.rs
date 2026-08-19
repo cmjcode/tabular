@@ -315,6 +315,9 @@ pub struct Tabular {
     pub pending_delete_http_request: Option<(String, String)>, // (request_id, request_name)
     pub pending_rename_http_request: Option<(String, String, String)>, // (request_id, current_name, edit_name)
     pub pending_delete_http_folder: Option<(String, String, String)>, // (workspace_id, folder_id, folder_name)
+    pub pending_rename_http_folder: Option<(String, String, String, String)>, // (workspace_id, folder_id, current_name, edit_name)
+    pub pending_create_http_folder: Option<(String, Option<String>, String, String)>, // (workspace_id, parent_folder_id, parent_display_name, input_folder_name)
+    pub pending_create_http_workspace: Option<String>, // input_workspace_name
     pub pending_delete_http_workspace: Option<(String, String)>, // (workspace_id, workspace_name)
     // Drag and drop tracking for HTTP Connections in sidebar
     pub dragged_http_conn_id: Option<i64>,
