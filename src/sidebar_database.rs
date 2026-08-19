@@ -739,11 +739,13 @@ pub(crate) fn render_edit_connection_dialog(
 }
 
 pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
+    crate::log_startup_step("load_connections started");
+    let rt = tabular.get_runtime();
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let rewrite_pool = pool.clone();
-        let rt = tokio::runtime::Runtime::new().unwrap();
 
+        crate::log_startup_step("load_connections: fetching connections from SQLite");
         let connections_result = rt.block_on(async {
         sqlx::query(
             "SELECT id, name, host, port, username, password, database_name, connection_type, folder, \
@@ -763,6 +765,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
         .fetch_all(pool_clone.as_ref())
         .await
     });
+        crate::log_startup_step("load_connections: fetched SQL rows, resolving secrets");
 
         if let Ok(rows) = connections_result {
             // Legacy plaintext rows migrated to the secret store during this
@@ -847,6 +850,7 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                     })
                 })
                 .collect();
+            crate::log_startup_step(&format!("load_connections: resolved secrets for {} connections", tabular.connections.len()));
 
             for (id, field, value) in secret_rewrites {
                 // Field names are fixed identifiers above, never user input.
@@ -861,14 +865,16 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
         }
     }
 
+    crate::log_startup_step("load_connections: refreshing connection tree");
     // Refresh the tree after loading connections
     refresh_connections_tree(tabular);
+    crate::log_startup_step("load_connections: completed");
 }
 
 pub(crate) fn load_connection_folders(tabular: &mut window_egui::Tabular) {
+    let rt = tabular.get_runtime();
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
-        let rt = tokio::runtime::Runtime::new().unwrap();
         if let Ok(rows) = rt.block_on(async {
             sqlx::query("SELECT path FROM connection_folders ORDER BY path")
                 .fetch_all(pool_clone.as_ref())
@@ -886,10 +892,10 @@ pub(crate) fn save_connection_folder(
     tabular: &mut window_egui::Tabular,
     path: &str,
 ) -> bool {
+    let rt = tabular.get_runtime();
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let path = path.to_string();
-        let rt = tokio::runtime::Runtime::new().unwrap();
         let ok = rt.block_on(async {
             sqlx::query("INSERT OR IGNORE INTO connection_folders (path) VALUES (?)")
                 .bind(&path)
@@ -909,10 +915,10 @@ pub(crate) fn delete_connection_folder(
     tabular: &mut window_egui::Tabular,
     folder_path: &str,
 ) {
+    let rt = tabular.get_runtime();
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let path = folder_path.to_string();
-        let rt = tokio::runtime::Runtime::new().unwrap();
         // Remove the folder and any subfolders from connection_folders
         let _ = rt.block_on(async {
             sqlx::query("DELETE FROM connection_folders WHERE path = ? OR path LIKE ?")
@@ -991,7 +997,7 @@ pub(crate) fn save_connection_to_database(
         let secret_ssh_key = connection.ssh_private_key.clone();
         let secret_ssh_password = connection.ssh_password.clone();
         let connection = connection.clone();
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tabular.get_runtime();
 
         let result = rt.block_on(async {
           sqlx::query(
@@ -1237,15 +1243,17 @@ pub(crate) fn copy_connection(tabular: &mut window_egui::Tabular, connection_id:
 }
 
 pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
+    crate::log_startup_step("initialize_database started");
     // Ensure app directories exist
     if let Err(e) = directory::ensure_app_directories() {
         error!("Failed to create app directories: {}", e);
         return;
     }
-
+    crate::log_startup_step("ensure_app_directories completed");
 
     // Initialize SQLite database
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tabular.get_runtime();
+    crate::log_startup_step("connecting to connections.db SQLitePool");
     let pool_result = rt.block_on(async {
             // Get the data directory path
             let data_dir = directory::get_data_dir();
@@ -1254,11 +1262,25 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
             // Convert path to string and use file:// prefix for SQLite
             let db_path_str = db_path.to_string_lossy();
             let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
-            let pool = SqlitePool::connect(&connection_string).await;
+            let connect_opts = match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&connection_string) {
+                Ok(opts) => opts
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                    .busy_timeout(std::time::Duration::from_secs(5)),
+                Err(e) => {
+                    error!("Invalid connections.db URL: {}", e);
+                    return None;
+                }
+            };
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(5)
+                .connect_with(connect_opts)
+                .await;
 
             match pool {
                 Ok(pool) => {
-                    debug!("Database connection successful");
+                    crate::log_startup_step("connections.db connected, verifying/creating tables");
 
                     // Create connections table
                     let create_connections_result = sqlx::query(
@@ -1564,6 +1586,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
     if let Some(pool) = pool_result {
         tabular.db_pool = Some(Arc::new(pool));
+        crate::log_startup_step("running column_cache / teams migrations");
         // Best-effort migrations for new columns (idempotent): add flags to column_cache
         // Ignore errors if columns already exist
         if let Some(ref pool) = tabular.db_pool {
@@ -1581,12 +1604,16 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                 let _ = crate::sync::sync_teams_cache::init_teams_cache_tables(pool.as_ref()).await;
             });
         }
+        crate::log_startup_step("calling load_connections");
         // Load existing connections from database
         load_connections(tabular);
+        crate::log_startup_step("calling load_connection_folders");
         // Load standalone folder paths
         load_connection_folders(tabular);
+        crate::log_startup_step("calling sidebar_history::load_query_history");
         // Load query history from database
         sidebar_history::load_query_history(tabular);
+        crate::log_startup_step("loading cached teams/members/shares");
 
         // Load cached Teams, Members, and Shared Folders from SQLite
         if let Some(ref pool) = tabular.db_pool.clone() {
@@ -1603,6 +1630,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                 tabular.shared_folders_cache = shares;
             }
         }
+        crate::log_startup_step("initialize_database completed successfully");
     } else {
         // Backup corrupt file and re-create fresh database if startup failed due to corruption
         let data_dir = directory::get_data_dir();
@@ -1616,7 +1644,19 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
             // Second attempt connect to fresh empty file
             let db_path_str = db_path.to_string_lossy();
             let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
-            if let Ok(new_pool) = rt.block_on(async { SqlitePool::connect(&connection_string).await }) {
+            let pool_res = rt.block_on(async {
+                if let Ok(opts) = <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&connection_string) {
+                    let opts = opts
+                        .create_if_missing(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                        .busy_timeout(std::time::Duration::from_secs(5));
+                    sqlx::sqlite::SqlitePoolOptions::new().max_connections(5).connect_with(opts).await
+                } else {
+                    SqlitePool::connect(&connection_string).await
+                }
+            });
+            if let Ok(new_pool) = pool_res {
                 tabular.db_pool = Some(Arc::new(new_pool));
                 info!("✅ Successfully created fresh connections.db after corruption recovery");
             }
@@ -2321,7 +2361,7 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
     if let Some(pool) = tabular.db_pool.clone() {
         let conns_to_insert = preserved_connections.clone();
         let hist_to_insert = preserved_history.clone();
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tabular.get_runtime();
         rt.block_on(async move {
             let _ = sqlx::query("PRAGMA foreign_keys = OFF").execute(pool.as_ref()).await;
 

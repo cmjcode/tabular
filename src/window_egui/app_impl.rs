@@ -3239,6 +3239,11 @@ impl Tabular {
 
 impl App for Tabular {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut Frame) {
+        static FIRST_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+        let is_first = FIRST_FRAME.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if is_first {
+            crate::log_startup_step("FIRST egui frame render started");
+        }
         // egui 0.34: App::update(ctx) became App::ui(ui); the body below is
         // ctx-based (panels via ctx), so rebind ctx from the root Ui.
         let ctx = &root_ui.ctx().clone();
@@ -3274,6 +3279,15 @@ impl App for Tabular {
         // We can get `TextEditState` from memory using the ID.
         // `if let Some(state) = egui::TextEdit::load_state(ctx, query_id)`
         // `state.cursor.range()` tells us the selection!
+        // Drain background HTTP collection loading receiver
+        if let Some(ref rx) = self.workspaces_load_receiver {
+            if let Ok(ws) = rx.try_recv() {
+                self.yaak_workspaces = ws;
+                self.workspaces_load_receiver = None;
+                crate::log_startup_step("async background loading of yaak_workspaces completed");
+            }
+        }
+
         // Load DB-type PNG icons once from assets/db_icons/ if files are present
         self.load_db_icon_textures(ctx);
         // Drive sync & collaboration tick
@@ -4294,6 +4308,9 @@ impl App for Tabular {
         // Centralized, non-blocking toast notifications. Rendered last so they
         // stack above all panels and dialogs.
         self.toasts.show(ctx);
+        if is_first {
+            crate::log_startup_step("FIRST egui frame render COMPLETED — window is ready and interactive!");
+        }
     } // end update
 
     fn on_exit(&mut self) {

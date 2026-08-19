@@ -585,6 +585,8 @@ pub struct Tabular {
     // ─── HTTP Collections (Yaak import) ──────────────────────────────────────
     /// All imported/saved API collections (workspaces → folders → requests).
     pub yaak_workspaces: Vec<crate::http_collection::HttpWorkspace>,
+    /// Background receiver for initial asynchronous loading of yaak_workspaces
+    pub workspaces_load_receiver: Option<std::sync::mpsc::Receiver<Vec<crate::http_collection::HttpWorkspace>>>,
     /// Search filter text for the Collections sidebar tab.
     pub collection_search: String,
     /// Which folder ids are expanded in the sidebar tree.

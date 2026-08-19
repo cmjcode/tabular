@@ -159,6 +159,7 @@ impl super::Tabular {
         response
     }
     pub fn new() -> Self {
+        crate::log_startup_step("Tabular::new() entered");
         // Create background processing channels
         let (background_sender, background_receiver) =
             mpsc::channel::<models::enums::BackgroundTask>();
@@ -167,6 +168,7 @@ impl super::Tabular {
             mpsc::channel::<connection::QueryResultMessage>();
 
         // Create shared runtime for all database operations
+        crate::log_startup_step("creating shared Tokio runtime");
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(rt) => Some(Arc::new(rt)),
             Err(e) => {
@@ -176,6 +178,7 @@ impl super::Tabular {
         };
 
         // Initialize ConfigStore
+        crate::log_startup_step("initializing ConfigStore");
         let config_store = if let Some(rt) = &runtime {
             rt.block_on(async {
                 crate::config::ConfigStore::new().await.ok()
@@ -184,7 +187,9 @@ impl super::Tabular {
             None
         };
 
+        crate::log_startup_step("loading sync account from secrets");
         let loaded_account = crate::sync::api_client::load_account();
+        crate::log_startup_step("sync account loaded -> constructing Tabular struct");
         let profile_username_input = loaded_account
             .as_ref()
             .and_then(|a| a.username.clone())
@@ -598,6 +603,7 @@ impl super::Tabular {
             sync_queries_pull_receiver: None,
             sync_history_last_ts: None,
             yaak_workspaces: Vec::new(),
+            workspaces_load_receiver: None,
             collection_search: String::new(),
             collection_expanded_folders: std::collections::HashSet::new(),
             show_yaak_import_dialog: false,
@@ -608,20 +614,36 @@ impl super::Tabular {
         app.connection_pools.clear();
 
         // Initialize database and sample data FIRST
+        crate::log_startup_step("calling sidebar_database::initialize_database(&mut app)");
         sidebar_database::initialize_database(&mut app);
+        crate::log_startup_step("sidebar_database::initialize_database finished");
+
+        crate::log_startup_step("calling sidebar_database::initialize_sample_data(&mut app)");
         sidebar_database::initialize_sample_data(&mut app);
+        crate::log_startup_step("sidebar_database::initialize_sample_data finished");
 
         // Load saved queries from directory
+        crate::log_startup_step("calling sidebar_query::load_queries_from_directory(&mut app)");
         sidebar_query::load_queries_from_directory(&mut app);
+        crate::log_startup_step("sidebar_query::load_queries_from_directory finished");
 
-        // Load saved HTTP collections (Yaak imports) from disk
-        app.yaak_workspaces = crate::http_collection::load_workspaces();
+        // Asynchronously load saved HTTP collections (Yaak imports) in background thread
+        crate::log_startup_step("spawning async background thread for http_collection::load_workspaces");
+        let (ws_tx, ws_rx) = std::sync::mpsc::channel();
+        app.workspaces_load_receiver = Some(ws_rx);
+        std::thread::spawn(move || {
+            let ws = crate::http_collection::load_workspaces();
+            let _ = ws_tx.send(ws);
+        });
 
         // Create initial query tab
+        crate::log_startup_step("creating initial query tab");
         editor::create_new_tab(&mut app, "Untitled Query".to_string(), String::new());
 
         // Start background thread AFTER database is initialized
+        crate::log_startup_step("starting background worker thread");
         app.start_background_worker(background_receiver, result_sender);
+        crate::log_startup_step("background worker thread started");
 
         // Do NOT force an immediate update check here; let the preference load path enforce 24h throttling.
         // If preferences haven't been loaded yet (first run path) we can perform a very conservative check:

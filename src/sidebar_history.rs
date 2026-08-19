@@ -44,9 +44,9 @@ fn format_date_for_display(date_str: &str) -> String {
 }
 
 pub(crate) fn load_query_history(tabular: &mut window_egui::Tabular) {
+    crate::log_startup_step("sidebar_history::load_query_history started");
+    let rt = tabular.get_runtime();
     if let Some(pool) = &tabular.db_pool {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-
         let result = rt.block_on(async {
                 match sqlx::query_as::<_, (i64, String, i64, String, String)>(
                     "SELECT id, query_text, connection_id, connection_name, executed_at FROM query_history ORDER BY executed_at DESC LIMIT 100"
@@ -80,8 +80,11 @@ pub(crate) fn load_query_history(tabular: &mut window_egui::Tabular) {
 
         if let Some(items) = result {
             tabular.history_items = items;
+            crate::log_startup_step(&format!("sidebar_history: loaded {} history items, refreshing tree", tabular.history_items.len()));
             refresh_history_tree(tabular);
+            crate::log_startup_step("sidebar_history: history tree refreshed");
         } else if let Some(ref pool) = tabular.db_pool {
+            crate::log_startup_step("sidebar_history: query_history failed, checking corruption recovery");
             // Test pool health; if corrupt, reset database file while preserving RAM
             let check = rt.block_on(async {
                 sqlx::query("SELECT 1 FROM query_history LIMIT 1").execute(pool.as_ref()).await
@@ -89,8 +92,10 @@ pub(crate) fn load_query_history(tabular: &mut window_egui::Tabular) {
             if let Err(e) = check {
                 sidebar_database::check_and_recover_sqlite_corruption(tabular, &e);
             }
+            crate::log_startup_step("sidebar_history: corruption recovery check finished");
         }
     }
+    crate::log_startup_step("sidebar_history::load_query_history finished");
 }
 
 pub(crate) fn save_query_to_history(
@@ -143,7 +148,7 @@ pub(crate) fn save_query_to_history(
         let conn_name = connection_name.clone();
         let now = now_str.clone();
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tabular.get_runtime();
         let upsert_res = rt.block_on(async move {
             // Try to update existing row first
             let updated = sqlx::query(
@@ -305,8 +310,8 @@ pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
 
 /// Delete all saved query history rows and reset the in-memory/UI state.
 pub(crate) fn clear_query_history(tabular: &mut window_egui::Tabular) {
+    let rt = tabular.get_runtime();
     if let Some(pool) = &tabular.db_pool {
-        let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(async {
             sqlx::query("DELETE FROM query_history")
                 .execute(pool.as_ref())

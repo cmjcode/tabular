@@ -362,14 +362,29 @@ mod backend_file {
         }
     }
 
+    static ENTRIES_CACHE: std::sync::RwLock<Option<HashMap<String, String>>> =
+        std::sync::RwLock::new(None);
+
     fn load_entries() -> HashMap<String, String> {
-        std::fs::read_to_string(store_path())
+        if let Ok(guard) = ENTRIES_CACHE.read()
+            && let Some(ref entries) = *guard
+        {
+            return entries.clone();
+        }
+        let entries: HashMap<String, String> = std::fs::read_to_string(store_path())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Ok(mut guard) = ENTRIES_CACHE.write() {
+            *guard = Some(entries.clone());
+        }
+        entries
     }
 
     fn save_entries(entries: &HashMap<String, String>) -> bool {
+        if let Ok(mut guard) = ENTRIES_CACHE.write() {
+            *guard = Some(entries.clone());
+        }
         let path = store_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -387,7 +402,14 @@ mod backend_file {
     }
 
     pub fn get(name: &str) -> Option<String> {
-        let blob = load_entries().remove(name)?;
+        let blob = {
+            let cached = if let Ok(guard) = ENTRIES_CACHE.read() {
+                guard.as_ref().and_then(|m| m.get(name).cloned())
+            } else {
+                None
+            };
+            cached.or_else(|| load_entries().get(name).cloned())?
+        };
         let raw = hex::decode(blob).ok()?;
         if raw.len() <= NONCE_LEN {
             return None;

@@ -262,9 +262,21 @@ impl ConfigStore {
 
         log::debug!("Attempting to create/open database at: {}", url);
 
+        let connect_opts = match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url) {
+            Ok(opts) => opts
+                .create_if_missing(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                .busy_timeout(std::time::Duration::from_secs(5)),
+            Err(e) => {
+                log::warn!("Invalid SQLite URL ({}), using JSON storage instead", e);
+                return Ok(Self { pool: None, use_json_fallback: true });
+            }
+        };
+
         match SqlitePoolOptions::new()
             .max_connections(1)
-            .connect(&url)
+            .connect_with(connect_opts)
             .await
         {
             Ok(pool) => {
