@@ -482,6 +482,9 @@ impl ConfigStore {
                     .await;
             }
 
+            // Mirror to JSON for fast-path startup loading
+            let _ = self.save_to_json(prefs);
+
             debug!(
                 "Saved prefs to SQLite: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, enable_debug_logging={}",
                 prefs.theme,
@@ -496,7 +499,7 @@ impl ConfigStore {
         }
     }
 
-    fn json_path() -> PathBuf {
+    pub fn json_path() -> PathBuf {
         let mut path = config_dir();
         path.push("preferences.json");
         path
@@ -739,4 +742,19 @@ pub fn set_data_dir(new_path: &str) -> Result<(), String> {
 
     log::debug!("Data directory changed to: {}", new_path);
     Ok(())
+}
+
+/// Load preferences quickly on startup without initializing Tokio runtime or SQLite pool.
+pub fn load_fast_preferences() -> AppPreferences {
+    let path = ConfigStore::json_path();
+    if let Ok(content) = std::fs::read_to_string(&path)
+        && let Ok(mut prefs) = serde_json::from_str::<AppPreferences>(&content)
+    {
+        // Quickly resolve AI key if present
+        if prefs.ai_api_key == crate::secrets::SECRET_SENTINEL {
+            prefs.ai_api_key = crate::secrets::get_secret("pref:ai_api_key").unwrap_or_default();
+        }
+        return prefs;
+    }
+    AppPreferences::default()
 }

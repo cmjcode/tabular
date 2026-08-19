@@ -602,6 +602,7 @@ impl super::Tabular {
             sync_queries_push_receiver: None,
             sync_queries_pull_receiver: None,
             sync_history_last_ts: None,
+            db_init_receiver: None,
             yaak_workspaces: Vec::new(),
             workspaces_load_receiver: None,
             collection_search: String::new(),
@@ -613,14 +614,15 @@ impl super::Tabular {
         // Clear any old cached pools
         app.connection_pools.clear();
 
-        // Initialize database and sample data FIRST
-        crate::log_startup_step("calling sidebar_database::initialize_database(&mut app)");
-        sidebar_database::initialize_database(&mut app);
-        crate::log_startup_step("sidebar_database::initialize_database finished");
-
-        crate::log_startup_step("calling sidebar_database::initialize_sample_data(&mut app)");
-        sidebar_database::initialize_sample_data(&mut app);
-        crate::log_startup_step("sidebar_database::initialize_sample_data finished");
+        // Asynchronously initialize database and load connections in background thread
+        crate::log_startup_step("spawning async background thread for initialize_database");
+        let (db_tx, db_rx) = std::sync::mpsc::channel();
+        app.db_init_receiver = Some(db_rx);
+        std::thread::spawn(move || {
+            if let Some(res) = sidebar_database::initialize_database_background() {
+                let _ = db_tx.send(res);
+            }
+        });
 
         // Load saved queries from directory
         crate::log_startup_step("calling sidebar_query::load_queries_from_directory(&mut app)");

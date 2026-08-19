@@ -1242,6 +1242,250 @@ pub(crate) fn copy_connection(tabular: &mut window_egui::Tabular, connection_id:
     }
 }
 
+pub struct DatabaseInitResult {
+    pub db_pool: Arc<SqlitePool>,
+    pub connections: Vec<models::structs::ConnectionConfig>,
+    pub connection_folders: Vec<String>,
+    pub history_items: Vec<models::structs::HistoryItem>,
+    pub teams: Vec<crate::sync::api_client::RemoteTeam>,
+    pub team_members: std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
+    pub shared_folders_cache: Vec<crate::sync::api_client::RemoteSharedFolder>,
+}
+
+pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
+    crate::log_startup_step("initialize_database_background thread started");
+    if let Err(e) = directory::ensure_app_directories() {
+        error!("Failed to create app directories: {}", e);
+        return None;
+    }
+
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            error!("Failed to create runtime for background db init: {}", e);
+            return None;
+        }
+    };
+
+    let data_dir = directory::get_data_dir();
+    let db_path = data_dir.join("connections.db");
+    let db_path_str = db_path.to_string_lossy();
+    let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
+    let connect_opts = match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&connection_string) {
+        Ok(opts) => opts
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5)),
+        Err(e) => {
+            error!("Invalid connections.db URL: {}", e);
+            return None;
+        }
+    };
+
+    let pool = rt.block_on(async {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(connect_opts)
+            .await
+    }).ok()?;
+
+    // Table verification and creations in single transaction
+    rt.block_on(async {
+        let _ = sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS connections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port TEXT NOT NULL,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL,
+                database_name TEXT NOT NULL,
+                connection_type TEXT NOT NULL,
+                folder TEXT DEFAULT NULL,
+                ssh_enabled INTEGER NOT NULL DEFAULT 0,
+                ssh_host TEXT NOT NULL DEFAULT '',
+                ssh_port TEXT NOT NULL DEFAULT '22',
+                ssh_username TEXT NOT NULL DEFAULT '',
+                ssh_auth_method TEXT NOT NULL DEFAULT 'key',
+                ssh_private_key TEXT NOT NULL DEFAULT '',
+                ssh_password TEXT NOT NULL DEFAULT '',
+                ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0,
+                custom_views TEXT NOT NULL DEFAULT '[]',
+                replication_master_id INTEGER DEFAULT NULL
+            );
+            CREATE TABLE IF NOT EXISTS connection_folders (path TEXT NOT NULL UNIQUE);
+            CREATE TABLE IF NOT EXISTS database_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name));
+            CREATE TABLE IF NOT EXISTS table_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, table_type TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name, table_type));
+            CREATE TABLE IF NOT EXISTS column_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, column_name TEXT NOT NULL, data_type TEXT NOT NULL, ordinal_position INTEGER NOT NULL, is_primary_key INTEGER NOT NULL DEFAULT 0, is_indexed INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name, column_name));
+            CREATE TABLE IF NOT EXISTS query_history (id INTEGER PRIMARY KEY AUTOINCREMENT, query_text TEXT NOT NULL, connection_id INTEGER NOT NULL, connection_name TEXT NOT NULL, executed_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE);
+            CREATE TABLE IF NOT EXISTS row_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, headers_json TEXT NOT NULL, rows_json TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name));
+            CREATE TABLE IF NOT EXISTS index_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, index_name TEXT NOT NULL, method TEXT NULL, is_unique INTEGER NOT NULL DEFAULT 0, columns_json TEXT NOT NULL DEFAULT '[]', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name, index_name));
+            CREATE TABLE IF NOT EXISTS partition_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, partition_name TEXT NOT NULL, partition_type TEXT NULL, partition_expression TEXT NULL, subpartition_type TEXT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name, partition_name));
+            CREATE TABLE IF NOT EXISTS foreign_key_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, column_name TEXT NOT NULL, referenced_table_name TEXT NOT NULL, referenced_column_name TEXT NOT NULL, constraint_name TEXT NOT NULL DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name));
+            "#
+        ).execute(&pool).await;
+
+        let _ = crate::sync::sync_teams_cache::init_teams_cache_tables(&pool).await;
+    });
+
+    // Load connections
+    let (connections, secret_rewrites) = rt.block_on(async {
+        let rows = sqlx::query(
+            "SELECT id, name, host, port, username, password, database_name, connection_type, folder, \
+             COALESCE(ssh_enabled, 0) AS ssh_enabled, \
+             COALESCE(ssh_host, '') AS ssh_host, \
+             COALESCE(ssh_port, '22') AS ssh_port, \
+             COALESCE(ssh_username, '') AS ssh_username, \
+             COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
+             COALESCE(ssh_private_key, '') AS ssh_private_key, \
+             COALESCE(ssh_password, '') AS ssh_password, \
+             COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
+             COALESCE(custom_views, '[]') AS custom_views, \
+             replication_master_id \
+         FROM connections",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+
+        let mut rewrites: Vec<(i64, &'static str, String)> = Vec::new();
+        let conns: Vec<models::structs::ConnectionConfig> = rows
+            .into_iter()
+            .filter_map(|row| {
+                let id = row.try_get::<i64, _>("id").ok()?;
+                let name = row.try_get::<String, _>("name").ok()?;
+                let host = row.try_get::<String, _>("host").ok()?;
+                let port = row.try_get::<String, _>("port").ok()?;
+                let username = row.try_get::<String, _>("username").ok()?;
+                let password = row.try_get::<String, _>("password").ok()?;
+                let database_name = row.try_get::<String, _>("database_name").ok()?;
+                let connection_type = row.try_get::<String, _>("connection_type").ok()?;
+                let folder = row.try_get::<Option<String>, _>("folder").ok()?;
+                let ssh_enabled = row.try_get::<i64, _>("ssh_enabled").ok()?;
+                let ssh_host = row.try_get::<String, _>("ssh_host").ok()?;
+                let ssh_port = row.try_get::<String, _>("ssh_port").ok()?;
+                let ssh_username = row.try_get::<String, _>("ssh_username").ok()?;
+                let ssh_auth_method = row.try_get::<String, _>("ssh_auth_method").ok()?;
+                let ssh_private_key = row.try_get::<String, _>("ssh_private_key").ok()?;
+                let ssh_password = row.try_get::<String, _>("ssh_password").ok()?;
+                let ssh_accept_unknown_host_keys =
+                    row.try_get::<i64, _>("ssh_accept_unknown_host_keys").ok()?;
+                let custom_views_json = row.try_get::<String, _>("custom_views").ok().unwrap_or_else(|| "[]".to_string());
+                let replication_master_id = row.try_get::<Option<i64>, _>("replication_master_id").ok().flatten();
+
+                let (password, pw_rewrite) = crate::secrets::resolve_stored(
+                    &crate::secrets::connection_secret_name(id, "password"),
+                    &password,
+                );
+                let (ssh_private_key, key_rewrite) = crate::secrets::resolve_stored(
+                    &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                    &ssh_private_key,
+                );
+                let (ssh_password, sshpw_rewrite) = crate::secrets::resolve_stored(
+                    &crate::secrets::connection_secret_name(id, "ssh_password"),
+                    &ssh_password,
+                );
+                for (field, rewrite) in [
+                    ("password", pw_rewrite),
+                    ("ssh_private_key", key_rewrite),
+                    ("ssh_password", sshpw_rewrite),
+                ] {
+                    if let Some(value) = rewrite {
+                        rewrites.push((id, field, value));
+                    }
+                }
+
+                Some(models::structs::ConnectionConfig {
+                    id: Some(id),
+                    name,
+                    host,
+                    port,
+                    username,
+                    password,
+                    database: database_name,
+                    connection_type: match connection_type.as_str() {
+                        "MySQL" => models::enums::DatabaseType::MySQL,
+                        "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
+                        "Redis" => models::enums::DatabaseType::Redis,
+                        "MsSQL" => models::enums::DatabaseType::MsSQL,
+                        "MongoDB" => models::enums::DatabaseType::MongoDB,
+                        "ApiHttp" => models::enums::DatabaseType::ApiHttp,
+                        _ => models::enums::DatabaseType::SQLite,
+                    },
+                    folder,
+                    ssh_enabled: ssh_enabled != 0,
+                    ssh_host,
+                    ssh_port,
+                    ssh_username,
+                    ssh_auth_method: models::enums::SshAuthMethod::from_db_value(&ssh_auth_method),
+                    ssh_private_key,
+                    ssh_password,
+                    ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+                    custom_views: serde_json::from_str(&custom_views_json).unwrap_or_default(),
+                    replication_master_id,
+                })
+            })
+            .collect();
+        (conns, rewrites)
+    });
+
+    for (id, field, value) in secret_rewrites {
+        let _ = rt.block_on(async {
+            sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE connections SET {} = ? WHERE id = ?", field)))
+                .bind(value)
+                .bind(id)
+                .execute(&pool)
+                .await
+        });
+    }
+
+    // Load connection folders
+    let connection_folders: Vec<String> = rt.block_on(async {
+        sqlx::query("SELECT path FROM connection_folders ORDER BY path")
+            .fetch_all(&pool)
+            .await
+            .map(|rows| rows.into_iter().filter_map(|r| r.try_get::<String, _>("path").ok()).collect())
+            .unwrap_or_default()
+    });
+
+    // Load history
+    let history_items: Vec<models::structs::HistoryItem> = rt.block_on(async {
+        sqlx::query_as::<_, (i64, String, i64, String, String)>(
+            "SELECT id, query_text, connection_id, connection_name, executed_at FROM query_history ORDER BY executed_at DESC LIMIT 100"
+        )
+        .fetch_all(&pool)
+        .await
+        .map(|rows| {
+            rows.into_iter().map(|r| models::structs::HistoryItem {
+                id: Some(r.0),
+                query: r.1,
+                connection_id: r.2,
+                connection_name: r.3,
+                executed_at: r.4,
+            }).collect()
+        })
+        .unwrap_or_default()
+    });
+
+    // Load cached Teams, Members, and Shared Folders from SQLite
+    let teams = rt.block_on(crate::sync::sync_teams_cache::load_teams_from_cache(&pool));
+    let team_members = rt.block_on(crate::sync::sync_teams_cache::load_team_members_from_cache(&pool));
+    let shared_folders_cache = rt.block_on(crate::sync::sync_teams_cache::load_shared_folders_from_cache(&pool));
+
+    crate::log_startup_step("initialize_database_background completed");
+    Some(DatabaseInitResult {
+        db_pool: Arc::new(pool),
+        connections,
+        connection_folders,
+        history_items,
+        teams,
+        team_members,
+        shared_folders_cache,
+    })
+}
+
 pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
     crate::log_startup_step("initialize_database started");
     // Ensure app directories exist
@@ -1664,6 +1908,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn initialize_sample_data(tabular: &mut window_egui::Tabular) {
     // Initialize with connections as root nodes
     refresh_connections_tree(tabular);

@@ -62,20 +62,10 @@ pub fn run() -> Result<(), eframe::Error> {
     config::init_data_dir();
     log_startup_step("init_data_dir completed");
 
-    // 1. Load preferences early to determine log level
-    // We use a temporary runtime because ConfigStore requires async and we haven't started our main runtime yet.
+    // 1. Load preferences early to determine log level (fast-path without starting a temporary runtime)
     let prefs = {
-        log_startup_step("loading preferences via temp runtime start");
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create temp runtime for config load");
-        let p = rt.block_on(async {
-            match config::ConfigStore::new().await {
-                Ok(store) => store.load().await,
-                Err(_) => config::AppPreferences::default(),
-            }
-        });
+        log_startup_step("loading preferences (fast-path)");
+        let p = config::load_fast_preferences();
         log_startup_step("loading preferences completed");
         p
     };

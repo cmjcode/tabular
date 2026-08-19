@@ -3279,6 +3279,29 @@ impl App for Tabular {
         // We can get `TextEditState` from memory using the ID.
         // `if let Some(state) = egui::TextEdit::load_state(ctx, query_id)`
         // `state.cursor.range()` tells us the selection!
+        // Drain background Database & Connection initialization receiver
+        if let Some(ref rx) = self.db_init_receiver {
+            if let Ok(res) = rx.try_recv() {
+                self.db_pool = Some(res.db_pool);
+                self.connections = res.connections;
+                self.connection_folders = res.connection_folders;
+                self.history_items = res.history_items;
+                if !res.teams.is_empty() {
+                    self.teams = res.teams;
+                }
+                if !res.team_members.is_empty() {
+                    self.team_members = res.team_members;
+                }
+                if !res.shared_folders_cache.is_empty() {
+                    self.shared_folders_cache = res.shared_folders_cache;
+                }
+                crate::sidebar_database::refresh_connections_tree(self);
+                crate::sidebar_history::refresh_history_tree(self);
+                self.db_init_receiver = None;
+                crate::log_startup_step("async background database & connections init completed");
+            }
+        }
+
         // Drain background HTTP collection loading receiver
         if let Some(ref rx) = self.workspaces_load_receiver {
             if let Ok(ws) = rx.try_recv() {
@@ -3308,8 +3331,8 @@ impl App for Tabular {
         // egui only repaints on input, so without this the "Connecting… (Ns)"
         // counter would sit frozen and look exactly like the hang it is meant to
         // rule out. Also keeps the watchdog above ticking while the app is idle.
-        if !self.pending_connection_pools.is_empty() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if !self.pending_connection_pools.is_empty() || self.db_init_receiver.is_some() || self.workspaces_load_receiver.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
         // Handle forced refresh flag

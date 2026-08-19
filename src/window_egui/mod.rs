@@ -582,6 +582,10 @@ pub struct Tabular {
     /// Last time history was synced (Unix timestamp), persisted to check incremental sync
     pub sync_history_last_ts: Option<String>,
 
+    // ─── Database & Connection Initialization ───────────────────────────────
+    /// Background receiver for initial asynchronous loading of connections.db & metadata
+    pub db_init_receiver: Option<std::sync::mpsc::Receiver<crate::sidebar_database::DatabaseInitResult>>,
+
     // ─── HTTP Collections (Yaak import) ──────────────────────────────────────
     /// All imported/saved API collections (workspaces → folders → requests).
     pub yaak_workspaces: Vec<crate::http_collection::HttpWorkspace>,
