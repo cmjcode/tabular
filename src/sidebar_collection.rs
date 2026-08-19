@@ -213,6 +213,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     let mut folder_to_create: Option<(String, Option<String>, String)> = None;
     let mut folder_to_rename: Option<(String, String, String)> = None;
     let mut new_req_target: Option<(String, Option<String>, String)> = None;
+    let mut expanded_folders = std::mem::take(&mut app.collection_expanded_folders);
 
     for ws_id in &ws_ids {
         let ws_idx = match app.yaak_workspaces.iter().position(|w| &w.id == ws_id) {
@@ -288,6 +289,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     ui,
                     ws_id,
                     &folder,
+                    &mut expanded_folders,
                     &filter,
                     accent,
                     active_dnd_source.as_ref(),
@@ -361,6 +363,8 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             }
         });
     }
+
+    app.collection_expanded_folders = expanded_folders;
 
     // Apply deferred actions after rendering loop
     if let Some((name, id)) = conn_to_open {
@@ -806,6 +810,7 @@ fn render_folder_node(
     ui: &mut egui::Ui,
     ws_id: &str,
     folder: &crate::http_collection::HttpFolder,
+    expanded_folders: &mut std::collections::HashSet<String>,
     filter: &str,
     accent: egui::Color32,
     active_dnd_source: Option<&HttpDndSource>,
@@ -815,57 +820,76 @@ fn render_folder_node(
     folder_to_rename: &mut Option<(String, String, String)>,
     folder_to_delete: &mut Option<(String, String, String)>,
 ) {
-    let folder_resp =
-        egui::CollapsingHeader::new(egui::RichText::new(format!("📂  {}", folder.name)))
-            .id_salt(format!("sidebar_coll_folder_{}", folder.id))
-            .show(ui, |ui| {
-                for req in &folder.requests {
-                    if !filter.is_empty()
-                        && !req.display_name().to_lowercase().contains(filter)
-                        && !req.url.to_lowercase().contains(filter)
-                    {
-                        continue;
-                    }
-                    if let Some(act) = render_request_row(ui, ws_id, req, accent, active_dnd_source) {
-                        *req_action_out = Some((req.clone(), act));
-                    }
-                }
-                for child in &folder.children {
-                    if !filter.is_empty() && !folder_has_match(child, filter) {
-                        continue;
-                    }
-                    render_folder_node(
-                        ui,
-                        ws_id,
-                        child,
-                        filter,
-                        accent,
-                        active_dnd_source,
-                        req_action_out,
-                        new_req_target,
-                        folder_to_create,
-                        folder_to_rename,
-                        folder_to_delete,
-                    );
-                }
+    let is_expanded = expanded_folders.contains(&folder.id) || !filter.is_empty();
+    let is_being_dragged = active_dnd_source.is_some_and(|src| {
+        matches!(src, HttpDndSource::Folder { folder_id, .. } if folder_id == &folder.id)
+    });
+
+    let mut toggle_clicked = false;
+    let mut row_clicked = false;
+
+    let inner_resp = ui.horizontal(|ui| {
+        ui.add_space(2.0);
+
+        // Dedicated triangle toggle (consistent with database & query sidebar trees)
+        if Tabular::triangle_toggle(ui, is_expanded).clicked() {
+            toggle_clicked = true;
+        }
+
+        let text_color = if is_being_dragged {
+            accent
+        } else {
+            ui.style().visuals.text_color()
+        };
+
+        let lbl = ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("📂  {}", folder.name))
+                    .small()
+                    .strong()
+                    .color(text_color),
+            )
+            .sense(egui::Sense::click_and_drag())
+            .truncate(),
+        );
+
+        if lbl.hovered() {
+            ui.ctx().set_cursor_icon(if is_being_dragged {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::PointingHand
             });
+        }
 
-    let folder_row_rect = folder_resp.header_response.rect;
-    let folder_interact_id = egui::Id::new("folder_dnd").with(&folder.id);
-    let folder_interact =
-        ui.interact(folder_row_rect, folder_interact_id, egui::Sense::click_and_drag());
+        if lbl.drag_started() {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(
+                    egui::Id::new("http_dnd_source"),
+                    HttpDndSource::Folder {
+                        folder_id: folder.id.clone(),
+                        folder_name: folder.name.clone(),
+                        from_ws_id: ws_id.to_string(),
+                    },
+                );
+            });
+        }
 
-    if folder_interact.drag_started() {
-        ui.ctx().data_mut(|d| {
-            d.insert_temp(
-                egui::Id::new("http_dnd_source"),
-                HttpDndSource::Folder {
-                    folder_id: folder.id.clone(),
-                    folder_name: folder.name.clone(),
-                    from_ws_id: ws_id.to_string(),
-                },
-            );
-        });
+        if lbl.clicked() && !is_being_dragged {
+            row_clicked = true;
+        }
+
+        lbl
+    });
+
+    let folder_row_rect = inner_resp.response.rect;
+    let label_resp = inner_resp.inner;
+
+    if toggle_clicked || row_clicked {
+        if expanded_folders.contains(&folder.id) {
+            expanded_folders.remove(&folder.id);
+        } else {
+            expanded_folders.insert(folder.id.clone());
+        }
     }
 
     if let Some(src) = active_dnd_source {
@@ -922,7 +946,7 @@ fn render_folder_node(
         }
     }
 
-    folder_resp.header_response.context_menu(|ui| {
+    label_resp.context_menu(|ui| {
         if ui.button("➕ Add New Http").clicked() {
             *new_req_target = Some((
                 ws_id.to_string(),
@@ -953,6 +977,41 @@ fn render_folder_node(
             ui.close();
         }
     });
+
+    if is_expanded {
+        ui.indent(format!("fld_body_{}", folder.id), |ui| {
+            for req in &folder.requests {
+                if !filter.is_empty()
+                    && !req.display_name().to_lowercase().contains(filter)
+                    && !req.url.to_lowercase().contains(filter)
+                {
+                    continue;
+                }
+                if let Some(act) = render_request_row(ui, ws_id, req, accent, active_dnd_source) {
+                    *req_action_out = Some((req.clone(), act));
+                }
+            }
+            for child in &folder.children {
+                if !filter.is_empty() && !folder_has_match(child, filter) {
+                    continue;
+                }
+                render_folder_node(
+                    ui,
+                    ws_id,
+                    child,
+                    expanded_folders,
+                    filter,
+                    accent,
+                    active_dnd_source,
+                    req_action_out,
+                    new_req_target,
+                    folder_to_create,
+                    folder_to_rename,
+                    folder_to_delete,
+                );
+            }
+        });
+    }
 }
 
 /// Render a single saved-request row. Returns Some(RequestAction) if the user interacted with it.
