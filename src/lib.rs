@@ -62,23 +62,9 @@ pub fn run() -> Result<(), eframe::Error> {
     config::init_data_dir();
     log_startup_step("init_data_dir completed");
 
-    // 1. Load preferences early to determine log level (fast-path without starting a temporary runtime)
-    let prefs = {
-        log_startup_step("loading preferences (fast-path)");
-        let p = config::load_fast_preferences();
-        log_startup_step("loading preferences completed");
-        p
-    };
-
-    let log_level = if prefs.enable_debug_logging {
-        log::LevelFilter::Debug
-    } else {
-        log::LevelFilter::Info
-    };
-
     let _ = env_logger::Builder::from_default_env()
         // Enable info-level logs for our crate so users can see data source messages
-        .filter_module("tabular", log_level)
+        .filter_module("tabular", log::LevelFilter::Info)
         .filter_module("winit", log::LevelFilter::Warn)
         .filter_module("tracing", log::LevelFilter::Warn)
         .is_test(false)
@@ -88,9 +74,6 @@ pub fn run() -> Result<(), eframe::Error> {
         "Application starting with data directory: {}",
         config::get_data_dir().display()
     );
-    if prefs.enable_debug_logging {
-        log::debug!("Debug logging enabled");
-    }
 
     let mut options = eframe::NativeOptions::default();
     options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
@@ -101,16 +84,13 @@ pub fn run() -> Result<(), eframe::Error> {
     }
     log_startup_step("starting eframe::run_native");
 
-    let initial_prefs = prefs.clone();
     eframe::run_native(
         "Tabular",
         options,
         Box::new(move |_cc| {
             log_startup_step("eframe creation closure entered");
-            let mut app = window_egui::Tabular::new();
+            let app = window_egui::Tabular::new();
             log_startup_step("Tabular::new() returned");
-            app.set_initial_prefs(initial_prefs);
-            log_startup_step("set_initial_prefs completed -> returning app to eframe");
             Ok(Box::new(app))
         }),
     )

@@ -3295,6 +3295,15 @@ impl App for Tabular {
                 if !res.shared_folders_cache.is_empty() {
                     self.shared_folders_cache = res.shared_folders_cache;
                 }
+                if let Some(account) = res.sync_account {
+                    if let Some(ref username) = account.username {
+                        self.profile_username_input = username.clone();
+                    }
+                    if let Some(ref phone) = account.phone {
+                        self.profile_phone_input = phone.clone();
+                    }
+                    self.sync_account = Some(account);
+                }
                 crate::sidebar_database::refresh_connections_tree(self);
                 crate::sidebar_history::refresh_history_tree(self);
                 self.db_init_receiver = None;

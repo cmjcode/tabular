@@ -1250,6 +1250,7 @@ pub struct DatabaseInitResult {
     pub teams: Vec<crate::sync::api_client::RemoteTeam>,
     pub team_members: std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
     pub shared_folders_cache: Vec<crate::sync::api_client::RemoteSharedFolder>,
+    pub sync_account: Option<crate::sync::TabularAccount>,
 }
 
 pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
@@ -1473,6 +1474,7 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
     let teams = rt.block_on(crate::sync::sync_teams_cache::load_teams_from_cache(&pool));
     let team_members = rt.block_on(crate::sync::sync_teams_cache::load_team_members_from_cache(&pool));
     let shared_folders_cache = rt.block_on(crate::sync::sync_teams_cache::load_shared_folders_from_cache(&pool));
+    let sync_account = crate::sync::api_client::load_account();
 
     crate::log_startup_step("initialize_database_background completed");
     Some(DatabaseInitResult {
@@ -1483,6 +1485,7 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
         teams,
         team_members,
         shared_folders_cache,
+        sync_account,
     })
 }
 

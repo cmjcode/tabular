@@ -177,27 +177,9 @@ impl super::Tabular {
             }
         };
 
-        // Initialize ConfigStore
-        crate::log_startup_step("initializing ConfigStore");
-        let config_store = if let Some(rt) = &runtime {
-            rt.block_on(async {
-                crate::config::ConfigStore::new().await.ok()
-            })
-        } else {
-            None
-        };
-
-        crate::log_startup_step("loading sync account from secrets");
-        let loaded_account = crate::sync::api_client::load_account();
-        crate::log_startup_step("sync account loaded -> constructing Tabular struct");
-        let profile_username_input = loaded_account
-            .as_ref()
-            .and_then(|a| a.username.clone())
-            .unwrap_or_default();
-        let profile_phone_input = loaded_account
-            .as_ref()
-            .and_then(|a| a.phone.clone())
-            .unwrap_or_default();
+        let config_store = None;
+        let profile_username_input = String::new();
+        let profile_phone_input = String::new();
 
         let mut app = Self {
             editor: EditorBuffer::new(""),
@@ -543,7 +525,7 @@ impl super::Tabular {
             schema_diff_state: None,
             schema_diff_receiver: None,
             // ── Sync & Collaboration ─────────────────────────────────────────
-            sync_account: loaded_account,
+            sync_account: None,
             sync_server_url: std::env::var("TABULAR_SERVER_URL")
                 .unwrap_or_else(|_| "https://api.tabular.id".to_string()),
             sync_enabled: true,
