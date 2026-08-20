@@ -78,6 +78,9 @@ pub fn run() -> Result<(), eframe::Error> {
     let mut options = eframe::NativeOptions::default();
     options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
     options.viewport.min_inner_size = Some(egui::vec2(800.0, 600.0));
+    if let Some(icon) = modules::load_icon() {
+        options.viewport.icon = Some(std::sync::Arc::new(icon));
+    }
     log_startup_step("starting eframe::run_native");
 
     eframe::run_native(

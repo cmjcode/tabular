@@ -606,8 +606,6 @@ pub struct Tabular {
     pub queries_load_receiver: Option<std::sync::mpsc::Receiver<Vec<models::structs::TreeNode>>>,
     /// Background receiver for decoding database icon textures
     pub db_icons_receiver: Option<std::sync::mpsc::Receiver<(String, egui::ColorImage)>>,
-    /// Background receiver for decoding application window icon
-    pub app_icon_receiver: Option<std::sync::mpsc::Receiver<egui::IconData>>,
 }
 
 // Preference tabs enumeration

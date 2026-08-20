@@ -3367,15 +3367,6 @@ impl App for Tabular {
             }
         }
 
-        // Drain background application window icon receiver
-        if let Some(ref rx) = self.app_icon_receiver {
-            if let Ok(icon) = rx.try_recv() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(icon))));
-                self.app_icon_receiver = None;
-                crate::log_startup_step("async background setting of app_icon completed");
-            }
-        }
-
         // Drive sync & collaboration tick
         self.tick_sync(ctx);
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)
@@ -3399,7 +3390,6 @@ impl App for Tabular {
             || self.workspaces_load_receiver.is_some()
             || self.queries_load_receiver.is_some()
             || self.db_icons_receiver.is_some()
-            || self.app_icon_receiver.is_some()
         {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }

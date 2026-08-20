@@ -594,7 +594,6 @@ impl super::Tabular {
             show_postman_import_dialog: false,
             queries_load_receiver: None,
             db_icons_receiver: None,
-            app_icon_receiver: None,
         };
 
         // Clear any old cached pools
@@ -626,16 +625,6 @@ impl super::Tabular {
         std::thread::spawn(move || {
             let ws = crate::http_collection::load_workspaces();
             let _ = ws_tx.send(ws);
-        });
-
-        // Asynchronously decode app window icon in background thread
-        crate::log_startup_step("spawning async background thread for modules::load_icon");
-        let (icon_tx, icon_rx) = std::sync::mpsc::channel();
-        app.app_icon_receiver = Some(icon_rx);
-        std::thread::spawn(move || {
-            if let Some(icon) = crate::modules::load_icon() {
-                let _ = icon_tx.send(icon);
-            }
         });
 
         // Asynchronously load and decode DB icon textures in background thread
