@@ -172,6 +172,25 @@ impl ApiClient {
         Ok(resp.data)
     }
 
+    /// Used to migrate a legacy (`crypto_version = 0`) query in place to E2E
+    /// encryption, and to re-encrypt under a Team key when its folder becomes
+    /// Team-shared — both cases update the existing row instead of creating a
+    /// duplicate (the server's `create_saved_query` always inserts a new id).
+    pub async fn update_saved_query(
+        &self,
+        token: &str,
+        id: &str,
+        req: &UpdateQueryReq,
+    ) -> anyhow::Result<RemoteSavedQuery> {
+        let resp = self.http
+            .put(self.url(&format!("/api/v1/queries/{}", id)))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<RemoteSavedQuery>>().await?;
+        Ok(resp.data)
+    }
+
     pub async fn delete_saved_query(&self, token: &str, id: &str) -> anyhow::Result<()> {
         self.http
             .delete(self.url(&format!("/api/v1/queries/{}", id)))
@@ -583,6 +602,11 @@ pub struct RemoteHistoryItem {
     pub id: String,
     pub connection_name: String,
     pub query_text: String,
+    #[serde(default)]
+    pub client_checksum: Option<String>,
+    /// 0 = legacy plaintext (untrusted), 1 = AccountKey AES-256-GCM ciphertext.
+    #[serde(default)]
+    pub crypto_version: i32,
     pub executed_at: String,
 }
 
@@ -591,6 +615,8 @@ pub struct HistoryPushItem {
     pub connection_name: String,
     pub query_text: String,
     pub executed_at: String,
+    pub client_checksum: Option<String>,
+    pub crypto_version: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -601,6 +627,9 @@ pub struct RemoteSavedQuery {
     pub query_text: String,
     pub connection_name: Option<String>,
     pub client_checksum: Option<String>,
+    /// 0 = legacy plaintext (untrusted), 1 = AccountKey/TeamKey AES-256-GCM ciphertext.
+    #[serde(default)]
+    pub crypto_version: i32,
     pub updated_at: String,
 }
 
@@ -611,6 +640,17 @@ pub struct CreateQueryReq {
     pub query_text: String,
     pub connection_name: Option<String>,
     pub client_checksum: Option<String>,
+    pub crypto_version: i32,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct UpdateQueryReq {
+    pub name: Option<String>,
+    pub folder_path: Option<String>,
+    pub query_text: Option<String>,
+    pub connection_name: Option<String>,
+    pub client_checksum: Option<String>,
+    pub crypto_version: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

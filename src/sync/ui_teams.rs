@@ -846,6 +846,12 @@ pub fn share_folder_action(
                         token2.clone(),
                         server2.clone(),
                     ),
+                    "query" => super::sync_queries::reencrypt_folder_to_server(
+                        key.clone(),
+                        folder_path_owned.clone(),
+                        token2.clone(),
+                        server2.clone(),
+                    ),
                     _ => {}
                 }
             }

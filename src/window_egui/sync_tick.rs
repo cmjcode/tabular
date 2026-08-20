@@ -208,28 +208,72 @@ impl super::Tabular {
             );
         }
 
-        // History push
+        // History push + pull — needs the vault unlocked since query_text is
+        // end-to-end encrypted; silently deferred otherwise. (Previously this
+        // block mistakenly called sync_queries instead of sync_history — real
+        // query history sync was never wired up until now.)
         if self.sync_trigger_history {
             self.sync_trigger_history = false;
-            info!("[sync] Triggering history sync");
+            if let (Some(vault), Some(db_pool)) = (self.vault.clone(), self.db_pool.clone()) {
+                info!("[sync] Triggering history sync");
 
-            let (tx, rx) = std::sync::mpsc::channel();
-            self.sync_queries_push_receiver = Some(rx);
-            crate::sync::sync_queries::push_queries_to_server(token.clone(), server.clone(), tx);
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.sync_history_push_receiver = Some(rx);
+                crate::sync::sync_history::push_history_to_server(
+                    self.history_items.clone(),
+                    vault.account_key.clone(),
+                    token.clone(),
+                    server.clone(),
+                    tx,
+                );
 
-            let (tx2, rx2) = std::sync::mpsc::channel();
-            self.sync_queries_pull_receiver = Some(rx2);
-            crate::sync::sync_queries::pull_queries_from_server(token.clone(), server.clone(), tx2);
+                let (tx2, rx2) = std::sync::mpsc::channel();
+                self.sync_history_pull_receiver = Some(rx2);
+                crate::sync::sync_history::pull_history_from_server(
+                    vault.account_key.clone(),
+                    token.clone(),
+                    server.clone(),
+                    db_pool,
+                    tx2,
+                );
+            } else {
+                info!("[sync] Deferring history sync — vault is locked or local DB not ready");
+            }
         }
 
-        // Queries sync
+        // Queries sync (push + pull) — needs the vault unlocked since
+        // query_text is end-to-end encrypted; silently deferred otherwise.
         if self.sync_trigger_queries {
             self.sync_trigger_queries = false;
-            info!("[sync] Triggering queries sync");
+            if let Some(vault) = self.vault.clone() {
+                info!("[sync] Triggering queries sync");
+                let team_keys = self.vault_team_keys.clone();
+                let shared_folders = self.shared_folders_cache.clone();
 
-            let (tx, rx) = std::sync::mpsc::channel();
-            self.sync_queries_push_receiver = Some(rx);
-            crate::sync::sync_queries::push_queries_to_server(token.clone(), server.clone(), tx);
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.sync_queries_push_receiver = Some(rx);
+                crate::sync::sync_queries::push_queries_to_server(
+                    vault.account_key.clone(),
+                    team_keys.clone(),
+                    shared_folders.clone(),
+                    token.clone(),
+                    server.clone(),
+                    tx,
+                );
+
+                let (tx2, rx2) = std::sync::mpsc::channel();
+                self.sync_queries_pull_receiver = Some(rx2);
+                crate::sync::sync_queries::pull_queries_from_server(
+                    vault.account_key.clone(),
+                    team_keys,
+                    shared_folders,
+                    token.clone(),
+                    server.clone(),
+                    tx2,
+                );
+            } else {
+                info!("[sync] Deferring queries sync — vault is locked");
+            }
         }
 
         // HTTP requests sync (push then pull) — needs the vault unlocked since
@@ -407,6 +451,11 @@ impl super::Tabular {
                 Ok(n) => {
                     info!("[sync] Pulled {} history items", n);
                     self.sync_status = crate::sync::SyncStatus::Synced;
+                    if n > 0 {
+                        // Refresh the in-memory list + sidebar tree so newly
+                        // pulled items show up without an app restart.
+                        crate::sidebar_history::load_query_history(self);
+                    }
                 }
                 Err(e) => {
                     warn!("[sync] History pull error: {}", e);

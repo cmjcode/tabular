@@ -2,6 +2,14 @@
 //!
 //! Offline-first: local SQLite is always the source of truth.
 //! Server sync happens in background when online.
+//!
+//! Security: `query_text` is encrypted with AES-256-GCM by `sync::vault_crypto`
+//! using the user's AccountKey BEFORE being sent to the server — history has no
+//! folder concept (unlike connections/queries/HTTP requests), so there's no
+//! Team-key case to resolve here, only the personal AccountKey. The server
+//! only ever stores ciphertext it cannot decrypt. `client_checksum` (SHA/MD5 of
+//! the *plaintext*) is what dedup runs on, since AES-GCM's random nonce means
+//! the same plaintext encrypted twice never produces the same ciphertext.
 
 use log::{info, warn};
 use std::sync::mpsc;
@@ -9,11 +17,13 @@ use std::sync::mpsc;
 use crate::models::structs::HistoryItem;
 
 use super::api_client::{ApiClient, HistoryPushItem};
+use super::vault_crypto::{self, SymKey};
 
-/// Push all local history items to the server (incremental by last_sync_ts).
-/// Runs in background — spawned via tokio::spawn.
+/// Push all local history items to the server (incremental by last_sync_ts),
+/// encrypted with the AccountKey. Runs in background — spawned via tokio::spawn.
 pub fn push_history_to_server(
     items: Vec<HistoryItem>,
+    account_key: SymKey,
     token: String,
     server_url: String,
     result_tx: mpsc::Sender<Result<u64, String>>,
@@ -21,14 +31,29 @@ pub fn push_history_to_server(
     super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
 
-        let push_items: Vec<HistoryPushItem> = items
-            .into_iter()
-            .map(|h| HistoryPushItem {
+        let mut push_items = Vec::with_capacity(items.len());
+        for h in items {
+            let cs = super::sync_queries::checksum(&h.query);
+            let encrypted = match vault_crypto::encrypt_str(&account_key, &h.query) {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!("❌ [sync_history] Failed to encrypt history item: {}", e);
+                    continue;
+                }
+            };
+            push_items.push(HistoryPushItem {
                 connection_name: h.connection_name,
-                query_text: h.query,
+                query_text: encrypted,
                 executed_at: h.executed_at,
-            })
-            .collect();
+                client_checksum: Some(cs),
+                crypto_version: 1,
+            });
+        }
+
+        if push_items.is_empty() {
+            let _ = result_tx.send(Ok(0));
+            return;
+        }
 
         match client.push_history(&token, push_items).await {
             Ok(inserted) => {
@@ -43,9 +68,12 @@ pub fn push_history_to_server(
     });
 }
 
-/// Pull remote history and merge into local SQLite (deduplication by query_text + executed_at).
-/// Returns new items that were inserted locally.
+/// Pull remote history and merge into local SQLite (deduplication by
+/// decrypted query text + connection_name + executed_at). Items that can't be
+/// decrypted (wrong/rotated key) are skipped and logged, never inserted as
+/// ciphertext.
 pub fn pull_history_from_server(
+    account_key: SymKey,
     token: String,
     server_url: String,
     db_pool: std::sync::Arc<sqlx::SqlitePool>,
@@ -65,12 +93,29 @@ pub fn pull_history_from_server(
 
         let mut inserted = 0usize;
         for item in &remote_items {
-            // Check if already exists locally
+            let plaintext = if item.crypto_version >= 1 {
+                match vault_crypto::decrypt_str(&account_key, &item.query_text) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("❌ [sync_history] Failed to decrypt history item: {}", e);
+                        continue;
+                    }
+                }
+            } else {
+                // Legacy (pre-vault) row — was never encrypted, just plain text.
+                // There's no update endpoint for history items, so unlike
+                // connections/queries/HTTP requests these aren't migrated in
+                // place; they're simply readable as-is until they age out.
+                item.query_text.clone()
+            };
+
+            // Check if already exists locally (compare against decrypted text —
+            // the server-side value is ciphertext and never matches directly).
             let exists: bool = sqlx::query_scalar(
                 "SELECT COUNT(*) > 0 FROM query_history
                  WHERE query_text = ? AND connection_name = ? AND executed_at = ?"
             )
-            .bind(&item.query_text)
+            .bind(&plaintext)
             .bind(&item.connection_name)
             .bind(&item.executed_at)
             .fetch_one(db_pool.as_ref())
@@ -82,7 +127,7 @@ pub fn pull_history_from_server(
                     "INSERT INTO query_history (query_text, connection_id, connection_name)
                      VALUES (?, 0, ?)"
                 )
-                .bind(&item.query_text)
+                .bind(&plaintext)
                 .bind(&item.connection_name)
                 .execute(db_pool.as_ref())
                 .await;
