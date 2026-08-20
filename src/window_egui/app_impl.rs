@@ -84,11 +84,15 @@ impl Tabular {
                     });
                 });
             if !keep_open {
-                // Cancel waiting but keep background creation going
+                // Cancel waiting and query execution
                 self.pool_wait_in_progress = false;
+                if let Some(conn_id) = self.pool_wait_connection_id {
+                    crate::connection::cancel_connection_attempt(self, conn_id);
+                }
                 self.pool_wait_connection_id = None;
                 self.pool_wait_query.clear();
                 self.pool_wait_started_at = None;
+                self.query_execution_in_progress = false;
             }
         }
     }
@@ -835,6 +839,21 @@ impl Tabular {
                             self.fetching_databases.remove(&connection_id);
                             self.pending_expansion_restore.remove(&connection_id);
                             self.connection_errors.insert(connection_id, error_message.clone());
+                            if self.pool_wait_in_progress
+                                && self.pool_wait_connection_id == Some(connection_id)
+                            {
+                                self.pool_wait_in_progress = false;
+                                self.pool_wait_connection_id = None;
+                                self.pool_wait_query.clear();
+                                self.pool_wait_started_at = None;
+                                self.query_execution_in_progress = false;
+                                self.error_message = format!("Connection failed: {}", error_message);
+                                self.show_error_message = true;
+                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                    tab.query_message = format!("Connection error: {}", error_message);
+                                    tab.query_message_is_error = true;
+                                }
+                            }
                             self.toasts.error(format!("Connection failed: {}", error_message));
                             ctx.request_repaint();
                         }
@@ -3655,8 +3674,46 @@ impl App for Tabular {
                 self.pool_wait_query.clear();
                 self.pool_wait_started_at = None;
             } else {
-                // Keep UI updated while waiting
-                ctx.request_repaint();
+                // Check if the connection has failed with an error
+                let failed_error = self
+                    .pool_wait_connection_id
+                    .and_then(|cid| self.connection_errors.get(&cid).cloned());
+                let elapsed = self
+                    .pool_wait_started_at
+                    .map(|t| t.elapsed())
+                    .unwrap_or_default();
+
+                if let Some(err) = failed_error {
+                    self.pool_wait_in_progress = false;
+                    self.pool_wait_connection_id = None;
+                    self.pool_wait_query.clear();
+                    self.pool_wait_started_at = None;
+                    self.query_execution_in_progress = false;
+                    self.error_message = format!("Connection failed: {}", err);
+                    self.show_error_message = true;
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        tab.query_message = format!("Connection error: {}", err);
+                        tab.query_message_is_error = true;
+                    }
+                } else if elapsed.as_secs() >= 30 {
+                    self.pool_wait_in_progress = false;
+                    if let Some(cid) = self.pool_wait_connection_id {
+                        crate::connection::cancel_connection_attempt(self, cid);
+                    }
+                    self.pool_wait_connection_id = None;
+                    self.pool_wait_query.clear();
+                    self.pool_wait_started_at = None;
+                    self.query_execution_in_progress = false;
+                    self.error_message = "Connection attempt timed out after 30 seconds.".to_string();
+                    self.show_error_message = true;
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        tab.query_message = "Connection attempt timed out after 30 seconds.".to_string();
+                        tab.query_message_is_error = true;
+                    }
+                } else {
+                    // Keep UI updated while waiting
+                    ctx.request_repaint();
+                }
             }
         }
         // Sync editor theme only if linking enabled

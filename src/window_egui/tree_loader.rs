@@ -678,6 +678,7 @@ impl super::Tabular {
 
                 if !self.refreshing_connections.contains(&connection_id)
                     && !self.fetching_databases.contains(&connection_id)
+                    && !self.connection_errors.contains_key(&connection_id)
                 {
                     self.maybe_auto_sync_connection(connection_id);
                 }
@@ -972,6 +973,11 @@ impl super::Tabular {
             && !databases.is_empty()
         {
             return databases;
+        }
+
+        // Do not re-fetch if the connection already failed
+        if self.connection_errors.contains_key(&connection_id) {
+            return Vec::new();
         }
         
         // If not in cache or empty, trigger background fetch
