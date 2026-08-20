@@ -37,6 +37,10 @@ impl super::Tabular {
 
         // ── Poll profile (username/phone) save receiver ────────────────────────
         self.poll_profile_receiver();
+
+        // ── Vault (E2E encryption) setup/unlock UI receivers ────────────────────
+        crate::sync::ui_vault_setup::drain_receivers(self);
+        self.poll_vault_team_keys_receiver();
     }
 
     fn poll_profile_receiver(&mut self) {
@@ -190,6 +194,9 @@ impl super::Tabular {
             self.sync_trigger_connections = false;
             info!("[sync] Triggering connections sync");
 
+            self.maybe_unlock_team_keys();
+            self.push_all_connections(&token, &server);
+
             let (tx, rx) = std::sync::mpsc::channel();
             self.sync_connections_receiver = Some(rx);
             let user_id = account.user_id.clone();
@@ -224,6 +231,41 @@ impl super::Tabular {
             self.sync_queries_push_receiver = Some(rx);
             crate::sync::sync_queries::push_queries_to_server(token.clone(), server.clone(), tx);
         }
+
+        // HTTP requests sync (push then pull) — needs the vault unlocked since
+        // headers/body/auth are end-to-end encrypted; silently deferred otherwise.
+        if self.sync_trigger_http {
+            self.sync_trigger_http = false;
+            if let Some(vault) = self.vault.clone() {
+                info!("[sync] Triggering HTTP requests sync");
+                let team_keys = self.vault_team_keys.clone();
+                let shared_folders = self.shared_folders_cache.clone();
+
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.sync_http_push_receiver = Some(rx);
+                crate::sync::sync_http_requests::push_http_requests_to_server(
+                    vault.account_key.clone(),
+                    team_keys.clone(),
+                    shared_folders.clone(),
+                    token.clone(),
+                    server.clone(),
+                    tx,
+                );
+
+                let (tx2, rx2) = std::sync::mpsc::channel();
+                self.sync_http_pull_receiver = Some(rx2);
+                crate::sync::sync_http_requests::pull_http_requests_from_server(
+                    vault.account_key.clone(),
+                    team_keys,
+                    shared_folders,
+                    token.clone(),
+                    server.clone(),
+                    tx2,
+                );
+            } else {
+                info!("[sync] Deferring HTTP requests sync — vault is locked");
+            }
+        }
     }
 
     fn drain_sync_receivers(&mut self) {
@@ -244,6 +286,7 @@ impl super::Tabular {
                     self.sync_refresh_attempt_count = 0;
                     self.sync_session_expired_notified = false;
                     self.toasts.info(format!("Signed in as {}", account.email));
+                    crate::sync::ui_vault_setup::trigger_vault_check(self);
 
                     // Trigger automatic sync for connections, history, queries
                     self.sync_trigger_connections = true;
@@ -312,7 +355,7 @@ impl super::Tabular {
                 Ok(remote_conns) => {
                     info!("[sync] Received {} remote connections", remote_conns.len());
                     self.sync_status = crate::sync::SyncStatus::Synced;
-                    // TODO: merge into local connection list
+                    self.merge_remote_connections(remote_conns);
                 }
                 Err(e) => {
                     warn!("[sync] Connections sync error: {}", e);
@@ -321,6 +364,21 @@ impl super::Tabular {
                 }
             }
             self.sync_connections_receiver = None;
+        }
+
+        // Connections push
+        if let Some(rx) = &self.sync_connections_push_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(n) if n > 0 => info!("[sync] Pushed {} new connection(s) to server", n),
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("[sync] Connections push error: {}", e);
+                    self.check_401_error(&e);
+                }
+            }
+            self.sync_connections_push_receiver = None;
         }
 
         // History push
@@ -393,6 +451,34 @@ impl super::Tabular {
                 }
             }
             self.sync_queries_pull_receiver = None;
+        }
+
+        // HTTP requests push
+        if let Some(rx) = &self.sync_http_push_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(n) => info!("[sync] Pushed {} HTTP request(s)", n),
+                Err(e) => {
+                    warn!("[sync] HTTP requests push error: {}", e);
+                    self.check_401_error(&e);
+                }
+            }
+            self.sync_http_push_receiver = None;
+        }
+
+        // HTTP requests pull
+        if let Some(rx) = &self.sync_http_pull_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(n) => info!("[sync] Pulled {} HTTP request(s)", n),
+                Err(e) => {
+                    warn!("[sync] HTTP requests pull error: {}", e);
+                    self.check_401_error(&e);
+                }
+            }
+            self.sync_http_pull_receiver = None;
         }
     }
 
@@ -617,6 +703,270 @@ impl super::Tabular {
             }
             self.shared_folders_receiver = None;
         }
+    }
+
+    /// Push local connections the server doesn't have yet (matched by
+    /// name + folder_path). Skips any connection whose folder is Team-shared
+    /// but whose Team key isn't unlocked locally yet, and any connection type
+    /// not synced to the cloud is still sent — the whole config is opaque
+    /// ciphertext to the server either way.
+    fn push_all_connections(&mut self, token: &str, server: &str) {
+        if self.sync_connections_push_receiver.is_some() {
+            return; // already in flight
+        }
+        let vault = match self.vault.clone() {
+            Some(v) => v,
+            None => return, // nothing to encrypt with yet
+        };
+        if self.connections.is_empty() {
+            return;
+        }
+
+        let team_keys = self.vault_team_keys.clone();
+        let shared_folders = self.shared_folders_cache.clone();
+        let connections = self.connections.clone();
+        let token = token.to_string();
+        let server = server.to_string();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.sync_connections_push_receiver = Some(rx);
+
+        crate::sync::spawn_async(async move {
+            let client = crate::sync::api_client::ApiClient::new(&server);
+            let remote = match client.list_connections(&token).await {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
+            let existing: std::collections::HashSet<(String, String)> =
+                remote.iter().map(|r| (r.name.clone(), r.folder_path.clone())).collect();
+
+            let mut pushed = 0usize;
+            for conn in connections {
+                let folder_path = conn.folder.clone().filter(|f| !f.trim().is_empty()).unwrap_or_else(|| "/".to_string());
+                if existing.contains(&(conn.name.clone(), folder_path.clone())) {
+                    continue;
+                }
+                let key = match crate::sync::vault_sync::resolve_key_for_folder(
+                    &vault.account_key,
+                    &team_keys,
+                    &shared_folders,
+                    "connection",
+                    &folder_path,
+                ) {
+                    Some(k) => k.clone(),
+                    None => continue, // Team key not unlocked yet — try again next tick
+                };
+
+                let encrypted = match crate::sync::vault_crypto::encrypt_json(&key, &conn) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        log::warn!("[sync] Failed to encrypt connection '{}': {}", conn.name, e);
+                        continue;
+                    }
+                };
+                let req = crate::sync::api_client::CreateConnectionReq {
+                    name: conn.name.clone(),
+                    db_type: format!("{:?}", conn.connection_type),
+                    encrypted_config: encrypted,
+                    color_tag: None,
+                    folder_path: Some(folder_path),
+                    crypto_version: 1,
+                };
+                match client.create_connection(&token, &req).await {
+                    Ok(_) => pushed += 1,
+                    Err(e) => log::warn!("[sync] Failed to push connection '{}': {}", conn.name, e),
+                }
+            }
+            let _ = tx.send(Ok(pushed));
+        });
+    }
+
+    /// Decrypt & merge connections pulled from the server into the local
+    /// connections list. Each row is decrypted with the AccountKey (personal
+    /// folders) or the owning Team's key (Team-shared folders) — resolved via
+    /// `vault_sync::resolve_key_for_folder`. Rows this device can't decrypt
+    /// yet (vault locked, Team key not granted, or pre-E2E legacy ciphertext)
+    /// are skipped rather than guessed at.
+    fn merge_remote_connections(&mut self, remote_conns: Vec<crate::sync::api_client::RemoteConnection>) {
+        let vault = match self.vault.clone() {
+            Some(v) => v,
+            None => {
+                info!("[sync] Vault locked — deferring connection decrypt until unlocked");
+                return;
+            }
+        };
+        let my_user_id = self.sync_account.as_ref().map(|a| a.user_id.clone());
+        let token = self.sync_account.as_ref().map(|a| a.access_token.clone());
+        let server = self.sync_server_url.clone();
+
+        let existing: std::collections::HashSet<(String, Option<String>)> = self
+            .connections
+            .iter()
+            .map(|c| (c.name.clone(), c.folder.clone()))
+            .collect();
+
+        let mut added = 0usize;
+        for remote in remote_conns {
+            let key = match crate::sync::vault_sync::resolve_key_for_folder(
+                &vault.account_key,
+                &self.vault_team_keys,
+                &self.shared_folders_cache,
+                "connection",
+                &remote.folder_path,
+            ) {
+                Some(k) => k.clone(),
+                None => {
+                    info!("[sync] Skipping Team-shared connection '{}': Team key not unlocked yet", remote.name);
+                    continue;
+                }
+            };
+
+            let mut conn: crate::models::structs::ConnectionConfig = if remote.crypto_version >= 1 {
+                match crate::sync::vault_crypto::decrypt_json(&key, &remote.encrypted_config) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("[sync] Failed to decrypt connection '{}': {}", remote.name, e);
+                        continue;
+                    }
+                }
+            } else {
+                // Legacy (pre-vault) row — best-effort decrypt with the old
+                // scheme(s), then queue a re-upload under the real vault key
+                // so it migrates for good instead of staying legacy forever.
+                let plaintext = match (&my_user_id, crate::sync::legacy_crypto::legacy_decrypt_best_effort(
+                    &remote.encrypted_config,
+                    my_user_id.as_deref().unwrap_or(""),
+                )) {
+                    (Some(_), Some(p)) => p,
+                    _ => {
+                        warn!("[sync] Could not decrypt legacy connection '{}' with any known scheme — skipping", remote.name);
+                        continue;
+                    }
+                };
+                match serde_json::from_str::<crate::models::structs::ConnectionConfig>(&plaintext) {
+                    Ok(c) => {
+                        if let Some(token) = &token {
+                            crate::sync::sync_connections::migrate_legacy_connection(
+                                remote.id.clone(),
+                                c.clone(),
+                                key.clone(),
+                                token.clone(),
+                                server.clone(),
+                            );
+                        }
+                        c
+                    }
+                    Err(e) => {
+                        warn!("[sync] Legacy connection '{}' decrypted but wasn't valid JSON: {}", remote.name, e);
+                        continue;
+                    }
+                }
+            };
+
+            if existing.contains(&(conn.name.clone(), conn.folder.clone())) {
+                continue; // already present locally — no merge/conflict resolution for connections yet
+            }
+
+            conn.id = None; // let the local DB assign a fresh id
+            if crate::sidebar_database::save_connection_to_database(self, &conn) {
+                added += 1;
+            }
+        }
+
+        if added > 0 {
+            info!("[sync] Merged {} new connection(s) from server", added);
+            self.toasts.info(format!("Synced {} connection(s) from cloud", added));
+            crate::sidebar_database::load_connections(self);
+        }
+    }
+
+    /// Opportunistically unlock any Team vault keys we don't have yet (piggy-backs
+    /// on the connections-sync cadence rather than polling every frame), and grant
+    /// pending members a key for any Team whose key we already hold.
+    fn poll_vault_team_keys_receiver(&mut self) {
+        if let Some(rx) = &self.vault_team_keys_receiver
+            && let Ok(unlocked) = rx.try_recv()
+        {
+            self.vault_team_keys_receiver = None;
+            if !unlocked.is_empty() {
+                info!("[sync] Unsealed {} Team vault key(s)", unlocked.len());
+                for (team_id, team_key) in unlocked {
+                    self.vault_team_keys.insert(team_id.clone(), team_key.clone());
+
+                    let account = match &self.sync_account {
+                        Some(a) => a.clone(),
+                        None => continue,
+                    };
+                    let server = self.sync_server_url.clone();
+                    crate::sync::spawn_async(async move {
+                        let client = crate::sync::api_client::ApiClient::new(&server);
+                        if let Err(e) = crate::sync::vault_sync::grant_pending_team_key_envelopes(
+                            &client,
+                            &account.access_token,
+                            &team_id,
+                            &team_key,
+                        )
+                        .await
+                        {
+                            warn!("[sync] Failed to grant pending Team {} key envelopes: {}", team_id, e);
+                        }
+                    });
+                }
+                // Re-pull connections now that we may be able to decrypt more of them.
+                self.sync_trigger_connections = true;
+            }
+        }
+
+        if let Some(rx) = &self.vault_team_bootstrap_receiver
+            && let Ok((team_id, result)) = rx.try_recv()
+        {
+            self.vault_team_bootstrap_receiver = None;
+            match result {
+                Ok(key) => {
+                    info!("[sync] Team {} vault key ready", team_id);
+                    self.vault_team_keys.insert(team_id, key);
+                    self.sync_trigger_connections = true;
+                    self.sync_trigger_http = true;
+                }
+                Err(e) => warn!("[sync] Failed to bootstrap Team {} vault key: {}", team_id, e),
+            }
+        }
+    }
+
+    /// Kick off unsealing Team vault keys for any Team we belong to but don't
+    /// have a key for yet. Called opportunistically alongside connections sync.
+    fn maybe_unlock_team_keys(&mut self) {
+        if self.vault_team_keys_receiver.is_some() {
+            return; // already in flight
+        }
+        let vault = match self.vault.clone() {
+            Some(v) => v,
+            None => return,
+        };
+        let missing: Vec<String> = self
+            .teams
+            .iter()
+            .map(|t| t.id.clone())
+            .filter(|id| !self.vault_team_keys.contains_key(id))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        let account = match &self.sync_account {
+            Some(a) => a.clone(),
+            None => return,
+        };
+        let server = self.sync_server_url.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.vault_team_keys_receiver = Some(rx);
+        crate::sync::spawn_async(async move {
+            let client = crate::sync::api_client::ApiClient::new(&server);
+            let unlocked = crate::sync::vault_sync::unlock_all_team_keys(&client, &account.access_token, &vault, &missing).await;
+            let _ = tx.send(unlocked);
+        });
     }
 
     /// Notify the CRDT engine when the editor text changes (call after each edit).

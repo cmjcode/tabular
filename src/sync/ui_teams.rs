@@ -784,6 +784,76 @@ pub fn share_folder_action(
     });
 
     tabular.share_folder_receiver = Some(rx);
+
+    // Bootstrap (or fetch) this Team's vault key, grant it to every current
+    // member, and re-encrypt anything already synced to this folder under the
+    // personal AccountKey so it moves onto the Team key instead of staying
+    // owner-only-readable forever.
+    if let Some(vault) = tabular.vault.clone() {
+        let team_id_owned = team_id.to_string();
+        let my_user_id = account.user_id.clone();
+        let token2 = account.access_token.clone();
+        let server2 = tabular.sync_server_url.clone();
+        let resource_type_owned = resource_type.to_string();
+        let folder_path_owned = folder_path.to_string();
+
+        // Local connections in this folder — captured now (sync, on the UI
+        // thread) since the spawned task below can't safely borrow `tabular`.
+        let matching_connections: Vec<crate::models::structs::ConnectionConfig> = if resource_type == "connection" {
+            tabular
+                .connections
+                .iter()
+                .filter(|c| {
+                    c.folder
+                        .clone()
+                        .filter(|f| !f.trim().is_empty())
+                        .unwrap_or_else(|| "/".to_string())
+                        == folder_path
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let (tx2, rx2) = std::sync::mpsc::channel();
+        super::spawn_async(async move {
+            let client = super::api_client::ApiClient::new(&server2);
+            let mut team_keys = std::collections::HashMap::new();
+            let result = async {
+                let key = super::vault_sync::ensure_own_team_key(
+                    &client, &token2, &my_user_id, &vault, &team_id_owned, &mut team_keys,
+                )
+                .await?;
+                super::vault_sync::grant_pending_team_key_envelopes(&client, &token2, &team_id_owned, &key).await?;
+                Ok::<_, anyhow::Error>(key)
+            }
+            .await
+            .map_err(|e| e.to_string());
+
+            if let Ok(key) = &result {
+                match resource_type_owned.as_str() {
+                    "connection" => super::sync_connections::reencrypt_folder_to_server(
+                        matching_connections,
+                        key.clone(),
+                        folder_path_owned.clone(),
+                        token2.clone(),
+                        server2.clone(),
+                    ),
+                    "http" => super::sync_http_requests::reencrypt_folder_to_server(
+                        key.clone(),
+                        folder_path_owned.clone(),
+                        token2.clone(),
+                        server2.clone(),
+                    ),
+                    _ => {}
+                }
+            }
+
+            let _ = tx2.send((team_id_owned, result));
+        });
+        tabular.vault_team_bootstrap_receiver = Some(rx2);
+    }
 }
 
 pub fn unshare_folder_action(tabular: &mut Tabular, team_id: &str, folder_id: &str) {

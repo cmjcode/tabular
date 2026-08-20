@@ -9,6 +9,7 @@
 pub mod api_client;
 pub mod auth;
 pub mod crdt_editor;
+pub mod legacy_crypto;
 pub mod sync_connections;
 pub mod sync_history;
 pub mod sync_http_requests;
@@ -17,6 +18,9 @@ pub mod sync_teams_cache;
 pub mod ui_collab;
 pub mod ui_login;
 pub mod ui_teams;
+pub mod ui_vault_setup;
+pub mod vault_crypto;
+pub mod vault_sync;
 
 use serde::{Deserialize, Serialize};
 

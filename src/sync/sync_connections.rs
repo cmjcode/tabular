@@ -1,104 +1,30 @@
 //! Sync Connections — upload/download encrypted connection configs.
 //!
-//! Security: connection credentials are encrypted with AES-256-GCM
-//! BEFORE being sent to the server. The server only stores ciphertext.
-//! Key derivation: PBKDF2 from the user's access_token sub (user_id).
+//! Security: connection credentials are encrypted with AES-256-GCM by
+//! `sync::vault_crypto` BEFORE being sent to the server, using either the
+//! user's own AccountKey (personal folders) or the owning Team's key
+//! (Team-shared folders) — resolved by `sync::vault_sync::resolve_key_for_folder`.
+//! The server only ever stores ciphertext it cannot decrypt.
+//!
+//! Decryption of pulled rows happens in `window_egui::sync_tick::merge_remote_connections`
+//! (it needs `Tabular`'s local connection list to merge into), not here.
 
-use base64::Engine;
 use log::{info, warn};
 use std::sync::mpsc;
 
 use crate::models::structs::ConnectionConfig;
 
 use super::api_client::{ApiClient, CreateConnectionReq, RemoteConnection};
-
-// ─── Encryption helpers ──────────────────────────────────────────────────────
-
-/// Encrypt a JSON string using AES-256-GCM.
-/// Key is derived from user_id using SHA-256.
-/// Returns base64-encoded: nonce(12 bytes) || ciphertext.
-#[cfg(feature = "collab")]
-pub fn encrypt_config(plaintext: &str, user_id: &str) -> Result<String, String> {
-    use aes_gcm::{
-        aead::{Aead, KeyInit},
-        Aes256Gcm, Key, Nonce,
-    };
-    use rand::RngExt;
-    use sha2::{Sha256, Digest};
-
-    let mut key_bytes = [0u8; 32];
-    let hash = Sha256::digest(user_id.as_bytes());
-    key_bytes.copy_from_slice(&hash);
-
-    let key: Key<Aes256Gcm> = key_bytes.into();
-    let cipher = Aes256Gcm::new(&key);
-
-    let mut nonce_bytes = [0u8; 12];
-    rand::rng().fill(&mut nonce_bytes);
-    let nonce: Nonce<_> = nonce_bytes.into();
-
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext.as_bytes())
-        .map_err(|e| e.to_string())?;
-
-    let mut combined = nonce_bytes.to_vec();
-    combined.extend_from_slice(&ciphertext);
-
-    Ok(base64::engine::general_purpose::STANDARD.encode(combined))
-}
-
-#[cfg(not(feature = "collab"))]
-pub fn encrypt_config(plaintext: &str, _user_id: &str) -> Result<String, String> {
-    Ok(base64::engine::general_purpose::STANDARD.encode(plaintext)) // No-op stub without collab feature
-}
-
-/// Decrypt an AES-256-GCM encrypted connection config.
-#[cfg(feature = "collab")]
-pub fn decrypt_config(encrypted: &str, user_id: &str) -> Result<String, String> {
-    use aes_gcm::{
-        aead::{Aead, KeyInit},
-        Aes256Gcm, Key, Nonce,
-    };
-    use sha2::{Sha256, Digest};
-
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(encrypted)
-        .map_err(|e| e.to_string())?;
-    if data.len() < 12 {
-        return Err("Invalid ciphertext: too short".to_string());
-    }
-
-    let (nonce_bytes, ciphertext) = data.split_at(12);
-
-    let mut key_bytes = [0u8; 32];
-    let hash = Sha256::digest(user_id.as_bytes());
-    key_bytes.copy_from_slice(&hash);
-
-    let key: Key<Aes256Gcm> = key_bytes.into();
-    let cipher = Aes256Gcm::new(&key);
-    let nonce: Nonce<_> = nonce_bytes.try_into().map_err(|_| "Invalid nonce length".to_string())?;
-
-    let plaintext = cipher
-        .decrypt(&nonce, ciphertext)
-        .map_err(|e| e.to_string())?;
-
-    String::from_utf8(plaintext).map_err(|e| e.to_string())
-}
-
-#[cfg(not(feature = "collab"))]
-pub fn decrypt_config(encrypted: &str, _user_id: &str) -> Result<String, String> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encrypted)
-        .map_err(|e| e.to_string())?;
-    String::from_utf8(bytes).map_err(|e| e.to_string())
-}
-
-// ─── Sync functions ───────────────────────────────────────────────────────────
+use super::vault_crypto::{self, SymKey};
 
 /// Push a single connection to the server (called after local save).
+/// `key` must already be resolved for this connection's folder via
+/// `vault_sync::resolve_key_for_folder` — callers with no key yet (Team not
+/// unlocked) should not call this until one is available.
 pub fn push_connection_to_server(
     conn: ConnectionConfig,
-    user_id: String,
+    key: SymKey,
+    folder_path: String,
     token: String,
     server_url: String,
     result_tx: mpsc::Sender<Result<String, String>>, // returns server connection ID
@@ -106,16 +32,7 @@ pub fn push_connection_to_server(
     super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
 
-        // Serialize connection to JSON, then encrypt
-        let config_json = match serde_json::to_string(&conn) {
-            Ok(j) => j,
-            Err(e) => {
-                let _ = result_tx.send(Err(e.to_string()));
-                return;
-            }
-        };
-
-        let encrypted = match encrypt_config(&config_json, &user_id) {
+        let encrypted = match vault_crypto::encrypt_json(&key, &conn) {
             Ok(e) => e,
             Err(e) => {
                 let _ = result_tx.send(Err(format!("Encryption error: {}", e)));
@@ -128,6 +45,8 @@ pub fn push_connection_to_server(
             db_type: format!("{:?}", conn.connection_type),
             encrypted_config: encrypted,
             color_tag: None,
+            folder_path: Some(folder_path),
+            crypto_version: 1,
         };
 
         match client.create_connection(&token, &req).await {
@@ -143,7 +62,102 @@ pub fn push_connection_to_server(
     });
 }
 
-/// Pull all connections from server and return decrypted configs.
+/// Re-encrypt every given local connection with `key` and upsert it to the
+/// server (update if a same-named row already exists in `folder_path`,
+/// otherwise create it). Used right after a folder becomes newly Team-shared,
+/// to move items that were already synced under the personal AccountKey onto
+/// the Team key — without this, they'd stay owner-only-readable forever even
+/// though the folder now says "shared". Fire-and-forget; failures are logged,
+/// not surfaced to the UI (the regular sync cadence will retry on its own).
+pub fn reencrypt_folder_to_server(
+    connections: Vec<ConnectionConfig>,
+    key: SymKey,
+    folder_path: String,
+    token: String,
+    server_url: String,
+) {
+    if connections.is_empty() {
+        return;
+    }
+    super::spawn_async(async move {
+        let client = ApiClient::new(&server_url);
+        let remote = match client.list_connections(&token).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("❌ [sync_connections] re-encrypt: failed to list remote connections: {}", e);
+                return;
+            }
+        };
+
+        let mut migrated = 0usize;
+        for conn in connections {
+            let encrypted = match vault_crypto::encrypt_json(&key, &conn) {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!("❌ [sync_connections] re-encrypt: failed to encrypt '{}': {}", conn.name, e);
+                    continue;
+                }
+            };
+
+            let existing = remote.iter().find(|r| r.name == conn.name && r.folder_path == folder_path);
+            let result = match existing {
+                Some(r) => {
+                    let body = serde_json::json!({ "encrypted_config": encrypted, "crypto_version": 1 });
+                    client.update_connection(&token, &r.id, &body).await.map(|_| ())
+                }
+                None => {
+                    let req = CreateConnectionReq {
+                        name: conn.name.clone(),
+                        db_type: format!("{:?}", conn.connection_type),
+                        encrypted_config: encrypted,
+                        color_tag: None,
+                        folder_path: Some(folder_path.clone()),
+                        crypto_version: 1,
+                    };
+                    client.create_connection(&token, &req).await.map(|_| ())
+                }
+            };
+            match result {
+                Ok(()) => migrated += 1,
+                Err(e) => warn!("❌ [sync_connections] re-encrypt: failed to upsert '{}': {}", conn.name, e),
+            }
+        }
+        info!("✅ [sync_connections] Re-encrypted {} connection(s) in '{}' under the Team key", migrated, folder_path);
+    });
+}
+
+/// Re-encrypt a single legacy (`crypto_version = 0`) connection — already
+/// decrypted by the caller via `legacy_crypto::legacy_decrypt_best_effort` —
+/// under the resolved vault key, and persist it server-side as
+/// `crypto_version = 1`. Fire-and-forget: on failure the row simply stays
+/// `crypto_version = 0` and migration is retried on the next pull.
+pub fn migrate_legacy_connection(
+    remote_id: String,
+    conn: ConnectionConfig,
+    key: SymKey,
+    token: String,
+    server_url: String,
+) {
+    super::spawn_async(async move {
+        let client = ApiClient::new(&server_url);
+        let encrypted = match vault_crypto::encrypt_json(&key, &conn) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("❌ [migrate] Failed to encrypt legacy connection '{}': {}", conn.name, e);
+                return;
+            }
+        };
+        let body = serde_json::json!({ "encrypted_config": encrypted, "crypto_version": 1 });
+        match client.update_connection(&token, &remote_id, &body).await {
+            Ok(_) => info!("✅ [migrate] Migrated legacy connection '{}' to end-to-end encryption", conn.name),
+            Err(e) => warn!("❌ [migrate] Failed to migrate connection '{}': {}", conn.name, e),
+        }
+    });
+}
+
+/// Pull all connections from server (still encrypted — decryption + merge
+/// into the local list happens in `window_egui::sync_tick`, which has
+/// access to the unlocked vault and Team keys).
 pub fn pull_connections_from_server(
     _user_id: String,
     token: String,

@@ -574,14 +574,42 @@ pub struct Tabular {
     pub sync_trigger_connections: bool,
     pub sync_trigger_history: bool,
     pub sync_trigger_queries: bool,
+    pub sync_trigger_http: bool,
+    pub sync_http_push_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
+    pub sync_http_pull_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     // Async receivers for sync operations
     pub sync_connections_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<crate::sync::api_client::RemoteConnection>, String>>>,
+    pub sync_connections_push_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     pub sync_history_push_receiver: Option<std::sync::mpsc::Receiver<Result<u64, String>>>,
     pub sync_history_pull_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     pub sync_queries_push_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     pub sync_queries_pull_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     /// Last time history was synced (Unix timestamp), persisted to check incremental sync
     pub sync_history_last_ts: Option<String>,
+
+    // ─── Vault (End-to-End Encryption) ──────────────────────────────────────
+    /// Unlocked vault key material for this session (None until the user
+    /// unlocks it with their Sync Passphrase). Never persisted in this form.
+    pub vault: Option<crate::sync::vault_crypto::UnlockedVault>,
+    /// Per-Team symmetric keys, unsealed with `vault`'s X25519 key.
+    pub vault_team_keys: std::collections::HashMap<String, crate::sync::vault_crypto::SymKey>,
+    /// Current step of the vault setup/unlock UI (Settings → Sync & Account).
+    pub vault_stage: crate::sync::ui_vault_setup::VaultStage,
+    /// Wrapped bundle fetched from the server — opaque without the passphrase.
+    pub vault_remote_bundle: Option<crate::sync::api_client::RemoteVaultKeys>,
+    pub vault_passphrase_input: String,
+    pub vault_passphrase_confirm_input: String,
+    pub vault_recovery_code_input: String,
+    /// Recovery code shown once right after vault creation.
+    pub vault_recovery_code_display: Option<String>,
+    pub vault_recovery_code_saved_confirmed: bool,
+    pub vault_error: Option<String>,
+    pub vault_check_receiver: Option<std::sync::mpsc::Receiver<Result<Option<crate::sync::api_client::RemoteVaultKeys>, String>>>,
+    pub vault_upload_receiver: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// Result of unsealing Team vault keys we didn't have yet.
+    pub vault_team_keys_receiver: Option<std::sync::mpsc::Receiver<std::collections::HashMap<String, crate::sync::vault_crypto::SymKey>>>,
+    /// Result of minting/fetching + granting a Team's vault key right after sharing a folder.
+    pub vault_team_bootstrap_receiver: Option<std::sync::mpsc::Receiver<(String, Result<crate::sync::vault_crypto::SymKey, String>)>>,
 
     // ─── Database & Connection Initialization ───────────────────────────────
     /// Background receiver for initial asynchronous loading of connections.db & metadata

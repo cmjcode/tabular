@@ -36,6 +36,12 @@ fn render_login_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
         if url_resp.lost_focus() || url_resp.changed() {
             tabular.prefs_dirty = true;
         }
+        if !tabular.sync_server_url.trim().is_empty() && !is_server_url_acceptable(&tabular.sync_server_url) {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 193, 7),
+                "⚠ Use https:// — plain http:// is only accepted for localhost",
+            );
+        }
         ui.add_space(12.0);
 
         // OAuth buttons
@@ -202,7 +208,12 @@ fn render_logged_in(tabular: &mut Tabular, ui: &mut egui::Ui) {
             if ui.add(style::btn_secondary("💾  Sync Queries")).clicked() {
                 tabular.sync_trigger_queries = true;
             }
+            if ui.add(style::btn_secondary("🌐  Sync HTTP Requests")).clicked() {
+                tabular.sync_trigger_http = true;
+            }
         });
+
+        super::ui_vault_setup::render_vault_panel(tabular, ui);
 
         ui.add_space(8.0);
         ui.separator();
@@ -217,9 +228,32 @@ fn render_logged_in(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
+/// Reject plaintext `http://` server URLs except for localhost/127.0.0.1
+/// (local dev). Everything synced — OAuth tokens, and until the vault is
+/// unlocked, even the E2E-encrypted payload's transport — depends on TLS;
+/// pointing at a plain-HTTP server defeats that regardless of what the
+/// application layer does.
+fn is_server_url_acceptable(url: &str) -> bool {
+    let trimmed = url.trim();
+    if let Some(rest) = trimmed.strip_prefix("https://") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = trimmed.strip_prefix("http://") {
+        let host = rest.split(['/', ':']).next().unwrap_or("");
+        return host == "localhost" || host == "127.0.0.1" || host == "::1";
+    }
+    false
+}
+
 fn start_oauth(tabular: &mut Tabular, provider: OAuthProvider) {
     if tabular.sync_server_url.trim().is_empty() {
         tabular.sync_login_error = Some("Please enter a server URL first".to_string());
+        return;
+    }
+    if !is_server_url_acceptable(&tabular.sync_server_url) {
+        tabular.sync_login_error = Some(
+            "Server URL must use https:// (plain http:// is only allowed for localhost/127.0.0.1)".to_string(),
+        );
         return;
     }
     tabular.sync_login_error = None;
@@ -276,6 +310,7 @@ fn try_submit_token(tabular: &mut Tabular) {
             tabular.sync_login_error = None;
             tabular.sync_token_input.clear();
             tabular.sync_status = super::SyncStatus::Synced;
+            super::ui_vault_setup::trigger_vault_check(tabular);
         }
         Err(e) => {
             tabular.sync_login_error = Some(format!("Invalid JSON: {}", e));
@@ -327,4 +362,16 @@ fn do_logout(tabular: &mut Tabular) {
     tabular.sync_account = None;
     tabular.sync_status = super::SyncStatus::Offline;
     tabular.crdt_state = None;
+
+    // Scrub the unlocked vault from memory — it must be re-unlocked with the
+    // Sync Passphrase (or re-fetched from the server) on the next sign-in.
+    tabular.vault = None;
+    tabular.vault_team_keys.clear();
+    tabular.vault_stage = super::ui_vault_setup::VaultStage::Unknown;
+    tabular.vault_remote_bundle = None;
+    tabular.vault_passphrase_input.clear();
+    tabular.vault_passphrase_confirm_input.clear();
+    tabular.vault_recovery_code_input.clear();
+    tabular.vault_recovery_code_display = None;
+    tabular.vault_error = None;
 }

@@ -97,18 +97,26 @@ cargo-deb = "3.7.0"
 chacha20poly1305 = "0.11"
 
 # ─── Sync & Collaboration (optional, feature-gated) ─────────────────────────
-# CRDT engine (Yjs port for Rust)
+# CRDT engine (Yjs port for Rust) — only needed for realtime collaborative editing.
 # small-client keeps 32-bit ClientID for wire-compat with tabular-server until server is also on 0.27
 yrs = { version = "0.27", features = ["small-client"], optional = true }
-# WebSocket client for collab rooms
+# WebSocket client for collab rooms — only needed for realtime collaborative editing.
 tokio-tungstenite = { version = "0.30", features = [
        "native-tls",
 ], optional = true }
-# AES-256-GCM encryption for connection credentials before server upload
-aes-gcm = { version = "0.11", optional = true }
-sha2 = { version = "0.11", optional = true }
+
+# ─── Vault crypto (src/sync/vault_crypto.rs) — NOT optional ────────────────
+# End-to-end encryption for synced connection credentials & HTTP client secrets.
+# These are non-optional: sync/login is always compiled in (not behind `collab`),
+# so gating the crypto behind an opt-in feature silently downgraded release
+# builds to a plaintext/base64 no-op — see SECURITY.md.
+aes-gcm = { version = "0.11" }                                    # symmetric encryption of synced payloads
+sha2 = { version = "0.11" }                                       # hashing (checksums, KDF glue)
 base64 = "0.23"
-rand = { version = "0.10", optional = true }
+rand = { version = "0.10" }                                       # AES-GCM nonce generation
+argon2 = { version = "0.5", features = ["std"] }                  # Sync Passphrase -> KEK (Argon2id)
+crypto_box = { version = "0.9", features = ["seal", "std"] }      # X25519 sealed boxes for Team vault key sharing
+zeroize = { version = "1", features = ["zeroize_derive"] }        # scrub key material from memory
 
 # OS keychain backends (see src/secrets.rs). Linux is opt-in via the
 # `linux-keyring` feature because Secret Service pulls a D-Bus build/runtime
@@ -137,13 +145,12 @@ tree_sitter_sequel = ["tree-sitter", "tree-sitter-sequel", "anyhow"]
 query_ast = ["sqlparser"]
 sqlparser = ["dep:sqlparser"]
 
-# Enable real-time collaboration and cloud sync features
+# Enable realtime collaborative editing (CRDT rooms + WebSocket).
+# Vault/E2E crypto and REST sync are always compiled in — see the
+# "Vault crypto" dependency block above.
 collab = [
        "dep:yrs",
        "dep:tokio-tungstenite",
-       "dep:aes-gcm",
-       "dep:sha2",
-       "dep:rand",
 ]
 
 # removed lapce_core in egui-only mode

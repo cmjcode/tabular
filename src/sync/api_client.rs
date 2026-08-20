@@ -15,10 +15,20 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(server_url: &str) -> Self {
+        // Lets a server operator gate out clients older than the release that
+        // introduced end-to-end vault encryption (see tabular-server's
+        // MIN_CLIENT_VERSION / middleware::version_gate) — a client this old
+        // doesn't send this header at all, which the gate treats as "too old".
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(v) = reqwest::header::HeaderValue::from_str(env!("CARGO_PKG_VERSION")) {
+            headers.insert("X-Tabular-Client-Version", v);
+        }
+
         ApiClient {
             server_url: server_url.trim_end_matches('/').to_string(),
             http: Client::builder()
-                .user_agent("tabular-client/0.10")
+                .user_agent(concat!("tabular-client/", env!("CARGO_PKG_VERSION")))
+                .default_headers(headers)
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap(),
@@ -387,6 +397,86 @@ impl ApiClient {
         Ok(resp.data)
     }
 
+    // ── Vault Keys (E2E) ─────────────────────────────────────────────────────
+    // The server only ever stores/returns opaque ciphertext + the public half
+    // of the X25519 keypair here — see sync/vault_crypto.rs for what actually
+    // unlocks this bundle (the Sync Passphrase, never sent over the wire).
+
+    /// `None` when the caller has never created a vault yet (fresh account).
+    pub async fn get_vault_keys(&self, token: &str) -> anyhow::Result<Option<RemoteVaultKeys>> {
+        let resp = self.http
+            .get(self.url("/api/v1/vault/keys"))
+            .bearer_auth(token)
+            .send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let wrapped = resp.error_for_status()?.json::<ApiWrapper<RemoteVaultKeys>>().await?;
+        Ok(Some(wrapped.data))
+    }
+
+    /// Create or rotate the caller's own vault key bundle.
+    pub async fn put_vault_keys(&self, token: &str, req: &PutVaultKeysReq) -> anyhow::Result<()> {
+        self.http
+            .put(self.url("/api/v1/vault/keys"))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
+    /// Bulk-fetch X25519 public keys for the given user ids (used to grant a
+    /// Team vault key to fellow members — the server never sees the key itself).
+    pub async fn list_public_keys(&self, token: &str, ids: &[String]) -> anyhow::Result<Vec<PublicKeyEntry>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = format!("{}?ids={}", self.url("/api/v1/users/public-keys"), percent_encode(&ids.join(",")));
+        let resp = self.http
+            .get(&url)
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<PublicKeyEntry>>>().await?;
+        Ok(resp.data)
+    }
+
+    // ── Team Vault Key Envelopes ─────────────────────────────────────────────
+
+    /// `None` when this team has no vault key yet, or the caller hasn't been
+    /// granted one yet (waiting on another online member's client to grant it).
+    pub async fn get_my_key_envelope(&self, token: &str, team_id: &str) -> anyhow::Result<Option<RemoteKeyEnvelope>> {
+        let resp = self.http
+            .get(self.url(&format!("/api/v1/teams/{}/key-envelopes/me", team_id)))
+            .bearer_auth(token)
+            .send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let wrapped = resp.error_for_status()?.json::<ApiWrapper<RemoteKeyEnvelope>>().await?;
+        Ok(Some(wrapped.data))
+    }
+
+    /// Team members who don't have a key envelope yet, with the public key
+    /// needed to seal one for them.
+    pub async fn list_pending_key_grants(&self, token: &str, team_id: &str) -> anyhow::Result<Vec<PendingKeyGrant>> {
+        let resp = self.http
+            .get(self.url(&format!("/api/v1/teams/{}/key-envelopes/pending", team_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<PendingKeyGrant>>>().await?;
+        Ok(resp.data)
+    }
+
+    /// Upload one or more sealed Team-key envelopes (granting members access).
+    pub async fn put_key_envelopes(&self, token: &str, team_id: &str, req: &PutKeyEnvelopesReq) -> anyhow::Result<()> {
+        self.http
+            .post(self.url(&format!("/api/v1/teams/{}/key-envelopes", team_id)))
+            .bearer_auth(token)
+            .json(req)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
     // ── Health check ─────────────────────────────────────────────────────────
 
     pub async fn health_check(&self) -> bool {
@@ -470,6 +560,11 @@ pub struct RemoteConnection {
     pub db_type: String,
     pub encrypted_config: String,
     pub color_tag: Option<String>,
+    #[serde(default)]
+    pub folder_path: String,
+    /// 0 = legacy (base64 no-op or SHA256(user_id)-keyed — untrusted), 1 = AccountKey/TeamKey AES-256-GCM.
+    #[serde(default)]
+    pub crypto_version: i32,
     pub updated_at: String,
 }
 
@@ -479,6 +574,8 @@ pub struct CreateConnectionReq {
     pub db_type: String,
     pub encrypted_config: String,
     pub color_tag: Option<String>,
+    pub folder_path: Option<String>,
+    pub crypto_version: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -532,6 +629,9 @@ pub struct RemoteHttpRequest {
     pub updated_at: String,
     #[serde(default)]
     pub access: String,
+    /// 0 = legacy plaintext JSON (untrusted), 1 = AccountKey/TeamKey AES-256-GCM ciphertext.
+    #[serde(default)]
+    pub crypto_version: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -545,6 +645,7 @@ pub struct CreateHttpRequestReq {
     pub body_json: Option<String>,
     pub auth_json: Option<String>,
     pub client_checksum: Option<String>,
+    pub crypto_version: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -558,6 +659,7 @@ pub struct UpdateHttpRequestReq {
     pub body_json: Option<String>,
     pub auth_json: Option<String>,
     pub client_checksum: Option<String>,
+    pub crypto_version: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -614,4 +716,95 @@ pub struct RemoteSharedFolder {
 pub struct ShareFolderReq {
     pub resource_type: String,
     pub folder_path: String,
+}
+
+// ─── Vault Keys (E2E) ──────────────────────────────────────────────────────
+
+/// Opaque wrapped-key bundle as stored server-side — see `sync::vault_crypto`
+/// for what unlocks it. None of these fields mean anything without the
+/// user's Sync Passphrase or recovery code.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteVaultKeys {
+    pub kdf_algo: String,
+    pub kdf_params_json: String,
+    pub salt: String,
+    pub wrapped_account_key: String,
+    pub x25519_public_key: String,
+    pub wrapped_x25519_private_key: String,
+    pub recovery_salt: String,
+    pub wrapped_account_key_recovery: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PutVaultKeysReq {
+    pub kdf_algo: String,
+    pub kdf_params_json: String,
+    pub salt: String,
+    pub wrapped_account_key: String,
+    pub x25519_public_key: String,
+    pub wrapped_x25519_private_key: String,
+    pub recovery_salt: String,
+    pub wrapped_account_key_recovery: String,
+}
+
+impl From<&crate::sync::vault_crypto::VaultKeyBundle> for PutVaultKeysReq {
+    fn from(b: &crate::sync::vault_crypto::VaultKeyBundle) -> Self {
+        PutVaultKeysReq {
+            kdf_algo: b.kdf_algo.clone(),
+            kdf_params_json: b.kdf_params_json.clone(),
+            salt: b.salt.clone(),
+            wrapped_account_key: b.wrapped_account_key.clone(),
+            x25519_public_key: b.x25519_public_key.clone(),
+            wrapped_x25519_private_key: b.wrapped_x25519_private_key.clone(),
+            recovery_salt: b.recovery_salt.clone(),
+            wrapped_account_key_recovery: b.wrapped_account_key_recovery.clone(),
+        }
+    }
+}
+
+impl From<RemoteVaultKeys> for crate::sync::vault_crypto::VaultKeyBundle {
+    fn from(r: RemoteVaultKeys) -> Self {
+        crate::sync::vault_crypto::VaultKeyBundle {
+            kdf_algo: r.kdf_algo,
+            kdf_params_json: r.kdf_params_json,
+            salt: r.salt,
+            wrapped_account_key: r.wrapped_account_key,
+            x25519_public_key: r.x25519_public_key,
+            wrapped_x25519_private_key: r.wrapped_x25519_private_key,
+            recovery_salt: r.recovery_salt,
+            wrapped_account_key_recovery: r.wrapped_account_key_recovery,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PublicKeyEntry {
+    pub id: String,
+    pub x25519_public_key: String,
+}
+
+// ─── Team Vault Key Envelopes ───────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteKeyEnvelope {
+    pub team_id: String,
+    pub user_id: String,
+    pub wrapped_team_key: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct KeyEnvelopeItemReq {
+    pub user_id: String,
+    pub wrapped_team_key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PutKeyEnvelopesReq {
+    pub envelopes: Vec<KeyEnvelopeItemReq>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PendingKeyGrant {
+    pub user_id: String,
+    pub x25519_public_key: String,
 }
