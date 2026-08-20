@@ -195,6 +195,7 @@ impl super::Tabular {
             show_add_connection: false,
             new_connection: models::structs::ConnectionConfig::default(),
             db_pool: None,
+            shared_db_pool: Arc::new(std::sync::RwLock::new(None)),
             runtime,
             connection_pools: HashMap::new(), // Start with empty cache
             pending_connection_pools: std::collections::HashSet::new(), // Track pools being created
@@ -701,16 +702,38 @@ impl super::Tabular {
         // }
         app
     }
+
+    pub fn set_db_pool(&mut self, pool: Option<Arc<sqlx::SqlitePool>>) {
+        self.db_pool = pool.clone();
+        if let Ok(mut lock) = self.shared_db_pool.write() {
+            *lock = pool;
+        }
+    }
+
     pub fn start_background_worker(
         &self,
         task_receiver: Receiver<models::enums::BackgroundTask>,
         result_sender: Sender<models::enums::BackgroundResult>,
     ) {
         // Spawn a background thread to process queued tasks
-        // Clone cache DB pool for use inside the worker
-        let cache_pool = self.db_pool.clone();
+        let shared_db_pool = self.shared_db_pool.clone();
         let shared_pools = self.shared_connection_pools.clone();
-        
+
+        fn get_cache_pool(
+            shared: &std::sync::Arc<std::sync::RwLock<Option<Arc<sqlx::SqlitePool>>>>,
+        ) -> Option<Arc<sqlx::SqlitePool>> {
+            // Wait up to 3 seconds for async database bootstrap to complete if called immediately at startup
+            for _ in 0..60 {
+                if let Ok(guard) = shared.read() {
+                    if let Some(pool) = guard.as_ref() {
+                        return Some(pool.clone());
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            shared.read().ok().and_then(|guard| guard.clone())
+        }
+
         std::thread::spawn(move || {
             while let Ok(task) = task_receiver.recv() {
                 crate::window_egui::connection_mgr::autosync_log(&format!(
@@ -723,11 +746,12 @@ impl super::Tabular {
                         // The old block_on approach caused the worker to stall for the
                         // entire MySQL/PG connection time, preventing RefreshConnection
                         // from being processed concurrently.
-                        let cache_pool_thread = cache_pool.clone();
+                        let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             eprintln!("[FETCH-DB] FetchDatabases id={} STARTED", connection_id);
+                            let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             if let Some(pool) = &cache_pool_thread
                                 && let Ok(rt) = tokio::runtime::Runtime::new()
                             {
@@ -757,7 +781,7 @@ impl super::Tabular {
                                 let _ = result_sender_thread.send(
                                     models::enums::BackgroundResult::ConnectionFailed {
                                         connection_id,
-                                        error_message: "Runtime initialization error".to_string(),
+                                        error_message: "Database pool not available or runtime initialization error".to_string(),
                                     },
                                 );
                             }
@@ -784,10 +808,11 @@ impl super::Tabular {
                     models::enums::BackgroundTask::FetchRedisKeys { connection_id, database_name } => {
                         // Spawn a thread so a slow Redis server does not stall
                         // the worker loop and every task queued behind it.
-                        let cache_pool_thread = cache_pool.clone();
+                        let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
+                            let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             if let Ok(rt) = tokio::runtime::Runtime::new() {
                                 let keys = rt.block_on(async {
                                     if database_name == driver_redis::REDIS_CLUSTER_KEYSPACE {
@@ -860,76 +885,77 @@ impl super::Tabular {
                         database_name,
                     } => {
                         // Off the worker loop: see FetchRedisKeys above.
-                        let cache_pool_thread = cache_pool.clone();
+                        let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
-                        if let Ok(rt) = tokio::runtime::Runtime::new() {
-                            let state = rt.block_on(async {
-                                let redis_manager = {
-                                    let pools = shared_pools_thread.lock().ok()?;
-                                    if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
-                                        Some(mgr.as_ref().clone())
-                                    } else {
-                                        None
-                                    }
-                                }?;
+                            let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
+                            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                                let state = rt.block_on(async {
+                                    let redis_manager = {
+                                        let pools = shared_pools_thread.lock().ok()?;
+                                        if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
+                                            Some(mgr.as_ref().clone())
+                                        } else {
+                                            None
+                                        }
+                                    }?;
 
-                                let cache_pool_ref = cache_pool_thread.as_ref()?;
-                                let connection = driver_redis::load_redis_connection_config(
-                                    cache_pool_ref.as_ref(),
-                                    connection_id,
-                                )
-                                .await?;
+                                    let cache_pool_ref = cache_pool_thread.as_ref()?;
+                                    let connection = driver_redis::load_redis_connection_config(
+                                        cache_pool_ref.as_ref(),
+                                        connection_id,
+                                    )
+                                    .await?;
 
-                                match driver_redis::load_redis_browser_state_for_keyspace(
-                                    &connection,
-                                    &redis_manager,
-                                    database_name.as_deref(),
-                                )
-                                .await
-                                {
-                                    Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster)) => {
-                                        let key_count = key_pairs.len();
-                                        Some(models::structs::RedisBrowserState {
-                                            available_keyspaces,
-                                            keyspace_label: keyspace_label.clone(),
-                                            keys: key_pairs
-                                                .into_iter()
-                                                .map(|(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
-                                                    key_name,
-                                                    key_type,
-                                                    ttl_label: if is_cluster {
-                                                        "Cluster".to_string()
-                                                    } else {
-                                                        keyspace_label.clone()
-                                                    },
-                                                    size_label: "-".to_string(),
-                                                })
-                                                .collect(),
-                                            status_text: if is_cluster {
-                                                format!("Redis Cluster keyspace · {} keys loaded · metadata loads on selection", key_count)
-                                            } else {
-                                                format!("{} · {} keys loaded", keyspace_label, key_count)
-                                            },
+                                    match driver_redis::load_redis_browser_state_for_keyspace(
+                                        &connection,
+                                        &redis_manager,
+                                        database_name.as_deref(),
+                                    )
+                                    .await
+                                    {
+                                        Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster)) => {
+                                            let key_count = key_pairs.len();
+                                            Some(models::structs::RedisBrowserState {
+                                                available_keyspaces,
+                                                keyspace_label: keyspace_label.clone(),
+                                                keys: key_pairs
+                                                    .into_iter()
+                                                    .map(|(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
+                                                        key_name,
+                                                        key_type,
+                                                        ttl_label: if is_cluster {
+                                                            "Cluster".to_string()
+                                                        } else {
+                                                            keyspace_label.clone()
+                                                        },
+                                                        size_label: "-".to_string(),
+                                                    })
+                                                    .collect(),
+                                                status_text: if is_cluster {
+                                                    format!("Redis Cluster keyspace · {} keys loaded · metadata loads on selection", key_count)
+                                                } else {
+                                                    format!("{} · {} keys loaded", keyspace_label, key_count)
+                                                },
+                                                ..Default::default()
+                                            })
+                                        }
+                                        Err(error) => Some(models::structs::RedisBrowserState {
+                                            last_error: Some(error),
                                             ..Default::default()
-                                        })
+                                        }),
                                     }
-                                    Err(error) => Some(models::structs::RedisBrowserState {
-                                        last_error: Some(error),
+                                });
+
+                                let _ = result_sender_thread.send(models::enums::BackgroundResult::RedisBrowserStateFetched {
+                                    connection_id,
+                                    state: state.unwrap_or_else(|| models::structs::RedisBrowserState {
+                                        last_error: Some(format!("Failed to load Redis browser for connection {}", connection_id)),
                                         ..Default::default()
                                     }),
-                                }
-                            });
-
-                            let _ = result_sender_thread.send(models::enums::BackgroundResult::RedisBrowserStateFetched {
-                                connection_id,
-                                state: state.unwrap_or_else(|| models::structs::RedisBrowserState {
-                                    last_error: Some(format!("Failed to load Redis browser for connection {}", connection_id)),
-                                    ..Default::default()
-                                }),
-                            });
-                        }
+                                });
+                            }
                         });
                     }
                     models::enums::BackgroundTask::SearchRedisBrowserKeys {
@@ -938,54 +964,56 @@ impl super::Tabular {
                         search_text,
                     } => {
                         // Off the worker loop: see FetchRedisKeys above.
-                        let cache_pool_thread = cache_pool.clone();
+                        let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
-                        if let Ok(rt) = tokio::runtime::Runtime::new() {
-                            let keys = rt.block_on(async {
-                                let redis_manager = {
-                                    let pools = shared_pools_thread.lock().ok()?;
-                                    if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
-                                        Some(mgr.as_ref().clone())
-                                    } else {
-                                        None
-                                    }
-                                }?;
+                            let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
+                            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                                let keys = rt.block_on(async {
+                                    let redis_manager = {
+                                        let pools = shared_pools_thread.lock().ok()?;
+                                        if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
+                                            Some(mgr.as_ref().clone())
+                                        } else {
+                                            None
+                                        }
+                                    }?;
 
-                                let cache_pool_ref = cache_pool_thread.as_ref()?;
-                                let connection = driver_redis::load_redis_connection_config(
-                                    cache_pool_ref.as_ref(),
-                                    connection_id,
-                                )
-                                .await?;
-
-                                Some(
-                                    driver_redis::search_redis_browser_keys_from_connection(
-                                        &connection,
-                                        &redis_manager,
-                                        &database_name,
-                                        &search_text,
-                                        200,
+                                    let cache_pool_ref = cache_pool_thread.as_ref()?;
+                                    let connection = driver_redis::load_redis_connection_config(
+                                        cache_pool_ref.as_ref(),
+                                        connection_id,
                                     )
-                                    .await,
-                                )
-                            });
+                                    .await?;
 
-                            let _ = result_sender_thread.send(models::enums::BackgroundResult::RedisBrowserSearchFetched {
-                                connection_id,
-                                database_name,
-                                search_text,
-                                keys: keys.unwrap_or_default(),
-                            });
-                        }
+                                    Some(
+                                        driver_redis::search_redis_browser_keys_from_connection(
+                                            &connection,
+                                            &redis_manager,
+                                            &database_name,
+                                            &search_text,
+                                            200,
+                                        )
+                                        .await,
+                                    )
+                                });
+
+                                let _ = result_sender_thread.send(models::enums::BackgroundResult::RedisBrowserSearchFetched {
+                                    connection_id,
+                                    database_name,
+                                    search_text,
+                                    keys: keys.unwrap_or_default(),
+                                });
+                            }
                         });
                     }
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
-                        let cache_pool_thread = cache_pool.clone();
+                        let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
+                            let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             eprintln!(
                                 "[AUTO-SYNC] bg RefreshConnection id={} STARTED cache_pool_present={}",
                                 connection_id,
@@ -1030,11 +1058,12 @@ impl super::Tabular {
                     }
                     models::enums::BackgroundTask::EnsureConnectionPool { connection_id } => {
                         // Spawn a thread so pool creation doesn't block the worker loop.
-                        let cache_pool_thread = cache_pool.clone();
+                        let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             eprintln!("[POOL] EnsureConnectionPool id={} STARTED", connection_id);
+                            let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             if let Some(pool) = &cache_pool_thread
                                 && let Ok(rt) = tokio::runtime::Runtime::new()
                             {
@@ -1055,6 +1084,11 @@ impl super::Tabular {
                                         });
                                     }
                                 }
+                            } else {
+                                let _ = result_sender_thread.send(models::enums::BackgroundResult::ConnectionFailed {
+                                    connection_id,
+                                    error_message: "Database pool not available".to_string(),
+                                });
                             }
                         });
                     }
@@ -1063,9 +1097,10 @@ impl super::Tabular {
                         database_name,
                         table_name,
                     } => {
-                        let cache_pool_thread = cache_pool.clone();
+                        let shared_db_pool_thread = shared_db_pool.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
+                            let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             if let Some(pool) = &cache_pool_thread
                                 && let Ok(rt) = tokio::runtime::Runtime::new()
                             {
@@ -1114,7 +1149,7 @@ impl super::Tabular {
                         std::thread::spawn(move || {
                             // Perform update check on a lightweight runtime (if required by async API)
                             let result = if let Ok(rt) = tokio::runtime::Runtime::new() {
-                                rt.block_on(crate::self_update::check_for_updates())
+                                 rt.block_on(crate::self_update::check_for_updates())
                                     .map_err(|e| e.to_string())
                             } else {
                                 Err("Failed to create runtime for update check".to_string())
@@ -1129,7 +1164,8 @@ impl super::Tabular {
                         show_progress: _,
                     } => {
                         // Start optional background prefetch with progress tracking
-                        if let Some(_cache_pool_arc) = &cache_pool {
+                        let shared_db_pool_thread = shared_db_pool.clone();
+                        if let Some(_cache_pool_arc) = get_cache_pool(&shared_db_pool_thread) {
                             // Need to get connection config and pool
                             // This is a bit tricky since we're in background thread
                             // We'll need to pass the necessary data or fetch from cache

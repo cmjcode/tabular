@@ -57,6 +57,23 @@ impl MetadataStaging {
     }
 
     pub(crate) async fn commit_to_sqlite(&self, cache_pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        match self.commit_to_sqlite_inner(cache_pool).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_corrupt_error(&e) => {
+                eprintln!(
+                    "[METADATA-STAGING] conn={} detected SQLite malformed/corruption error: {}. Attempting self-healing checkpoint & reindex...",
+                    self.connection_id, e
+                );
+                let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(cache_pool).await;
+                let _ = sqlx::query("REINDEX").execute(cache_pool).await;
+                // Retry once after healing
+                self.commit_to_sqlite_inner(cache_pool).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn commit_to_sqlite_inner(&self, cache_pool: &SqlitePool) -> Result<(), sqlx::Error> {
         let total_tables: usize = self.databases.iter().map(|d| d.tables.len()).sum();
         eprintln!(
             "[METADATA-STAGING] conn={} starting atomic SQLite commit: {} databases, {} tables total",
@@ -97,16 +114,24 @@ impl MetadataStaging {
         // 2. Insert staged data in batch
         for db in &self.databases {
             sqlx::query(
-                "INSERT OR REPLACE INTO database_cache (connection_id, database_name) VALUES (?, ?)",
+                "INSERT INTO database_cache (connection_id, database_name) VALUES (?, ?) \
+                 ON CONFLICT(connection_id, database_name) DO NOTHING",
             )
             .bind(self.connection_id)
             .bind(&db.database_name)
             .execute(&mut *tx)
             .await?;
 
+            let mut seen_tables = std::collections::HashSet::new();
             for tbl in &db.tables {
+                let table_key = (tbl.table_name.clone(), tbl.table_type.clone());
+                if !seen_tables.insert(table_key) {
+                    continue;
+                }
+
                 sqlx::query(
-                    "INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?) \
+                     ON CONFLICT(connection_id, database_name, table_name, table_type) DO NOTHING",
                 )
                 .bind(self.connection_id)
                 .bind(&db.database_name)
@@ -115,9 +140,15 @@ impl MetadataStaging {
                 .execute(&mut *tx)
                 .await?;
 
+                let mut seen_cols = std::collections::HashSet::new();
                 for col in &tbl.columns {
+                    if !seen_cols.insert(col.column_name.clone()) {
+                        continue;
+                    }
+
                     sqlx::query(
-                        "INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?) \
+                         ON CONFLICT(connection_id, database_name, table_name, column_name) DO UPDATE SET data_type = excluded.data_type, ordinal_position = excluded.ordinal_position",
                     )
                     .bind(self.connection_id)
                     .bind(&db.database_name)
@@ -129,9 +160,15 @@ impl MetadataStaging {
                     .await?;
                 }
 
+                let mut seen_indexes = std::collections::HashSet::new();
                 for idx in &tbl.indexes {
+                    if !seen_indexes.insert(idx.index_name.clone()) {
+                        continue;
+                    }
+
                     sqlx::query(
-                        "INSERT OR REPLACE INTO index_cache (connection_id, database_name, table_name, index_name, method, is_unique, columns_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO index_cache (connection_id, database_name, table_name, index_name, method, is_unique, columns_json) VALUES (?, ?, ?, ?, ?, ?, ?) \
+                         ON CONFLICT(connection_id, database_name, table_name, index_name) DO UPDATE SET method = excluded.method, is_unique = excluded.is_unique, columns_json = excluded.columns_json",
                     )
                     .bind(self.connection_id)
                     .bind(&db.database_name)
@@ -161,4 +198,17 @@ impl MetadataStaging {
         );
         Ok(())
     }
+}
+
+fn is_corrupt_error(e: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db_err) = e {
+        if db_err.code().is_some_and(|c| c.as_ref() == "11") {
+            return true;
+        }
+        let msg = db_err.message().to_lowercase();
+        return msg.contains("malformed")
+            || msg.contains("disk image is malformed")
+            || msg.contains("corrupt");
+    }
+    false
 }

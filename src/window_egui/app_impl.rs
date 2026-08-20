@@ -3282,7 +3282,7 @@ impl App for Tabular {
         // Drain background Database & Connection initialization receiver
         if let Some(ref rx) = self.db_init_receiver {
             if let Ok(res) = rx.try_recv() {
-                self.db_pool = Some(res.db_pool);
+                self.set_db_pool(Some(res.db_pool));
                 self.connections = res.connections;
                 self.connection_folders = res.connection_folders;
                 self.history_items = res.history_items;

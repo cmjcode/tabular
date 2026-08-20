@@ -1832,7 +1832,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
         });
 
     if let Some(pool) = pool_result {
-        tabular.db_pool = Some(Arc::new(pool));
+        tabular.set_db_pool(Some(Arc::new(pool)));
         crate::log_startup_step("running column_cache / teams migrations");
         // Best-effort migrations for new columns (idempotent): add flags to column_cache
         // Ignore errors if columns already exist
@@ -1904,7 +1904,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                 }
             });
             if let Ok(new_pool) = pool_res {
-                tabular.db_pool = Some(Arc::new(new_pool));
+                tabular.set_db_pool(Some(Arc::new(new_pool)));
                 info!("✅ Successfully created fresh connections.db after corruption recovery");
             }
         }
@@ -2588,7 +2588,7 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
     let preserved_history = tabular.history_items.clone();
 
     // Clear active pool so file handle is released
-    tabular.db_pool = None;
+    tabular.set_db_pool(None);
 
     // Backup & delete corrupted SQLite file
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();

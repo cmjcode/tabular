@@ -45,6 +45,7 @@ pub struct Tabular {
     pub show_add_connection: bool,
     pub new_connection: models::structs::ConnectionConfig,
     pub db_pool: Option<Arc<SqlitePool>>,
+    pub shared_db_pool: Arc<std::sync::RwLock<Option<Arc<SqlitePool>>>>,
     // Global async runtime for all database operations
     pub runtime: Option<Arc<tokio::runtime::Runtime>>,
     // Connection cache untuk menghindari membuat koneksi berulang

@@ -511,6 +511,7 @@ pub(crate) async fn fetch_mysql_data(
 
         eprintln!("[DRIVER-MYSQL] conn={} schema '{}' has {} tables/views", connection_id, db_name, table_rows.len());
 
+        let mut seen_tables = std::collections::HashSet::new();
         for row in table_rows.into_iter() {
             let table_name = match decode_cell(&row, 0) {
                 Some(v) => v,
@@ -522,6 +523,11 @@ pub(crate) async fn fetch_mysql_data(
             } else {
                 "table".to_string()
             };
+
+            let table_key = (table_name.clone(), table_type.clone());
+            if !seen_tables.insert(table_key) {
+                continue;
+            }
 
             let mut staged_table = TableMetaStaging {
                 table_name: table_name.clone(),
@@ -539,15 +545,18 @@ pub(crate) async fn fetch_mysql_data(
                 .await;
 
             if let Ok(cols) = cols_res {
+                let mut seen_cols = std::collections::HashSet::new();
                 for row_c in cols {
                     let col_name = decode_cell(&row_c, 0).unwrap_or_default();
                     let col_type = decode_cell(&row_c, 1).unwrap_or_default();
                     let ord: i64 = row_c.try_get(2).unwrap_or(0);
-                    staged_table.columns.push(ColumnMetaStaging {
-                        column_name: col_name,
-                        data_type: col_type,
-                        ordinal_position: ord,
-                    });
+                    if !col_name.is_empty() && seen_cols.insert(col_name.clone()) {
+                        staged_table.columns.push(ColumnMetaStaging {
+                            column_name: col_name,
+                            data_type: col_type,
+                            ordinal_position: ord,
+                        });
+                    }
                 }
             }
 
@@ -568,6 +577,7 @@ pub(crate) async fn fetch_mysql_data(
                 .await;
 
             if let Ok(index_rows) = indexes_res {
+                let mut seen_indexes = std::collections::HashSet::new();
                 for idx_row in index_rows {
                     let index_name = decode_cell(&idx_row, 0).unwrap_or_default();
                     let columns_str = decode_cell(&idx_row, 1).unwrap_or_default();
@@ -584,12 +594,14 @@ pub(crate) async fn fetch_mysql_data(
                     let columns_json =
                         serde_json::to_string(&columns).unwrap_or_else(|_| "[]".to_string());
 
-                    staged_table.indexes.push(IndexMetaStaging {
-                        index_name,
-                        method: index_types,
-                        is_unique,
-                        columns_json,
-                    });
+                    if !index_name.is_empty() && seen_indexes.insert(index_name.clone()) {
+                        staged_table.indexes.push(IndexMetaStaging {
+                            index_name,
+                            method: index_types,
+                            is_unique,
+                            columns_json,
+                        });
+                    }
                 }
             }
 
