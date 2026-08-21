@@ -149,14 +149,22 @@ fn render_url_bar(
 ) -> bool {
     let mut workspaces_saved = false;
 
+    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
+        ui.ctx(),
+        crate::config::UiModePreference::Auto,
+    );
+
+    let bar_h = if metrics.is_touch { 36.0 } else { 28.0 };
+    let method_w = if metrics.is_touch { 92.0 } else { 78.0 };
+    let send_w = if metrics.is_touch { 88.0 } else { 76.0 };
+    let save_w = if metrics.is_touch { 88.0 } else { 76.0 };
+    let code_w = if metrics.is_touch { 42.0 } else { 36.0 };
+    let font_sz = if metrics.is_touch { 14.0 } else { 12.5 };
+
     ui.horizontal(|ui| {
-        let send_w = 84.0;
-        let save_w = 76.0;
-        let code_w = 38.0;
-        let method_w = 88.0;
-        let bar_h = 30.0;
         ui.spacing_mut().interact_size.y = bar_h;
         ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
 
         // Method selector
         egui::ComboBox::from_id_salt("http_method_combo")
@@ -177,15 +185,16 @@ fn render_url_bar(
                 }
             });
 
-        // URL input — subtract Send, Save, and Code button widths so NONE is clipped
+        // URL input — fills all remaining space so the right buttons align flush to the right
         let total_right_w = send_w + save_w + code_w;
-        let total_spacing = ui.spacing().item_spacing.x * 4.0 + 8.0;
+        let total_spacing = ui.spacing().item_spacing.x * 4.0;
         let url_w = (ui.available_width() - total_right_w - total_spacing).max(80.0);
         let url_resp = ui.add_sized(
             [url_w, bar_h],
             egui::TextEdit::singleline(&mut state.url)
                 .hint_text("https://api.example.com/endpoint")
-                .margin(egui::Margin::symmetric(8, 5))
+                .desired_width(url_w)
+                .margin(egui::Margin::symmetric(8, 4))
                 .vertical_align(egui::Align::Center),
         );
 
@@ -207,27 +216,39 @@ fn render_url_bar(
             }
         }
 
-        // SEND button
+        // SEND button — identical height and corner radius as Save and Code
         let send_label = if state.is_loading {
             "⏳ Sending"
         } else {
             "▶  Send"
         };
-        let send_btn = ui.add_enabled(
-            !state.is_loading && !state.url.is_empty(),
-            egui::Button::new(egui::RichText::new(send_label).color(egui::Color32::WHITE).strong())
-                .fill(crate::window_egui::style::theme_accent(ui.ctx()))
-                .corner_radius(egui::CornerRadius::same(5)),
-        );
-        if send_btn.clicked() {
+        let can_send = !state.is_loading && !state.url.is_empty();
+        let send_btn = egui::Button::new(
+            egui::RichText::new(send_label)
+                .color(egui::Color32::WHITE)
+                .strong()
+                .size(font_sz),
+        )
+        .fill(crate::window_egui::style::theme_accent(ui.ctx()))
+        .corner_radius(egui::CornerRadius::same(5));
+
+        let send_resp = ui.add_enabled_ui(can_send, |ui| {
+            ui.add_sized([send_w, bar_h], send_btn)
+        }).inner;
+
+        if send_resp.clicked() {
             execute_request(state);
         }
 
-        // SAVE button
+        // SAVE button — identical height and corner radius as Send and Code
         let save_btn = ui.add_sized(
             [save_w, bar_h],
-            egui::Button::new(egui::RichText::new("💾 Save").color(ui.visuals().text_color()))
-                .corner_radius(egui::CornerRadius::same(5)),
+            egui::Button::new(
+                egui::RichText::new("💾 Save")
+                    .color(ui.visuals().text_color())
+                    .size(font_sz),
+            )
+            .corner_radius(egui::CornerRadius::same(5)),
         ).on_hover_text("Save / Update request (Cmd+S)");
 
         if save_btn.clicked() {
@@ -236,11 +257,15 @@ fn render_url_bar(
             }
         }
 
-        // CODE button — opens the "Copy as Code" dialog (curl / Python / Go / …)
+        // CODE button — identical height and corner radius as Send and Save
         let code_btn = ui.add_sized(
             [code_w, bar_h],
-            egui::Button::new(egui::RichText::new("</>").color(ui.visuals().text_color()))
-                .corner_radius(egui::CornerRadius::same(5)),
+            egui::Button::new(
+                egui::RichText::new("</>")
+                    .color(ui.visuals().text_color())
+                    .size(font_sz),
+            )
+            .corner_radius(egui::CornerRadius::same(5)),
         ).on_hover_text("Copy request as code (curl, Python, Go, …)");
         if code_btn.clicked() {
             state.show_code_dialog = true;
@@ -814,39 +839,87 @@ fn render_kv_table(
     rows: &mut Vec<(String, String, bool)>,
     id: &str,
 ) {
+    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
+        ui.ctx(),
+        crate::config::UiModePreference::Auto,
+    );
+    let row_h = if metrics.is_touch { 36.0 } else { 28.0 };
+    let del_btn_w = if metrics.is_touch { 34.0 } else { 26.0 };
+    let font_sz = if metrics.is_touch { 14.0 } else { 12.5 };
+    let checkbox_w = if metrics.is_touch { 24.0 } else { 20.0 };
+
     let mut to_remove: Vec<usize> = Vec::new();
     let spacing = ui.spacing().item_spacing.x;
-    let checkbox_w = 20.0;
-    let del_btn_w = 20.0;
     let total_w = ui.available_width();
-    // Two fields share the space left after checkbox, delete button, and 3 gaps
+    // Two fields share the exact space left after checkbox, delete button, and 3 gaps
     let field_w = ((total_w - checkbox_w - del_btn_w - spacing * 3.0) * 0.5).max(60.0);
 
     // Header row
     ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = row_h;
         ui.add_space(checkbox_w + spacing);
-        ui.add_sized([field_w, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new("Key").strong()));
-        ui.add_sized([field_w, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new("Value").strong()));
+        ui.add_sized([field_w, row_h], egui::Label::new(egui::RichText::new("Key").strong().size(font_sz)));
+        ui.add_sized([field_w, row_h], egui::Label::new(egui::RichText::new("Value").strong().size(font_sz)));
     });
     ui.separator();
 
     let _ = id;
     for (idx, (key, value, enabled)) in rows.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            ui.checkbox(enabled, "");
-            ui.add(egui::TextEdit::singleline(key).desired_width(field_w).hint_text("key"));
-            ui.add(egui::TextEdit::singleline(value).desired_width(field_w).hint_text("value"));
-            if ui.small_button("×").on_hover_text("Remove row").clicked() {
+            ui.spacing_mut().interact_size.y = row_h;
+            ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
+
+            ui.add_sized([checkbox_w, row_h], |ui: &mut egui::Ui| {
+                ui.checkbox(enabled, "")
+            });
+
+            ui.add_sized(
+                [field_w, row_h],
+                egui::TextEdit::singleline(key)
+                    .desired_width(field_w)
+                    .hint_text("key")
+                    .margin(egui::Margin::symmetric(8, 4))
+                    .vertical_align(egui::Align::Center),
+            );
+
+            ui.add_sized(
+                [field_w, row_h],
+                egui::TextEdit::singleline(value)
+                    .desired_width(field_w)
+                    .hint_text("value")
+                    .margin(egui::Margin::symmetric(8, 4))
+                    .vertical_align(egui::Align::Center),
+            );
+
+            let del_btn = egui::Button::new(
+                egui::RichText::new("×")
+                    .size(if metrics.is_touch { 16.0 } else { 13.0 })
+                    .strong(),
+            )
+            .corner_radius(egui::CornerRadius::same(5));
+
+            if ui
+                .add_sized([del_btn_w, row_h], del_btn)
+                .on_hover_text("Remove row")
+                .clicked()
+            {
                 to_remove.push(idx);
             }
         });
+        ui.add_space(2.0);
     }
 
     for idx in to_remove.iter().rev() {
         rows.remove(*idx);
     }
 
-    if ui.small_button("+ Add row").clicked() {
+    ui.add_space(4.0);
+    let add_btn_w = if metrics.is_touch { 110.0 } else { 90.0 };
+    if ui.add_sized(
+        [add_btn_w, row_h],
+        egui::Button::new(egui::RichText::new("+ Add row").size(font_sz).strong())
+            .corner_radius(egui::CornerRadius::same(5)),
+    ).clicked() {
         rows.push(("".to_string(), "".to_string(), true));
     }
 }
@@ -854,6 +927,12 @@ fn render_kv_table(
 // ─── Auth panel ─────────────────────────────────────────────────────────────
 
 fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
+    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
+        ui.ctx(),
+        crate::config::UiModePreference::Auto,
+    );
+    let row_h = if metrics.is_touch { 36.0 } else { 28.0 };
+
     // Auth type selector
     ui.horizontal_wrapped(|ui| {
         ui.label("Type:");
@@ -890,32 +969,41 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
         }
         HttpAuthType::BearerToken | HttpAuthType::JwtBearer => {
             ui.label("Token:");
-            ui.add(
+            ui.add_sized(
+                [ui.available_width(), row_h],
                 egui::TextEdit::singleline(&mut state.bearer_token)
                     .hint_text("Bearer token or JWT string")
                     .desired_width(f32::INFINITY)
+                    .margin(egui::Margin::symmetric(8, 4))
+                    .vertical_align(egui::Align::Center)
                     .password(true),
             );
         }
         HttpAuthType::BasicAuth => {
             egui::Grid::new("http_basic_auth")
                 .num_columns(2)
-                .spacing([8.0, 4.0])
+                .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("Username:");
-                    ui.add(
+                    ui.add_sized(
+                        [260.0, row_h],
                         egui::TextEdit::singleline(&mut state.basic_user)
                             .hint_text("username")
-                            .desired_width(250.0),
+                            .desired_width(260.0)
+                            .margin(egui::Margin::symmetric(8, 4))
+                            .vertical_align(egui::Align::Center),
                     );
                     ui.end_row();
 
                     ui.label("Password:");
-                    ui.add(
+                    ui.add_sized(
+                        [260.0, row_h],
                         egui::TextEdit::singleline(&mut state.basic_pass)
                             .hint_text("password")
-                            .password(true)
-                            .desired_width(250.0),
+                            .desired_width(260.0)
+                            .margin(egui::Margin::symmetric(8, 4))
+                            .vertical_align(egui::Align::Center)
+                            .password(true),
                     );
                     ui.end_row();
                 });
@@ -923,22 +1011,28 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
         HttpAuthType::ApiKey => {
             egui::Grid::new("http_api_key_auth")
                 .num_columns(2)
-                .spacing([8.0, 4.0])
+                .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("Key Name:");
-                    ui.add(
+                    ui.add_sized(
+                        [260.0, row_h],
                         egui::TextEdit::singleline(&mut state.api_key_name)
                             .hint_text("X-API-Key")
-                            .desired_width(250.0),
+                            .desired_width(260.0)
+                            .margin(egui::Margin::symmetric(8, 4))
+                            .vertical_align(egui::Align::Center),
                     );
                     ui.end_row();
 
                     ui.label("Key Value:");
-                    ui.add(
+                    ui.add_sized(
+                        [260.0, row_h],
                         egui::TextEdit::singleline(&mut state.api_key_value)
                             .hint_text("your-api-key")
-                            .password(true)
-                            .desired_width(250.0),
+                            .desired_width(260.0)
+                            .margin(egui::Margin::symmetric(8, 4))
+                            .vertical_align(egui::Align::Center)
+                            .password(true),
                     );
                     ui.end_row();
 
