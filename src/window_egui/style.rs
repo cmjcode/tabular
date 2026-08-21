@@ -387,8 +387,8 @@ pub fn render_sidebar_subtab(
         } else {
             egui::Color32::from_rgb(140, 148, 162)
         };
-
-        let font_id = egui::FontId::new(13.0, egui::FontFamily::Proportional);
+        let font_size = (size.y * 0.50).clamp(14.0, 18.0);
+        let font_id = egui::FontId::new(font_size, egui::FontFamily::Proportional);
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,

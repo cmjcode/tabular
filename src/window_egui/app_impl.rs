@@ -3,7 +3,6 @@ use log::{debug};
 use chrono::{DateTime, Duration, Utc};
 use super::{Tabular, PrefTab, style};
 
-const TAB_BUTTON_HEIGHT: f32 = 36.0;
 use crate::{models, connection, editor, data_table, sidebar_database,
             sidebar_query, spreadsheet::SpreadsheetOperations, dialog,
             cache_data};
@@ -1246,12 +1245,15 @@ impl Tabular {
                 egui::Color32::from_rgb(235, 238, 243)
             };
             let available_width = (ui.available_width() - 8.0).max(40.0);
+            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), self.ui_mode);
+            let search_height = if metrics.is_touch { 36.0 } else { 28.0 };
 
             let search_response = ui.add_sized(
-                [available_width, 24.0],
+                [available_width, search_height],
                 egui::TextEdit::singleline(&mut self.database_search_text)
                     .desired_width(f32::INFINITY)
                     .hint_text(hint)
+                    .font(egui::FontId::proportional(if metrics.is_touch { 14.0 } else { 13.0 }))
                     .background_color(search_bg),
             );
 
@@ -1296,7 +1298,8 @@ impl Tabular {
                 .show(root_ui, |ui| {
                     ui.vertical(|ui| {
                         // Top bar for sidebar tabs matching query tab bar height and alignment
-                        let top_bar_height = TAB_BUTTON_HEIGHT;
+                        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
+                        let top_bar_height = metrics.tab_button_height;
                         let available_width = ui.available_width();
                         let (bar_rect, _) = ui.allocate_exact_size(
                             egui::vec2(available_width, top_bar_height),
@@ -1330,7 +1333,7 @@ impl Tabular {
                                 ui.spacing_mut().item_spacing.x = 2.0;
                                 let btn_avail_width = ui.available_width();
                                 let button_width = ((btn_avail_width - 4.0) / 3.0).clamp(40.0, 140.0);
-                                let button_height = 34.0;
+                                let button_height = top_bar_height;
 
                                 let is_db_active = self.selected_menu == "Database";
                                 if style::render_custom_tab(ui, "Database", is_db_active, egui::vec2(button_width, button_height)).clicked() {
@@ -1359,10 +1362,11 @@ impl Tabular {
                                     // under "Database" (like VS Code's view-container
                                     // sub-views) so each gets full space + a contextual "+".
                                     ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        ui.spacing_mut().item_spacing.x = 3.0;
                                         let sub_avail_width = ui.available_width();
-                                        let sub_button_width = (sub_avail_width - 4.0) / 3.0;
-                                        let sub_button_size = egui::vec2(sub_button_width, 22.0);
+                                        let sub_button_width = (sub_avail_width - 6.0) / 3.0;
+                                        let sub_button_height = if metrics.is_touch { 36.0 } else { 30.0 };
+                                        let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
 
                                         let sub_tabs: [(&str, &str); 3] = [
                                             ("Connections", "🔌"),
@@ -1751,11 +1755,11 @@ impl Tabular {
                     // Remove the full_table_tab logic - all tabs will now show query editor + results
                     // Table tabs will just have additional Data/Structure toggle in the bottom panel
 
-                    // Normal query tab: tab bar, editor, toggle, content
-                    // Compact top bar: tabs on left, selectors on right, single row.
-                    let top_bar_height = TAB_BUTTON_HEIGHT;
+                    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
+                    let top_bar_height = metrics.tab_button_height;
                     let available_width = ui.available_width();
-                    let mut selectors_width = (available_width * 0.48).clamp(360.0, 520.0);
+                    let min_selectors = if metrics.is_touch { 420.0 } else { 360.0 };
+                    let mut selectors_width = (available_width * 0.50).clamp(min_selectors, 580.0);
                     let mut left_width = available_width - selectors_width;
                     if left_width < 180.0 {
                         left_width = 180.0;
@@ -2063,18 +2067,18 @@ impl Tabular {
                         |ui| {
                             ui.add_space(4.0);
 
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
-                            ui.spacing_mut().interact_size.y = 22.0;
+                            ui.spacing_mut().item_spacing.x = if metrics.is_touch { 4.0 } else { 2.0 };
+                            ui.spacing_mut().button_padding = if metrics.is_touch { egui::vec2(10.0, 6.0) } else { egui::vec2(8.0, 4.0) };
+                            ui.spacing_mut().interact_size.y = if metrics.is_touch { 34.0 } else { 28.0 };
 
                             // Override child widget visuals for flat merged appearance with tabs
                             ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
                             ui.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
                             ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-                            ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
-                            ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
-                            ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::same(4);
-                            ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::same(4);
+                            ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(5);
+                            ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(5);
+                            ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::same(5);
+                            ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::same(5);
 
                             let sep_color = if ui.visuals().dark_mode {
                                 egui::Color32::from_rgb(55, 55, 60)
@@ -2083,7 +2087,7 @@ impl Tabular {
                             };
 
                             let add_divider = |ui: &mut egui::Ui| {
-                                let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 16.0), egui::Sense::hover());
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 20.0), egui::Sense::hover());
                                 ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, sep_color));
                             };
 
@@ -2097,17 +2101,19 @@ impl Tabular {
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
+                            let gear_btn_size = if metrics.is_touch { [38.0, 34.0] } else { [28.0, 26.0] };
+                            let gear_icon_size = if metrics.is_touch { 16.0 } else { 14.0 };
                             let gear_response = ui
                                 .add_sized(
-                                    [24.0, 22.0],
+                                    gear_btn_size,
                                     egui::Button::new(
                                         egui::RichText::new("⚙")
-                                            .size(13.0)
+                                            .size(gear_icon_size)
                                             .color(ui.visuals().text_color()),
                                     )
                                     .fill(gear_bg)
                                     .stroke(egui::Stroke::NONE)
-                                    .corner_radius(egui::CornerRadius::same(4)),
+                                    .corner_radius(egui::CornerRadius::same(5)),
                                 )
                                 .on_hover_text("Settings");
                             if gear_response.clicked() {
@@ -2117,7 +2123,7 @@ impl Tabular {
 
                             // Popup area logic for gear menu
                             if self.show_settings_menu {
-                                let menu_width = 170.0;
+                                let menu_width = if metrics.is_touch { 230.0 } else { 195.0 };
                                 let pos = egui::pos2(
                                     gear_response.rect.right() - menu_width,
                                     gear_response.rect.bottom() + 6.0,
@@ -2143,14 +2149,14 @@ impl Tabular {
                                             .fill(frame_bg)
                                             .stroke(egui::Stroke::new(1.0, border_color))
                                             .corner_radius(egui::CornerRadius::same(8))
-                                            .inner_margin(egui::Margin::symmetric(6, 6));
+                                            .inner_margin(egui::Margin::symmetric(8, 8));
 
                                         frame.show(ui, |ui| {
-                                            ui.set_width(menu_width - 12.0);
-                                            ui.spacing_mut().item_spacing.y = 2.0;
+                                            ui.set_width(menu_width - 16.0);
+                                            ui.spacing_mut().item_spacing.y = 3.0;
 
                                             let draw_menu_item = |ui: &mut egui::Ui, icon: &str, label: &str, shortcut: Option<&str>| -> bool {
-                                                let item_height = 28.0;
+                                                let item_height = if metrics.is_touch { 40.0 } else { 32.0 };
                                                 let item_width = ui.available_width();
                                                 let (rect, resp) = ui.allocate_exact_size(
                                                     egui::vec2(item_width, item_height),
@@ -2176,33 +2182,35 @@ impl Tabular {
 
                                                 ui.painter().rect_filled(
                                                     rect,
-                                                    egui::CornerRadius::same(5),
+                                                    egui::CornerRadius::same(6),
                                                     bg_color,
                                                 );
 
                                                 // Draw Icon
+                                                let icon_size = if metrics.is_touch { 16.0 } else { 14.0 };
                                                 let icon_area = egui::Rect::from_min_size(
-                                                    egui::pos2(rect.left() + 8.0, rect.top()),
-                                                    egui::vec2(20.0, rect.height()),
+                                                    egui::pos2(rect.left() + 10.0, rect.top()),
+                                                    egui::vec2(24.0, rect.height()),
                                                 );
                                                 ui.painter().text(
                                                     icon_area.left_center(),
                                                     egui::Align2::LEFT_CENTER,
                                                     icon,
-                                                    egui::FontId::proportional(12.5),
+                                                    egui::FontId::proportional(icon_size),
                                                     text_color,
                                                 );
 
                                                 // Draw Label
+                                                let label_size = if metrics.is_touch { 14.5 } else { 13.0 };
                                                 let text_area = egui::Rect::from_min_size(
-                                                    egui::pos2(rect.left() + 28.0, rect.top()),
-                                                    egui::vec2(rect.width() - 34.0, rect.height()),
+                                                    egui::pos2(rect.left() + 34.0, rect.top()),
+                                                    egui::vec2(rect.width() - 40.0, rect.height()),
                                                 );
                                                 ui.painter().text(
                                                     text_area.left_center(),
                                                     egui::Align2::LEFT_CENTER,
                                                     label,
-                                                    egui::FontId::proportional(12.5),
+                                                    egui::FontId::proportional(label_size),
                                                     text_color,
                                                 );
 
@@ -2214,10 +2222,10 @@ impl Tabular {
                                                         egui::Color32::from_rgb(140, 145, 160)
                                                     };
                                                     ui.painter().text(
-                                                        rect.right_center() - egui::vec2(8.0, 0.0),
+                                                        rect.right_center() - egui::vec2(10.0, 0.0),
                                                         egui::Align2::RIGHT_CENTER,
                                                         sc,
-                                                        egui::FontId::proportional(11.0),
+                                                        egui::FontId::proportional(11.5),
                                                         sc_color,
                                                     );
                                                 }
@@ -2285,8 +2293,10 @@ impl Tabular {
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
+                            let ai_btn_size = if metrics.is_touch { [38.0, 34.0] } else { [28.0, 26.0] };
+                            let ai_icon_size = if metrics.is_touch { 16.0 } else { 14.0 };
                             let ai_btn_label = egui::RichText::new("✨")
-                                .size(13.0)
+                                .size(ai_icon_size)
                                 .color(if self.show_ai_panel {
                                     egui::Color32::WHITE
                                 } else {
@@ -2294,11 +2304,11 @@ impl Tabular {
                                 });
                             if ui
                                 .add_sized(
-                                    [24.0, 22.0],
+                                    ai_btn_size,
                                     egui::Button::new(ai_btn_label)
                                         .fill(ai_btn_bg)
                                         .stroke(egui::Stroke::NONE)
-                                        .corner_radius(egui::CornerRadius::same(4)),
+                                        .corner_radius(egui::CornerRadius::same(5)),
                                 )
                                 .on_hover_text(if self.show_ai_panel {
                                     "Close AI Assistant (Cmd+Shift+A)"

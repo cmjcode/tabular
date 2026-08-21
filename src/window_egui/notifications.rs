@@ -145,17 +145,30 @@ impl ToastManager {
 
         let mut dismiss: Option<usize> = None;
         egui::Area::new(egui::Id::new("tabular_toasts"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 48.0))
             .interactable(true)
             .show(ctx, |ui| {
-                ui.set_max_width(360.0);
+                ui.set_max_width(380.0);
                 for (idx, toast) in self.toasts.iter().enumerate() {
                     let accent = toast.kind.accent();
+                    let dark = ui.visuals().dark_mode;
+                    let toast_bg = if dark {
+                        egui::Color32::from_rgb(26, 28, 35)
+                    } else {
+                        egui::Color32::from_rgb(255, 255, 255)
+                    };
                     let frame = egui::Frame::new()
-                        .fill(ui.visuals().panel_fill)
+                        .fill(toast_bg)
                         .stroke(egui::Stroke::new(1.0, accent))
-                        .corner_radius(6.0)
-                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .corner_radius(8.0)
+                        .shadow(egui::Shadow {
+                            offset: [0, 4],
+                            blur: 12,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(if dark { 120 } else { 40 }),
+                        })
+                        .inner_margin(egui::Margin::symmetric(12, 10))
                         .outer_margin(egui::Margin {
                             bottom: 8,
                             ..Default::default()
