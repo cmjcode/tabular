@@ -383,10 +383,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 }
             }
             // ── Data scroll area ────────────────────────────────────────────────────
-            // Keep bottom scrollbar tight against the bottom pagination bar
-            let pagination_bar_h = 32.0_f32;
-            let item_spacing_y = ui.spacing().item_spacing.y;
-            let data_h = (ui.available_height() - pagination_bar_h - item_spacing_y).max(20.0);
+            // Keep bottom scrollbar tight against the bottom pagination bar (zero gap)
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let pagination_bar_h = 36.0_f32;
+            let data_h = (ui.available_height() - pagination_bar_h).max(20.0);
             let (data_rect, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), data_h),
                 egui::Sense::hover(),
@@ -1524,11 +1524,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             );
         }
 
-        let pagination_height = 32.0_f32;
-        let space_to_push = (ui.available_height() - pagination_height).max(0.0);
-        if space_to_push > 2.0 {
-            ui.add_space(space_to_push - 2.0);
-        }
         render_pagination_bar(tabular, ui);
     }
 }
