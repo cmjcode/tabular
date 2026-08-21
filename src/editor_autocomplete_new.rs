@@ -1588,12 +1588,12 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
     let small_font_id = egui::TextStyle::Small.resolve(ui.style());
     let heading_font_id = egui::FontId::new(
-        if metrics.is_touch { 11.5 } else { 10.5 },
+        if metrics.is_touch { 12.5 } else { 10.5 },
         egui::FontFamily::Proportional,
     );
 
-    let row_height = if metrics.is_touch { 28.0 } else { 22.0 };
-    let header_height = if metrics.is_touch { 22.0 } else { 18.0 };
+    let row_height = if metrics.is_touch { 32.0 } else { 22.0 };
+    let header_height = if metrics.is_touch { 26.0 } else { 18.0 };
 
     let suggestions = app.autocomplete_suggestions.clone();
     let kinds = app.autocomplete_kinds.clone();

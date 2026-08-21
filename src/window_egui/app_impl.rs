@@ -1246,14 +1246,14 @@ impl Tabular {
             };
             let available_width = (ui.available_width() - 8.0).max(40.0);
             let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), self.ui_mode);
-            let search_height = if metrics.is_touch { 36.0 } else { 28.0 };
+            let search_height = if metrics.is_touch { 40.0 } else { 28.0 };
 
             let search_response = ui.add_sized(
                 [available_width, search_height],
                 egui::TextEdit::singleline(&mut self.database_search_text)
                     .desired_width(f32::INFINITY)
                     .hint_text(hint)
-                    .font(egui::FontId::proportional(if metrics.is_touch { 14.0 } else { 13.0 }))
+                    .font(egui::FontId::proportional(if metrics.is_touch { 15.5 } else { 13.0 }))
                     .background_color(search_bg),
             );
 
@@ -1365,7 +1365,7 @@ impl Tabular {
                                         ui.spacing_mut().item_spacing.x = 3.0;
                                         let sub_avail_width = ui.available_width();
                                         let sub_button_width = (sub_avail_width - 6.0) / 3.0;
-                                        let sub_button_height = if metrics.is_touch { 36.0 } else { 30.0 };
+                                        let sub_button_height = if metrics.is_touch { 40.0 } else { 30.0 };
                                         let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
 
                                         let sub_tabs: [(&str, &str); 3] = [
@@ -1584,7 +1584,7 @@ impl Tabular {
                                         ui.spacing_mut().item_spacing.x = 3.0;
                                         let sub_avail_width = (ui.available_width() - 8.0).max(40.0);
                                         let sub_button_width = (sub_avail_width - 4.0) / 2.0;
-                                        let sub_button_height = if metrics.is_touch { 36.0 } else { 30.0 };
+                                        let sub_button_height = if metrics.is_touch { 40.0 } else { 30.0 };
                                         let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
 
                                         let sub_tabs: [(&str, &str); 2] = [
@@ -2102,8 +2102,8 @@ impl Tabular {
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
-                            let gear_btn_size = if metrics.is_touch { [38.0, 34.0] } else { [28.0, 26.0] };
-                            let gear_icon_size = if metrics.is_touch { 16.0 } else { 14.0 };
+                            let gear_btn_size = if metrics.is_touch { [42.0, 38.0] } else { [28.0, 26.0] };
+                            let gear_icon_size = if metrics.is_touch { 18.0 } else { 14.0 };
                             let gear_response = ui
                                 .add_sized(
                                     gear_btn_size,
@@ -2124,7 +2124,7 @@ impl Tabular {
 
                             // Popup area logic for gear menu
                             if self.show_settings_menu {
-                                let menu_width = if metrics.is_touch { 230.0 } else { 195.0 };
+                                let menu_width = if metrics.is_touch { 250.0 } else { 195.0 };
                                 let pos = egui::pos2(
                                     gear_response.rect.right() - menu_width,
                                     gear_response.rect.bottom() + 6.0,
@@ -2157,7 +2157,7 @@ impl Tabular {
                                             ui.spacing_mut().item_spacing.y = 3.0;
 
                                             let draw_menu_item = |ui: &mut egui::Ui, icon: &str, label: &str, shortcut: Option<&str>| -> bool {
-                                                let item_height = if metrics.is_touch { 40.0 } else { 32.0 };
+                                                let item_height = if metrics.is_touch { 44.0 } else { 32.0 };
                                                 let item_width = ui.available_width();
                                                 let (rect, resp) = ui.allocate_exact_size(
                                                     egui::vec2(item_width, item_height),
@@ -2188,7 +2188,7 @@ impl Tabular {
                                                 );
 
                                                 // Draw Icon
-                                                let icon_size = if metrics.is_touch { 16.0 } else { 14.0 };
+                                                let icon_size = if metrics.is_touch { 18.0 } else { 14.0 };
                                                 let icon_area = egui::Rect::from_min_size(
                                                     egui::pos2(rect.left() + 10.0, rect.top()),
                                                     egui::vec2(24.0, rect.height()),
@@ -2202,7 +2202,7 @@ impl Tabular {
                                                 );
 
                                                 // Draw Label
-                                                let label_size = if metrics.is_touch { 14.5 } else { 13.0 };
+                                                let label_size = if metrics.is_touch { 16.0 } else { 13.0 };
                                                 let text_area = egui::Rect::from_min_size(
                                                     egui::pos2(rect.left() + 34.0, rect.top()),
                                                     egui::vec2(rect.width() - 40.0, rect.height()),
@@ -2294,8 +2294,8 @@ impl Tabular {
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
-                            let ai_btn_size = if metrics.is_touch { [38.0, 34.0] } else { [28.0, 26.0] };
-                            let ai_icon_size = if metrics.is_touch { 16.0 } else { 14.0 };
+                            let ai_btn_size = if metrics.is_touch { [42.0, 38.0] } else { [28.0, 26.0] };
+                            let ai_icon_size = if metrics.is_touch { 18.0 } else { 14.0 };
                             let ai_btn_label = egui::RichText::new("✨")
                                 .size(ai_icon_size)
                                 .color(if self.show_ai_panel {

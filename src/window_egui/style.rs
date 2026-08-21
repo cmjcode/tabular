@@ -145,23 +145,23 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme, metrics: &DeviceUiMetri
 
         // Global spacing and padding for a modern, touch-friendly or compact desktop layout.
         style.spacing.item_spacing = if metrics.is_touch {
-            egui::vec2(10.0, 8.0)
+            egui::vec2(12.0, 10.0)
         } else {
             egui::vec2(8.0, 6.0)
         };
         style.spacing.window_margin = metrics.panel_margin;
         style.spacing.button_padding = metrics.button_padding;
         style.spacing.menu_margin = if metrics.is_touch {
-            egui::Margin::same(12)
+            egui::Margin::same(14)
         } else {
             egui::Margin::same(8)
         };
-        style.spacing.indent = if metrics.is_touch { 20.0 } else { 16.0 };
+        style.spacing.indent = if metrics.is_touch { 22.0 } else { 16.0 };
         style.spacing.interact_size = metrics.min_touch_size;
         style.spacing.scroll.bar_width = metrics.scrollbar_width;
 
         // Rounded widgets across the app.
-        let radius = if metrics.is_touch { 8.0 } else { 6.0 };
+        let radius = if metrics.is_touch { 10.0 } else { 6.0 };
         style.visuals.widgets.inactive.corner_radius = radius.into();
         style.visuals.widgets.hovered.corner_radius = radius.into();
         style.visuals.widgets.active.corner_radius = radius.into();
@@ -325,7 +325,8 @@ pub fn render_custom_tab(
             }
         };
 
-        let font_id = egui::FontId::new(13.0, egui::FontFamily::Proportional);
+        let tab_font_size = (size.y * 0.32).clamp(13.0, 16.0);
+        let font_id = egui::FontId::new(tab_font_size, egui::FontFamily::Proportional);
 
         ui.painter().text(
             rect.center(),
