@@ -219,6 +219,58 @@ pub(crate) fn find_tab_for_target(
     })
 }
 
+/// Find an existing unsaved query tab for a given connection_id.
+/// Returns Some(index) if an unsaved tab already exists for this connection.
+pub(crate) fn find_unsaved_query_tab_for_connection(
+    tabular: &window_egui::Tabular,
+    connection_id: i64,
+    is_api_http: bool,
+    is_redis: bool,
+) -> Option<usize> {
+    tabular.query_tabs.iter().position(|tab| {
+        if tab.connection_id != Some(connection_id) {
+            return false;
+        }
+        if is_api_http {
+            return tab.http_client_state.is_some();
+        }
+        if is_redis {
+            return tab.redis_browser_state.is_some();
+        }
+        // For standard query tab: must not be a saved file tab, not table browse, not diagram, not DBA special mode
+        !tab.is_saved
+            && tab.file_path.is_none()
+            && !tab.is_table_browse_mode
+            && tab.diagram_state.is_none()
+            && tab.dba_special_mode.is_none()
+            && tab.http_client_state.is_none()
+            && tab.redis_browser_state.is_none()
+    })
+}
+
+/// Check if the only open tab is an untouched/initial "Untitled Query" tab with no connection.
+pub(crate) fn find_initial_blank_tab(tabular: &window_egui::Tabular) -> Option<usize> {
+    if tabular.query_tabs.len() == 1 {
+        let tab = &tabular.query_tabs[0];
+        if tab.connection_id.is_none()
+            && !tab.is_saved
+            && tab.file_path.is_none()
+            && !tab.is_modified
+            && tab.content.trim().is_empty()
+            && tabular.editor.text.trim().is_empty()
+            && !tab.is_table_browse_mode
+            && tab.diagram_state.is_none()
+            && tab.http_client_state.is_none()
+            && tab.redis_browser_state.is_none()
+            && tab.results.is_empty()
+            && tab.result_rows.is_empty()
+        {
+            return Some(0);
+        }
+    }
+    None
+}
+
 pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     let mut need_connect: Option<i64> = None;
     if tab_index < tabular.query_tabs.len() {

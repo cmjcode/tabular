@@ -814,7 +814,7 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
             if can_beautify && !state.show_code_dialog {
                 let ctx = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("http_req_beautify_overlay"))
-                    .order(egui::Order::Foreground)
+                    .order(egui::Order::Middle)
                     .fixed_pos(egui::pos2(
                         panel_rect.right() - 28.0,
                         panel_rect.bottom() - 28.0,
@@ -1222,7 +1222,7 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
             if (is_json || is_xml) && !state.show_code_dialog {
                 let ctx = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("http_resp_beautify_overlay"))
-                    .order(egui::Order::Foreground)
+                    .order(egui::Order::Middle)
                     .fixed_pos(egui::pos2(
                         panel_rect.right() - 28.0,
                         panel_rect.bottom() - 28.0,

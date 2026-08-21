@@ -328,6 +328,9 @@ pub struct Tabular {
     pub pending_create_http_folder: Option<(String, Option<String>, String, String)>, // (workspace_id, parent_folder_id, parent_display_name, input_folder_name)
     pub pending_create_http_workspace: Option<String>, // input_workspace_name
     pub pending_delete_http_workspace: Option<(String, String)>, // (workspace_id, workspace_name)
+    pub pending_rename_http_workspace: Option<(String, String, String)>, // (workspace_id, current_name, edit_name)
+    pub pending_rename_connection_folder: Option<(String, String, String)>, // (folder_path, current_name, edit_name)
+    pub pending_rename_query_folder: Option<(String, String, String)>, // (relative_path, current_name, edit_name)
     // Drag and drop tracking for HTTP Connections in sidebar
     pub dragged_http_conn_id: Option<i64>,
     // Structure view column widths (separate from data grid)

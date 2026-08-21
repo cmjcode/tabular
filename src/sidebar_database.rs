@@ -946,6 +946,140 @@ pub(crate) fn delete_connection_folder(
     load_connections(tabular);
 }
 
+pub(crate) fn rename_connection_folder(
+    tabular: &mut window_egui::Tabular,
+    old_path: &str,
+    new_name: &str,
+) -> Result<(), String> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    if trimmed.contains('/') {
+        return Err("Folder name cannot contain '/'".to_string());
+    }
+    if trimmed == "Default" {
+        return Err("Cannot use reserved name 'Default'".to_string());
+    }
+
+    let new_path = if let Some(parent_idx) = old_path.rfind('/') {
+        format!("{}/{}", &old_path[..parent_idx], trimmed)
+    } else {
+        trimmed.to_string()
+    };
+
+    if new_path == old_path {
+        return Ok(());
+    }
+
+    let rt = tabular.get_runtime();
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let old_p = old_path.to_string();
+        let new_p = new_path.clone();
+        let old_prefix = format!("{}/", old_path);
+        let new_prefix = format!("{}/", new_path);
+
+        // 1. Update exact match in connection_folders
+        let _ = rt.block_on(async {
+            sqlx::query("UPDATE OR IGNORE connection_folders SET path = ? WHERE path = ?")
+                .bind(&new_p)
+                .bind(&old_p)
+                .execute(pool_clone.as_ref())
+                .await
+        });
+        let _ = rt.block_on(async {
+            sqlx::query("DELETE FROM connection_folders WHERE path = ?")
+                .bind(&old_p)
+                .execute(pool_clone.as_ref())
+                .await
+        });
+
+        // 2. Update subfolders in connection_folders
+        let subfolder_rows: Vec<String> = rt.block_on(async {
+            sqlx::query("SELECT path FROM connection_folders WHERE path LIKE ?")
+                .bind(format!("{}%", old_prefix))
+                .fetch_all(pool_clone.as_ref())
+                .await
+                .map(|rows| {
+                    rows.into_iter()
+                        .filter_map(|r| r.try_get::<String, _>("path").ok())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        for sub in subfolder_rows {
+            if let Some(suffix) = sub.strip_prefix(&old_prefix) {
+                let updated_sub = format!("{}{}", new_prefix, suffix);
+                let _ = rt.block_on(async {
+                    sqlx::query("UPDATE OR IGNORE connection_folders SET path = ? WHERE path = ?")
+                        .bind(&updated_sub)
+                        .bind(&sub)
+                        .execute(pool_clone.as_ref())
+                        .await
+                });
+                let _ = rt.block_on(async {
+                    sqlx::query("DELETE FROM connection_folders WHERE path = ?")
+                        .bind(&sub)
+                        .execute(pool_clone.as_ref())
+                        .await
+                });
+            }
+        }
+
+        // 3. Update connections table for folder = old_path
+        let _ = rt.block_on(async {
+            sqlx::query("UPDATE connections SET folder = ? WHERE folder = ?")
+                .bind(&new_p)
+                .bind(&old_p)
+                .execute(pool_clone.as_ref())
+                .await
+        });
+
+        // 4. Update connections table for subfolders
+        let conn_subfolders: Vec<String> = rt.block_on(async {
+            sqlx::query("SELECT DISTINCT folder FROM connections WHERE folder LIKE ?")
+                .bind(format!("{}%", old_prefix))
+                .fetch_all(pool_clone.as_ref())
+                .await
+                .map(|rows| {
+                    rows.into_iter()
+                        .filter_map(|r| r.try_get::<String, _>("folder").ok())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        for sub in conn_subfolders {
+            if let Some(suffix) = sub.strip_prefix(&old_prefix) {
+                let updated_sub = format!("{}{}", new_prefix, suffix);
+                let _ = rt.block_on(async {
+                    sqlx::query("UPDATE connections SET folder = ? WHERE folder = ?")
+                        .bind(&updated_sub)
+                        .bind(&sub)
+                        .execute(pool_clone.as_ref())
+                        .await
+                });
+            }
+        }
+    }
+
+    // Update in-memory connection_folders
+    let old_prefix = format!("{}/", old_path);
+    let new_prefix = format!("{}/", new_path);
+    for f in &mut tabular.connection_folders {
+        if f == old_path {
+            *f = new_path.clone();
+        } else if let Some(suffix) = f.strip_prefix(&old_prefix) {
+            *f = format!("{}{}", new_prefix, suffix);
+        }
+    }
+
+    // Reload connections and refresh tree
+    load_connections(tabular);
+    tabular.toasts.success(format!("Renamed folder to '{}'", trimmed));
+    Ok(())
+}
+
 /// Move a connection's credentials into the secret store and rewrite the row
 /// so the columns only hold the sentinel (or plaintext if no backend worked).
 fn externalize_connection_secrets(
@@ -2624,6 +2758,74 @@ pub(crate) fn render_create_subfolder_dialog(
     if !open {
         tabular.show_create_subfolder_dialog = false;
         tabular.new_subfolder_name.clear();
+    }
+}
+
+pub(crate) fn render_rename_connection_folder_dialog(
+    tabular: &mut window_egui::Tabular,
+    ctx: &egui::Context,
+) {
+    let Some((folder_path, current_name, mut edit_name)) =
+        tabular.pending_rename_connection_folder.clone()
+    else {
+        return;
+    };
+
+    let mut close_dialog = false;
+    let mut confirm_rename = false;
+
+    egui::Window::new("Rename Connection Folder")
+        .resizable(false)
+        .default_width(320.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.label(egui::RichText::new("✏️ Rename Folder").strong());
+            ui.add_space(6.0);
+
+            ui.label(format!("Current folder: {}", current_name));
+            ui.add_space(4.0);
+
+            ui.label("New folder name:");
+            let resp = ui.text_edit_singleline(&mut edit_name);
+            resp.request_focus();
+
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                confirm_rename = true;
+                close_dialog = true;
+            }
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let trimmed = edit_name.trim();
+                let valid = !trimmed.is_empty()
+                    && trimmed != current_name
+                    && !trimmed.contains('/')
+                    && trimmed != "Default";
+                ui.add_enabled_ui(valid, |ui| {
+                    if ui.button("Rename").clicked() {
+                        confirm_rename = true;
+                        close_dialog = true;
+                    }
+                });
+                if ui.button("Cancel").clicked() {
+                    close_dialog = true;
+                }
+            });
+        });
+
+    if confirm_rename {
+        let trimmed = edit_name.trim().to_string();
+        if !trimmed.is_empty() && trimmed != current_name {
+            if let Err(e) = rename_connection_folder(tabular, &folder_path, &trimmed) {
+                tabular.toasts.error(e);
+            }
+        }
+        tabular.pending_rename_connection_folder = None;
+    } else if close_dialog {
+        tabular.pending_rename_connection_folder = None;
+    } else {
+        tabular.pending_rename_connection_folder = Some((folder_path, current_name, edit_name));
     }
 }
 

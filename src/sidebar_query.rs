@@ -269,6 +269,142 @@ pub(crate) fn render_create_folder_dialog(tabular: &mut window_egui::Tabular, ct
     }
 }
 
+pub(crate) fn rename_query_folder(
+    tabular: &mut window_egui::Tabular,
+    relative_path: &str,
+    new_name: &str,
+) -> Result<(), String> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("Folder name cannot contain path separators".to_string());
+    }
+
+    let query_dir = directory::get_query_dir();
+    let source_path = query_dir.join(relative_path);
+
+    if !source_path.exists() || !source_path.is_dir() {
+        return Err(format!("Folder '{}' does not exist", relative_path));
+    }
+
+    let parent_path = source_path
+        .parent()
+        .unwrap_or(&query_dir);
+    let target_path = parent_path.join(trimmed);
+
+    if target_path == source_path {
+        return Ok(());
+    }
+
+    if target_path.exists() {
+        return Err(format!("Folder '{}' already exists", trimmed));
+    }
+
+    std::fs::rename(&source_path, &target_path)
+        .map_err(|e| format!("Failed to rename folder: {}", e))?;
+
+    // Update any open tabs whose file path was within the renamed folder
+    let source_str = source_path.to_string_lossy().to_string();
+    let target_str = target_path.to_string_lossy().to_string();
+    let source_prefix = if source_str.ends_with(std::path::MAIN_SEPARATOR) {
+        source_str.clone()
+    } else {
+        format!("{}{}", source_str, std::path::MAIN_SEPARATOR)
+    };
+    let target_prefix = if target_str.ends_with(std::path::MAIN_SEPARATOR) {
+        target_str.clone()
+    } else {
+        format!("{}{}", target_str, std::path::MAIN_SEPARATOR)
+    };
+
+    for tab in &mut tabular.query_tabs {
+        if let Some(ref file_path) = tab.file_path {
+            if file_path.starts_with(&source_prefix) {
+                let rest = &file_path[source_prefix.len()..];
+                tab.file_path = Some(format!("{}{}", target_prefix, rest));
+            }
+        }
+    }
+
+    // Refresh query tree
+    load_queries_from_directory(tabular);
+    tabular.toasts.success(format!("Renamed folder to '{}'", trimmed));
+    Ok(())
+}
+
+pub(crate) fn render_rename_query_folder_dialog(
+    tabular: &mut window_egui::Tabular,
+    ctx: &egui::Context,
+) {
+    let Some((relative_path, current_name, mut edit_name)) =
+        tabular.pending_rename_query_folder.clone()
+    else {
+        return;
+    };
+
+    let mut close_dialog = false;
+    let mut confirm_rename = false;
+
+    egui::Window::new("Rename Query Folder")
+        .collapsible(false)
+        .resizable(false)
+        .default_width(320.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(egui::RichText::new("✏️ Rename Folder").strong());
+            ui.add_space(6.0);
+
+            ui.label(format!("Current folder: {}", current_name));
+            ui.add_space(4.0);
+
+            ui.label("New folder name:");
+            let resp = ui.text_edit_singleline(&mut edit_name);
+            resp.request_focus();
+
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                confirm_rename = true;
+                close_dialog = true;
+            }
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let trimmed = edit_name.trim();
+                let valid = !trimmed.is_empty()
+                    && trimmed != current_name
+                    && !trimmed.contains('/')
+                    && !trimmed.contains('\\');
+                ui.add_enabled_ui(valid, |ui| {
+                    if ui.button("Rename").clicked() {
+                        confirm_rename = true;
+                        close_dialog = true;
+                    }
+                });
+                if ui.button("Cancel").clicked() {
+                    close_dialog = true;
+                }
+            });
+        });
+
+    if confirm_rename {
+        let trimmed = edit_name.trim().to_string();
+        if !trimmed.is_empty() && trimmed != current_name {
+            if let Err(err) = rename_query_folder(tabular, &relative_path, &trimmed) {
+                tabular.error_message = err;
+                tabular.show_error_message = true;
+            } else {
+                ctx.request_repaint();
+            }
+        }
+        tabular.pending_rename_query_folder = None;
+    } else if close_dialog {
+        tabular.pending_rename_query_folder = None;
+    } else {
+        tabular.pending_rename_query_folder = Some((relative_path, current_name, edit_name));
+    }
+}
+
 pub(crate) fn render_move_to_folder_dialog(
     tabular: &mut window_egui::Tabular,
     ctx: &egui::Context,

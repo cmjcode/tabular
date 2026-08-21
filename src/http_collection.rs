@@ -288,6 +288,25 @@ pub fn create_folder_in_workspace(
     Some(new_folder)
 }
 
+/// Rename an existing workspace.
+pub fn rename_workspace_in_workspaces(
+    workspaces: &mut [HttpWorkspace],
+    ws_id: &str,
+    new_name: &str,
+) -> bool {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if let Some(ws) = workspaces.iter_mut().find(|w| w.id == ws_id) {
+        ws.name = trimmed.to_string();
+        save_workspaces(workspaces);
+        true
+    } else {
+        false
+    }
+}
+
 /// Rename an existing folder inside a workspace.
 pub fn rename_folder_in_workspaces(
     workspaces: &mut [HttpWorkspace],
@@ -1826,6 +1845,25 @@ mod tests {
         );
         assert!(renamed_root);
         assert_eq!(workspaces[0].folders[0].name, "Authentication & Security");
+    }
+
+    #[test]
+    fn test_rename_workspace() {
+        let mut workspaces = vec![HttpWorkspace {
+            id: "ws-test".to_string(),
+            name: "Initial Name".to_string(),
+            requests: vec![],
+            folders: vec![],
+            environments: vec![],
+        }];
+
+        let renamed = rename_workspace_in_workspaces(&mut workspaces, "ws-test", "Renamed Workspace");
+        assert!(renamed);
+        assert_eq!(workspaces[0].name, "Renamed Workspace");
+
+        let invalid = rename_workspace_in_workspaces(&mut workspaces, "ws-test", "   ");
+        assert!(!invalid);
+        assert_eq!(workspaces[0].name, "Renamed Workspace");
     }
 
     #[test]

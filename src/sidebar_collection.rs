@@ -210,6 +210,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     // Track actions requested from top-level and folder requests
     let mut req_action: Option<(SavedRequest, RequestAction)> = None;
     let mut ws_to_delete: Option<String> = None;
+    let mut ws_to_rename: Option<(String, String)> = None;
     let mut folder_to_delete: Option<(String, String, String)> = None;
     let mut folder_to_create: Option<(String, Option<String>, String)> = None;
     let mut folder_to_rename: Option<(String, String, String)> = None;
@@ -357,6 +358,10 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 folder_to_create = Some((ws_id.clone(), None, ws_name.clone()));
                 ui.close();
             }
+            if ui.button("✏️ Rename Workspace").clicked() {
+                ws_to_rename = Some((ws_id.clone(), ws_name.clone()));
+                ui.close();
+            }
             ui.separator();
             if ui.button("🗑 Delete Workspace").clicked() {
                 ws_to_delete = Some(ws_id.clone());
@@ -416,6 +421,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     }
     if let Some((ws_id, folder_id, folder_name)) = folder_to_rename {
         app.pending_rename_http_folder = Some((ws_id, folder_id, folder_name.clone(), folder_name));
+    }
+    if let Some((ws_id, ws_name)) = ws_to_rename {
+        app.pending_rename_http_workspace = Some((ws_id, ws_name.clone(), ws_name));
     }
     if let Some(ws_id) = ws_to_delete {
         let ws_name = app

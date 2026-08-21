@@ -378,6 +378,9 @@ impl super::Tabular {
             pending_create_http_folder: None,
             pending_create_http_workspace: None,
             pending_delete_http_workspace: None,
+            pending_rename_http_workspace: None,
+            pending_rename_connection_folder: None,
+            pending_rename_query_folder: None,
             dragged_http_conn_id: None,
 
             structure_col_widths: Vec::new(),

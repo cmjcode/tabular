@@ -792,11 +792,12 @@ impl super::Tabular {
                     self.query_execution_in_progress = true;
                 }
 
-                egui::Area::new(egui::Id::new((format!("floating_query_actions_{}", context_id), self.active_tab_index)))
-                    .order(egui::Order::Foreground)
-                    .pivot(egui::Align2::RIGHT_BOTTOM)
-                    .fixed_pos(cluster_pos)
-                    .show(ui.ctx(), |area_ui| {
+                if !self.show_settings_window && !self.show_schema_diff_dialog {
+                    egui::Area::new(egui::Id::new((format!("floating_query_actions_{}", context_id), self.active_tab_index)))
+                        .order(egui::Order::Middle)
+                        .pivot(egui::Align2::RIGHT_BOTTOM)
+                        .fixed_pos(cluster_pos)
+                        .show(ui.ctx(), |area_ui| {
                         let ctx = area_ui.ctx().clone();
                         let cluster_bg = if ui.visuals().dark_mode {
                             egui::Color32::from_rgb(25, 25, 25)
@@ -979,6 +980,7 @@ impl super::Tabular {
                                 });
                             });
                     });
+                }
 
                 if toggle_changed
                     && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
@@ -1040,13 +1042,13 @@ impl super::Tabular {
                 }
 
                 // Inline AI loading indicator (shown below the format/run buttons while AI is working)
-                if self.ai_inline_receiver.is_some() {
+                if self.ai_inline_receiver.is_some() && !self.show_settings_window && !self.show_schema_diff_dialog {
                     let ai_indicator_pos = egui::pos2(
                         cluster_pos.x - 120.0,
                         cluster_pos.y + button_size.y + 4.0,
                     );
                     egui::Area::new(egui::Id::new((format!("ai_inline_loading_{}", context_id), self.active_tab_index)))
-                        .order(egui::Order::Foreground)
+                        .order(egui::Order::Middle)
                         .fixed_pos(ai_indicator_pos)
                         .show(ui.ctx(), |area_ui| {
                             egui::Frame::new()
@@ -2019,6 +2021,77 @@ impl super::Tabular {
 
             if close_dialog {
                 self.pending_rename_http_folder = None;
+            }
+        }
+    }
+
+    pub fn render_rename_http_workspace_dialog(&mut self, ctx: &egui::Context) {
+        if let Some((ws_id, current_name, mut edit_name)) =
+            self.pending_rename_http_workspace.clone()
+        {
+            let mut close_dialog = false;
+            let mut confirm_rename = false;
+
+            egui::Window::new("Rename Workspace")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(380.0)
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("✏️ Rename Workspace").strong());
+                        ui.add_space(8.0);
+                        ui.label("Workspace Name:");
+                        ui.add_space(2.0);
+                        let text_edit = ui.add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::TextEdit::singleline(&mut edit_name)
+                                .hint_text("Enter new workspace name"),
+                        );
+                        if text_edit.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            confirm_rename = true;
+                            close_dialog = true;
+                        }
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Save").clicked() {
+                                        confirm_rename = true;
+                                        close_dialog = true;
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        close_dialog = true;
+                                    }
+                                },
+                            );
+                        });
+                    });
+                });
+
+            if confirm_rename {
+                let trimmed = edit_name.trim();
+                if !trimmed.is_empty() {
+                    if crate::http_collection::rename_workspace_in_workspaces(
+                        &mut self.yaak_workspaces,
+                        &ws_id,
+                        trimmed,
+                    ) {
+                        self.toasts
+                            .success(format!("Renamed workspace to '{}'", trimmed));
+                    }
+                }
+            } else if !close_dialog {
+                self.pending_rename_http_workspace =
+                    Some((ws_id, current_name, edit_name));
+            }
+
+            if close_dialog {
+                self.pending_rename_http_workspace = None;
             }
         }
     }

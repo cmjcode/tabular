@@ -700,64 +700,86 @@ impl super::Tabular {
                 .map(|conn| (conn.name.clone(), conn.connection_type.clone(), conn.connection_type == models::enums::DatabaseType::ApiHttp))
                 .unwrap_or_else(|| (format!("Connection {}", connection_id), models::enums::DatabaseType::SQLite, false));
 
-            // Create new tab with this connection pre-selected
-            let tab_title = if is_api_http || connection_type == models::enums::DatabaseType::Redis {
-                connection_name.clone()
-            } else {
-                format!("Query - {}", connection_name)
-            };
-            editor::create_new_tab_with_connection(
-                self,
-                tab_title,
-                String::new(),
-                Some(connection_id),
-            );
+            let is_redis = connection_type == models::enums::DatabaseType::Redis;
 
-            // For API-HTTP connections, set up the HTTP client state on the new tab
-            if is_api_http
-                && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    // Load previously saved state if available, else use defaults
-                    let state = crate::http_client::load_http_state(connection_id)
-                        .unwrap_or_default();
-                    tab.http_client_state = Some(state);
+            // Check if there is already an open unsaved query tab for this connection
+            if let Some(existing_index) =
+                editor::find_unsaved_query_tab_for_connection(self, connection_id, is_api_http, is_redis)
+            {
+                if existing_index != self.active_tab_index {
+                    editor::switch_to_tab(self, existing_index);
+                }
+                self.current_connection_id = Some(connection_id);
+            } else {
+                // Create new tab with this connection pre-selected
+                let tab_title = if is_api_http || is_redis {
+                    connection_name.clone()
+                } else {
+                    format!("Query - {}", connection_name)
+                };
+
+                // If only an untouched blank "Untitled Query" tab is open, reuse it instead of spawning a 2nd tab
+                if let Some(blank_index) = editor::find_initial_blank_tab(self) {
+                    if let Some(tab) = self.query_tabs.get_mut(blank_index) {
+                        tab.title = tab_title;
+                        tab.connection_id = Some(connection_id);
+                    }
+                    self.current_connection_id = Some(connection_id);
+                } else {
+                    editor::create_new_tab_with_connection(
+                        self,
+                        tab_title,
+                        String::new(),
+                        Some(connection_id),
+                    );
                 }
 
-            if connection_type == models::enums::DatabaseType::Redis {
+                // For API-HTTP connections, set up the HTTP client state on the new tab
+                if is_api_http
+                    && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        // Load previously saved state if available, else use defaults
+                        let state = crate::http_client::load_http_state(connection_id)
+                            .unwrap_or_default();
+                        tab.http_client_state = Some(state);
+                    }
+
+                if is_redis {
                     let cached_state = crate::driver_redis::load_cached_redis_browser_state(
                         self,
                         connection_id,
                     );
-                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    let mut redis_state = cached_state
-                    .or_else(|| {
-                        Some(crate::driver_redis::redis_browser_loading_state(
-                            "Loading Redis browser in background...",
-                        ))
-                    })
-                    .unwrap_or_default();
-                    redis_state.auto_refresh_enabled = true;
-                    redis_state.auto_refresh_interval_seconds =
-                        self.redis_browser_auto_refresh_default_seconds.max(1);
-                    tab.redis_browser_state = Some(redis_state);
+                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                        let mut redis_state = cached_state
+                            .or_else(|| {
+                                Some(crate::driver_redis::redis_browser_loading_state(
+                                    "Loading Redis browser in background...",
+                                ))
+                            })
+                            .unwrap_or_default();
+                        redis_state.auto_refresh_enabled = true;
+                        redis_state.auto_refresh_interval_seconds =
+                            self.redis_browser_auto_refresh_default_seconds.max(1);
+                        tab.redis_browser_state = Some(redis_state);
+                    }
+                    if self.fetching_redis_browser.insert(connection_id)
+                        && let Some(sender) = &self.background_sender
+                    {
+                        let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
+                            connection_id,
+                            database_name: None,
+                        });
+                    }
+                    self.query_message.clear();
+                    self.current_table_headers.clear();
+                    self.current_table_data.clear();
+                    self.all_table_data.clear();
+                    self.current_table_name.clear();
+                    self.total_rows = 0;
+                    self.current_page = 0;
                 }
-                if self.fetching_redis_browser.insert(connection_id)
-                    && let Some(sender) = &self.background_sender
-                {
-                    let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
-                        connection_id,
-                        database_name: None,
-                    });
-                }
-                self.query_message.clear();
-                self.current_table_headers.clear();
-                self.current_table_data.clear();
-                self.all_table_data.clear();
-                self.current_table_name.clear();
-                self.total_rows = 0;
-                self.current_page = 0;
-            }
 
-            debug!("Created new tab with connection ID: {}", connection_id);
+                debug!("Created new tab with connection ID: {}", connection_id);
+            }
 
             // If connection had previously failed, clear error and retry connecting
             if self.connection_errors.contains_key(&connection_id) {
@@ -1929,6 +1951,35 @@ impl super::Tabular {
             sidebar_database::delete_connection_folder(self, &folder_path);
         }
 
+        // Handle "Rename Folder" context menu request for connections
+        let conn_rename_req: Option<String> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("conn_rename_folder_req")));
+        if let Some(folder_path) = conn_rename_req {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<String>(egui::Id::new("conn_rename_folder_req"));
+            });
+            let folder_name = folder_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&folder_path)
+                .to_string();
+            self.pending_rename_connection_folder =
+                Some((folder_path, folder_name.clone(), folder_name));
+        }
+
+        // Handle "Rename Folder" context menu request for queries
+        let query_rename_req: Option<(String, String)> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("query_rename_folder_req")));
+        if let Some((rel_path, folder_name)) = query_rename_req {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<(String, String)>(egui::Id::new("query_rename_folder_req"));
+            });
+            self.pending_rename_query_folder =
+                Some((rel_path, folder_name.clone(), folder_name));
+        }
+
         // Handle "Share to Team" context menu request
         let share_req: Option<(String, String)> = ui
             .ctx()
@@ -2635,6 +2686,26 @@ impl super::Tabular {
                             ui.close();
                         }
 
+                        if ui.button("✏️ Rename Folder").clicked() {
+                            let relative_path = if let Some(full_path) = &node.file_path {
+                                let query_dir = directory::get_query_dir();
+                                std::path::Path::new(full_path)
+                                    .strip_prefix(&query_dir)
+                                    .unwrap_or(std::path::Path::new(&node.name))
+                                    .to_string_lossy()
+                                    .to_string()
+                            } else {
+                                node.name.clone()
+                            };
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    egui::Id::new("query_rename_folder_req"),
+                                    (relative_path, node.name.clone()),
+                                );
+                            });
+                            ui.close();
+                        }
+
                         if ui.button("🗑️ Remove Folder").clicked() {
                             // Store the full folder path for removal (relative to query dir)
                             if let Some(full_path) = &node.file_path {
@@ -2702,6 +2773,15 @@ impl super::Tabular {
                             ui.close();
                         }
                         if node.name != "Default" {
+                            if ui.button("✏️ Rename Folder").clicked() {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(
+                                        egui::Id::new("conn_rename_folder_req"),
+                                        folder_path.clone(),
+                                    );
+                                });
+                                ui.close();
+                            }
                             ui.separator();
                             if ui.button("🗑️ Delete Folder").clicked() {
                                 ui.ctx().data_mut(|d| {

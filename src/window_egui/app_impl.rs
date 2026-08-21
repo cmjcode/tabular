@@ -99,19 +99,30 @@ impl Tabular {
     /// Render the Preferences/Settings modal window.
     /// Extracted verbatim from `update()` (behavior-preserving).
     fn render_settings_dialog(&mut self, ctx: &egui::Context) {
-            if self.show_settings_window {
-                let mut open_flag = true; // local to satisfy borrow rules
-                egui::Window::new("Preferences")
-                    .open(&mut open_flag)
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                    .default_width(420.0)
-                    .show(ctx, |ui| {
-                        // Tab bar
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            let accent = style::theme_accent(ctx);
+        if self.show_settings_window {
+            let mut open_flag = true; // local to satisfy borrow rules
+            let screen_rect = ctx.content_rect();
+            let max_dialog_h = (screen_rect.height() - 40.0).max(280.0);
+            let max_dialog_w = (screen_rect.width() - 32.0).min(780.0).max(360.0);
+            let content_max_h = (max_dialog_h - 120.0).max(180.0);
+
+            egui::Window::new("Preferences")
+                .open(&mut open_flag)
+                .collapsible(false)
+                .resizable(false)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .fixed_pos(screen_rect.center())
+                .max_height(max_dialog_h)
+                .max_width(max_dialog_w)
+                .default_width(max_dialog_w)
+                .show(ctx, |ui| {
+                    // Tab bar
+                    egui::ScrollArea::horizontal()
+                        .id_salt("settings_tab_bar_scroll")
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                let accent = style::theme_accent(ctx);
                             let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
                                 let selected = *current == me;
                                 let dark = ui.visuals().dark_mode;
@@ -214,11 +225,17 @@ impl Tabular {
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::SyncAccount, "☁ Sync & Account");
                         });
-                        ui.separator();
-                        ui.add_space(4.0);
+                    });
+                    ui.separator();
+                    ui.add_space(4.0);
 
-                        match self.settings_active_pref_tab {
-                            PrefTab::ApplicationTheme => {
+                    egui::ScrollArea::vertical()
+                        .id_salt("settings_content_scroll")
+                        .max_height(content_max_h)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            match self.settings_active_pref_tab {
+                                PrefTab::ApplicationTheme => {
                                 ui.heading("Application Theme");
                                 ui.add_space(8.0);
 
@@ -615,20 +632,21 @@ impl Tabular {
                                 crate::sync::ui_login::render_login_panel(self, ui);
                             }
                         }
-
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            if ui.button("💾 Save Preferences").clicked() {
-                                self.prefs_dirty = true; self.try_save_prefs(); self.prefs_save_feedback = Some("Saved".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
-                            }
-                            if let Some(msg) = &self.prefs_save_feedback { ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0,150,0))); }
-                        });
                     });
-                if !open_flag {
-                    self.show_settings_window = false;
-                }
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("💾 Save Preferences").clicked() {
+                            self.prefs_dirty = true; self.try_save_prefs(); self.prefs_save_feedback = Some("Saved".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
+                        }
+                        if let Some(msg) = &self.prefs_save_feedback { ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0,150,0))); }
+                    });
+                });
+            if !open_flag {
+                self.show_settings_window = false;
             }
+        }
     }
 
     /// Drain native file/directory picker result channels into state.
@@ -2799,6 +2817,7 @@ impl Tabular {
                     self.render_rename_http_folder_dialog(ui.ctx());
                     self.render_create_http_workspace_dialog(ui.ctx());
                     self.render_delete_http_workspace_confirmation(ui.ctx());
+                    self.render_rename_http_workspace_dialog(ui.ctx());
 
                     // Render context menu for row operations
                     if self.show_row_context_menu {
@@ -4405,6 +4424,7 @@ impl App for Tabular {
         sidebar_database::render_add_connection_dialog(self, ctx);
         sidebar_database::render_edit_connection_dialog(self, ctx);
         sidebar_database::render_create_subfolder_dialog(self, ctx);
+        sidebar_database::render_rename_connection_folder_dialog(self, ctx);
         if let Some(rx) = &self.replication_setup_receiver
             && let Ok(result) = rx.try_recv()
         {
@@ -4473,6 +4493,7 @@ impl App for Tabular {
         dialog::render_parameter_dialog(self, ctx);
         dialog::render_unsafe_dml_dialog(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
+        sidebar_query::render_rename_query_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
         // Update dialog
         self.render_update_dialog(ctx);
