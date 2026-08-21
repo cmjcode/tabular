@@ -278,7 +278,8 @@ impl Tabular {
                                                  ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                                                      if ui.add_sized([130.0, 28.0], egui::Button::new(if selected { "Current" } else { "Select" })).clicked() {
                                                          self.app_theme = *theme;
-                                                         crate::window_egui::style::apply_theme(ctx, self.app_theme);
+                                                         let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
+                                                         crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
                                                          if self.link_editor_theme {
                                                              self.advanced_editor.theme = match self.app_theme {
                                                                  crate::config::AppTheme::Dark => crate::models::structs::EditorColorTheme::GithubDark,
@@ -299,6 +300,33 @@ impl Tabular {
                                     crate::config::AppTheme::Light => "High-contrast white theme with crisp panels.",
                                     crate::config::AppTheme::LightSoft => "Soft warm theme with gentle contrast for reduced eye fatigue.",
                                 }).size(11.0).color(egui::Color32::from_gray(120)));
+
+                                ui.add_space(14.0);
+                                ui.separator();
+                                ui.add_space(8.0);
+                                ui.heading("📱 Mode Antarmuka (Desktop / Tablet Touch)");
+                                ui.label(egui::RichText::new("Sesuaikan ukuran tombol, area sentuh, dan layout agar nyaman untuk mouse atau sentuhan jari pada iPad / Android tablet.").size(12.0).color(egui::Color32::from_gray(130)));
+                                ui.add_space(6.0);
+
+                                let mode_options = [
+                                    (crate::config::UiModePreference::Auto, "🌐 Otomatis", "Deteksi otomatis berdasarkan sistem (iOS/Android) atau resolusi layar."),
+                                    (crate::config::UiModePreference::Desktop, "💻 Desktop", "Ukuran tombol kompak dan padat untuk mouse & keyboard fisik."),
+                                    (crate::config::UiModePreference::TouchTablet, "📱 Tablet / Touch", "Target sentuh 44pt, baris tabel 38px, dan quick keyword toolbar."),
+                                ];
+
+                                for (mode, name, desc) in mode_options {
+                                    let selected = self.ui_mode == mode;
+                                    ui.horizontal(|ui| {
+                                        if ui.radio(selected, name).clicked() {
+                                            self.ui_mode = mode;
+                                            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
+                                            crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
+                                            self.prefs_dirty = true;
+                                            self.try_save_prefs();
+                                        }
+                                        ui.label(egui::RichText::new(desc).size(11.0).color(egui::Color32::from_gray(120)));
+                                    });
+                                }
                                 ctx.request_repaint();
                             }
                             PrefTab::EditorTheme => {
@@ -3241,6 +3269,7 @@ impl Tabular {
                     ai_base_url: self.ai_base_url.clone(),
                     redis_browser_auto_refresh_seconds: self.redis_browser_auto_refresh_default_seconds.max(1),
                     sync_server_url: Some(self.sync_server_url.clone()),
+                    ui_mode: self.ui_mode,
                 };
                 rt.block_on(store.save(&prefs));
                 log::debug!(
@@ -3266,8 +3295,10 @@ impl App for Tabular {
         // egui 0.34: App::update(ctx) became App::ui(ui); the body below is
         // ctx-based (panels via ctx), so rebind ctx from the root Ui.
         let ctx = &root_ui.ctx().clone();
-        // Ensure theme/style is applied for current `app_theme` each frame (idempotent)
-        crate::window_egui::style::apply_theme(ctx, self.app_theme);
+        // Compute adaptive device UI metrics (touch vs desktop) based on preferences and platform
+        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
+        // Ensure theme/style is applied for current `app_theme` and `ui_mode` each frame (idempotent)
+        crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
         
         // If Cmd+A was pressed, set a short-lived flag or state?
         // Actually, we need to know if "Select All" happened recently.
@@ -3532,6 +3563,7 @@ impl App for Tabular {
                 Ok(store) => {
                     let prefs = rt.block_on(store.load());
                     self.app_theme = prefs.theme;
+                    self.ui_mode = prefs.ui_mode;
                     self.link_editor_theme = prefs.link_editor_theme;
                     self.advanced_editor.theme = match prefs.editor_theme.as_str() {
                         "GITHUB_LIGHT" => crate::models::structs::EditorColorTheme::GithubLight,
@@ -3601,8 +3633,9 @@ impl App for Tabular {
             }
         }
 
-        // Apply global UI visuals based on the current theme.
-        crate::window_egui::style::apply_theme(ctx, self.app_theme);
+        // Apply global UI visuals based on the current theme and device metrics.
+        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
+        crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
 
         // If waiting for pool, check readiness and auto-run queued query
         if self.pool_wait_in_progress {

@@ -43,6 +43,7 @@ impl super::Tabular {
 
     pub fn set_initial_prefs(&mut self, prefs: crate::config::AppPreferences) {
         self.app_theme = prefs.theme;
+        self.ui_mode = prefs.ui_mode;
         self.link_editor_theme = prefs.link_editor_theme;
         self.advanced_editor.theme = match prefs.editor_theme.as_str() {
             "GITHUB_LIGHT" => crate::models::structs::EditorColorTheme::GithubLight,
@@ -284,6 +285,7 @@ impl super::Tabular {
             request_theme_selector: false,
             // App UI theme (default dark)
             app_theme: crate::config::AppTheme::Dark,
+            ui_mode: crate::config::UiModePreference::Auto,
             link_editor_theme: true,
             show_settings_window: false,
             // Database search functionality

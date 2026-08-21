@@ -27,6 +27,7 @@ pub mod tree_loader;
 pub mod update;
 pub mod style;
 pub mod sync_tick;
+pub mod device_profile;
 
 pub struct Tabular {
     pub editor: EditorBuffer,
@@ -170,6 +171,7 @@ pub struct Tabular {
     // Flag to request theme selector on next frame
     pub request_theme_selector: bool,
     pub app_theme: crate::config::AppTheme,
+    pub ui_mode: crate::config::UiModePreference,
     pub link_editor_theme: bool, // when true editor theme follows app theme
     // Settings window visibility
     pub show_settings_window: bool,

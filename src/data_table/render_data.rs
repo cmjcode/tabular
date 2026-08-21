@@ -364,11 +364,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // Virtual scroll: only render rows visible in the viewport.
             // Previous frame's scroll offset drives row range — 1-frame lag is imperceptible.
-            const ROW_HEIGHT: f32 = 28.0;
+            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+            let row_height = metrics.table_row_height;
             let total_rows = tabular.current_table_data.len();
             let prev_scroll_y = tabular.data_scroll_y;
-            let first_row = ((prev_scroll_y / ROW_HEIGHT) as usize).saturating_sub(3);
-            let last_row = (((prev_scroll_y + data_h) / ROW_HEIGHT).ceil() as usize + 4).min(total_rows);
+            let first_row = ((prev_scroll_y / row_height) as usize).saturating_sub(3);
+            let last_row = (((prev_scroll_y + data_h) / row_height).ceil() as usize + 4).min(total_rows);
 
             // Pre-compute total content width (matches sticky header formula)
             let total_content_w: f32 = 60.0
@@ -393,7 +394,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                     // Top spacer: allocate space for rows above the viewport
                     if first_row > 0 {
-                        ui.add_space(first_row as f32 * ROW_HEIGHT);
+                        ui.add_space(first_row as f32 * row_height);
                     }
 
                     for (row_index, row) in current_table_data
@@ -424,7 +425,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                         // Each row is a horizontal strip of fixed height
                         ui.allocate_ui_with_layout(
-                            egui::vec2(total_content_w, ROW_HEIGHT),
+                            egui::vec2(total_content_w, row_height),
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -460,7 +461,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                                 // ── Row number cell ──────────────────────────────────
                                 ui.allocate_ui_with_layout(
-                                    [60.0, ROW_HEIGHT].into(),
+                                    [60.0, row_height].into(),
                                     egui::Layout::top_down(egui::Align::Center),
                                     |ui| {
                                         let rect = ui.available_rect_before_wrap();
@@ -515,7 +516,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                         get_column_width(tabular, col_index).max(50.0)
                                     };
                                     ui.allocate_ui_with_layout(
-                                        [column_width, ROW_HEIGHT].into(),
+                                        [column_width, row_height].into(),
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
                                             let rect = ui.available_rect_before_wrap();
@@ -1012,7 +1013,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                     // Bottom spacer: allocate space for rows below the viewport
                     if last_row < total_rows {
-                        ui.add_space((total_rows - last_row) as f32 * ROW_HEIGHT);
+                        ui.add_space((total_rows - last_row) as f32 * row_height);
                     }
 
                     // Context menu on the scroll area background
@@ -1149,8 +1150,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     .sum::<f32>();
                             let col_w = get_column_width(tabular, sel_col).max(50.0);
                             let rect = egui::Rect::from_min_size(
-                                egui::pos2(col_x, sel_row as f32 * ROW_HEIGHT),
-                                egui::vec2(col_w, ROW_HEIGHT),
+                                egui::pos2(col_x, sel_row as f32 * row_height),
+                                egui::vec2(col_w, row_height),
                             );
                             ui.scroll_to_rect(rect, Some(egui::Align::Center));
                         }

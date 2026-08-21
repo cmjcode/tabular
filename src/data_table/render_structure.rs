@@ -373,8 +373,9 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                             } else {
                                 egui::Color32::from_gray(240)
                             };
-                            let row_h = 26.0f32;
-                            let header_h = 30.0f32;
+                            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+                            let row_h = metrics.table_row_height;
+                            let header_h = metrics.table_row_height + 4.0;
                             egui::ScrollArea::both()
                                 .id_salt("struct_idx_inline")
                                 .auto_shrink([false, false])
@@ -991,8 +992,9 @@ pub(crate) fn render_structure_columns_editor(
     } else {
         egui::Color32::from_gray(240)
     };
-    let row_h = 26.0f32;
-    let header_h = 30.0f32;
+    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+    let row_h = metrics.table_row_height;
+    let header_h = metrics.table_row_height + 4.0;
 
     egui::ScrollArea::both().id_salt("struct_cols_inline").auto_shrink([false,false]).show(ui, |ui| {
             // HEADER

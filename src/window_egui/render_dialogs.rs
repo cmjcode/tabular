@@ -756,9 +756,11 @@ impl super::Tabular {
                         editor::render_advanced_editor(self, ui);
                     });
 
-                let button_size = egui::vec2(26.0, 26.0);
+                let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), self.ui_mode);
+                let button_size = if metrics.is_touch { egui::vec2(36.0, 32.0) } else { egui::vec2(26.0, 26.0) };
+                let icon_size = if metrics.is_touch { 11.0 } else { 8.0 };
                 let _button_spacing = 2.0;
-                let button_corner = 2_u8;
+                let button_corner = if metrics.is_touch { 4_u8 } else { 2_u8 };
                 let right_margin = 6.0; // Compact right margin to align closely with editor border
                 let cluster_pos = egui::pos2(
                     rect.max.x - right_margin,
@@ -766,11 +768,11 @@ impl super::Tabular {
                 );
                 let is_loading = self.query_execution_in_progress || self.pool_wait_in_progress;
                 let play_text = if is_loading {
-                    egui::RichText::new("⏳").color(egui::Color32::WHITE).size(8.0)
+                    egui::RichText::new("⏳").color(egui::Color32::WHITE).size(icon_size)
                 } else {
                     egui::RichText::new("▶")
                         .color(egui::Color32::WHITE)
-                        .size(8.0)
+                        .size(icon_size)
                 };
                 let play_tooltip = if is_loading {
                     "Executing query…"
@@ -822,10 +824,10 @@ impl super::Tabular {
                             .fill(cluster_bg)
                             .stroke(egui::Stroke::new(1.0, cluster_border))
                             .corner_radius(egui::CornerRadius::same(6u8))
-                            .inner_margin(egui::Margin::same(2))
+                            .inner_margin(egui::Margin::same(if metrics.is_touch { 4 } else { 2 }))
                             .show(area_ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    ui.spacing_mut().item_spacing.x = if metrics.is_touch { 4.0 } else { 3.0 };
 
                                     if tx_mode {
                                         let mut mode = tx_mode;
@@ -871,7 +873,27 @@ impl super::Tabular {
                                         egui::Color32::from_rgb(190, 190, 190)
                                     };
 
-                                    let format_button = egui::Button::new(egui::RichText::new("</>").size(8.0))
+                                    // Touch tablet quick SQL keywords toolbar
+                                    if metrics.is_touch {
+                                        let kw_list = ["SELECT ", "FROM ", "WHERE ", "* ", "; "];
+                                        for kw in kw_list {
+                                            let kw_btn = egui::Button::new(
+                                                egui::RichText::new(kw.trim()).size(10.5).strong(),
+                                            )
+                                            .fill(base_fill)
+                                            .stroke(egui::Stroke::new(1.0, base_border))
+                                            .corner_radius(egui::CornerRadius::same(button_corner));
+                                            if ui.add_sized([egui::vec2(36.0, 30.0).x, button_size.y], kw_btn).clicked() {
+                                                let cur = self.cursor_position.min(self.editor.text.len());
+                                                self.editor.apply_single_replace(cur..cur, kw);
+                                                self.cursor_position += kw.len();
+                                                self.editor.mark_text_modified();
+                                            }
+                                        }
+                                        ui.separator();
+                                    }
+
+                                    let format_button = egui::Button::new(egui::RichText::new("</>").size(icon_size))
                                         .fill(base_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))
                                         .corner_radius(egui::CornerRadius::same(button_corner));
@@ -883,7 +905,7 @@ impl super::Tabular {
                                         format_clicked = true;
                                     }
 
-                                    let explain_button = egui::Button::new(egui::RichText::new("🔍").size(8.0))
+                                    let explain_button = egui::Button::new(egui::RichText::new("🔍").size(icon_size))
                                         .fill(base_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))
                                         .corner_radius(egui::CornerRadius::same(button_corner));

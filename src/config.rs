@@ -41,6 +41,44 @@ impl std::str::FromStr for AppTheme {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UiModePreference {
+    #[default]
+    Auto,
+    Desktop,
+    TouchTablet,
+}
+
+impl UiModePreference {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiModePreference::Auto => "AUTO",
+            UiModePreference::Desktop => "DESKTOP",
+            UiModePreference::TouchTablet => "TOUCH_TABLET",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            UiModePreference::Auto => "Otomatis (Sesuai Layar / Perangkat)",
+            UiModePreference::Desktop => "Desktop (Kompak & Mouse)",
+            UiModePreference::TouchTablet => "Tablet / Touch (Area Sentuh Nyaman)",
+        }
+    }
+}
+
+impl std::str::FromStr for UiModePreference {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "DESKTOP" => UiModePreference::Desktop,
+            "TOUCH_TABLET" | "TABLET" | "TOUCH" => UiModePreference::TouchTablet,
+            _ => UiModePreference::Auto,
+        })
+    }
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AiProvider {
     #[default]
     OpenAI,
@@ -164,6 +202,8 @@ impl std::str::FromStr for AiProvider {
 pub struct AppPreferences {
     #[serde(default)]
     pub theme: AppTheme,
+    #[serde(default)]
+    pub ui_mode: UiModePreference,
     pub link_editor_theme: bool,
     pub editor_theme: String,
     pub font_size: f32,
@@ -198,6 +238,7 @@ impl Default for AppPreferences {
     fn default() -> Self {
         Self {
             theme: AppTheme::Dark,
+            ui_mode: UiModePreference::Auto,
             link_editor_theme: true,
             editor_theme: "GITHUB_DARK".into(),
             font_size: 14.0,
@@ -324,6 +365,7 @@ impl ConfigStore {
                 ai_base_url: String::new(),
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
                 sync_server_url: Some("https://api.tabular.id".to_string()),
+                ui_mode: UiModePreference::Auto,
             };
 
             // Set when a legacy plaintext AI key was migrated to the secret
@@ -339,6 +381,7 @@ impl ConfigStore {
                     let v: String = row.get(1);
                     match k.as_str() {
                         "theme" => prefs.theme = v.parse().unwrap_or(AppTheme::Dark),
+                        "ui_mode" => prefs.ui_mode = v.parse().unwrap_or(UiModePreference::Auto),
                         // Legacy migration: old boolean flags
                         "is_dark_mode" => if v != "1" { prefs.theme = AppTheme::Light; },
                         "is_light_soft" => if v == "1" { prefs.theme = AppTheme::LightSoft; },
@@ -425,8 +468,9 @@ impl ConfigStore {
             // The key goes to the OS keychain; the row keeps only a sentinel.
             let ai_api_key_stored =
                 crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
-            let entries: [(&str, &str); 15] = [
+            let entries: [(&str, &str); 16] = [
                 ("theme", prefs.theme.as_str()),
+                ("ui_mode", prefs.ui_mode.as_str()),
                 (
                     "link_editor_theme",
                     if prefs.link_editor_theme { "1" } else { "0" },

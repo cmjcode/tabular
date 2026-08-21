@@ -135,43 +135,55 @@ fn theme_visuals(theme: AppTheme) -> egui::Visuals {
     }
 }
 
-pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
+use crate::window_egui::device_profile::DeviceUiMetrics;
+
+pub fn apply_theme(ctx: &egui::Context, theme: AppTheme, metrics: &DeviceUiMetrics) {
     let visuals = theme_visuals(theme);
 
     ctx.all_styles_mut(|style| {
         style.visuals = visuals.clone();
 
-        // Global spacing and padding for a more modern layout.
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.window_margin = egui::Margin::same(10);
-        style.spacing.button_padding = egui::vec2(12.0, 7.0);
-        style.spacing.menu_margin = egui::Margin::same(8);
-        style.spacing.indent = 16.0;
-        style.spacing.interact_size = egui::vec2(44.0, 24.0);
+        // Global spacing and padding for a modern, touch-friendly or compact desktop layout.
+        style.spacing.item_spacing = if metrics.is_touch {
+            egui::vec2(10.0, 8.0)
+        } else {
+            egui::vec2(8.0, 6.0)
+        };
+        style.spacing.window_margin = metrics.panel_margin;
+        style.spacing.button_padding = metrics.button_padding;
+        style.spacing.menu_margin = if metrics.is_touch {
+            egui::Margin::same(12)
+        } else {
+            egui::Margin::same(8)
+        };
+        style.spacing.indent = if metrics.is_touch { 20.0 } else { 16.0 };
+        style.spacing.interact_size = metrics.min_touch_size;
+        style.spacing.scroll.bar_width = metrics.scrollbar_width;
 
         // Rounded widgets across the app.
-        style.visuals.widgets.inactive.corner_radius = 6.0.into();
-        style.visuals.widgets.hovered.corner_radius = 6.0.into();
-        style.visuals.widgets.active.corner_radius = 6.0.into();
-        style.visuals.widgets.open.corner_radius = 6.0.into();
+        let radius = if metrics.is_touch { 8.0 } else { 6.0 };
+        style.visuals.widgets.inactive.corner_radius = radius.into();
+        style.visuals.widgets.hovered.corner_radius = radius.into();
+        style.visuals.widgets.active.corner_radius = radius.into();
+        style.visuals.widgets.open.corner_radius = radius.into();
 
-        // Use a consistent app font / body size.
-        style.override_font_id = Some(egui::FontId::new(14.0, egui::FontFamily::Proportional));
+        // Typography dynamically sized for desktop or touch tablet.
+        style.override_font_id = Some(egui::FontId::new(metrics.font_body_size, egui::FontFamily::Proportional));
         style.text_styles.insert(
             egui::TextStyle::Body,
-            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            egui::FontId::new(metrics.font_body_size, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Monospace,
-            egui::FontId::new(13.0, egui::FontFamily::Monospace),
+            egui::FontId::new(metrics.font_monospace_size, egui::FontFamily::Monospace),
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            egui::FontId::new(metrics.font_body_size, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Heading,
-            egui::FontId::new(18.0, egui::FontFamily::Proportional),
+            egui::FontId::new(metrics.font_heading_size, egui::FontFamily::Proportional),
         );
     });
 }
