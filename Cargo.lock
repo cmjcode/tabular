@@ -6676,7 +6676,7 @@ dependencies = [
 
 [[package]]
 name = "tabular"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "aes-gcm",
  "anyhow",

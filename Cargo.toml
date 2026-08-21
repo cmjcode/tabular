@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 
 [lib]
@@ -109,13 +109,20 @@ tokio-tungstenite = { version = "0.30", features = [
 # These are non-optional: sync/login is always compiled in (not behind `collab`),
 # so gating the crypto behind an opt-in feature silently downgraded release
 # builds to a plaintext/base64 no-op — see SECURITY.md.
-aes-gcm = { version = "0.11" }                                    # symmetric encryption of synced payloads
-sha2 = { version = "0.11" }                                       # hashing (checksums, KDF glue)
+aes-gcm = { version = "0.11" } # symmetric encryption of synced payloads
+sha2 = { version = "0.11" } # hashing (checksums, KDF glue)
 base64 = "0.23"
-rand = { version = "0.10" }                                       # AES-GCM nonce generation
-argon2 = { version = "0.5", features = ["std"] }                  # Sync Passphrase -> KEK (Argon2id)
-crypto_box = { version = "0.9", features = ["seal", "std"] }      # X25519 sealed boxes for Team vault key sharing
-zeroize = { version = "1", features = ["zeroize_derive"] }        # scrub key material from memory
+rand = { version = "0.10" } # AES-GCM nonce generation
+argon2 = { version = "0.5", features = [
+       "std",
+] } # Sync Passphrase -> KEK (Argon2id)
+crypto_box = { version = "0.9", features = [
+       "seal",
+       "std",
+] } # X25519 sealed boxes for Team vault key sharing
+zeroize = { version = "1", features = [
+       "zeroize_derive",
+] } # scrub key material from memory
 
 # OS keychain backends (see src/secrets.rs). Linux is opt-in via the
 # `linux-keyring` feature because Secret Service pulls a D-Bus build/runtime
@@ -154,10 +161,7 @@ sqlparser = ["dep:sqlparser"]
 # Enable realtime collaborative editing (CRDT rooms + WebSocket).
 # Vault/E2E crypto and REST sync are always compiled in — see the
 # "Vault crypto" dependency block above.
-collab = [
-       "dep:yrs",
-       "dep:tokio-tungstenite",
-]
+collab = ["dep:yrs", "dep:tokio-tungstenite"]
 
 # removed lapce_core in egui-only mode
 
