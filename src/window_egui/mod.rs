@@ -551,6 +551,7 @@ pub struct Tabular {
     pub teams_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteTeam>>>>,
     pub team_create_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::api_client::RemoteTeam>>>,
     pub team_delete_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
+    pub team_to_delete: Option<(String, String)>,
     pub team_members_receiver: Option<std::sync::mpsc::Receiver<(String, anyhow::Result<Vec<crate::sync::api_client::RemoteTeamMember>>)>>,
     pub team_add_member_receiver: Option<std::sync::mpsc::Receiver<(String, anyhow::Result<()>)>>,
     // Share Folder state

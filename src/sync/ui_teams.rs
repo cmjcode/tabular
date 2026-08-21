@@ -149,18 +149,23 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             let is_open_before = team_state.is_open();
 
             let team_res = team_state.show_header(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(team_header_text).strong().size(13.0));
-                    if is_owner {
-                        ui.add_space(2.0);
-                        if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
-                            .on_hover_text("Delete Team")
-                            .clicked()
-                        {
-                            delete_team(tabular, &team.id);
-                        }
+                ui.spacing_mut().interact_size = egui::vec2(22.0, 22.0);
+                ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+                ui.label(egui::RichText::new(team_header_text).strong().size(13.0));
+                if is_owner {
+                    let btn_size = egui::vec2(22.0, 22.0);
+                    let space = (ui.available_width() - btn_size.x - 4.0).max(0.0);
+                    ui.add_space(space);
+                    if ui.add_sized(
+                        btn_size,
+                        egui::Button::new(egui::RichText::new("🗑").size(14.0)).frame(false),
+                    )
+                    .on_hover_text("Delete Team")
+                    .clicked()
+                    {
+                        tabular.team_to_delete = Some((team.id.clone(), team.name.clone()));
                     }
-                });
+                }
             }).body(|ui| {
                 ui.indent(format!("team_body_{}", team.id), |ui| {
                     if let Some(desc) = &team.description
@@ -182,21 +187,22 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut open_add_dialog = false;
                     members_state.show_header(ui, |ui| {
-                        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(members_header_title).strong().small());
-                            ui.add_space(2.0);
-                            if ui.add_sized(
-                                [18.0, 18.0],
-                                egui::Button::new(egui::RichText::new("+").size(11.0).strong())
-                                    .corner_radius(egui::CornerRadius::same(3)),
-                            )
-                            .on_hover_text("Tambah Member (Popup)")
-                            .clicked()
-                            {
-                                open_add_dialog = true;
-                            }
-                        });
+                        ui.spacing_mut().interact_size = egui::vec2(18.0, 18.0);
+                        ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
+                        ui.label(egui::RichText::new(members_header_title).strong().small());
+                        let btn_size = egui::vec2(18.0, 18.0);
+                        let space = (ui.available_width() - btn_size.x - 4.0).max(0.0);
+                        ui.add_space(space);
+                        if ui.add_sized(
+                            btn_size,
+                            egui::Button::new(egui::RichText::new("+").size(12.0).strong())
+                                .corner_radius(egui::CornerRadius::same(3)),
+                        )
+                        .on_hover_text("Tambah Member (Popup)")
+                        .clicked()
+                        {
+                            open_add_dialog = true;
+                        }
                     }).body(|ui| {
                         ui.indent(format!("members_body_{}", team.id), |ui| {
                             if let Some(members) = tabular.team_members.get(&team.id).cloned() {
@@ -256,21 +262,22 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut add_share_clicked = false;
                     shares_state.show_header(ui, |ui| {
-                        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(shares_header_title).strong().small());
-                            ui.add_space(2.0);
-                            if ui.add_sized(
-                                [18.0, 18.0],
-                                egui::Button::new(egui::RichText::new("+").size(11.0).strong())
-                                    .corner_radius(egui::CornerRadius::same(3)),
-                            )
-                            .on_hover_text("Share Folder (Connection/Query/HTTP)")
-                            .clicked()
-                            {
-                                add_share_clicked = true;
-                            }
-                        });
+                        ui.spacing_mut().interact_size = egui::vec2(18.0, 18.0);
+                        ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
+                        ui.label(egui::RichText::new(shares_header_title).strong().small());
+                        let btn_size = egui::vec2(18.0, 18.0);
+                        let space = (ui.available_width() - btn_size.x - 4.0).max(0.0);
+                        ui.add_space(space);
+                        if ui.add_sized(
+                            btn_size,
+                            egui::Button::new(egui::RichText::new("+").size(12.0).strong())
+                                .corner_radius(egui::CornerRadius::same(3)),
+                        )
+                        .on_hover_text("Share Folder (Connection/Query/HTTP)")
+                        .clicked()
+                        {
+                            add_share_clicked = true;
+                        }
                     }).body(|ui| {
                         ui.indent(format!("shares_body_{}", team.id), |ui| {
                             if team_shares.is_empty() {
@@ -326,21 +333,22 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut add_room_clicked = false;
                     rooms_state.show_header(ui, |ui| {
-                        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(rooms_header_title).strong().small());
-                            ui.add_space(2.0);
-                            if ui.add_sized(
-                                [18.0, 18.0],
-                                egui::Button::new(egui::RichText::new("+").size(11.0).strong())
-                                    .corner_radius(egui::CornerRadius::same(3)),
-                            )
-                            .on_hover_text("Buat Room baru untuk Team ini")
-                            .clicked()
-                            {
-                                add_room_clicked = true;
-                            }
-                        });
+                        ui.spacing_mut().interact_size = egui::vec2(18.0, 18.0);
+                        ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
+                        ui.label(egui::RichText::new(rooms_header_title).strong().small());
+                        let btn_size = egui::vec2(18.0, 18.0);
+                        let space = (ui.available_width() - btn_size.x - 4.0).max(0.0);
+                        ui.add_space(space);
+                        if ui.add_sized(
+                            btn_size,
+                            egui::Button::new(egui::RichText::new("+").size(12.0).strong())
+                                .corner_radius(egui::CornerRadius::same(3)),
+                        )
+                        .on_hover_text("Buat Room baru untuk Team ini")
+                        .clicked()
+                        {
+                            add_room_clicked = true;
+                        }
                     }).body(|ui| {
                         ui.indent(format!("rooms_body_{}", team.id), |ui| {
                             if team_rooms.is_empty() {
@@ -1266,3 +1274,72 @@ fn collect_http_subfolders(
         collect_http_subfolders(&f.children, out);
     }
 }
+
+/// Modal confirmation dialog before deleting a Team.
+pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
+    let Some((team_id, team_name)) = tabular.team_to_delete.clone() else {
+        return;
+    };
+
+    let mut do_delete = false;
+    let mut close = false;
+
+    egui::Window::new("🗑 Hapus Team")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .fixed_size([340.0, 160.0])
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Apakah Anda yakin ingin menghapus Team ini?")
+                        .strong()
+                        .size(14.0),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!("\"{}\"", team_name))
+                        .strong()
+                        .color(crate::window_egui::style::theme_accent(ui.ctx())),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Semua room, share folder, dan data member di dalam team ini akan terhapus.")
+                        .weak()
+                        .small(),
+                );
+                ui.add_space(14.0);
+
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.spacing_mut().interact_size.y = 28.0;
+
+                    let avail_w = ui.available_width();
+                    let btn_w = (avail_w - 12.0) / 2.0;
+
+                    if ui.add_sized([btn_w, 28.0], egui::Button::new("Batal")).clicked() {
+                        close = true;
+                    }
+
+                    if ui.add_sized(
+                        [btn_w, 28.0],
+                        egui::Button::new(egui::RichText::new("🗑 Hapus Team").color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(200, 50, 50)),
+                    ).clicked() {
+                        do_delete = true;
+                        close = true;
+                    }
+                });
+                ui.add_space(6.0);
+            });
+        });
+
+    if do_delete {
+        delete_team(tabular, &team_id);
+    }
+    if close {
+        tabular.team_to_delete = None;
+    }
+}
+

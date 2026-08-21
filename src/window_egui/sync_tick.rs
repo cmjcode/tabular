@@ -16,9 +16,10 @@ impl super::Tabular {
         // ── Render collab panel (floating window) ───────────────────────────
         crate::sync::ui_collab::render_collab_panel(self, ctx);
 
-        // ── Render share folder dialog & add member dialog ─────────────────────
+        // ── Render share folder dialog & add member dialog & delete team dialog ────
         crate::sync::ui_teams::render_share_folder_dialog(self, ctx);
         crate::sync::ui_teams::render_add_member_dialog(self, ctx);
+        crate::sync::ui_teams::render_delete_team_dialog(self, ctx);
 
         // ── Poll CRDT messages ───────────────────────────────────────────────
         self.poll_crdt_messages(ctx);

@@ -562,6 +562,7 @@ impl super::Tabular {
             teams_receiver: None,
             team_create_receiver: None,
             team_delete_receiver: None,
+            team_to_delete: None,
             team_members_receiver: None,
             team_add_member_receiver: None,
             show_share_folder_dialog: false,
