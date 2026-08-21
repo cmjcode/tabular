@@ -2030,17 +2030,15 @@ impl super::Tabular {
                 .collect();
         }
 
-        // If cache doesn't have data or is empty, fallback to server query
-        if let Some(connection) = self
-            .connections
-            .iter()
-            .find(|c| c.id == Some(connection_id))
-        {
-            let connection = connection.clone();
-            self.load_table_columns_sync(connection_id, table_name, &connection, database_name)
-        } else {
-            Vec::new()
+        // If cache doesn't have data, trigger background fetch if sender exists
+        if let Some(sender) = &self.background_sender {
+            let _ = sender.send(models::enums::BackgroundTask::FetchTableStructure {
+                connection_id,
+                database_name: database_name.to_string(),
+                table_name: table_name.to_string(),
+            });
         }
+        Vec::new()
     }
     pub fn extract_indexes_and_pks_from_cache(
         &mut self,
@@ -2048,128 +2046,20 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) -> (Vec<String>, Vec<String>) {
-        // Try to get primary keys from cache first
         let pk_columns = if let Some(pks) =
             cache_data::get_primary_keys_from_cache(self, connection_id, database_name, table_name)
         {
-            if !pks.is_empty() {
-                pks
-            } else {
-                // Cache is empty, fallback to server query
-                if let Some(connection) = self
-                    .connections
-                    .iter()
-                    .find(|c| c.id == Some(connection_id))
-                {
-                    let connection = connection.clone();
-                    self.fetch_primary_key_columns_for_table(
-                        connection_id,
-                        &connection,
-                        database_name,
-                        table_name,
-                    )
-                } else {
-                    Vec::new()
-                }
-            }
+            pks
         } else {
-            // Cache doesn't have data, fallback to server query
-            if let Some(connection) = self
-                .connections
-                .iter()
-                .find(|c| c.id == Some(connection_id))
-            {
-                let connection = connection.clone();
-                self.fetch_primary_key_columns_for_table(
-                    connection_id,
-                    &connection,
-                    database_name,
-                    table_name,
-                )
-            } else {
-                Vec::new()
-            }
+            Vec::new()
         };
 
-        // Try to get index names from cache first (fast tree render)
         let indexes_list = if let Some(names) =
             cache_data::get_index_names_from_cache(self, connection_id, database_name, table_name)
         {
-            if !names.is_empty() {
-                names
-            } else {
-                // Cache empty: fallback to live fetch and seed cache with names
-                if let Some(connection) = self
-                    .connections
-                    .iter()
-                    .find(|c| c.id == Some(connection_id))
-                {
-                    let connection = connection.clone();
-                    let names = self.fetch_index_names_for_table(
-                        connection_id,
-                        &connection,
-                        database_name,
-                        table_name,
-                    );
-                    if !names.is_empty() {
-                        let stubs: Vec<models::structs::IndexStructInfo> = names
-                            .iter()
-                            .map(|n| models::structs::IndexStructInfo {
-                                name: n.clone(),
-                                method: None,
-                                unique: false,
-                                columns: Vec::new(),
-                            })
-                            .collect();
-                        cache_data::save_indexes_to_cache(
-                            self,
-                            connection_id,
-                            database_name,
-                            table_name,
-                            &stubs,
-                        );
-                    }
-                    names
-                } else {
-                    Vec::new()
-                }
-            }
+            names
         } else {
-            // No cache table or error: fallback and seed cache
-            if let Some(connection) = self
-                .connections
-                .iter()
-                .find(|c| c.id == Some(connection_id))
-            {
-                let connection = connection.clone();
-                let names = self.fetch_index_names_for_table(
-                    connection_id,
-                    &connection,
-                    database_name,
-                    table_name,
-                );
-                if !names.is_empty() {
-                    let stubs: Vec<models::structs::IndexStructInfo> = names
-                        .iter()
-                        .map(|n| models::structs::IndexStructInfo {
-                            name: n.clone(),
-                            method: None,
-                            unique: false,
-                            columns: Vec::new(),
-                        })
-                        .collect();
-                    cache_data::save_indexes_to_cache(
-                        self,
-                        connection_id,
-                        database_name,
-                        table_name,
-                        &stubs,
-                    );
-                }
-                names
-            } else {
-                Vec::new()
-            }
+            Vec::new()
         };
 
         (indexes_list, pk_columns)
@@ -2180,44 +2070,11 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) -> Vec<models::structs::PartitionStructInfo> {
-        // Try cache first
         if let Some(cached_partitions) = cache_data::get_partitions_from_cache(self, connection_id, database_name, table_name) {
             debug!("📚 Using cached partitions for {}/{} ({} partitions)", database_name, table_name, cached_partitions.len());
             return cached_partitions;
         }
-        
-        // Cache miss - fetch from database
-        if let Some(connection) = self
-            .connections
-            .iter()
-            .find(|c| c.id == Some(connection_id))
-        {
-            let connection = connection.clone();
-            debug!("🔍 Fetching partition details from DB for {}/{}", database_name, table_name);
-            // Use the fetch function from data_table module
-            let partitions = crate::data_table::fetch_partition_details_for_table(
-                self,
-                connection_id,
-                &connection,
-                database_name,
-                table_name,
-            );
-            debug!("📊 Fetched {} partitions from database", partitions.len());
-            if !partitions.is_empty() {
-                debug!("💾 Saving {} partitions to cache", partitions.len());
-                cache_data::save_partitions_to_cache(
-                    self,
-                    connection_id,
-                    database_name,
-                    table_name,
-                    &partitions,
-                );
-            }
-            partitions
-        } else {
-            debug!("⚠️  Connection not found: {}", connection_id);
-            Vec::new()
-        }
+        Vec::new()
     }
     pub fn fetch_index_names_for_table(
         &mut self,

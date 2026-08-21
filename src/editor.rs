@@ -2726,11 +2726,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Record text length before TextEdit renders (O(1)) — used in response.changed() to detect insertions
     let pre_text_len = tabular.editor.text.len();
 
+    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+    let effective_font_size = if metrics.is_touch && tabular.advanced_editor.font_size <= 14.0 {
+        metrics.font_monospace_size.max(16.0)
+    } else {
+        tabular.advanced_editor.font_size
+    };
+
     // Calculate gutter width and editor rect
     let gutter_width = if tabular.advanced_editor.show_line_numbers {
         let digits = (pre_line_count as f32).log10().floor() as usize + 1;
         // Base gutter on configured editor font size for consistent alignment
-        (digits as f32) * (tabular.advanced_editor.font_size * 0.6) + 20.0
+        (digits as f32) * (effective_font_size * 0.6) + 20.0
     } else {
         0.0
     };
@@ -2762,7 +2769,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Build TextEdit widget directly and capture full output (galley, clip rect, etc.)
     // NOTE: Removed .code_editor() as it may interfere with cursor rendering
     let text_edit = egui::TextEdit::multiline(&mut tabular.editor.text)
-        .font(egui::FontId::monospace(tabular.advanced_editor.font_size))
+        .font(egui::FontId::monospace(effective_font_size))
         .desired_rows(rows)
         .desired_width(f32::INFINITY)
         .cursor_at_end(false) // Allow cursor to be positioned anywhere

@@ -1542,52 +1542,31 @@ impl super::Tabular {
                                     self.pool_wait_started_at = Some(std::time::Instant::now());
                                     self.current_table_name =
                                         "Connecting… waiting for pool".to_string();
-                                } else if let Some((headers, data)) =
-                                    connection::execute_query_with_connection(
+                                } else {
+                                    let job_id = self.next_query_job_id;
+                                    self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
+                                    if let Ok(mut job) = connection::prepare_query_job(
                                         self,
                                         connection_id,
-                                        safe_query,
-                                    )
-                                {
-                                    self.current_table_headers = headers;
-                                    self.current_table_data = data.clone();
-                                    self.all_table_data = data;
-                                    // current_table_name sudah diset lebih awal
-                                    self.is_table_browse_mode = true; // Enable filter for table browse
-                                    self.sql_filter_text.clear(); // Clear any previous filter
-                                    self.total_rows = self.all_table_data.len();
-                                    self.current_page = 0;
-                                    if let Some(active_tab) =
-                                        self.query_tabs.get_mut(self.active_tab_index)
-                                    {
-                                        active_tab.result_headers =
-                                            self.current_table_headers.clone();
-                                        active_tab.result_rows = self.current_table_data.clone();
-                                        active_tab.result_all_rows = self.all_table_data.clone();
-                                        active_tab.result_table_name =
-                                            self.current_table_name.clone();
-                                        active_tab.is_table_browse_mode = self.is_table_browse_mode;
-                                        active_tab.current_page = self.current_page;
-                                        active_tab.page_size = self.page_size;
-                                        active_tab.total_rows = self.total_rows;
-                                    }
-                                    // Save latest first page into row cache (best-effort)
-                                    if let Some(dbn) = &database_name {
-                                        let snapshot: Vec<Vec<String>> =
-                                            self.all_table_data.iter().take(100).cloned().collect();
-                                        let headers_clone = self.current_table_headers.clone();
-                                        crate::cache_data::save_table_rows_to_cache(
-                                            self,
+                                        safe_query.clone(),
+                                        job_id,
+                                    ) {
+                                        job.options.save_to_history = false;
+                                        let status = connection::QueryJobStatus {
+                                            job_id,
                                             connection_id,
-                                            dbn,
-                                            &table_name,
-                                            &headers_clone,
-                                            &snapshot,
-                                        );
-                                        debug!(
-                                            "💾 Cached first 100 rows after live fetch for {}/{}",
-                                            dbn, table_name
-                                        );
+                                            query_preview: safe_query.chars().take(80).collect(),
+                                            started_at: std::time::Instant::now(),
+                                            completed: false,
+                                        };
+                                        self.active_query_jobs.insert(job_id, status);
+                                        self.query_execution_in_progress = true;
+                                        self.extend_query_icon_hold();
+                                        self.current_table_name = format!("Loading {}...", table_name);
+                                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                            active_tab.result_table_name = self.current_table_name.clone();
+                                        }
+                                        let _ = connection::spawn_query_job(self, job, self.query_result_sender.clone());
                                     }
                                 }
                             } else {

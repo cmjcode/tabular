@@ -2464,9 +2464,16 @@ impl Tabular {
                                 ui.set_style(style);
 
                                 ui.horizontal(|ui| {
+                                     let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), self.ui_mode);
+                                     let tab_h = if metrics.is_touch { 38.0 } else { 28.0 };
+                                     let data_tab_w = if metrics.is_touch { 105.0 } else { 90.0 };
+                                     let struct_tab_w = if metrics.is_touch { 125.0 } else { 105.0 };
+                                     let query_tab_w = if metrics.is_touch { 110.0 } else { 90.0 };
+                                     let msg_tab_w = if metrics.is_touch { 120.0 } else { 100.0 };
+
                                      let is_data = self.table_bottom_view
                                          == models::structs::TableBottomView::Data;
-                                     if style::render_custom_tab(ui, "📊 Data", is_data, egui::vec2(90.0, 26.0)).clicked() {
+                                     if style::render_custom_tab(ui, "📊 Data", is_data, egui::vec2(data_tab_w, tab_h)).clicked() {
                                          self.table_bottom_view =
                                              models::structs::TableBottomView::Data;
                                          // Ensure DATA view uses persisted cache when available.
@@ -2504,7 +2511,7 @@ impl Tabular {
 
                                      let is_struct = self.table_bottom_view
                                          == models::structs::TableBottomView::Structure;
-                                     if style::render_custom_tab(ui, "⊞ Structure", is_struct, egui::vec2(105.0, 26.0)).clicked() {
+                                     if style::render_custom_tab(ui, "⊞ Structure", is_struct, egui::vec2(struct_tab_w, tab_h)).clicked() {
                                          self.table_bottom_view =
                                              models::structs::TableBottomView::Structure;
                                          // Load structure only if target changed; otherwise keep in-memory (avoid repeated cache hits)
@@ -2547,7 +2554,7 @@ impl Tabular {
                                      if is_view_tab && has_ddl {
                                          let is_query = self.table_bottom_view
                                              == models::structs::TableBottomView::Query;
-                                         if style::render_custom_tab(ui, "📝 Query", is_query, egui::vec2(90.0, 26.0)).clicked() {
+                                         if style::render_custom_tab(ui, "📝 Query", is_query, egui::vec2(query_tab_w, tab_h)).clicked() {
                                              self.table_bottom_view = models::structs::TableBottomView::Query;
                                          }
                                      }
@@ -2555,7 +2562,7 @@ impl Tabular {
                                     // Messages tab - show when there's a query message
                                     if !self.query_message.is_empty() {
                                         let is_messages = self.show_message_panel;
-                                        if style::render_custom_tab(ui, "💬 Messages", is_messages, egui::vec2(100.0, 26.0)).clicked() {
+                                        if style::render_custom_tab(ui, "💬 Messages", is_messages, egui::vec2(msg_tab_w, tab_h)).clicked() {
                                             self.show_message_panel = !self.show_message_panel;
                                             self.message_shown_at = None;
                                         }

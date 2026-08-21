@@ -728,8 +728,8 @@ impl super::Tabular {
                     });
 
                 let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), self.ui_mode);
-                let button_size = if metrics.is_touch { egui::vec2(38.0, 36.0) } else { egui::vec2(26.0, 24.0) };
-                let icon_size = if metrics.is_touch { 14.0 } else { 8.0 };
+                let button_size = if metrics.is_touch { egui::vec2(44.0, 40.0) } else { egui::vec2(26.0, 24.0) };
+                let icon_size = if metrics.is_touch { 16.0 } else { 8.0 };
                 let _button_spacing = 2.0;
                 let button_corner = if metrics.is_touch { 6_u8 } else { 2_u8 };
                 let right_margin = 6.0; // Compact right margin to align closely with editor border
@@ -858,7 +858,7 @@ impl super::Tabular {
                                         for kw in kw_list {
                                             let trimmed = kw.trim();
                                             let kw_btn = egui::Button::new(
-                                                egui::RichText::new(trimmed).size(10.5).strong(),
+                                                egui::RichText::new(trimmed).size(13.0).strong(),
                                             )
                                             .min_size(egui::vec2(0.0, button_size.y))
                                             .fill(base_fill)
@@ -867,7 +867,7 @@ impl super::Tabular {
 
                                             let width = match trimmed {
                                                 "*" | ";" => button_size.x,
-                                                _ => 48.0,
+                                                _ => 60.0,
                                             };
 
                                             if ui.add_sized([width, button_size.y], kw_btn).clicked() {

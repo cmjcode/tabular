@@ -19,57 +19,77 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
         // Show grid whenever we have headers (even if 0 rows) so user sees column structure
         if !tabular.current_table_headers.is_empty() {
+            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+
             // Toolbar: filter + spreadsheet actions (only in table browse mode)
             if tabular.is_table_browse_mode {
-                ui.horizontal(|ui| {
-                    // WHERE filter
-                    ui.label("WHERE:");
-                    let filter_response = ui.add_sized(
-                        [ui.available_width() * 0.8, 25.0],
-                        egui::TextEdit::singleline(&mut tabular.sql_filter_text)
-                            .hint_text("column = 'value' AND col2 > 0")
-                            .interactive(true),
-                    );
-
-                    if filter_response.has_focus() || filter_response.hovered() {
-                        let visuals = ui.visuals();
-                        let accent = if filter_response.has_focus() {
-                            visuals.selection.stroke.color
-                        } else {
-                            visuals.widgets.hovered.bg_stroke.color
-                        };
-                        let rect = filter_response.rect.expand(2.0);
-                        ui.painter().rect_stroke(
-                            rect,
-                            4.0,
-                            egui::Stroke::new(1.6, accent),
-                            egui::StrokeKind::Outside,
+                let toolbar_height = if metrics.is_touch { 40.0 } else { 32.0 };
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), toolbar_height),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new("🔍 WHERE:")
+                                .strong()
+                                .size(if metrics.is_touch { 14.5 } else { 13.0 }),
                         );
-                    }
-
-                    // Apply filter when:
-                    // - Enter is pressed while the field has focus, or
-                    // - The field loses focus (more forgiving than requiring `changed()`)
-                    // This avoids cases where `lost_focus && changed` misses due to frame timing.
-                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (filter_response.has_focus() && enter_pressed)
-                        || filter_response.lost_focus()
-                    {
-                        apply_sql_filter(tabular);
-                    }
-                    if ui.button("❌").on_hover_text("Clear filter").clicked() {
-                        tabular.sql_filter_text.clear();
-                        apply_sql_filter(tabular);
-                    }
-                    if tabular.spreadsheet_state.is_dirty {
-                        ui.separator();
-                        ui.colored_label(
-                            crate::window_egui::style::theme_warning(ui.ctx()),
-                            "Unsaved changes (⌘S)",
+                        let filter_width = (ui.available_width() - if metrics.is_touch { 180.0 } else { 140.0 }).max(160.0);
+                        let input_height = if metrics.is_touch { 34.0 } else { 26.0 };
+                        let filter_response = ui.add_sized(
+                            [filter_width, input_height],
+                            egui::TextEdit::singleline(&mut tabular.sql_filter_text)
+                                .hint_text("column = 'value' AND col2 > 0")
+                                .interactive(true),
                         );
-                    }
-                });
+
+                        if filter_response.has_focus() || filter_response.hovered() {
+                            let visuals = ui.visuals();
+                            let accent = if filter_response.has_focus() {
+                                visuals.selection.stroke.color
+                            } else {
+                                visuals.widgets.hovered.bg_stroke.color
+                            };
+                            let rect = filter_response.rect.expand(1.5);
+                            ui.painter().rect_stroke(
+                                rect,
+                                4.0,
+                                egui::Stroke::new(1.4, accent),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+
+                        // Apply filter when:
+                        // - Enter is pressed while the field has focus, or
+                        // - The field loses focus (more forgiving than requiring `changed()`)
+                        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (filter_response.has_focus() && enter_pressed)
+                            || filter_response.lost_focus()
+                        {
+                            apply_sql_filter(tabular);
+                        }
+                        let clear_btn_size = egui::vec2(if metrics.is_touch { 34.0 } else { 26.0 }, input_height);
+                        if ui
+                            .add_sized(clear_btn_size, crate::window_egui::style::btn_secondary("✖"))
+                            .on_hover_text("Clear filter")
+                            .clicked()
+                        {
+                            tabular.sql_filter_text.clear();
+                            apply_sql_filter(tabular);
+                        }
+                        if tabular.spreadsheet_state.is_dirty {
+                            ui.separator();
+                            ui.colored_label(
+                                crate::window_egui::style::theme_warning(ui.ctx()),
+                                "Unsaved changes (⌘S)",
+                            );
+                        }
+                    },
+                );
+                ui.add_space(2.0);
                 ui.separator();
+                ui.add_space(2.0);
             }
 
             // Store sort state locally to avoid borrowing issues
@@ -110,12 +130,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 }
             }
 
-            // Tata letak: sticky header (32px) + data scroll + pagination bar.
+            // Tata letak: sticky header + data scroll + reserved pagination bar.
             let avail_h = ui.available_height();
-            let pagination_height_est = 44.0_f32;
-            let total_h = (avail_h - pagination_height_est).max(50.0);
-            let header_h = 36.0_f32;
-            let data_h = (total_h - header_h).max(20.0);
+            let pagination_reserve = if metrics.is_touch { 62.0_f32 } else { 50.0_f32 };
+            let total_h = (avail_h - pagination_reserve).max(50.0);
+            let header_h = if metrics.is_touch { 42.0_f32 } else { 34.0_f32 };
+            let item_spacing_y = ui.spacing().item_spacing.y;
+            let data_h = (total_h - header_h - item_spacing_y * 2.0).max(20.0);
 
             // ── Sticky header row ──────────────────────────────────────────────────
             let header_w = ui.available_width();
@@ -138,17 +159,23 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 let mut hdr_ui = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(content_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        .layout(egui::Layout::left_to_right(egui::Align::Min)),
                 );
                 hdr_ui.set_clip_rect(header_alloc_rect);
                 hdr_ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
+                let mut current_header_x = 0.0_f32;
+
                 // "No" header cell
+                let no_col_w = 60.0_f32;
                 hdr_ui.allocate_ui_with_layout(
-                    [60.0, header_h].into(),
-                    egui::Layout::left_to_right(egui::Align::Center),
+                    [no_col_w, header_h].into(),
+                    egui::Layout::left_to_right(egui::Align::Min),
                     |ui| {
-                        let rect = ui.available_rect_before_wrap();
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(content_rect.min.x + current_header_x, content_rect.min.y),
+                            egui::vec2(no_col_w, header_h),
+                        );
                         let border_color = if ui.visuals().dark_mode {
                             egui::Color32::from_gray(60)
                         } else {
@@ -174,7 +201,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "No",
-                            egui::FontId::proportional(14.0),
+                            egui::FontId::proportional(if metrics.is_touch { 14.5 } else { 13.5 }),
                             text_color,
                         );
                         let resp = ui.allocate_response(rect.size(), egui::Sense::click());
@@ -183,6 +210,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         }
                     },
                 );
+                current_header_x += no_col_w;
 
                 // Column header cells
                 for (col_index, header) in headers.iter().enumerate() {
@@ -194,11 +222,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     } else {
                         get_column_width(tabular, col_index).max(30.0)
                     };
+                    let col_rect = egui::Rect::from_min_size(
+                        egui::pos2(content_rect.min.x + current_header_x, content_rect.min.y),
+                        egui::vec2(column_width, header_h),
+                    );
                     hdr_ui.allocate_ui_with_layout(
                         [column_width, header_h].into(),
-                        egui::Layout::left_to_right(egui::Align::Center),
+                        egui::Layout::left_to_right(egui::Align::Min),
                         |ui| {
-                            let rect = ui.available_rect_before_wrap();
+                            let rect = col_rect;
                             let border_color = if ui.visuals().dark_mode {
                                 egui::Color32::from_gray(60)
                             } else {
@@ -215,111 +247,116 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
                             ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
                             ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 0.0;
-                                let sort_button_width = 45.0;
-                                let text_area_width = ui.available_width() - sort_button_width;
-                                ui.allocate_ui_with_layout(
-                                    [text_area_width, ui.available_height()].into(),
-                                    egui::Layout::top_down(egui::Align::Center),
-                                    |ui| {
-                                        ui.add(egui::Label::new(
-                                            egui::RichText::new(header)
-                                                .strong()
-                                                .size(13.0)
-                                                .color(ui.visuals().text_color()),
-                                        ));
+
+                            let sort_button_width = if metrics.is_touch { 48.0 } else { 38.0 };
+                            let label_rect = egui::Rect::from_min_max(
+                                rect.min,
+                                egui::pos2((rect.max.x - sort_button_width).max(rect.min.x), rect.max.y),
+                            );
+
+                            let text_color = ui.visuals().text_color();
+                            let font_size = if metrics.is_touch { 14.0 } else { 13.0 };
+                            let max_header_chars = ((label_rect.width() / 8.0).floor() as usize).max(3);
+                            let display_header = if header.chars().count() > max_header_chars {
+                                format!("{}...", header.chars().take(max_header_chars.saturating_sub(3)).collect::<String>())
+                            } else {
+                                header.clone()
+                            };
+                            ui.painter().text(
+                                label_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                &display_header,
+                                egui::FontId::proportional(font_size),
+                                text_color,
+                            );
+
+                            let (is_sorted_column, is_asc) =
+                                if current_sort_column == Some(col_index) {
+                                    (true, current_sort_ascending)
+                                } else {
+                                    (false, false)
+                                };
+                            let sort_rect = egui::Rect::from_min_max(
+                                egui::pos2((rect.max.x - sort_button_width).max(rect.min.x), rect.min.y),
+                                rect.max,
+                            );
+                            let sort_response = ui.interact(
+                                sort_rect,
+                                egui::Id::new(("col_sort_btn", col_index)),
+                                egui::Sense::click(),
+                            );
+                            if sort_response.hovered() {
+                                ui.painter().rect_filled(
+                                    sort_rect.shrink(2.0),
+                                    4.0,
+                                    if ui.visuals().dark_mode {
+                                        egui::Color32::from_white_alpha(10)
+                                    } else {
+                                        egui::Color32::from_black_alpha(10)
                                     },
                                 );
-                                let (is_sorted_column, is_asc) =
-                                    if current_sort_column == Some(col_index) {
-                                        (true, current_sort_ascending)
-                                    } else {
-                                        (false, false)
-                                    };
-                                let icon_size = ui.available_height().min(sort_button_width) * 0.6;
-                                let (response, painter) = ui.allocate_painter(
-                                    egui::vec2(sort_button_width, ui.available_height()),
-                                    egui::Sense::click(),
-                                );
-                                if response.hovered() {
-                                    painter.rect_filled(
-                                        response.rect.shrink(2.0),
-                                        4.0,
-                                        if ui.visuals().dark_mode {
-                                            egui::Color32::from_white_alpha(10)
-                                        } else {
-                                            egui::Color32::from_black_alpha(10)
-                                        },
-                                    );
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                }
-                                let icon_color = if is_sorted_column {
-                                    crate::window_egui::style::theme_accent(ui.ctx())
-                                } else if response.hovered() {
-                                    ui.visuals().text_color()
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            let icon_color = if is_sorted_column {
+                                crate::window_egui::style::theme_accent(ui.ctx())
+                            } else if sort_response.hovered() {
+                                ui.visuals().text_color()
+                            } else {
+                                ui.visuals().text_color().gamma_multiply(0.3)
+                            };
+                            let center = sort_rect.center();
+                            let icon_size = header_h.min(sort_button_width) * 0.5;
+                            let half_sz = icon_size * 0.35;
+                            if is_sorted_column {
+                                if is_asc {
+                                    ui.painter().add(egui::Shape::convex_polygon(
+                                        vec![
+                                            center + egui::vec2(0.0, -half_sz),
+                                            center + egui::vec2(-half_sz, half_sz),
+                                            center + egui::vec2(half_sz, half_sz),
+                                        ],
+                                        icon_color,
+                                        egui::Stroke::NONE,
+                                    ));
                                 } else {
-                                    ui.visuals().text_color().gamma_multiply(0.3)
+                                    ui.painter().add(egui::Shape::convex_polygon(
+                                        vec![
+                                            center + egui::vec2(0.0, half_sz),
+                                            center + egui::vec2(-half_sz, -half_sz),
+                                            center + egui::vec2(half_sz, -half_sz),
+                                        ],
+                                        icon_color,
+                                        egui::Stroke::NONE,
+                                    ));
+                                }
+                            } else {
+                                let dash_rect = egui::Rect::from_center_size(
+                                    center,
+                                    egui::vec2(icon_size * 0.7, 2.5),
+                                );
+                                ui.painter().rect_filled(dash_rect, 1.0, icon_color);
+                            }
+                            if sort_response.clicked() {
+                                let new_ascending = if current_sort_column == Some(col_index) {
+                                    !current_sort_ascending
+                                } else {
+                                    true
                                 };
-                                let center = response.rect.center();
-                                let half_sz = icon_size * 0.35;
-                                if is_sorted_column {
-                                    if is_asc {
-                                        painter.add(egui::Shape::convex_polygon(
-                                            vec![
-                                                center + egui::vec2(0.0, -half_sz),
-                                                center + egui::vec2(-half_sz, half_sz),
-                                                center + egui::vec2(half_sz, half_sz),
-                                            ],
-                                            icon_color,
-                                            egui::Stroke::NONE,
-                                        ));
-                                    } else {
-                                        painter.add(egui::Shape::convex_polygon(
-                                            vec![
-                                                center + egui::vec2(0.0, half_sz),
-                                                center + egui::vec2(-half_sz, -half_sz),
-                                                center + egui::vec2(half_sz, -half_sz),
-                                            ],
-                                            icon_color,
-                                            egui::Stroke::NONE,
-                                        ));
-                                    }
-                                } else {
-                                    let dash_rect = egui::Rect::from_center_size(
-                                        center,
-                                        egui::vec2(icon_size * 0.6, icon_size * 0.15),
-                                    );
-                                    painter.rect_filled(dash_rect, 1.0, icon_color);
-                                }
-                                if response.clicked() {
-                                    let new_ascending = if current_sort_column == Some(col_index) {
-                                        !current_sort_ascending
-                                    } else {
-                                        true
-                                    };
-                                    sort_requests.push((col_index, new_ascending));
-                                }
-                                let header_click_rect = egui::Rect::from_min_max(
-                                    rect.min,
-                                    egui::pos2(
-                                        (rect.max.x - sort_button_width).max(rect.min.x),
-                                        rect.max.y,
-                                    ),
-                                );
-                                let header_click_resp = ui.interact(
-                                    header_click_rect,
-                                    egui::Id::new(("col_hdr_s", col_index)),
-                                    egui::Sense::click(),
-                                );
-                                if header_click_resp.clicked() {
-                                    let modifiers = ui.input(|i| i.modifiers);
-                                    col_sel_requests.push((col_index, modifiers));
-                                }
-                            });
+                                sort_requests.push((col_index, new_ascending));
+                            }
+                            let header_click_resp = ui.interact(
+                                label_rect,
+                                egui::Id::new(("col_hdr_s", col_index)),
+                                egui::Sense::click(),
+                            );
+                            if header_click_resp.clicked() {
+                                let modifiers = ui.input(|i| i.modifiers);
+                                col_sel_requests.push((col_index, modifiers));
+                            }
+
                             // Resize handle
-                            let handle_x = ui.max_rect().max.x;
-                            let handle_y = ui.max_rect().min.y;
+                            let handle_x = rect.max.x;
+                            let handle_y = rect.min.y;
                             let resize_handle_rect = egui::Rect::from_min_size(
                                 egui::pos2(handle_x - 8.0, handle_y),
                                 egui::vec2(8.0, header_h),
@@ -347,6 +384,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             }
                         },
                     );
+                    current_header_x += column_width;
                 }
             }
             // ── Data scroll area ────────────────────────────────────────────────────
@@ -364,7 +402,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // Virtual scroll: only render rows visible in the viewport.
             // Previous frame's scroll offset drives row range — 1-frame lag is imperceptible.
-            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
             let row_height = metrics.table_row_height;
             let total_rows = tabular.current_table_data.len();
             let prev_scroll_y = tabular.data_scroll_y;
@@ -1488,11 +1525,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             );
         }
 
-        // Always push pagination bar sticky to bottom of container
-        let pagination_height = 44.0_f32;
+        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+        let pagination_height = if metrics.is_touch { 54.0_f32 } else { 44.0_f32 };
         let space_to_push = (ui.available_height() - pagination_height).max(0.0);
-        if space_to_push > 0.0 {
-            ui.add_space(space_to_push);
+        if space_to_push > 6.0 {
+            ui.add_space(space_to_push - 6.0);
         }
         render_pagination_bar(tabular, ui);
     }

@@ -194,10 +194,17 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
     let table_name = infer_current_table_name(tabular);
     let is_cols = tabular.structure_sub_view == models::structs::StructureSubView::Columns;
     let is_idx = tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
+    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+    let tab_h = if metrics.is_touch { 38.0 } else { 28.0 };
+    let tab_size = egui::vec2(if metrics.is_touch { 115.0 } else { 95.0 }, tab_h);
 
     // Top action bar - Balanced & Clean UI style
     ui.horizontal(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
+        ui.spacing_mut().button_padding = if metrics.is_touch {
+            egui::vec2(14.0, 8.0)
+        } else {
+            egui::vec2(10.0, 4.0)
+        };
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
 
         ui.add_space(4.0);
@@ -211,19 +218,19 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 }
             ))
             .strong()
-            .size(15.0),
+            .size(if metrics.is_touch { 16.0 } else { 14.5 }),
         );
         ui.add_space(8.0);
 
         // Subview Tabs (Columns vs Indexes) - Styled identical to Data / Structure tabs
-        if crate::window_egui::style::render_custom_tab(ui, "☰ Columns", is_cols, egui::vec2(105.0, 26.0)).clicked() {
+        if crate::window_egui::style::render_custom_tab(ui, "☰ Columns", is_cols, tab_size).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Columns;
             tabular.structure_sel_anchor = None;
             tabular.structure_selected_cell = None;
             tabular.structure_selected_row = None;
         }
 
-        if crate::window_egui::style::render_custom_tab(ui, "📈 Indexes", is_idx, egui::vec2(105.0, 26.0)).clicked() {
+        if crate::window_egui::style::render_custom_tab(ui, "📈 Indexes", is_idx, tab_size).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
             load_structure_info_for_current_table(tabular);
             tabular.structure_sel_anchor = None;
