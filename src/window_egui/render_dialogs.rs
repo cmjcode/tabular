@@ -579,16 +579,34 @@ impl super::Tabular {
         egui::Frame::new()
             .fill(bg_color)
             .stroke(egui::Stroke::new(1.0, stroke_color))
-            .inner_margin(egui::Margin::symmetric(10, 6))
+            .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("💬 Query Execution Message")
-                            .weak()
-                            .small(),
+                ui.scope(|ui| {
+                    let spacing = ui.spacing_mut();
+                    spacing.item_spacing = egui::vec2(4.0, 2.0);
+                    spacing.button_padding = egui::vec2(6.0, 3.0);
+                    spacing.interact_size = egui::vec2(24.0, 22.0);
+
+                    let style = ui.style_mut();
+                    style.override_font_id = Some(egui::FontId::new(12.5, egui::FontFamily::Proportional));
+                    style.text_styles.insert(
+                        egui::TextStyle::Body,
+                        egui::FontId::new(12.5, egui::FontFamily::Proportional),
                     );
-                    data_table::render_footer_view_buttons(self, ui);
+                    style.text_styles.insert(
+                        egui::TextStyle::Button,
+                        egui::FontId::new(12.5, egui::FontFamily::Proportional),
+                    );
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("💬 Query Execution Message")
+                                .weak()
+                                .small(),
+                        );
+                        data_table::render_footer_view_buttons(self, ui);
+                    });
                 });
             });
     }

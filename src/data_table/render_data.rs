@@ -131,12 +131,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             }
 
             // Tata letak: sticky header + data scroll + reserved pagination bar.
-            let avail_h = ui.available_height();
-            let pagination_reserve = if metrics.is_touch { 62.0_f32 } else { 50.0_f32 };
-            let total_h = (avail_h - pagination_reserve).max(50.0);
             let header_h = if metrics.is_touch { 42.0_f32 } else { 34.0_f32 };
-            let item_spacing_y = ui.spacing().item_spacing.y;
-            let data_h = (total_h - header_h - item_spacing_y * 2.0).max(20.0);
 
             // ── Sticky header row ──────────────────────────────────────────────────
             let header_w = ui.available_width();
@@ -388,6 +383,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 }
             }
             // ── Data scroll area ────────────────────────────────────────────────────
+            // Keep bottom scrollbar tight against the bottom pagination bar
+            let pagination_bar_h = 32.0_f32;
+            let item_spacing_y = ui.spacing().item_spacing.y;
+            let data_h = (ui.available_height() - pagination_bar_h - item_spacing_y).max(20.0);
             let (data_rect, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), data_h),
                 egui::Sense::hover(),
@@ -1525,11 +1524,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             );
         }
 
-        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
-        let pagination_height = if metrics.is_touch { 54.0_f32 } else { 44.0_f32 };
+        let pagination_height = 32.0_f32;
         let space_to_push = (ui.available_height() - pagination_height).max(0.0);
-        if space_to_push > 6.0 {
-            ui.add_space(space_to_push - 6.0);
+        if space_to_push > 2.0 {
+            ui.add_space(space_to_push - 2.0);
         }
         render_pagination_bar(tabular, ui);
     }
