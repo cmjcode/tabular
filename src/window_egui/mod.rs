@@ -231,8 +231,13 @@ pub struct Tabular {
     /// One-frame flag set by table arrow navigation to suppress editor autocomplete
     /// reacting to the same left/right arrow key event.
     pub suppress_editor_arrow_once: bool,
-    // Gear menu and about dialog
+    // Gear menu and about / account dialogs
     pub show_about_dialog: bool,
+    pub show_account_dialog: bool,
+    // Avatar texture for profile / top bar
+    pub avatar_texture: Option<egui::TextureHandle>,
+    pub avatar_texture_url: Option<String>,
+    pub avatar_image_receiver: Option<std::sync::mpsc::Receiver<Result<(String, egui::ColorImage), String>>>,
     // Preferences persistence
     pub config_store: Option<crate::config::ConfigStore>,
     pub last_saved_prefs: Option<crate::config::AppPreferences>,
@@ -527,11 +532,15 @@ pub struct Tabular {
     pub collab_rooms: Vec<crate::sync::CollabRoom>,
     /// Show the floating collab panel
     pub show_collab_panel: bool,
+    /// Editable buffer for the Display Name field in Account / Profile dialog
+    pub profile_display_name_input: String,
+    /// Editable buffer for the Avatar URL field in Account / Profile dialog
+    pub profile_avatar_url_input: String,
     /// Editable buffer for the Username field in Settings → Sync & Account
     pub profile_username_input: String,
     /// Editable buffer for the Phone field in Settings → Sync & Account
     pub profile_phone_input: String,
-    /// Async receiver for the profile (username/phone) save result
+    /// Async receiver for the profile save result
     pub profile_update_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::RemoteUser, String>>>,
     /// Input for creating a new collab room
     pub new_collab_room_name: String,
@@ -657,7 +666,7 @@ pub enum PrefTab {
     DataDirectory,
     Update,
     AiAssistant,
-    SyncAccount,
+    Sync,
 }
 
 impl Default for Tabular {

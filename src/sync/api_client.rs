@@ -393,13 +393,20 @@ impl ApiClient {
     pub async fn update_profile(
         &self,
         token: &str,
+        display_name: Option<&str>,
+        avatar_url: Option<&str>,
         username: Option<&str>,
         phone: Option<&str>,
     ) -> anyhow::Result<RemoteUser> {
         let resp = self.http
             .put(self.url("/api/v1/users/me"))
             .bearer_auth(token)
-            .json(&serde_json::json!({ "username": username, "phone": phone }))
+            .json(&serde_json::json!({
+                "display_name": display_name,
+                "avatar_url": avatar_url,
+                "username": username,
+                "phone": phone,
+            }))
             .send().await?.error_for_status()?
             .json::<ApiWrapper<RemoteUser>>().await?;
         Ok(resp.data)
@@ -848,3 +855,43 @@ pub struct PendingKeyGrant {
     pub user_id: String,
     pub x25519_public_key: String,
 }
+
+/// Helper to load an image from HTTP/HTTPS URL, data URI (base64), or local path
+/// and decode it into an egui::ColorImage.
+pub async fn fetch_image_as_color_image(url_or_path: &str) -> Result<eframe::egui::ColorImage, String> {
+    let url_or_path = url_or_path.trim();
+    if url_or_path.is_empty() {
+        return Err("Empty image URL or path".to_string());
+    }
+
+    let bytes = if url_or_path.starts_with("http://") || url_or_path.starts_with("https://") {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client.get(url_or_path).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP error {}", resp.status()));
+        }
+        resp.bytes().await.map_err(|e| e.to_string())?.to_vec()
+    } else if let Some(base64_data) = url_or_path.strip_prefix("data:image/") {
+        if let Some((_, b64)) = base64_data.split_once(";base64,") {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(b64.trim())
+                .map_err(|e| format!("Base64 decode error: {}", e))?
+        } else {
+            return Err("Invalid data URI format".to_string());
+        }
+    } else {
+        // Local file path
+        std::fs::read(url_or_path).map_err(|e| format!("Failed to read file: {}", e))?
+    };
+
+    let image = image::load_from_memory(&bytes).map_err(|e| format!("Image decode error: {}", e))?;
+    let rgba = image.to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = rgba.as_flat_samples();
+    Ok(eframe::egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice()))
+}
+

@@ -223,7 +223,7 @@ impl Tabular {
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::DataDirectory, "Data Directory");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::SyncAccount, "☁ Sync & Account");
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Sync, "☁ Cloud Sync");
                         });
                     });
                     ui.separator();
@@ -628,8 +628,8 @@ impl Tabular {
                                     ui.label(egui::RichText::new(format!("✓ Key configured: {masked}")).color(egui::Color32::from_rgb(0, 180, 80)).size(12.0));
                                 }
                             }
-                            PrefTab::SyncAccount => {
-                                crate::sync::ui_login::render_login_panel(self, ui);
+                            PrefTab::Sync => {
+                                crate::sync::ui_login::render_sync_panel(self, ui);
                             }
                         }
                     });
@@ -2111,7 +2111,7 @@ impl Tabular {
                                 ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, sep_color));
                             };
 
-                            // 1. Gear menu button (Rightmost)
+                            // 1. Gear menu or User Avatar button (Rightmost)
                             let gear_bg = if self.show_settings_menu {
                                 if ui.visuals().dark_mode {
                                     egui::Color32::from_rgb(65, 65, 72)
@@ -2121,10 +2121,36 @@ impl Tabular {
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
-                            let gear_btn_size = if metrics.is_touch { [42.0, 38.0] } else { [28.0, 26.0] };
-                            let gear_icon_size = if metrics.is_touch { 18.0 } else { 14.0 };
-                            let gear_response = ui
-                                .add_sized(
+
+                            let gear_response = if let Some(ref account) = self.sync_account {
+                                let avatar_size = if metrics.is_touch { 32.0 } else { 24.0 };
+                                let btn_size = egui::vec2(
+                                    if metrics.is_touch { 42.0 } else { 28.0 },
+                                    if metrics.is_touch { 38.0 } else { 26.0 },
+                                );
+                                let (btn_rect, btn_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                                if btn_resp.hovered() || self.show_settings_menu {
+                                    ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(5), gear_bg);
+                                }
+                                let avatar_rect = egui::Rect::from_center_size(btn_rect.center(), egui::vec2(avatar_size, avatar_size));
+                                let mut av_ui = ui.new_child(egui::UiBuilder::new().max_rect(avatar_rect));
+                                crate::sync::ui_login::draw_circular_avatar(
+                                    &mut av_ui,
+                                    self,
+                                    avatar_size,
+                                    &account.email,
+                                    if !self.profile_display_name_input.is_empty() {
+                                        Some(&self.profile_display_name_input)
+                                    } else {
+                                        account.display_name.as_deref()
+                                    },
+                                );
+                                let user_hint = account.display_name.as_deref().unwrap_or(&account.email);
+                                btn_resp.on_hover_text(format!("Account: {}", user_hint))
+                            } else {
+                                let gear_btn_size = if metrics.is_touch { [42.0, 38.0] } else { [28.0, 26.0] };
+                                let gear_icon_size = if metrics.is_touch { 18.0 } else { 14.0 };
+                                ui.add_sized(
                                     gear_btn_size,
                                     egui::Button::new(
                                         egui::RichText::new("⚙")
@@ -2135,15 +2161,17 @@ impl Tabular {
                                     .stroke(egui::Stroke::NONE)
                                     .corner_radius(egui::CornerRadius::same(5)),
                                 )
-                                .on_hover_text("Settings");
+                                .on_hover_text("Settings & Account")
+                            };
+
                             if gear_response.clicked() {
                                 gear_response.request_focus();
                                 self.show_settings_menu = !self.show_settings_menu;
                             }
 
-                            // Popup area logic for gear menu
+                            // Popup area logic for gear / account menu
                             if self.show_settings_menu {
-                                let menu_width = if metrics.is_touch { 250.0 } else { 195.0 };
+                                let menu_width = if metrics.is_touch { 260.0 } else { 220.0 };
                                 let pos = egui::pos2(
                                     gear_response.rect.right() - menu_width,
                                     gear_response.rect.bottom() + 6.0,
@@ -2253,25 +2281,102 @@ impl Tabular {
                                                 resp.clicked()
                                             };
 
-                                            if draw_menu_item(ui, "⚙", "Preferences", Some("⌘,")) {
-                                                self.show_settings_window = true;
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            ui.add_space(3.0);
                                             let sep_color = if dark {
                                                 egui::Color32::from_rgb(45, 48, 58)
                                             } else {
                                                 egui::Color32::from_rgb(225, 230, 238)
                                             };
-                                            let cursor_y = ui.cursor().top();
-                                            let rect_width = ui.available_width();
-                                            ui.painter().hline(
-                                                ui.cursor().left()..=(ui.cursor().left() + rect_width),
-                                                cursor_y,
-                                                egui::Stroke::new(1.0, sep_color),
-                                            );
-                                            ui.add_space(4.0);
+                                            let draw_menu_sep = |ui: &mut egui::Ui| {
+                                                ui.add_space(3.0);
+                                                let cursor_y = ui.cursor().top();
+                                                let rect_width = ui.available_width();
+                                                ui.painter().hline(
+                                                    ui.cursor().left()..=(ui.cursor().left() + rect_width),
+                                                    cursor_y,
+                                                    egui::Stroke::new(1.0, sep_color),
+                                                );
+                                                ui.add_space(4.0);
+                                            };
+
+                                            // Logged in user header / quick profile card
+                                            if let Some(ref account) = self.sync_account.clone() {
+                                                let card_height = if metrics.is_touch { 52.0 } else { 44.0 };
+                                                let (card_rect, card_resp) = ui.allocate_exact_size(
+                                                    egui::vec2(ui.available_width(), card_height),
+                                                    egui::Sense::click(),
+                                                );
+                                                let is_card_hovered = card_resp.hovered();
+                                                let card_bg = if is_card_hovered {
+                                                    if dark { egui::Color32::from_rgb(46, 52, 64) } else { egui::Color32::from_rgb(234, 238, 246) }
+                                                } else {
+                                                    egui::Color32::TRANSPARENT
+                                                };
+                                                ui.painter().rect_filled(card_rect, egui::CornerRadius::same(6), card_bg);
+
+                                                let av_size = 30.0;
+                                                let av_rect = egui::Rect::from_center_size(
+                                                    egui::pos2(card_rect.left() + 20.0, card_rect.center().y),
+                                                    egui::vec2(av_size, av_size),
+                                                );
+                                                let mut av_ui = ui.new_child(egui::UiBuilder::new().max_rect(av_rect));
+                                                crate::sync::ui_login::draw_circular_avatar(
+                                                    &mut av_ui,
+                                                    self,
+                                                    av_size,
+                                                    &account.email,
+                                                    if !self.profile_display_name_input.is_empty() {
+                                                        Some(&self.profile_display_name_input)
+                                                    } else {
+                                                        account.display_name.as_deref()
+                                                    },
+                                                );
+
+                                                let name_text = if !self.profile_display_name_input.is_empty() {
+                                                    &self.profile_display_name_input
+                                                } else {
+                                                    account.display_name.as_deref().unwrap_or(&account.email)
+                                                };
+                                                let text_area = egui::Rect::from_min_size(
+                                                    egui::pos2(card_rect.left() + 42.0, card_rect.top() + 6.0),
+                                                    egui::vec2(card_rect.width() - 46.0, card_rect.height() - 12.0),
+                                                );
+                                                ui.painter().text(
+                                                    text_area.left_top(),
+                                                    egui::Align2::LEFT_TOP,
+                                                    name_text,
+                                                    egui::FontId::proportional(12.5),
+                                                    if dark { egui::Color32::WHITE } else { egui::Color32::from_rgb(15, 15, 20) },
+                                                );
+                                                ui.painter().text(
+                                                    text_area.left_bottom(),
+                                                    egui::Align2::LEFT_BOTTOM,
+                                                    &account.email,
+                                                    egui::FontId::proportional(10.5),
+                                                    ui.visuals().weak_text_color(),
+                                                );
+
+                                                if card_resp.clicked() {
+                                                    crate::sync::ui_login::open_account_dialog(self);
+                                                    self.show_settings_menu = false;
+                                                }
+
+                                                if draw_menu_item(ui, "👤", "Account & Profile", None) {
+                                                    crate::sync::ui_login::open_account_dialog(self);
+                                                    self.show_settings_menu = false;
+                                                }
+                                            } else {
+                                                if draw_menu_item(ui, "👤", "Sign In / Account", None) {
+                                                    crate::sync::ui_login::open_account_dialog(self);
+                                                    self.show_settings_menu = false;
+                                                }
+                                            }
+
+                                            if draw_menu_item(ui, "⚙", "Preferences", Some("⌘,")) {
+                                                self.show_settings_window = true;
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            draw_menu_sep(ui);
 
                                             if draw_menu_item(ui, "🔄", "Check for Updates", None) {
                                                 self.check_for_updates(true);
@@ -2281,6 +2386,14 @@ impl Tabular {
                                             if draw_menu_item(ui, "ℹ", "About Tabular", None) {
                                                 self.show_about_dialog = true;
                                                 self.show_settings_menu = false;
+                                            }
+
+                                            if self.sync_account.is_some() {
+                                                draw_menu_sep(ui);
+                                                if draw_menu_item(ui, "🚪", "Sign Out", None) {
+                                                    crate::sync::ui_login::do_logout(self);
+                                                    self.show_settings_menu = false;
+                                                }
                                             }
 
                                             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -3400,6 +3513,12 @@ impl App for Tabular {
                     self.shared_folders_cache = res.shared_folders_cache;
                 }
                 if let Some(account) = res.sync_account {
+                    if let Some(ref name) = account.display_name {
+                        self.profile_display_name_input = name.clone();
+                    }
+                    if let Some(ref avatar) = account.avatar_url {
+                        self.profile_avatar_url_input = avatar.clone();
+                    }
                     if let Some(ref username) = account.username {
                         self.profile_username_input = username.clone();
                     }
@@ -4486,6 +4605,7 @@ impl App for Tabular {
         connection::render_connection_selector(self, ctx);
         dialog::render_error_dialog(self, ctx);
         dialog::render_about_dialog(self, ctx);
+        crate::sync::ui_login::render_account_dialog(self, ctx);
         // Index create/edit dialog
         dialog::render_index_dialog(self, ctx);
         dialog::render_create_table_dialog(self, ctx);

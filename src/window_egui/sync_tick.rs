@@ -36,27 +36,36 @@ impl super::Tabular {
         // ── Poll teams receivers ──────────────────────────────────────────────
         self.poll_teams_receivers();
 
-        // ── Poll profile (username/phone) save receiver ────────────────────────
-        self.poll_profile_receiver();
+        // ── Poll profile save receiver and avatar images ────────────────────────
+        self.poll_profile_receiver(ctx);
 
         // ── Vault (E2E encryption) setup/unlock UI receivers ────────────────────
         crate::sync::ui_vault_setup::drain_receivers(self);
         self.poll_vault_team_keys_receiver();
     }
 
-    fn poll_profile_receiver(&mut self) {
+    fn poll_profile_receiver(&mut self, ctx: &egui::Context) {
         if let Some(rx) = &self.profile_update_receiver
             && let Ok(result) = rx.try_recv()
         {
             match result {
                 Ok(user) => {
                     if let Some(account) = &mut self.sync_account {
+                        account.display_name = user.display_name.clone();
+                        account.avatar_url = user.avatar_url.clone();
                         account.username = user.username.clone();
                         account.phone = user.phone.clone();
                         crate::sync::api_client::save_account(account);
                     }
+                    self.profile_display_name_input = user.display_name.unwrap_or_default();
+                    self.profile_avatar_url_input = user.avatar_url.clone().unwrap_or_default();
                     self.profile_username_input = user.username.unwrap_or_default();
                     self.profile_phone_input = user.phone.unwrap_or_default();
+                    // Invalidate avatar texture if avatar_url changed
+                    if self.avatar_texture_url != user.avatar_url {
+                        self.avatar_texture = None;
+                        self.avatar_texture_url = None;
+                    }
                     self.toasts.info("Profile saved");
                 }
                 Err(e) => {
@@ -66,6 +75,38 @@ impl super::Tabular {
                 }
             }
             self.profile_update_receiver = None;
+        }
+
+        // Poll avatar texture receiver
+        if let Some(rx) = &self.avatar_image_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok((url, color_image)) => {
+                    self.avatar_texture = Some(ctx.load_texture("user_avatar", color_image, Default::default()));
+                    self.avatar_texture_url = Some(url);
+                }
+                Err(e) => {
+                    log::debug!("Failed to load avatar image: {}", e);
+                }
+            }
+            self.avatar_image_receiver = None;
+        }
+
+        // Auto-fetch avatar if account has an avatar_url not yet loaded
+        if let Some(account) = &self.sync_account
+            && let Some(ref url) = account.avatar_url
+            && !url.trim().is_empty()
+            && self.avatar_texture_url.as_ref() != Some(url)
+            && self.avatar_image_receiver.is_none()
+        {
+            let url_clone = url.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            crate::sync::spawn_async(async move {
+                let res = crate::sync::api_client::fetch_image_as_color_image(&url_clone).await;
+                let _ = tx.send(res.map(|img| (url_clone, img)));
+            });
+            self.avatar_image_receiver = Some(rx);
         }
     }
 

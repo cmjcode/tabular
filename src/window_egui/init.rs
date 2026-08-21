@@ -326,8 +326,12 @@ impl super::Tabular {
             // Column width management
             column_widths: Vec::new(),
             min_column_width: 50.0,
-            // Gear menu and about dialog
+            // Gear menu and about / account dialogs
             show_about_dialog: false,
+            show_account_dialog: false,
+            avatar_texture: None,
+            avatar_texture_url: None,
+            avatar_image_receiver: None,
             // Logo texture
             logo_texture: None,
             db_icon_textures: HashMap::new(),
@@ -543,6 +547,8 @@ impl super::Tabular {
             crdt_state: None,
             collab_rooms: Vec::new(),
             show_collab_panel: false,
+            profile_display_name_input: String::new(),
+            profile_avatar_url_input: String::new(),
             profile_username_input,
             profile_phone_input,
             profile_update_receiver: None,
