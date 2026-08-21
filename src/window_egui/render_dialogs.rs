@@ -757,7 +757,7 @@ impl super::Tabular {
                     });
 
                 let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), self.ui_mode);
-                let button_size = if metrics.is_touch { egui::vec2(36.0, 32.0) } else { egui::vec2(26.0, 26.0) };
+                let button_size = if metrics.is_touch { egui::vec2(32.0, 30.0) } else { egui::vec2(26.0, 24.0) };
                 let icon_size = if metrics.is_touch { 11.0 } else { 8.0 };
                 let _button_spacing = 2.0;
                 let button_corner = if metrics.is_touch { 4_u8 } else { 2_u8 };
@@ -824,10 +824,29 @@ impl super::Tabular {
                             .fill(cluster_bg)
                             .stroke(egui::Stroke::new(1.0, cluster_border))
                             .corner_radius(egui::CornerRadius::same(6u8))
-                            .inner_margin(egui::Margin::same(if metrics.is_touch { 4 } else { 2 }))
+                            .inner_margin(egui::Margin::same(if metrics.is_touch { 4 } else { 3 }))
                             .show(area_ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = if metrics.is_touch { 4.0 } else { 3.0 };
+                                ui.spacing_mut().item_spacing = egui::vec2(if metrics.is_touch { 4.0 } else { 3.0 }, 0.0);
+                                ui.spacing_mut().button_padding = egui::vec2(if metrics.is_touch { 6.0 } else { 4.0 }, 0.0);
+                                ui.spacing_mut().interact_size.y = button_size.y;
+
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    let base_fill = if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(36, 36, 36)
+                                    } else {
+                                        egui::Color32::from_rgb(245, 245, 245)
+                                    };
+                                    let base_border = if ui.visuals().dark_mode {
+                                        egui::Color32::from_rgb(90, 90, 90)
+                                    } else {
+                                        egui::Color32::from_rgb(190, 190, 190)
+                                    };
+
+                                    let draw_separator = |ui: &mut egui::Ui| {
+                                        let sep_h = (button_size.y - 8.0).max(14.0);
+                                        let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, sep_h), egui::Sense::hover());
+                                        ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, base_border));
+                                    };
 
                                     if tx_mode {
                                         let mut mode = tx_mode;
@@ -858,42 +877,42 @@ impl super::Tabular {
                                             rollback_clicked = true;
                                         }
                                         ui.add_space(2.0);
-                                        ui.separator();
+                                        draw_separator(ui);
                                         ui.add_space(2.0);
                                     }
-
-                                    let base_fill = if ui.visuals().dark_mode {
-                                        egui::Color32::from_rgb(36, 36, 36)
-                                    } else {
-                                        egui::Color32::from_rgb(245, 245, 245)
-                                    };
-                                    let base_border = if ui.visuals().dark_mode {
-                                        egui::Color32::from_rgb(90, 90, 90)
-                                    } else {
-                                        egui::Color32::from_rgb(190, 190, 190)
-                                    };
 
                                     // Touch tablet quick SQL keywords toolbar
                                     if metrics.is_touch {
                                         let kw_list = ["SELECT ", "FROM ", "WHERE ", "* ", "; "];
                                         for kw in kw_list {
+                                            let trimmed = kw.trim();
                                             let kw_btn = egui::Button::new(
-                                                egui::RichText::new(kw.trim()).size(10.5).strong(),
+                                                egui::RichText::new(trimmed).size(10.5).strong(),
                                             )
+                                            .min_size(egui::vec2(0.0, button_size.y))
                                             .fill(base_fill)
                                             .stroke(egui::Stroke::new(1.0, base_border))
                                             .corner_radius(egui::CornerRadius::same(button_corner));
-                                            if ui.add_sized([egui::vec2(36.0, 30.0).x, button_size.y], kw_btn).clicked() {
+
+                                            let width = match trimmed {
+                                                "*" | ";" => button_size.x,
+                                                _ => 48.0,
+                                            };
+
+                                            if ui.add_sized([width, button_size.y], kw_btn).clicked() {
                                                 let cur = self.cursor_position.min(self.editor.text.len());
                                                 self.editor.apply_single_replace(cur..cur, kw);
                                                 self.cursor_position += kw.len();
                                                 self.editor.mark_text_modified();
                                             }
                                         }
-                                        ui.separator();
+                                        ui.add_space(4.0);
+                                        draw_separator(ui);
+                                        ui.add_space(4.0);
                                     }
 
                                     let format_button = egui::Button::new(egui::RichText::new("</>").size(icon_size))
+                                        .min_size(egui::vec2(button_size.x, button_size.y))
                                         .fill(base_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))
                                         .corner_radius(egui::CornerRadius::same(button_corner));
@@ -906,6 +925,7 @@ impl super::Tabular {
                                     }
 
                                     let explain_button = egui::Button::new(egui::RichText::new("🔍").size(icon_size))
+                                        .min_size(egui::vec2(button_size.x, button_size.y))
                                         .fill(base_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))
                                         .corner_radius(egui::CornerRadius::same(button_corner));
@@ -917,7 +937,12 @@ impl super::Tabular {
                                         explain_clicked = true;
                                     }
 
+                                    ui.add_space(4.0);
+                                    draw_separator(ui);
+                                    ui.add_space(4.0);
+
                                     let execute_button = egui::Button::new(play_text.clone())
+                                        .min_size(egui::vec2(button_size.x, button_size.y))
                                         .fill(if is_loading {
                                             egui::Color32::from_rgb(60, 60, 60)
                                         } else {
@@ -944,7 +969,7 @@ impl super::Tabular {
                                                     .unwrap_or(s.len())
                                             };
                                             let start_b = to_byte_index(&self.editor.text, range.start);
-                                            let end_b = to_byte_index(&self.editor.text, range.end);
+                                             let end_b = to_byte_index(&self.editor.text, range.end);
                                             if start_b < end_b && end_b <= self.editor.text.len() {
                                                 direct_selected = self.editor.text[start_b..end_b].to_string();
                                             }

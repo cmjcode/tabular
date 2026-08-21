@@ -3967,21 +3967,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Render autocomplete popup positioned under cursor
     if tabular.show_autocomplete && !tabular.autocomplete_suggestions.is_empty() {
-        // Use O(log n) binary-search via offset_to_line_col instead of O(n) char scan
-        let cursor = tabular.cursor_position.min(tabular.editor.text.len());
-        let (line_no, col_bytes) = tabular.editor.offset_to_line_col(cursor);
-        let column = col_bytes; // byte offset within line (good enough for monospace approximation)
-        let char_w = 8.0_f32; // heuristic monospace width
+        let cursor_char_idx = {
+            let s = &tabular.editor.text;
+            let clamp = tabular.cursor_position.min(s.len());
+            s[..clamp].chars().count()
+        };
+        let caret_cursor = CCursor::new(cursor_char_idx);
+        let caret_line_rect = galley
+            .pos_from_cursor(caret_cursor)
+            .translate(galley_pos.to_vec2());
         let line_h = ui.text_style_height(&egui::TextStyle::Monospace);
-        let editor_rect = response.rect; // basic TextEdit rect
-        let mut pos = egui::pos2(
-            editor_rect.left() + (column as f32) * char_w,
-            editor_rect.top() + 4.0 + (line_no as f32) * line_h,
-        );
-        // Clamp horizontally inside editor area
-        if pos.x > editor_rect.right() - 150.0 {
-            pos.x = editor_rect.right() - 150.0;
-        }
+        let pos = egui::pos2(caret_line_rect.left(), caret_line_rect.top() + line_h + 3.0);
         editor_autocomplete::render_autocomplete(tabular, ui, pos);
     }
 

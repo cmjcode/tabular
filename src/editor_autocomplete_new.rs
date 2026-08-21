@@ -1583,19 +1583,27 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     if !app.show_autocomplete || app.autocomplete_suggestions.is_empty() {
         return;
     }
+    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), app.ui_mode);
     let screen = ui.ctx().content_rect();
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
     let small_font_id = egui::TextStyle::Small.resolve(ui.style());
-    let heading_font_id = egui::TextStyle::Body.resolve(ui.style());
+    let heading_font_id = egui::FontId::new(
+        if metrics.is_touch { 11.5 } else { 10.5 },
+        egui::FontFamily::Proportional,
+    );
+
+    let row_height = if metrics.is_touch { 28.0 } else { 22.0 };
+    let header_height = if metrics.is_touch { 22.0 } else { 18.0 };
+
     let suggestions = app.autocomplete_suggestions.clone();
     let kinds = app.autocomplete_kinds.clone();
     let notes = app.autocomplete_notes.clone();
     let mut max_label_px: f32 = 0.0;
     let mut max_note_px: f32 = 0.0;
     let mut max_heading_px: f32 = 0.0;
-    let mut note_count = 0usize;
     let mut group_count = 0usize;
     let mut last_kind: Option<crate::models::enums::AutocompleteKind> = None;
+
     ui.ctx().fonts_mut(|f| {
         for (idx, s) in suggestions.iter().enumerate() {
             let g = f.layout_no_wrap(s.clone(), font_id.clone(), egui::Color32::WHITE);
@@ -1605,7 +1613,6 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                 let ng =
                     f.layout_no_wrap(note.clone(), small_font_id.clone(), egui::Color32::WHITE);
                 max_note_px = max_note_px.max(ng.size().x);
-                note_count += 1;
             }
 
             if let Some(&kind) = kinds.get(idx)
@@ -1630,73 +1637,70 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
         }
     });
 
-    let base_width = max_label_px.max(max_heading_px) + max_note_px + 20.0;
-    let popup_w = (base_width + 48.0).clamp(320.0, (screen.width() - 32.0).max(320.0));
+    let base_width = max_label_px.max(max_heading_px) + max_note_px + 24.0;
+    let popup_w = (base_width + 40.0).clamp(300.0, (screen.width() - 32.0).max(300.0));
 
     let entry_count = suggestions.len() as f32;
-    let mut desired_h = entry_count * 24.0 + (group_count as f32) * 24.0 + 12.0;
+    let total_content_h = entry_count * row_height + (group_count as f32) * header_height + 8.0;
 
-    if desired_h < 64.0 {
-        desired_h = 64.0;
-    }
     let screen_h = screen.height();
-    let desired_cap = screen_h * 0.65;
-    if desired_h > desired_cap {
-        desired_h = desired_cap;
-    }
+    let desired_cap = (screen_h * 0.55).max(120.0);
+    let desired_h = total_content_h.min(desired_cap);
+
     let margin = 8.0;
     let space_below = (screen.bottom() - pos.y - margin).max(0.0);
     let space_above = (pos.y - screen.top() - margin).max(0.0);
-    let show_above = space_below + 2.0 < desired_h && space_above > space_below;
+    let show_above = space_below < desired_h && space_above > space_below;
     let max_h = desired_h.min(if show_above { space_above } else { space_below });
+
     let mut popup_pos = pos;
     if show_above {
-        popup_pos.y = (pos.y - max_h).max(screen.top());
+        popup_pos.y = (pos.y - max_h - 4.0).max(screen.top());
     }
     if popup_pos.x + popup_w > screen.right() {
         popup_pos.x = (screen.right() - popup_w).max(screen.left());
     }
-    
-    // nice shadow and generic window styles
+
     egui::Area::new(egui::Id::new("autocomplete_popup"))
         .fixed_pos(popup_pos)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
-            // Create a custom frame with high-contrast styling
             let bg_fill = if ui.visuals().dark_mode {
-                egui::Color32::from_rgb(30, 30, 35)  // darker background in dark mode
+                egui::Color32::from_rgb(30, 30, 35)
             } else {
-                egui::Color32::from_rgb(250, 250, 250)  // lighter background in light mode
+                egui::Color32::from_rgb(250, 250, 250)
             };
             let stroke_color = if ui.visuals().dark_mode {
-                egui::Color32::from_rgb(100, 100, 110)
+                egui::Color32::from_rgb(80, 80, 90)
             } else {
                 egui::Color32::from_rgb(180, 180, 190)
             };
-            
+
             egui::Frame::new()
                 .fill(bg_fill)
                 .stroke(egui::Stroke::new(1.0, stroke_color))
+                .corner_radius(egui::CornerRadius::same(if metrics.is_touch { 6_u8 } else { 4_u8 }))
                 .shadow(eframe::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 12,
+                    offset: [0, 6],
+                    blur: 10,
                     spread: 1,
-                    color: egui::Color32::from_black_alpha(120),
+                    color: egui::Color32::from_black_alpha(100),
                 })
+                .inner_margin(egui::Margin::symmetric(0, 4))
                 .show(ui, |ui| {
                     ui.set_min_width(popup_w);
                     ui.set_max_width(popup_w);
-                    ui.set_min_height(max_h);
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 1.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
                     let suggestions = suggestions.clone();
                     let kinds = kinds.clone();
                     let notes = notes.clone();
                     let mut last_kind = None;
-                    
+
                     egui::ScrollArea::vertical()
                         .max_height(max_h)
+                        .auto_shrink([false, true])
                         .show(ui, |ui| {
-                        
                             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
                             for (i, s) in suggestions.iter().enumerate() {
@@ -1708,96 +1712,87 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                         crate::models::enums::AutocompleteKind::Table => "Tables",
                                         crate::models::enums::AutocompleteKind::Column => "Columns",
                                         crate::models::enums::AutocompleteKind::Syntax => "Syntax",
-                                        crate::models::enums::AutocompleteKind::Snippet => {
-                                            "Snippets"
-                                        }
-                                        crate::models::enums::AutocompleteKind::Parameter => {
-                                            "Parameters"
-                                        }
+                                        crate::models::enums::AutocompleteKind::Snippet => "Snippets",
+                                        crate::models::enums::AutocompleteKind::Parameter => "Parameters",
                                     };
-                                    ui.allocate_ui(egui::vec2(ui.available_width(), 22.0), |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.add_space(8.0);
-                                            let header_color = if ui.visuals().dark_mode {
-                                                egui::Color32::from_rgb(180, 180, 190)  // bright gray in dark
-                                            } else {
-                                                egui::Color32::from_rgb(60, 60, 70)  // dark gray in light
-                                            };
-                                            ui.label(
-                                                egui::RichText::new(label)
-                                                    .size(11.0)
-                                                    .strong()
-                                                    .color(header_color),
-                                            );
-                                        });
-                                    });
-                                    ui.add_space(2.0);
+
+                                    let (header_rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(ui.available_width(), header_height),
+                                        egui::Sense::hover(),
+                                    );
+                                    if ui.is_rect_visible(header_rect) {
+                                        let header_color = if ui.visuals().dark_mode {
+                                            egui::Color32::from_rgb(170, 175, 185)
+                                        } else {
+                                            egui::Color32::from_rgb(70, 75, 85)
+                                        };
+                                        ui.painter().text(
+                                            egui::pos2(header_rect.left() + 8.0, header_rect.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                            label,
+                                            heading_font_id.clone(),
+                                            header_color,
+                                        );
+                                    }
                                 }
-                                
+
                                 let selected = i == app.selected_autocomplete_index;
-                                let row_height = 24.0;
-                                let available_width = ui.available_width();
-                                let (rect, response) = ui.allocate_exact_size(egui::vec2(available_width, row_height), egui::Sense::click());
-                                
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(ui.available_width(), row_height),
+                                    egui::Sense::click(),
+                                );
+
                                 if ui.is_rect_visible(rect) {
                                     if selected {
                                         let sel_color = if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(70, 130, 180)  // steel blue in dark
+                                            egui::Color32::from_rgb(55, 115, 170)
                                         } else {
-                                            egui::Color32::from_rgb(100, 150, 220)  // lighter blue in light
+                                            egui::Color32::from_rgb(90, 145, 215)
                                         };
-                                        ui.painter().add(egui::Shape::rect_filled(
-                                            rect.shrink(0.0),
-                                            0.0,
-                                            sel_color,
-                                        ));
+                                        ui.painter().rect_filled(rect, 0.0, sel_color);
                                     } else if response.hovered() {
                                         let hover_color = if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(50, 50, 55)
+                                            egui::Color32::from_rgb(45, 45, 52)
                                         } else {
-                                            egui::Color32::from_rgb(240, 240, 245)
+                                            egui::Color32::from_rgb(235, 238, 245)
                                         };
-                                        ui.painter().add(egui::Shape::rect_filled(
-                                            rect.shrink(0.0),
-                                            0.0,
-                                            hover_color,
-                                        ));
+                                        ui.painter().rect_filled(rect, 0.0, hover_color);
                                     }
 
                                     let text_color = if selected {
                                         egui::Color32::WHITE
                                     } else if ui.visuals().dark_mode {
-                                        egui::Color32::from_rgb(220, 220, 220)  // bright text in dark
+                                        egui::Color32::from_rgb(225, 225, 230)
                                     } else {
-                                        egui::Color32::from_rgb(20, 20, 30)  // dark text in light
+                                        egui::Color32::from_rgb(25, 25, 35)
                                     };
 
-                                    let content_rect = rect.shrink2(egui::vec2(8.0, 0.0));
-                                    ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(s)
-                                                    .font(font_id.clone())
-                                                    .color(text_color),
-                                            );
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                if let Some(note) = notes.get(i).and_then(|n| n.clone()) {
-                                                    let note_color = if selected {
-                                                        egui::Color32::from_rgb(200, 200, 210)
-                                                    } else if ui.visuals().dark_mode {
-                                                        egui::Color32::from_rgb(140, 140, 150)
-                                                    } else {
-                                                        egui::Color32::from_rgb(100, 100, 120)
-                                                    };
-                                                    ui.label(
-                                                        egui::RichText::new(note)
-                                                            .font(small_font_id.clone())
-                                                            .color(note_color),
-                                                    );
-                                                }
-                                            });
-                                        });
-                                    });
+                                    // Left: Suggestion text
+                                    ui.painter().text(
+                                        egui::pos2(rect.left() + 8.0, rect.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        s,
+                                        font_id.clone(),
+                                        text_color,
+                                    );
+
+                                    // Right: Note / description
+                                    if let Some(Some(note)) = notes.get(i) {
+                                        let note_color = if selected {
+                                            egui::Color32::from_rgb(215, 225, 240)
+                                        } else if ui.visuals().dark_mode {
+                                            egui::Color32::from_rgb(135, 140, 150)
+                                        } else {
+                                            egui::Color32::from_rgb(105, 110, 125)
+                                        };
+                                        ui.painter().text(
+                                            egui::pos2(rect.right() - 8.0, rect.center().y),
+                                            egui::Align2::RIGHT_CENTER,
+                                            note,
+                                            small_font_id.clone(),
+                                            note_color,
+                                        );
+                                    }
                                 }
 
                                 if response.clicked() {
