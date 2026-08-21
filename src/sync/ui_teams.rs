@@ -67,9 +67,9 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     // ── Create & Refresh Team row ─────────────────────────────────────────
     ui.horizontal(|ui| {
         let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
-        let row_h = if metrics.is_touch { 34.0 } else { 28.0 };
-        let btn_w = if metrics.is_touch { 32.0 } else { 28.0 };
-        let refresh_w = if metrics.is_touch { 32.0 } else { 28.0 };
+        let row_h = if metrics.is_touch { 38.0 } else { 28.0 };
+        let btn_w = if metrics.is_touch { 38.0 } else { 28.0 };
+        let refresh_w = if metrics.is_touch { 38.0 } else { 28.0 };
 
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
@@ -90,7 +90,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
         let can_create = !tabular.new_team_name.trim().is_empty();
         let create_btn = egui::Button::new(
-            egui::RichText::new("+").size(if metrics.is_touch { 16.0 } else { 14.0 }).strong()
+            egui::RichText::new("+").size(if metrics.is_touch { 18.0 } else { 14.0 }).strong()
         )
         .min_size(egui::vec2(btn_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
@@ -107,7 +107,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         }
 
         let refresh_btn = egui::Button::new(
-            egui::RichText::new("🔄").size(if metrics.is_touch { 15.0 } else { 13.0 })
+            egui::RichText::new("🔄").size(if metrics.is_touch { 16.0 } else { 13.0 })
         )
         .min_size(egui::vec2(refresh_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
@@ -148,17 +148,23 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             );
             let is_open_before = team_state.is_open();
 
+            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+            let sub_btn_size = if metrics.is_touch { egui::vec2(32.0, 32.0) } else { egui::vec2(18.0, 18.0) };
+            let sub_btn_font = if metrics.is_touch { 18.0 } else { 12.0 };
+            let team_del_size = if metrics.is_touch { egui::vec2(34.0, 34.0) } else { egui::vec2(22.0, 22.0) };
+            let team_del_font = if metrics.is_touch { 18.0 } else { 14.0 };
+            let item_del_size = if metrics.is_touch { egui::vec2(30.0, 30.0) } else { egui::vec2(18.0, 18.0) };
+
             let team_res = team_state.show_header(ui, |ui| {
-                ui.spacing_mut().interact_size = egui::vec2(22.0, 22.0);
+                ui.spacing_mut().interact_size = team_del_size;
                 ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
-                ui.label(egui::RichText::new(team_header_text).strong().size(13.0));
+                ui.label(egui::RichText::new(team_header_text).strong().size(if metrics.is_touch { 14.5 } else { 13.0 }));
                 if is_owner {
-                    let btn_size = egui::vec2(22.0, 22.0);
-                    let space = (ui.available_width() - btn_size.x - 4.0).max(0.0);
+                    let space = (ui.available_width() - team_del_size.x - 4.0).max(0.0);
                     ui.add_space(space);
                     if ui.add_sized(
-                        btn_size,
-                        egui::Button::new(egui::RichText::new("🗑").size(14.0)).frame(false),
+                        team_del_size,
+                        egui::Button::new(egui::RichText::new("🗑").size(team_del_font)).frame(false),
                     )
                     .on_hover_text("Delete Team")
                     .clicked()
@@ -187,16 +193,15 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut open_add_dialog = false;
                     members_state.show_header(ui, |ui| {
-                        ui.spacing_mut().interact_size = egui::vec2(18.0, 18.0);
+                        ui.spacing_mut().interact_size = sub_btn_size;
                         ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
                         ui.label(egui::RichText::new(members_header_title).strong().small());
-                        let btn_size = egui::vec2(18.0, 18.0);
-                        let space = (ui.available_width() - btn_size.x - 4.0).max(0.0);
+                        let space = (ui.available_width() - sub_btn_size.x - 4.0).max(0.0);
                         ui.add_space(space);
                         if ui.add_sized(
-                            btn_size,
-                            egui::Button::new(egui::RichText::new("+").size(12.0).strong())
-                                .corner_radius(egui::CornerRadius::same(3)),
+                            sub_btn_size,
+                            egui::Button::new(egui::RichText::new("+").size(sub_btn_font).strong())
+                                .corner_radius(egui::CornerRadius::same(if metrics.is_touch { 4 } else { 3 })),
                         )
                         .on_hover_text("Tambah Member (Popup)")
                         .clicked()
@@ -221,9 +226,12 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                                             if is_owner && m.user_id != account.user_id {
                                                 ui.add_space(2.0);
-                                                if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
-                                                    .on_hover_text("Remove member")
-                                                    .clicked()
+                                                if ui.add_sized(
+                                                    item_del_size,
+                                                    egui::Button::new(egui::RichText::new("🗑").size(if metrics.is_touch { 14.0 } else { 11.0 })).frame(false),
+                                                )
+                                                .on_hover_text("Remove member")
+                                                .clicked()
                                                 {
                                                     remove_team_member(tabular, &team.id, &m.user_id);
                                                 }
@@ -262,16 +270,15 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut add_share_clicked = false;
                     shares_state.show_header(ui, |ui| {
-                        ui.spacing_mut().interact_size = egui::vec2(18.0, 18.0);
+                        ui.spacing_mut().interact_size = sub_btn_size;
                         ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
                         ui.label(egui::RichText::new(shares_header_title).strong().small());
-                        let btn_size = egui::vec2(18.0, 18.0);
-                        let space = (ui.available_width() - btn_size.x - 4.0).max(0.0);
+                        let space = (ui.available_width() - sub_btn_size.x - 4.0).max(0.0);
                         ui.add_space(space);
                         if ui.add_sized(
-                            btn_size,
-                            egui::Button::new(egui::RichText::new("+").size(12.0).strong())
-                                .corner_radius(egui::CornerRadius::same(3)),
+                            sub_btn_size,
+                            egui::Button::new(egui::RichText::new("+").size(sub_btn_font).strong())
+                                .corner_radius(egui::CornerRadius::same(if metrics.is_touch { 4 } else { 3 })),
                         )
                         .on_hover_text("Share Folder (Connection/Query/HTTP)")
                         .clicked()
@@ -296,9 +303,12 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                                         if is_owner {
                                             ui.add_space(2.0);
-                                            if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
-                                                .on_hover_text("Unshare folder")
-                                                .clicked()
+                                            if ui.add_sized(
+                                                item_del_size,
+                                                egui::Button::new(egui::RichText::new("🗑").size(if metrics.is_touch { 14.0 } else { 11.0 })).frame(false),
+                                            )
+                                            .on_hover_text("Unshare folder")
+                                            .clicked()
                                             {
                                                 unshare_folder_action(tabular, &team.id, &sf.id);
                                             }
@@ -333,16 +343,15 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut add_room_clicked = false;
                     rooms_state.show_header(ui, |ui| {
-                        ui.spacing_mut().interact_size = egui::vec2(18.0, 18.0);
+                        ui.spacing_mut().interact_size = sub_btn_size;
                         ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
                         ui.label(egui::RichText::new(rooms_header_title).strong().small());
-                        let btn_size = egui::vec2(18.0, 18.0);
-                        let space = (ui.available_width() - btn_size.x - 4.0).max(0.0);
+                        let space = (ui.available_width() - sub_btn_size.x - 4.0).max(0.0);
                         ui.add_space(space);
                         if ui.add_sized(
-                            btn_size,
-                            egui::Button::new(egui::RichText::new("+").size(12.0).strong())
-                                .corner_radius(egui::CornerRadius::same(3)),
+                            sub_btn_size,
+                            egui::Button::new(egui::RichText::new("+").size(sub_btn_font).strong())
+                                .corner_radius(egui::CornerRadius::same(if metrics.is_touch { 4 } else { 3 })),
                         )
                         .on_hover_text("Buat Room baru untuk Team ini")
                         .clicked()
@@ -359,9 +368,12 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                         ui.label(egui::RichText::new(format!("☁ {}", r.name)).small());
                                         if is_owner {
                                             ui.add_space(2.0);
-                                            if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
-                                                .on_hover_text("Delete room")
-                                                .clicked()
+                                            if ui.add_sized(
+                                                item_del_size,
+                                                egui::Button::new(egui::RichText::new("🗑").size(if metrics.is_touch { 14.0 } else { 11.0 })).frame(false),
+                                            )
+                                            .on_hover_text("Delete room")
+                                            .clicked()
                                             {
                                                 super::ui_collab::delete_room(tabular, &r.id);
                                             }
@@ -374,8 +386,11 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                                         if is_current {
                                             ui.label(egui::RichText::new("● Connected").color(egui::Color32::from_rgb(72, 199, 116)).small());
-                                        } else if ui.small_button("Join").clicked() {
-                                            super::ui_collab::join_room(tabular, r);
+                                        } else {
+                                            let join_h = if metrics.is_touch { 28.0 } else { 20.0 };
+                                            if ui.add_sized([44.0, join_h], egui::Button::new(egui::RichText::new("Join").size(if metrics.is_touch { 13.0 } else { 11.0 }))).clicked() {
+                                                super::ui_collab::join_room(tabular, r);
+                                            }
                                         }
                                     });
                                 }

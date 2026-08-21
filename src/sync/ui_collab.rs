@@ -106,9 +106,9 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     // ── Create & Refresh room row ───────────────────────────────────────
     ui.horizontal(|ui| {
         let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
-        let row_h = if metrics.is_touch { 34.0 } else { 28.0 };
-        let btn_w = if metrics.is_touch { 32.0 } else { 28.0 };
-        let refresh_w = if metrics.is_touch { 32.0 } else { 28.0 };
+        let row_h = if metrics.is_touch { 38.0 } else { 28.0 };
+        let btn_w = if metrics.is_touch { 38.0 } else { 28.0 };
+        let refresh_w = if metrics.is_touch { 38.0 } else { 28.0 };
 
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
@@ -129,7 +129,7 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
         let can_create = !tabular.new_collab_room_name.trim().is_empty();
         let create_btn = egui::Button::new(
-            egui::RichText::new("+").size(if metrics.is_touch { 16.0 } else { 14.0 }).strong()
+            egui::RichText::new("+").size(if metrics.is_touch { 18.0 } else { 14.0 }).strong()
         )
         .min_size(egui::vec2(btn_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
@@ -145,7 +145,7 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         }
 
         let refresh_btn = egui::Button::new(
-            egui::RichText::new("🔄").size(if metrics.is_touch { 15.0 } else { 13.0 })
+            egui::RichText::new("🔄").size(if metrics.is_touch { 16.0 } else { 13.0 })
         )
         .min_size(egui::vec2(refresh_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
@@ -172,33 +172,40 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         let rooms = tabular.collab_rooms.clone();
         for room in &rooms {
             ui.group(|ui| {
+                let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+                let del_size = if metrics.is_touch { egui::vec2(26.0, 26.0) } else { egui::vec2(18.0, 18.0) };
+                let join_h = if metrics.is_touch { 28.0 } else { 20.0 };
+
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(&room.name).small().strong());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
-                            .on_hover_text("Delete room")
-                            .clicked()
-                        {
-                            delete_room(tabular, &room.id);
-                        }
 
-                        let is_current = tabular
-                            .crdt_state
-                            .as_ref()
-                            .map(|c| c.room_id == room.id)
-                            .unwrap_or(false);
+                    let is_current = tabular
+                        .crdt_state
+                        .as_ref()
+                        .map(|c| c.room_id == room.id)
+                        .unwrap_or(false);
 
-                        if is_current {
-                            ui.label(
-                                egui::RichText::new("● Connected")
-                                    .color(egui::Color32::from_rgb(72, 199, 116))
-                                    .small(),
-                            );
-                        } else if ui.small_button("Join").clicked() {
-                            join_room(tabular, room);
-                        }
-                    });
+                    let status_w = if is_current { 80.0 } else { 48.0 };
+                    let space = (ui.available_width() - del_size.x - status_w - 8.0).max(0.0);
+                    ui.add_space(space);
+
+                    if is_current {
+                        ui.label(
+                            egui::RichText::new("● Connected")
+                                .color(egui::Color32::from_rgb(72, 199, 116))
+                                .small(),
+                        );
+                    } else if ui.add_sized([44.0, join_h], egui::Button::new(egui::RichText::new("Join").size(if metrics.is_touch { 13.0 } else { 11.0 }))).clicked() {
+                        join_room(tabular, room);
+                    }
+
+                    if ui
+                        .add_sized(del_size, egui::Button::new(egui::RichText::new("🗑").size(if metrics.is_touch { 14.0 } else { 11.0 })).frame(false))
+                        .on_hover_text("Delete room")
+                        .clicked()
+                    {
+                        delete_room(tabular, &room.id);
+                    }
                 });
                 if let Some(desc) = &room.description
                     && !desc.is_empty()
