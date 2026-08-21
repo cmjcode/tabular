@@ -67,22 +67,22 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     // ── Create & Refresh Team row ─────────────────────────────────────────
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
 
         let avail_width = ui.available_width();
-        let btn_width = 24.0;
-        let refresh_width = 24.0;
-        let input_width = (avail_width - btn_width - refresh_width - 16.0).max(40.0);
+        let btn_width = 26.0;
+        let refresh_width = 26.0;
+        let row_h = 28.0;
+        let input_width = (avail_width - btn_width - refresh_width - 12.0).max(40.0);
 
         ui.add_sized(
-            [input_width, 24.0],
+            [input_width, row_h],
             egui::TextEdit::singleline(&mut tabular.new_team_name).hint_text("Team name…"),
         );
 
         let can_create = !tabular.new_team_name.trim().is_empty();
-        let create_btn = egui::Button::new(egui::RichText::new("+").strong()).corner_radius(4.0);
+        let create_btn = egui::Button::new(egui::RichText::new("+").strong()).corner_radius(egui::CornerRadius::same(4));
         let create_resp = ui
-            .add_enabled_ui(can_create, |ui| ui.add_sized([btn_width, 24.0], create_btn))
+            .add_enabled_ui(can_create, |ui| ui.add_sized([btn_width, row_h], create_btn))
             .inner;
 
         let create_resp = if can_create {
@@ -97,8 +97,8 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
         if ui
             .add_sized(
-                [refresh_width, 24.0],
-                egui::Button::new(egui::RichText::new("🔄").small()).corner_radius(4.0),
+                [refresh_width, row_h],
+                egui::Button::new(egui::RichText::new("🔄").small()).corner_radius(egui::CornerRadius::same(4)),
             )
             .on_hover_text("Refresh Teams")
             .clicked()
@@ -170,7 +170,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     members_state.show_header(ui, |ui| {
                         ui.label(egui::RichText::new(members_header_title).strong().small());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(egui::Button::new(egui::RichText::new("+").strong().small()).corner_radius(3.0))
+                            if ui.add_sized([20.0, 18.0], egui::Button::new(egui::RichText::new("+").size(11.0).strong()).corner_radius(egui::CornerRadius::same(3)))
                                 .on_hover_text("Tambah Member (Popup)")
                                 .clicked()
                             {
@@ -239,7 +239,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     shares_state.show_header(ui, |ui| {
                         ui.label(egui::RichText::new(shares_header_title).strong().small());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(egui::Button::new(egui::RichText::new("+").strong().small()).corner_radius(3.0))
+                            if ui.add_sized([20.0, 18.0], egui::Button::new(egui::RichText::new("+").size(11.0).strong()).corner_radius(egui::CornerRadius::same(3)))
                                 .on_hover_text("Share Folder (Connection/Query/HTTP)")
                                 .clicked()
                             {
@@ -294,7 +294,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     rooms_state.show_header(ui, |ui| {
                         ui.label(egui::RichText::new(rooms_header_title).strong().small());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(egui::Button::new(egui::RichText::new("+").strong().small()).corner_radius(3.0))
+                            if ui.add_sized([20.0, 18.0], egui::Button::new(egui::RichText::new("+").size(11.0).strong()).corner_radius(egui::CornerRadius::same(3)))
                                 .on_hover_text("Buat Room baru untuk Team ini")
                                 .clicked()
                             {

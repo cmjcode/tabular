@@ -1581,10 +1581,11 @@ impl Tabular {
                                 "Collaborations" => {
                                     // ── Sub-tabs: Teams / Collaboration ──────────
                                     ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        ui.spacing_mut().item_spacing.x = 3.0;
                                         let sub_avail_width = ui.available_width();
-                                        let sub_button_width = (sub_avail_width - 2.0) / 2.0;
-                                        let sub_button_size = egui::vec2(sub_button_width, 22.0);
+                                        let sub_button_width = (sub_avail_width - 4.0) / 2.0;
+                                        let sub_button_height = if metrics.is_touch { 36.0 } else { 30.0 };
+                                        let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
 
                                         let sub_tabs: [(&str, &str); 2] = [
                                             ("Teams", "👥"),
@@ -1608,7 +1609,7 @@ impl Tabular {
                                             }
                                         }
                                     });
-                                    ui.add_space(3.0);
+                                    ui.add_space(4.0);
 
                                     match self.selected_collab_sub_menu.as_str() {
                                         "Teams" => {

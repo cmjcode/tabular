@@ -150,15 +150,17 @@ fn render_url_bar(
     let mut workspaces_saved = false;
 
     ui.horizontal(|ui| {
-        let send_w = 88.0;
-        let save_w = 72.0; // Reserve space for the Save button so it is never clipped
-        let code_w = 40.0; // Reserve space for the "Copy as Code" button
-        let bar_h = 28.0;
+        let send_w = 84.0;
+        let save_w = 76.0;
+        let code_w = 38.0;
+        let method_w = 88.0;
+        let bar_h = 30.0;
         ui.spacing_mut().interact_size.y = bar_h;
+        ui.spacing_mut().item_spacing.x = 4.0;
 
         // Method selector
         egui::ComboBox::from_id_salt("http_method_combo")
-            .width(90.0)
+            .width(method_w)
             .selected_text(state.method.label())
             .show_ui(ui, |ui| {
                 for method in [
@@ -175,8 +177,10 @@ fn render_url_bar(
                 }
             });
 
-        // URL input — subtract Send, Save, and Code button widths so none is clipped
-        let url_w = (ui.available_width() - send_w - save_w - code_w - 12.0).max(120.0);
+        // URL input — subtract Send, Save, and Code button widths so NONE is clipped
+        let total_right_w = send_w + save_w + code_w;
+        let total_spacing = ui.spacing().item_spacing.x * 4.0 + 8.0;
+        let url_w = (ui.available_width() - total_right_w - total_spacing).max(80.0);
         let url_resp = ui.add_sized(
             [url_w, bar_h],
             egui::TextEdit::singleline(&mut state.url)
@@ -211,18 +215,19 @@ fn render_url_bar(
         };
         let send_btn = ui.add_enabled(
             !state.is_loading && !state.url.is_empty(),
-            egui::Button::new(egui::RichText::new(send_label).color(egui::Color32::WHITE))
+            egui::Button::new(egui::RichText::new(send_label).color(egui::Color32::WHITE).strong())
                 .fill(crate::window_egui::style::theme_accent(ui.ctx()))
-                .min_size(egui::vec2(send_w - 10.0, bar_h)),
+                .corner_radius(egui::CornerRadius::same(5)),
         );
         if send_btn.clicked() {
             execute_request(state);
         }
 
-        // SAVE button — explicitly sized to match the reserved `save_w` above
-        let save_btn = ui.add(
+        // SAVE button
+        let save_btn = ui.add_sized(
+            [save_w, bar_h],
             egui::Button::new(egui::RichText::new("💾 Save").color(ui.visuals().text_color()))
-                .min_size(egui::vec2(save_w - 4.0, bar_h)),
+                .corner_radius(egui::CornerRadius::same(5)),
         ).on_hover_text("Save / Update request (Cmd+S)");
 
         if save_btn.clicked() {
@@ -232,9 +237,10 @@ fn render_url_bar(
         }
 
         // CODE button — opens the "Copy as Code" dialog (curl / Python / Go / …)
-        let code_btn = ui.add(
+        let code_btn = ui.add_sized(
+            [code_w, bar_h],
             egui::Button::new(egui::RichText::new("</>").color(ui.visuals().text_color()))
-                .min_size(egui::vec2(code_w - 4.0, bar_h)),
+                .corner_radius(egui::CornerRadius::same(5)),
         ).on_hover_text("Copy request as code (curl, Python, Go, …)");
         if code_btn.clicked() {
             state.show_code_dialog = true;
@@ -645,26 +651,35 @@ fn render_request_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
 fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
     // Body type selector row
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Form Data:");
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        ui.selectable_value(&mut state.body_type, HttpBodyType::NoBody, "No Body");
+        ui.selectable_value(&mut state.body_type, HttpBodyType::Json, "JSON");
         ui.selectable_value(
             &mut state.body_type,
             HttpBodyType::UrlEncoded,
-            "Url Encoded",
+            "Form URL-Encoded",
         );
         ui.selectable_value(&mut state.body_type, HttpBodyType::MultiPart, "Multi-Part");
 
-        ui.separator();
-        ui.label("Text:");
-        ui.selectable_value(&mut state.body_type, HttpBodyType::GraphQL, "GraphQL");
-        ui.selectable_value(&mut state.body_type, HttpBodyType::Json, "JSON");
-        ui.selectable_value(&mut state.body_type, HttpBodyType::Xml, "XML");
-        ui.selectable_value(&mut state.body_type, HttpBodyType::OtherText, "Other");
+        // More body types dropdown
+        let more_label = match state.body_type {
+            HttpBodyType::GraphQL => "GraphQL",
+            HttpBodyType::Xml => "XML",
+            HttpBodyType::OtherText => "Raw Text",
+            HttpBodyType::BinaryFile => "Binary File",
+            _ => "More Types ▾",
+        };
 
-        ui.separator();
-        ui.label("Other:");
-        ui.selectable_value(&mut state.body_type, HttpBodyType::BinaryFile, "Binary File");
-        ui.selectable_value(&mut state.body_type, HttpBodyType::NoBody, "No Body");
+        egui::ComboBox::from_id_salt("http_body_more_types_combo")
+            .selected_text(more_label)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut state.body_type, HttpBodyType::GraphQL, "GraphQL");
+                ui.selectable_value(&mut state.body_type, HttpBodyType::Xml, "XML");
+                ui.selectable_value(&mut state.body_type, HttpBodyType::OtherText, "Raw Text");
+                ui.selectable_value(&mut state.body_type, HttpBodyType::BinaryFile, "Binary File");
+            });
     });
 
     ui.add_space(6.0);
