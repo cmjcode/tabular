@@ -18,3 +18,11 @@ flatpak/repo
 .agents
 Cargo.lock
 .idea
+
+# iOS & Xcode build artifacts
+ios/Xcode/TabulariOS/Generated/
+build/
+*.xcarchive
+*.xcuserstate
+xcuserdata/
+DerivedData/
