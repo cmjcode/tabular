@@ -39,11 +39,15 @@ impl super::Tabular {
         let mut format_clicked = false;
         let toast_width = 380.0;
 
-        // 1. MESSAGE TOAST CARD (Anchored at fixed RIGHT_BOTTOM position -8.0, -44.0)
+        // 1. MESSAGE TOAST CARD (Anchored at fixed RIGHT_BOTTOM position with slide-up animation)
         if is_msg_open {
+            let msg_anim = ctx.animate_value_with_time(egui::Id::new("toast_msg_slide_anim"), 1.0, 0.16);
+            let eased_anim = super::style::ease_out_cubic(msg_anim);
+            let y_offset = -44.0 + (1.0 - eased_anim) * 25.0;
+
             let area_resp = egui::Area::new(egui::Id::new("message_toast_overlay"))
                 .order(egui::Order::Foreground)
-                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -44.0))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, y_offset))
                 .show(ctx, |ui| {
                     let container_fill = if ctx.global_style().visuals.dark_mode {
                         egui::Color32::from_rgb(30, 31, 36)
@@ -64,9 +68,9 @@ impl super::Tabular {
                         .inner_margin(egui::Margin::symmetric(10, 8))
                         .shadow(egui::Shadow {
                             offset: [0, 4],
-                            blur: 10,
+                            blur: 12,
                             spread: 0,
-                            color: egui::Color32::from_black_alpha(100),
+                            color: egui::Color32::from_black_alpha(120),
                         })
                         .show(ui, |ui| {
                             ui.set_min_width(toast_width);
@@ -78,7 +82,7 @@ impl super::Tabular {
                                     ("💬 Query Message", super::style::theme_accent(ctx))
                                 };
 
-                                // Header row with title & close button (X) aligned right
+                                // Header row with title, copy button, & close button (X) aligned right
                                 ui.horizontal(|ui| {
                                     ui.label(
                                         egui::RichText::new(title)
@@ -88,9 +92,12 @@ impl super::Tabular {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            ui.spacing_mut().item_spacing.x = 4.0;
                                             if super::style::render_close_icon_button(ui).clicked() {
                                                 close_msg_toast = true;
+                                            }
+                                            if ui.small_button("📋 Copy").on_hover_text("Copy message to clipboard").clicked() {
+                                                ui.ctx().copy_text(self.query_message.clone());
                                             }
                                         },
                                     );
@@ -134,6 +141,24 @@ impl super::Tabular {
                                             }
                                         });
                                     });
+
+                                // Auto-hide progress bar
+                                if let Some(shown_at) = self.message_shown_at {
+                                    let elapsed = shown_at.elapsed().as_secs_f32();
+                                    if elapsed < 5.0 {
+                                        let remaining_pct = (1.0 - (elapsed / 5.0)).clamp(0.0, 1.0);
+                                        let bar_rect = egui::Rect::from_min_size(
+                                            ui.cursor().min,
+                                            egui::vec2(toast_width * remaining_pct, 2.0),
+                                        );
+                                        ui.painter().rect_filled(
+                                            bar_rect,
+                                            egui::CornerRadius::same(1u8),
+                                            stroke_color.linear_multiply(0.8),
+                                        );
+                                        ui.add_space(2.0);
+                                    }
+                                }
                             });
                         });
                 });
@@ -941,13 +966,18 @@ impl super::Tabular {
                                     draw_separator(ui);
                                     ui.add_space(4.0);
 
+                                    let exec_fill = if is_loading {
+                                        let t = (ui.input(|i| i.time) * 5.0).sin() as f32;
+                                        let pulse = (t * 0.25 + 0.75).clamp(0.4, 1.0);
+                                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
+                                        super::style::theme_accent(ui.ctx()).linear_multiply(pulse)
+                                    } else {
+                                        super::style::theme_accent(ui.ctx())
+                                    };
+
                                     let execute_button = egui::Button::new(play_text.clone())
                                         .min_size(egui::vec2(button_size.x, button_size.y))
-                                        .fill(if is_loading {
-                                            egui::Color32::from_rgb(60, 60, 60)
-                                        } else {
-                                            super::style::theme_accent(ui.ctx())
-                                        })
+                                        .fill(exec_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))
                                         .corner_radius(egui::CornerRadius::same(button_corner));
                                     if ui

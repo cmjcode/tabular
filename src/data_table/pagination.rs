@@ -55,13 +55,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                 // Execution time indicator
                 if let Some(ms) = exec_ms {
                     ui.separator();
-                    let label = if ms >= 1000 {
-                        format!("⏱ {:.2} s", ms as f64 / 1000.0)
-                    } else {
-                        format!("⏱ {} ms", ms)
-                    };
-                    ui.label(egui::RichText::new(label).color(ui.visuals().weak_text_color()))
-                        .on_hover_text("Query execution time");
+                    crate::window_egui::style::render_execution_pill(ui, ms as u128, tabular.total_rows);
                 }
 
                 // Grid Summary Bar (Sum, Avg, Count, Min, Max for selected cells)

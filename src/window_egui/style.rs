@@ -544,3 +544,106 @@ pub fn render_close_icon_button(ui: &mut egui::Ui) -> egui::Response {
     response.on_hover_text("Close")
 }
 
+/// Smooth cubic easing out for fluid UI transitions
+pub fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Helper to get an animated 0.0 -> 1.0 modal presentation factor
+pub fn animate_modal_progress(ctx: &egui::Context, id_source: &str, open: bool, duration_secs: f32) -> f32 {
+    let raw = ctx.animate_value_with_time(egui::Id::new(id_source), if open { 1.0 } else { 0.0 }, duration_secs);
+    ease_out_cubic(raw)
+}
+
+/// Render a smooth dimming backdrop overlay behind modals and spotlights
+pub fn render_modal_backdrop(ctx: &egui::Context, id_source: &str, open: bool) -> f32 {
+    let progress = animate_modal_progress(ctx, id_source, open, 0.18);
+    if progress > 0.01 {
+        let max_alpha = if ctx.global_style().visuals.dark_mode { 160 } else { 90 };
+        let alpha = (max_alpha as f32 * progress) as u8;
+        let screen_rect = ctx.content_rect();
+        
+        egui::Area::new(egui::Id::new(format!("{}_backdrop_area", id_source)))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen_rect.min)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    egui::Color32::from_black_alpha(alpha),
+                );
+            });
+    }
+    progress
+}
+
+/// Render a modern macOS/Linear style keyboard shortcut pill badge
+pub fn render_shortcut_badge(ui: &mut egui::Ui, shortcut: &str) {
+    let is_dark = ui.visuals().dark_mode;
+    let bg = if is_dark {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 15)
+    };
+    let border = if is_dark {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 25)
+    };
+    let fg = ui.visuals().text_color().linear_multiply(0.85);
+
+    egui::Frame::new()
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(egui::CornerRadius::same(4u8))
+        .inner_margin(egui::Margin::symmetric(5, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(shortcut)
+                    .size(10.5)
+                    .family(egui::FontFamily::Monospace)
+                    .color(fg),
+            );
+        });
+}
+
+/// Render an interactive execution time / row count badge (e.g. ⚡ 14ms • 200 rows)
+pub fn render_execution_pill(ui: &mut egui::Ui, duration_ms: u128, row_count: usize) {
+    let is_dark = ui.visuals().dark_mode;
+    let bg = if is_dark {
+        egui::Color32::from_rgb(16, 44, 32)
+    } else {
+        egui::Color32::from_rgb(220, 248, 230)
+    };
+    let stroke = if is_dark {
+        egui::Color32::from_rgb(34, 134, 80)
+    } else {
+        egui::Color32::from_rgb(70, 180, 110)
+    };
+    let text_col = if is_dark {
+        egui::Color32::from_rgb(110, 235, 160)
+    } else {
+        egui::Color32::from_rgb(20, 110, 55)
+    };
+
+    egui::Frame::new()
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, stroke))
+        .corner_radius(egui::CornerRadius::same(12u8))
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                ui.label(egui::RichText::new("⚡").size(11.0).color(text_col));
+                ui.label(
+                    egui::RichText::new(format!("{}ms • {} rows", duration_ms, row_count))
+                        .size(11.5)
+                        .strong()
+                        .color(text_col),
+                );
+            });
+        });
+}
+
+

@@ -77,6 +77,7 @@ fn load_logo_texture(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
 
 pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if tabular.show_about_dialog {
+        window_egui::style::render_modal_backdrop(ctx, "about_dialog", tabular.show_about_dialog);
         // Load logo texture if not already loaded
         load_logo_texture(tabular, ctx);
 
@@ -157,6 +158,7 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
 
 pub(crate) fn render_error_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if tabular.show_error_message {
+        window_egui::style::render_modal_backdrop(ctx, "error_dialog", tabular.show_error_message);
         egui::Window::new("Error")
             .collapsible(false)
             .resizable(false)
@@ -1866,6 +1868,7 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
     if !tabular.show_unsafe_dml_dialog {
         return;
     }
+    window_egui::style::render_modal_backdrop(ctx, "unsafe_dml_dialog", tabular.show_unsafe_dml_dialog);
 
     let mut confirm_clicked = false;
     let mut cancel_clicked = false;

@@ -4719,7 +4719,7 @@ pub(crate) fn open_command_palette(tabular: &mut window_egui::Tabular) {
     tabular.command_palette_selected_index = 0;
 
     // Initialize command palette items with shortcut hints
-    tabular.command_palette_items = vec![
+    let mut items = vec![
         "Query: Run                    ⌘ Enter".to_string(),
         "Query: Format SQL             ⌘ Shift+F".to_string(),
         "Query: Explain                ⌘ Shift+E".to_string(),
@@ -4743,6 +4743,21 @@ pub(crate) fn open_command_palette(tabular: &mut window_egui::Tabular) {
         "Preferences: Color Theme".to_string(),
         "Preferences: Settings         ⌘,".to_string(),
     ];
+
+    // Helper to collect tables and views from items_tree
+    fn collect_table_nodes(nodes: &[models::structs::TreeNode], out: &mut Vec<String>) {
+        for node in nodes {
+            if node.node_type == models::enums::NodeType::Table {
+                out.push(format!("Table: {}                    ↵ Open", node.name));
+            } else if node.node_type == models::enums::NodeType::View {
+                out.push(format!("View: {}                    ↵ Open", node.name));
+            }
+            collect_table_nodes(&node.children, out);
+        }
+    }
+    collect_table_nodes(&tabular.items_tree, &mut items);
+
+    tabular.command_palette_items = items;
 }
 
 pub(crate) fn navigate_command_palette(tabular: &mut window_egui::Tabular, direction: i32) {
@@ -4836,38 +4851,84 @@ pub(crate) fn select_current_theme(tabular: &mut window_egui::Tabular) {
 }
 
 pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-    // Create a centered modal dialog
-    egui::Area::new(egui::Id::new("command_palette"))
-        .fixed_pos(egui::pos2(
-            ctx.content_rect().center().x - 300.0,
-            ctx.content_rect().center().y - 200.0,
-        ))
+    let progress = window_egui::style::render_modal_backdrop(ctx, "command_palette", tabular.show_command_palette);
+    if progress <= 0.01 {
+        return;
+    }
+
+    let screen_rect = ctx.content_rect();
+    let modal_width = 580.0;
+    let modal_x = (screen_rect.width() - modal_width) / 2.0;
+    let base_y = 100.0;
+    let animated_y = base_y + (1.0 - progress) * -20.0;
+
+    egui::Area::new(egui::Id::new("command_palette_spotlight"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(modal_x, animated_y))
         .show(ctx, |ui| {
-            egui::Frame::default()
-                .fill(ui.style().visuals.window_fill)
-                .stroke(ui.style().visuals.window_stroke)
-                .shadow(egui::epaint::Shadow::default())
-                .inner_margin(egui::Margin::same(10))
+            let is_dark = ui.visuals().dark_mode;
+            let bg_color = if is_dark {
+                egui::Color32::from_rgb(26, 28, 36)
+            } else {
+                egui::Color32::from_rgb(255, 255, 255)
+            };
+            let stroke_color = if is_dark {
+                egui::Color32::from_rgb(58, 62, 78)
+            } else {
+                egui::Color32::from_rgb(210, 215, 225)
+            };
+
+            egui::Frame::new()
+                .fill(bg_color)
+                .stroke(egui::Stroke::new(1.0, stroke_color))
+                .corner_radius(egui::CornerRadius::same(12u8))
+                .shadow(egui::Shadow {
+                    offset: [0, 10],
+                    blur: 24,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(120),
+                })
+                .inner_margin(egui::Margin::same(0))
                 .show(ui, |ui| {
+                    ui.set_width(modal_width);
                     ui.vertical(|ui| {
-                        // Search input
-                        let response = ui.add_sized(
-                            [580.0, 25.0],
-                            egui::TextEdit::singleline(&mut tabular.command_palette_input)
-                                .hint_text("Type command name..."),
+                        // Top Search Bar Header
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(14, 12))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("🔍")
+                                            .size(16.0)
+                                            .color(ui.visuals().text_color().linear_multiply(0.7)),
+                                    );
+                                    ui.add_space(4.0);
+
+                                    let text_edit = egui::TextEdit::singleline(&mut tabular.command_palette_input)
+                                        .hint_text("Type a command or search tables... (⌘P / ⌘K)")
+                                        .frame(egui::Frame::NONE)
+                                        .font(egui::FontId::proportional(15.0));
+
+                                    let response = ui.add_sized([modal_width - 80.0, 26.0], text_edit);
+
+                                    if response.changed() {
+                                        tabular.command_palette_selected_index = 0;
+                                    }
+
+                                    if tabular.command_palette_input.is_empty() {
+                                        response.request_focus();
+                                    }
+                                });
+                            });
+
+                        // 1px Divider
+                        let cur_min = ui.cursor().min;
+                        ui.painter().hline(
+                            cur_min.x..=(cur_min.x + modal_width),
+                            cur_min.y,
+                            egui::Stroke::new(1.0, stroke_color),
                         );
-
-                        // Reset selection when text changes
-                        if response.changed() {
-                            tabular.command_palette_selected_index = 0;
-                        }
-
-                        // Auto-focus the input when palette opens
-                        if tabular.command_palette_input.is_empty() {
-                            response.request_focus();
-                        }
-
-                        ui.separator();
+                        ui.add_space(4.0);
 
                         // Filter commands based on input
                         let filtered_commands: Vec<String> =
@@ -4885,34 +4946,155 @@ pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &e
                                     .collect()
                             };
 
-                        // Ensure selected index is within bounds when filtering
                         if tabular.command_palette_selected_index >= filtered_commands.len()
                             && !filtered_commands.is_empty()
                         {
                             tabular.command_palette_selected_index = 0;
                         }
 
-                        // Command list
-                        egui::ScrollArea::vertical()
-                            .max_height(500.0)
+                        // Command List Container
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
-                                for (index, command) in filtered_commands.iter().enumerate() {
-                                    let is_selected =
-                                        index == tabular.command_palette_selected_index;
+                                egui::ScrollArea::vertical()
+                                    .max_height(340.0)
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        if filtered_commands.is_empty() {
+                                            ui.add_space(20.0);
+                                            ui.vertical_centered(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("No matching commands or tables found")
+                                                        .size(13.0)
+                                                        .color(ui.visuals().text_color().linear_multiply(0.5)),
+                                                );
+                                            });
+                                            ui.add_space(20.0);
+                                        } else {
+                                            let mut last_category = "";
+                                            for (index, command) in filtered_commands.iter().enumerate() {
+                                                let is_selected = index == tabular.command_palette_selected_index;
 
-                                    // Highlight selected item
-                                    let text = if is_selected {
-                                        egui::RichText::new(command)
-                                            .background_color(ui.style().visuals.selection.bg_fill)
-                                            .color(ui.style().visuals.selection.stroke.color)
-                                    } else {
-                                        egui::RichText::new(command)
-                                    };
+                                                // Parse category & shortcut
+                                                let (cat, icon) = if command.starts_with("Table: ") {
+                                                    ("Tables & Views", "📋")
+                                                } else if command.starts_with("View: ") {
+                                                    ("Tables & Views", "👁️")
+                                                } else if command.starts_with("Preferences: ") {
+                                                    ("Preferences", "⚙️")
+                                                } else if command.starts_with("Data: ") {
+                                                    ("Data Tools", "📊")
+                                                } else if command.starts_with("Transaction: ") {
+                                                    ("Transactions", "🔒")
+                                                } else {
+                                                    ("Actions", "⚡")
+                                                };
 
-                                    if ui.selectable_label(is_selected, text).clicked() {
-                                        execute_command(tabular, command);
-                                    }
-                                }
+                                                if cat != last_category && tabular.command_palette_input.is_empty() {
+                                                    last_category = cat;
+                                                    ui.add_space(6.0);
+                                                    ui.label(
+                                                        egui::RichText::new(cat)
+                                                            .size(11.0)
+                                                            .strong()
+                                                            .color(window_egui::style::theme_accent(ctx)),
+                                                    );
+                                                    ui.add_space(2.0);
+                                                }
+
+                                                // Split label and shortcut hint
+                                                let (label, shortcut_opt) = if let Some(pos) = command.find("  ") {
+                                                    let label = command[..pos].trim();
+                                                    let shortcut = command[pos..].trim();
+                                                    (label, Some(shortcut))
+                                                } else {
+                                                    (command.as_str(), None)
+                                                };
+
+                                                let item_bg = if is_selected {
+                                                    if is_dark {
+                                                        egui::Color32::from_rgb(46, 50, 66)
+                                                    } else {
+                                                        egui::Color32::from_rgb(230, 236, 245)
+                                                    }
+                                                } else {
+                                                    egui::Color32::TRANSPARENT
+                                                };
+
+                                                let item_frame = egui::Frame::new()
+                                                    .fill(item_bg)
+                                                    .corner_radius(egui::CornerRadius::same(6u8))
+                                                    .inner_margin(egui::Margin::symmetric(10, 6));
+
+                                                let item_resp = item_frame.show(ui, |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(egui::RichText::new(icon).size(13.0));
+                                                        ui.add_space(4.0);
+
+                                                        let title_text = if is_selected {
+                                                            egui::RichText::new(label).strong().size(13.5).color(
+                                                                if is_dark { egui::Color32::WHITE } else { egui::Color32::BLACK },
+                                                            )
+                                                        } else {
+                                                            egui::RichText::new(label).size(13.5)
+                                                        };
+                                                        ui.label(title_text);
+
+                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                            if let Some(sc) = shortcut_opt {
+                                                                window_egui::style::render_shortcut_badge(ui, sc);
+                                                            }
+                                                        });
+                                                    });
+                                                }).response;
+
+                                                let clicked = item_resp.interact(egui::Sense::click()).clicked();
+                                                if is_selected {
+                                                    item_resp.scroll_to_me(Some(egui::Align::Center));
+                                                }
+
+                                                if clicked {
+                                                    execute_command(tabular, command);
+                                                }
+                                            }
+                                        }
+                                    });
+                            });
+
+                        // 1px Divider before footer
+                        let footer_cur_min = ui.cursor().min;
+                        ui.painter().hline(
+                            footer_cur_min.x..=(footer_cur_min.x + modal_width),
+                            footer_cur_min.y,
+                            egui::Stroke::new(1.0, stroke_color),
+                        );
+
+                        // Footer with keyboard navigation guidance
+                        egui::Frame::new()
+                            .fill(if is_dark { egui::Color32::from_rgb(20, 21, 28) } else { egui::Color32::from_rgb(245, 246, 250) })
+                            .corner_radius(egui::CornerRadius { nw: 0, ne: 0, sw: 12, se: 12 })
+                            .inner_margin(egui::Margin::symmetric(14, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Tabular Spotlight")
+                                            .size(11.0)
+                                            .color(ui.visuals().text_color().linear_multiply(0.5)),
+                                    );
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        window_egui::style::render_shortcut_badge(ui, "Esc");
+                                        ui.label(egui::RichText::new("Close").size(11.0).color(ui.visuals().text_color().linear_multiply(0.6)));
+                                        ui.add_space(6.0);
+
+                                        window_egui::style::render_shortcut_badge(ui, "↵");
+                                        ui.label(egui::RichText::new("Select").size(11.0).color(ui.visuals().text_color().linear_multiply(0.6)));
+                                        ui.add_space(6.0);
+
+                                        window_egui::style::render_shortcut_badge(ui, "↑↓");
+                                        ui.label(egui::RichText::new("Navigate").size(11.0).color(ui.visuals().text_color().linear_multiply(0.6)));
+                                    });
+                                });
                             });
                     });
                 });
@@ -4927,6 +5109,28 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
     tabular.show_command_palette = false;
     tabular.command_palette_input.clear();
     tabular.command_palette_selected_index = 0;
+
+    if key.starts_with("Table: ") || key.starts_with("View: ") {
+        let table_name = if let Some(t) = key.strip_prefix("Table: ") {
+            t.trim()
+        } else if let Some(v) = key.strip_prefix("View: ") {
+            v.trim()
+        } else {
+            ""
+        };
+        if !table_name.is_empty() {
+            let query = format!("SELECT * FROM {} LIMIT 100;", table_name);
+            let title = table_name.to_string();
+            create_new_tab_with_connection_and_database(
+                tabular,
+                title,
+                query,
+                tabular.current_connection_id,
+                None,
+            );
+        }
+        return;
+    }
 
     match key {
         "Query: Run" => {

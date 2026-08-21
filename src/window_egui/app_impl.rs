@@ -3853,11 +3853,10 @@ impl App for Tabular {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
 
-            // CMD+SHIFT+P or CMD/CTRL+K to open command palette
-            if (i.modifiers.mac_cmd && i.modifiers.shift && i.key_pressed(egui::Key::P))
-                || ((i.modifiers.mac_cmd || i.modifiers.ctrl)
-                    && i.key_pressed(egui::Key::K)
-                    && !self.show_command_palette)
+            // CMD/CTRL+P, CMD+SHIFT+P, or CMD/CTRL+K to open spotlight / command palette
+            if (i.modifiers.mac_cmd || i.modifiers.ctrl)
+                && (i.key_pressed(egui::Key::P) || i.key_pressed(egui::Key::K))
+                && !self.show_command_palette
             {
                 editor::open_command_palette(self);
             }
