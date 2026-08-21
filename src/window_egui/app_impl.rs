@@ -2132,18 +2132,19 @@ impl Tabular {
                                 if btn_resp.hovered() || self.show_settings_menu {
                                     ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(5), gear_bg);
                                 }
-                                let avatar_rect = egui::Rect::from_center_size(btn_rect.center(), egui::vec2(avatar_size, avatar_size));
-                                let mut av_ui = ui.new_child(egui::UiBuilder::new().max_rect(avatar_rect));
-                                crate::sync::ui_login::draw_circular_avatar(
-                                    &mut av_ui,
+                                crate::sync::ui_login::paint_circular_avatar(
+                                    ui.painter(),
                                     self,
-                                    avatar_size,
+                                    btn_rect.center(),
+                                    avatar_size / 2.0,
                                     &account.email,
                                     if !self.profile_display_name_input.is_empty() {
                                         Some(&self.profile_display_name_input)
                                     } else {
                                         account.display_name.as_deref()
                                     },
+                                    btn_resp.hovered(),
+                                    ui.visuals().dark_mode,
                                 );
                                 let user_hint = account.display_name.as_deref().unwrap_or(&account.email);
                                 btn_resp.on_hover_text(format!("Account: {}", user_hint))
@@ -2314,21 +2315,20 @@ impl Tabular {
                                                 ui.painter().rect_filled(card_rect, egui::CornerRadius::same(6), card_bg);
 
                                                 let av_size = 30.0;
-                                                let av_rect = egui::Rect::from_center_size(
-                                                    egui::pos2(card_rect.left() + 20.0, card_rect.center().y),
-                                                    egui::vec2(av_size, av_size),
-                                                );
-                                                let mut av_ui = ui.new_child(egui::UiBuilder::new().max_rect(av_rect));
-                                                crate::sync::ui_login::draw_circular_avatar(
-                                                    &mut av_ui,
+                                                let av_center = egui::pos2(card_rect.left() + 20.0, card_rect.center().y);
+                                                crate::sync::ui_login::paint_circular_avatar(
+                                                    ui.painter(),
                                                     self,
-                                                    av_size,
+                                                    av_center,
+                                                    av_size / 2.0,
                                                     &account.email,
                                                     if !self.profile_display_name_input.is_empty() {
                                                         Some(&self.profile_display_name_input)
                                                     } else {
                                                         account.display_name.as_deref()
                                                     },
+                                                    is_card_hovered,
+                                                    dark,
                                                 );
 
                                                 let name_text = if !self.profile_display_name_input.is_empty() {

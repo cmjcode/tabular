@@ -9,6 +9,99 @@ use eframe::egui;
 use crate::window_egui::{Tabular, style};
 use super::auth::OAuthProvider;
 
+/// Directly paint a circular avatar into any painter at center with radius using a circular fan mesh.
+pub fn paint_circular_avatar(
+    painter: &egui::Painter,
+    tabular: &Tabular,
+    center: egui::Pos2,
+    radius: f32,
+    email: &str,
+    display_name: Option<&str>,
+    is_hovered: bool,
+    dark_mode: bool,
+) {
+    if let Some(ref texture) = tabular.avatar_texture {
+        // Draw true circular mesh with texture mapping
+        let n_points = 32;
+        let mut mesh = egui::Mesh::with_texture(texture.id());
+        let center_uv = egui::pos2(0.5, 0.5);
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: center,
+            uv: center_uv,
+            color: egui::Color32::WHITE,
+        });
+
+        for i in 0..=n_points {
+            let angle = i as f32 * std::f32::consts::TAU / (n_points as f32);
+            let (sin, cos) = angle.sin_cos();
+            let p = center + egui::vec2(cos, sin) * radius;
+            let uv = center_uv + egui::vec2(cos, sin) * 0.5;
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: p,
+                uv,
+                color: egui::Color32::WHITE,
+            });
+        }
+
+        for i in 1..=(n_points as u32) {
+            mesh.indices.push(0);
+            mesh.indices.push(i);
+            mesh.indices.push(i + 1);
+        }
+
+        painter.add(egui::Shape::mesh(mesh));
+
+        let stroke_color = if is_hovered {
+            egui::Color32::from_rgb(100, 160, 255)
+        } else if dark_mode {
+            egui::Color32::from_rgb(80, 85, 100)
+        } else {
+            egui::Color32::from_rgb(190, 195, 205)
+        };
+        painter.circle_stroke(center, radius - 0.5, egui::Stroke::new(1.5, stroke_color));
+    } else {
+        let bg_color = if is_hovered {
+            egui::Color32::from_rgb(45, 95, 190)
+        } else if dark_mode {
+            egui::Color32::from_rgb(55, 65, 85)
+        } else {
+            egui::Color32::from_rgb(215, 225, 240)
+        };
+
+        painter.circle_filled(center, radius, bg_color);
+        let stroke_color = if is_hovered {
+            egui::Color32::WHITE
+        } else if dark_mode {
+            egui::Color32::from_rgb(75, 85, 110)
+        } else {
+            egui::Color32::from_rgb(185, 195, 215)
+        };
+        painter.circle_stroke(center, radius - 0.5, egui::Stroke::new(1.0, stroke_color));
+
+        let initial = display_name
+            .and_then(|n| n.trim().chars().next())
+            .or_else(|| email.trim().chars().next())
+            .unwrap_or('U')
+            .to_uppercase()
+            .to_string();
+
+        let font_size = (radius * 0.92).max(11.0);
+        let text_color = if dark_mode {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_rgb(30, 40, 60)
+        };
+
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            initial,
+            egui::FontId::proportional(font_size),
+            text_color,
+        );
+    }
+}
+
 /// Draw a circular avatar with either the loaded image texture or initials / user icon fallback.
 pub fn draw_circular_avatar(
     ui: &mut egui::Ui,
@@ -17,75 +110,17 @@ pub fn draw_circular_avatar(
     email: &str,
     display_name: Option<&str>,
 ) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
-    let center = rect.center();
-    let radius = size / 2.0;
-
-    let dark = ui.visuals().dark_mode;
-
-    if let Some(ref texture) = tabular.avatar_texture {
-        // Draw circular image
-        let corner_radius = egui::CornerRadius::same(radius as u8);
-        ui.painter().rect_filled(rect, corner_radius, egui::Color32::BLACK);
-        ui.painter().image(
-            texture.id(),
-            rect,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
-        // Subtle circular border
-        let stroke_color = if resp.hovered() {
-            style::theme_accent(ui.ctx())
-        } else if dark {
-            egui::Color32::from_rgb(70, 75, 90)
-        } else {
-            egui::Color32::from_rgb(200, 205, 215)
-        };
-        ui.painter().circle_stroke(center, radius - 0.5, egui::Stroke::new(1.5, stroke_color));
-    } else {
-        // Fallback: draw circular badge with initial letter or user icon
-        let bg_color = if resp.hovered() {
-            style::theme_accent(ui.ctx())
-        } else if dark {
-            egui::Color32::from_rgb(55, 65, 85)
-        } else {
-            egui::Color32::from_rgb(215, 225, 240)
-        };
-
-        ui.painter().circle_filled(center, radius, bg_color);
-        let stroke_color = if resp.hovered() {
-            egui::Color32::WHITE
-        } else if dark {
-            egui::Color32::from_rgb(75, 85, 110)
-        } else {
-            egui::Color32::from_rgb(185, 195, 215)
-        };
-        ui.painter().circle_stroke(center, radius - 0.5, egui::Stroke::new(1.0, stroke_color));
-
-        // Initial character
-        let initial = display_name
-            .and_then(|n| n.trim().chars().next())
-            .or_else(|| email.trim().chars().next())
-            .unwrap_or('U')
-            .to_uppercase()
-            .to_string();
-
-        let font_size = (size * 0.46).max(11.0);
-        let text_color = if dark {
-            egui::Color32::WHITE
-        } else {
-            egui::Color32::from_rgb(30, 40, 60)
-        };
-
-        ui.painter().text(
-            center,
-            egui::Align2::CENTER_CENTER,
-            initial,
-            egui::FontId::proportional(font_size),
-            text_color,
-        );
-    }
-
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    paint_circular_avatar(
+        ui.painter(),
+        tabular,
+        rect.center(),
+        size / 2.0,
+        email,
+        display_name,
+        resp.hovered(),
+        ui.visuals().dark_mode,
+    );
     resp
 }
 
