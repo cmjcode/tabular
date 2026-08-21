@@ -7,8 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		TABiOS_APP_CONTENT /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = TABiOS_FILE_CONTENT /* ContentView.swift */; };
-		TABiOS_APP_MAIN /* TabulariOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = TABiOS_FILE_APP /* TabulariOSApp.swift */; };
+		TABiOS_APP_MAIN_M /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = TABiOS_FILE_MAIN_M /* main.m */; };
 		TABiOS_FFI_HDR /* TabularFFI.h in Headers */ = {isa = PBXBuildFile; fileRef = TABiOS_FFI_H /* TabularFFI.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		TABiOS_FRAMEWORK_BUILD /* Tabular.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = TABiOS_XCFRAMEWORK /* Tabular.xcframework */; };
 		TABiOS_FRAMEWORK_EMBED /* Tabular.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = TABiOS_XCFRAMEWORK /* Tabular.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -31,8 +30,7 @@
 /* Begin PBXFileReference section */
 		TABiOS_ENTITLEMENTS /* TabulariOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TabulariOS.entitlements; sourceTree = SOURCE_ROOT; };
 		TABiOS_FFI_H /* TabularFFI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TabularFFI.h; sourceTree = "<group>"; };
-		TABiOS_FILE_APP /* TabulariOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabulariOSApp.swift; sourceTree = "<group>"; };
-		TABiOS_FILE_CONTENT /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		TABiOS_FILE_MAIN_M /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		TABiOS_PRODUCT /* TabulariOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TabulariOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		TABiOS_XCFRAMEWORK /* Tabular.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Tabular.xcframework; path = Generated/Tabular.xcframework; sourceTree = SOURCE_ROOT; };
 		TABiOS_REF_RUST_SRC /* Rust Source (src) */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Rust Source (src)"; path = "../../../src"; sourceTree = "<group>"; };
@@ -54,8 +52,7 @@
 		TABiOS_GROUP_APP /* Sources/App */ = {
 			isa = PBXGroup;
 			children = (
-				TABiOS_FILE_APP /* TabulariOSApp.swift */,
-				TABiOS_FILE_CONTENT /* ContentView.swift */,
+				TABiOS_FILE_MAIN_M /* main.m */,
 			);
 			path = Sources/App;
 			sourceTree = SOURCE_ROOT;
@@ -184,8 +181,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				TABiOS_APP_MAIN /* TabulariOSApp.swift in Sources */,
-				TABiOS_APP_CONTENT /* ContentView.swift in Sources */,
+				TABiOS_APP_MAIN_M /* main.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
