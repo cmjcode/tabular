@@ -46,6 +46,74 @@ pub mod query_ast;
 pub mod syntax_ts;
 pub mod window_egui; // re-enabled syntax highlighting helpers
 
+#[cfg(not(target_os = "ios"))]
+pub use ::rfd;
+
+#[cfg(target_os = "ios")]
+pub mod rfd {
+    use std::path::PathBuf;
+
+    #[derive(Default, Clone)]
+    pub struct FileDialog;
+
+    impl FileDialog {
+        pub fn new() -> Self {
+            Self
+        }
+
+        pub fn add_filter<S: AsRef<str>, T: AsRef<str>>(self, _name: S, _ext: &[T]) -> Self {
+            self
+        }
+
+        pub fn set_file_name<S: AsRef<str>>(self, _name: S) -> Self {
+            self
+        }
+
+        pub fn set_title<S: AsRef<str>>(self, _title: S) -> Self {
+            self
+        }
+
+        pub fn set_directory<P: AsRef<std::path::Path>>(self, _dir: P) -> Self {
+            self
+        }
+
+        pub fn pick_file(self) -> Option<PathBuf> {
+            None
+        }
+
+        pub fn pick_files(self) -> Option<Vec<PathBuf>> {
+            None
+        }
+
+        pub fn save_file(self) -> Option<PathBuf> {
+            None
+        }
+
+        pub fn pick_folder(self) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    #[derive(Default, Clone)]
+    pub struct MessageDialog;
+
+    impl MessageDialog {
+        pub fn new() -> Self {
+            Self
+        }
+
+        pub fn set_title<S: AsRef<str>>(self, _title: S) -> Self {
+            self
+        }
+
+        pub fn set_description<S: AsRef<str>>(self, _desc: S) -> Self {
+            self
+        }
+
+        pub fn show(self) {}
+    }
+}
+
 pub static STARTUP_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 pub fn log_startup_step(step: &str) {
@@ -107,8 +175,20 @@ pub extern "C" fn tabular_version() -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tabular_run() -> i32 {
-    match run() {
-        Ok(_) => 0,
-        Err(_) => 1,
+    let result = std::panic::catch_unwind(|| {
+        match run() {
+            Ok(_) => 0,
+            Err(e) => {
+                log::error!("eframe run error: {:?}", e);
+                1
+            }
+        }
+    });
+    match result {
+        Ok(code) => code,
+        Err(_) => {
+            log::error!("tabular_run encountered an unhandled panic");
+            -1
+        }
     }
 }

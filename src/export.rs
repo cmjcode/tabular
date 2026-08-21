@@ -2,6 +2,7 @@ use log::debug;
 use std::path::Path;
 
 use crate::models::enums::DatabaseType;
+use crate::rfd;
 
 pub fn export_to_csv(
     all_table_data: &[Vec<String>],

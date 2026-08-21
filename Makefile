@@ -43,6 +43,10 @@ help:
 	@echo "  build-windows      Build Windows (x86_64 + aarch64)"
 	@echo "  bundle-macos       Create .app (codesign/notarize optional)"
 	@echo "  pkg-macos-store    Create signed .pkg (App Store / distribution)"
+	@echo "  build-ipad         Build iPad XCFramework and test binary"
+	@echo "  archive-ipad       Archive TabulariOS Xcode project for iPad"
+	@echo "  ipa-ipad           Export signed .ipa for iPad"
+	@echo "  publish-ipad       Upload .ipa to App Store Connect / TestFlight"
 	@echo "  bundle-linux       Create tarballs + basic AppDir"
 	@echo "  bundle-windows     Create zipped binaries"
 	@echo "  release            Clean + deps + all bundles"
@@ -319,3 +323,20 @@ notarize-check:
 		echo "💿 DMG Gatekeeper status:"; \
 		spctl -a -t open --context context:primary-signature -v $(MACOS_DIR)/$(APP_NAME)-$(VERSION).dmg && echo "✅ DMG accepted" || echo "❌ DMG rejected"; \
 	fi
+
+# ─── iPad / iPadOS Targets ────────────────────────────────────────────────────
+build-ipad:
+	@echo "📱 Building iPad XCFramework and checking build..."
+	bash build_ipad.sh build
+
+archive-ipad:
+	@echo "📦 Archiving TabulariOS Xcode project for iPad..."
+	bash build_ipad.sh archive
+
+ipa-ipad:
+	@echo "📦 Exporting signed .ipa for iPad..."
+	bash build_ipad.sh export
+
+publish-ipad:
+	@echo "🚀 Publishing Tabular iPad app to App Store Connect / TestFlight..."
+	bash build_ipad.sh publish

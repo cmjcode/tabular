@@ -6,6 +6,7 @@ data/connections copy.db
 .DS_Store
 dist/
 build_apple.sh
+build_ipad.sh
 notarize-simple.sh
 notarize.sh
 .flatpak-builder/

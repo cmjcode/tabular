@@ -1,4 +1,6 @@
 
+use crate::rfd;
+
 impl super::Tabular {
     pub fn handle_directory_picker(&mut self) {
         let (sender, receiver) = std::sync::mpsc::channel();

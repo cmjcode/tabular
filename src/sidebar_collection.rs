@@ -1,6 +1,7 @@
 use crate::http_collection::{
     SavedRequest, import_from_postman, import_from_yaak, save_workspaces,
 };
+use crate::rfd;
 use crate::window_egui::Tabular;
 /// sidebar_collection.rs
 ///

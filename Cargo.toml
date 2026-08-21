@@ -5,7 +5,7 @@ edition = "2024"
 
 [lib]
 name = "tabular"
-crate-type = ["rlib", "cdylib", "staticlib"]
+crate-type = ["rlib", "staticlib"]
 
 # Cargo.toml
 [package.metadata.bundle]
@@ -53,7 +53,6 @@ regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
 rust_xlsxwriter = "0.98"                           # Pure-Rust xlsx writer (no libclang/C toolchain)
-rfd = "0.17"                                       # For file dialog
 hex = "0.4.3"
 rust_decimal = "1.42.1"
 log = "0.4"
@@ -122,7 +121,14 @@ zeroize = { version = "1", features = ["zeroize_derive"] }        # scrub key ma
 # `linux-keyring` feature because Secret Service pulls a D-Bus build/runtime
 # dependency into the packaging chain (deb/flatpak/AUR); without it Linux
 # uses the encrypted-file store.
-[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = "4"
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+rfd = "0.17"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["protected"] }
 keyring = "4"
 
 [target.'cfg(target_os = "windows")'.dependencies]

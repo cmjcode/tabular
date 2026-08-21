@@ -6,6 +6,7 @@ use log::{debug, error};
 use crate::models;
 use crate::connection;
 use crate::driver_redis;
+use crate::rfd;
 use crate::{sidebar_database, sidebar_query, editor};
 use crate::editor_buffer::EditorBuffer;
 use super::PrefTab;

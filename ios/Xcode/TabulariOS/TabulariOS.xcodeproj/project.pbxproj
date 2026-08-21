@@ -1,60 +1,348 @@
 // !$*UTF8*$!
 {
 	archiveVersion = 1;
-	classes = {};
-	objectVersion = 56;
+	classes = {
+	};
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
-		TABiOS_FFI_HDR /* TabularFFI.h in Headers */ = {isa = PBXBuildFile; fileRef = TABiOS_FFI_H /* TabularFFI.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		TABiOS_APP_CONTENT /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = TABiOS_FILE_CONTENT /* ContentView.swift */; };
 		TABiOS_APP_MAIN /* TabulariOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = TABiOS_FILE_APP /* TabulariOSApp.swift */; };
+		TABiOS_FFI_HDR /* TabularFFI.h in Headers */ = {isa = PBXBuildFile; fileRef = TABiOS_FFI_H /* TabularFFI.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		TABiOS_FRAMEWORK_BUILD /* Tabular.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = TABiOS_XCFRAMEWORK /* Tabular.xcframework */; };
+		TABiOS_FRAMEWORK_EMBED /* Tabular.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = TABiOS_XCFRAMEWORK /* Tabular.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		TABiOS_EMBED_FRAMEWORKS /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				TABiOS_FRAMEWORK_EMBED /* Tabular.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		TABiOS_FILE_CONTENT /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		TABiOS_FILE_APP /* TabulariOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabulariOSApp.swift; sourceTree = "<group>"; };
+		TABiOS_ENTITLEMENTS /* TabulariOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TabulariOS.entitlements; sourceTree = SOURCE_ROOT; };
 		TABiOS_FFI_H /* TabularFFI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TabularFFI.h; sourceTree = "<group>"; };
+		TABiOS_FILE_APP /* TabulariOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabulariOSApp.swift; sourceTree = "<group>"; };
+		TABiOS_FILE_CONTENT /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		TABiOS_PRODUCT /* TabulariOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TabulariOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		TABiOS_XCFRAMEWORK /* Tabular.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Tabular.xcframework; path = Generated/Tabular.xcframework; sourceTree = SOURCE_ROOT; };
+		TABiOS_REF_RUST_SRC /* Rust Source (src) */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Rust Source (src)"; path = "../../../src"; sourceTree = "<group>"; };
+		TABiOS_REF_CARGO_TOML /* Cargo.toml */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Cargo.toml"; path = "../../../Cargo.toml"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFrameworksBuildPhase section */
+		TABiOS_FRAMEWORKS /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				TABiOS_FRAMEWORK_BUILD /* Tabular.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
 /* Begin PBXGroup section */
-		TABiOS_GROUP_ROOT = {isa = PBXGroup; children = (TABiOS_GROUP_APP, TABiOS_GROUP_FFI, TABiOS_GROUP_PRODUCTS, ); sourceTree = "<group>"; };
-		TABiOS_GROUP_APP = {isa = PBXGroup; children = (TABiOS_FILE_APP, TABiOS_FILE_CONTENT, ); path = Sources/App; sourceTree = SOURCE_ROOT; };
-		TABiOS_GROUP_FFI = {isa = PBXGroup; children = (TABiOS_FFI_H, ); path = Sources/FFI; sourceTree = SOURCE_ROOT; };
-		TABiOS_GROUP_PRODUCTS = {isa = PBXGroup; children = (TABiOS_PRODUCT, ); name = Products; sourceTree = "<group>"; };
+		TABiOS_GROUP_APP /* Sources/App */ = {
+			isa = PBXGroup;
+			children = (
+				TABiOS_FILE_APP /* TabulariOSApp.swift */,
+				TABiOS_FILE_CONTENT /* ContentView.swift */,
+			);
+			path = Sources/App;
+			sourceTree = SOURCE_ROOT;
+		};
+		TABiOS_GROUP_FFI /* Sources/FFI */ = {
+			isa = PBXGroup;
+			children = (
+				TABiOS_FFI_H /* TabularFFI.h */,
+			);
+			path = Sources/FFI;
+			sourceTree = SOURCE_ROOT;
+		};
+		TABiOS_GROUP_FRAMEWORKS /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				TABiOS_XCFRAMEWORK /* Tabular.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		TABiOS_GROUP_PRODUCTS /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				TABiOS_PRODUCT /* TabulariOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		TABiOS_GROUP_ROOT = {
+			isa = PBXGroup;
+			children = (
+				TABiOS_REF_RUST_SRC /* Rust Source (src) */,
+				TABiOS_REF_CARGO_TOML /* Cargo.toml */,
+				TABiOS_GROUP_APP /* Sources/App */,
+				TABiOS_GROUP_FFI /* Sources/FFI */,
+				TABiOS_GROUP_FRAMEWORKS /* Frameworks */,
+				TABiOS_ENTITLEMENTS /* TabulariOS.entitlements */,
+				TABiOS_GROUP_PRODUCTS /* Products */,
+			);
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
-		TABiOS_HEADERS = {isa = PBXHeadersBuildPhase; files = (TABiOS_FFI_HDR, ); };
+		TABiOS_HEADERS /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				TABiOS_FFI_HDR /* TabularFFI.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
-		TABiOS_TARGET /* TabulariOS */ = {isa = PBXNativeTarget; buildConfigurationList = TABiOS_CONFIG_LIST; buildPhases = (TABiOS_SCRIPT_RUST, TABiOS_HEADERS, TABiOS_SOURCES, ); buildRules = (); dependencies = (); name = TabulariOS; productName = TabulariOS; productReference = TABiOS_PRODUCT; productType = "com.apple.product-type.application"; };
+		TABiOS_TARGET /* TabulariOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = TABiOS_CONFIG_LIST /* Build configuration list for PBXNativeTarget "TabulariOS" */;
+			buildPhases = (
+				TABiOS_SCRIPT_RUST /* Build Rust XCFramework */,
+				TABiOS_HEADERS /* Headers */,
+				TABiOS_SOURCES /* Sources */,
+				TABiOS_FRAMEWORKS /* Frameworks */,
+				TABiOS_EMBED_FRAMEWORKS /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TabulariOS;
+			productName = TabulariOS;
+			productReference = TABiOS_PRODUCT /* TabulariOS.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		TABiOS_PROJECT /* Project object */ = {isa = PBXProject; attributes = {LastSwiftUpdateCheck = 1500; LastUpgradeCheck = 1500; ORGANIZATIONNAME = Tabular; TargetAttributes = {TABiOS_TARGET = {CreatedOnToolsVersion = 15.0; }; }; }; buildConfigurationList = TABiOS_PROJECT_CONFIG_LIST; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, ); mainGroup = TABiOS_GROUP_ROOT; productRefGroup = TABiOS_GROUP_PRODUCTS; projectDirPath = ""; projectRoot = ""; targets = (TABiOS_TARGET, ); };
+		TABiOS_PROJECT /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				ORGANIZATIONNAME = Tabular;
+				TargetAttributes = {
+					TABiOS_TARGET = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = TABiOS_PROJECT_CONFIG_LIST /* Build configuration list for PBXProject "TabulariOS" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+			);
+			mainGroup = TABiOS_GROUP_ROOT;
+			productRefGroup = TABiOS_GROUP_PRODUCTS /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				TABiOS_TARGET /* TabulariOS */,
+			);
+		};
 /* End PBXProject section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		TABiOS_SCRIPT_RUST /* Build Rust XCFramework */ = {isa = PBXShellScriptBuildPhase; name = "Build Rust XCFramework"; shellPath = /bin/bash; shellScript = "${PROJECT_DIR}/../scripts/build-rust-xcframework.sh"; };
+		TABiOS_SCRIPT_RUST /* Build Rust XCFramework */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust XCFramework";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "if [ -f \"${PROJECT_DIR}/Generated/Tabular.xcframework/Info.plist\" ]; then\n  echo \"[Rust] Using existing Tabular.xcframework\"\n  exit 0\nfi\nenv -i PATH=\"$PATH\" HOME=\"$HOME\" /bin/bash \"${PROJECT_DIR}/../scripts/build-rust-xcframework.sh\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		TABiOS_SOURCES = {isa = PBXSourcesBuildPhase; files = (TABiOS_APP_MAIN, TABiOS_APP_CONTENT, ); };
+		TABiOS_SOURCES /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				TABiOS_APP_MAIN /* TabulariOSApp.swift in Sources */,
+				TABiOS_APP_CONTENT /* ContentView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		TABiOS_BUILD_DEBUG = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_UIApplicationSceneManifest = YES; INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"; IPHONEOS_DEPLOYMENT_TARGET = 15.0; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; MARKETING_VERSION = 0.0.1; PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 2; OTHER_LDFLAGS = "-ObjC"; }; name = Debug; };
-		TABiOS_BUILD_RELEASE = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_UIApplicationSceneManifest = YES; INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"; IPHONEOS_DEPLOYMENT_TARGET = 15.0; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks"; MARKETING_VERSION = 0.0.1; PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 2; OTHER_LDFLAGS = "-ObjC"; }; name = Release; };
-		TABiOS_PROJECT_CONFIG_DEBUG = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };
-		TABiOS_PROJECT_CONFIG_RELEASE = {isa = XCBuildConfiguration; buildSettings = {}; name = Release; };
+		TABiOS_BUILD_DEBUG /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = "$(ARCHS_STANDARD)";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_ENTITLEMENTS = TabulariOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8WP2HU7M3Z;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Generated",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.12.0;
+				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+					"-framework",
+					SystemConfiguration,
+					"-framework",
+					Security,
+					"-framework",
+					CoreFoundation,
+					"-framework",
+					Network,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/FFI/TabularFFI.h;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		TABiOS_BUILD_RELEASE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = "$(ARCHS_STANDARD)";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_ENTITLEMENTS = TabulariOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8WP2HU7M3Z;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Generated",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.12.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+					"-framework",
+					SystemConfiguration,
+					"-framework",
+					Security,
+					"-framework",
+					CoreFoundation,
+					"-framework",
+					Network,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/FFI/TabularFFI.h;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		TABiOS_PROJECT_CONFIG_DEBUG /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			};
+			name = Debug;
+		};
+		TABiOS_PROJECT_CONFIG_RELEASE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		TABiOS_CONFIG_LIST = {isa = XCConfigurationList; buildConfigurations = (TABiOS_BUILD_DEBUG, TABiOS_BUILD_RELEASE, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		TABiOS_PROJECT_CONFIG_LIST = {isa = XCConfigurationList; buildConfigurations = (TABiOS_PROJECT_CONFIG_DEBUG, TABiOS_PROJECT_CONFIG_RELEASE, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		TABiOS_CONFIG_LIST /* Build configuration list for PBXNativeTarget "TabulariOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				TABiOS_BUILD_DEBUG /* Debug */,
+				TABiOS_BUILD_RELEASE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		TABiOS_PROJECT_CONFIG_LIST /* Build configuration list for PBXProject "TabulariOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				TABiOS_PROJECT_CONFIG_DEBUG /* Debug */,
+				TABiOS_PROJECT_CONFIG_RELEASE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 	};
 	rootObject = TABiOS_PROJECT /* Project object */;

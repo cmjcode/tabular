@@ -8,8 +8,10 @@ IOS_DEVICE=aarch64-apple-ios
 ios_sim_targets=(aarch64-apple-ios-sim)
 # Add x86_64-apple-ios-sim if you still target Intel simulator: rustup target add x86_64-apple-ios
 
+export IPHONEOS_DEPLOYMENT_TARGET=16.0
+
 echo "[Rust][iOS] Building device staticlib"
-cargo build --release --target $IOS_DEVICE
+cargo build --release --target $IOS_DEVICE --lib
 
 device_lib=target/$IOS_DEVICE/release/lib${CRATE_NAME}.a
 if [ ! -f "$device_lib" ]; then echo "Missing device lib"; exit 1; fi
@@ -18,7 +20,7 @@ SIM_LIBS=()
 for T in "${ios_sim_targets[@]}"; do
   echo "[Rust][iOS] Building sim target $T"
   rustup target add "$T" >/dev/null 2>&1 || true
-  cargo build --release --target "$T"
+  cargo build --release --target "$T" --lib
   sim_lib=target/$T/release/lib${CRATE_NAME}.a
   if [ ! -f "$sim_lib" ]; then echo "Missing sim lib for $T"; exit 1; fi
   SIM_LIBS+=("$sim_lib")

@@ -14,9 +14,9 @@ struct ContentView: View {
                         Text(version).font(.system(.body, design: .monospaced))
                     }
                     Button("Run Core (experimental)") {
-                        DispatchQueue.global().async {
+                        DispatchQueue.main.async {
                             let r = tabular_run()
-                            DispatchQueue.main.async { self.runResult = Int(r) }
+                            self.runResult = Int(r)
                         }
                     }
                     if let r = runResult { Text("Run exit code: \(r)").font(.footnote) }
