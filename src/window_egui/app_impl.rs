@@ -721,6 +721,7 @@ impl Tabular {
 
                             if success {
                                 self.connection_errors.remove(&connection_id);
+                                self.record_connection_synced(connection_id);
                                 debug!(
                                     "✅ Background refresh completed successfully for connection {}",
                                     connection_id
@@ -3313,6 +3314,22 @@ impl App for Tabular {
         // egui 0.34: App::update(ctx) became App::ui(ui); the body below is
         // ctx-based (panels via ctx), so rebind ctx from the root Ui.
         let ctx = &root_ui.ctx().clone();
+
+        // Track user interaction for idle detection (> 3 min)
+        let has_user_input = ctx.input(|i| {
+            !i.raw.events.is_empty()
+                || i.pointer.delta() != egui::Vec2::ZERO
+                || i.pointer.any_pressed()
+                || i.pointer.any_down()
+                || i.pointer.any_released()
+        });
+        if has_user_input {
+            self.last_user_interaction = std::time::Instant::now();
+        }
+
+        // Periodically evaluate idle auto-sync (> 3 minutes idle, 1x daily per connection)
+        self.check_idle_and_auto_sync();
+
         // Compute adaptive device UI metrics (touch vs desktop) based on preferences and platform
         let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
         // Ensure theme/style is applied for current `app_theme` and `ui_mode` each frame (idempotent)
@@ -3372,6 +3389,7 @@ impl App for Tabular {
                     }
                     self.sync_account = Some(account);
                 }
+                self.connection_last_synced = res.connection_last_synced;
                 crate::sidebar_database::refresh_connections_tree(self);
                 crate::sidebar_history::refresh_history_tree(self);
                 self.db_init_receiver = None;

@@ -153,9 +153,6 @@ impl super::Tabular {
             }
             node.is_loaded = true;
         }
-
-        // Trigger unified background auto-sync to fetch live databases and schema atomically
-        self.maybe_auto_sync_connection(connection_id);
     }
     pub fn build_connection_structure_from_cache(
         &mut self,
@@ -672,15 +669,19 @@ impl super::Tabular {
                 databases_folder.is_loaded = false;
             }
             None => {
-                // Cache lookup returned None — DB pool not ready or connection never synced.
-                // Trigger auto-sync only in this case.
-                eprintln!("[TREE-LOADER] conn={} CACHE MISS (None)! Triggering auto-sync if not already running", connection_id);
+                // Cache lookup returned None — DB pool not ready or connection never fetched databases.
+                // Fetch databases list in background if not already fetching.
+                eprintln!("[TREE-LOADER] conn={} CACHE MISS (None)! Dispatching FetchDatabases in background", connection_id);
 
-                if !self.refreshing_connections.contains(&connection_id)
-                    && !self.fetching_databases.contains(&connection_id)
+                if !self.fetching_databases.contains(&connection_id)
                     && !self.connection_errors.contains_key(&connection_id)
                 {
-                    self.maybe_auto_sync_connection(connection_id);
+                    if let Some(sender) = &self.background_sender {
+                        self.fetching_databases.insert(connection_id);
+                        let _ = sender.send(models::enums::BackgroundTask::FetchDatabases {
+                            connection_id,
+                        });
+                    }
                 }
 
                 databases_folder.children.clear();

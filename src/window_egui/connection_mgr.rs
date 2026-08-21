@@ -249,31 +249,114 @@ impl super::Tabular {
         }
         None
     }
-    /// Trigger a background schema-cache sync the first time a connection is added or
-    /// opened, so autocomplete suggestions become available without a manual refresh.
-    /// Runs at most once per connection per session and skips API-HTTP (no schema).
-    pub fn maybe_auto_sync_connection(&mut self, connection_id: i64) {
-        let is_http = self
+    /// Check if a connection needs schema sync (e.g. at most once per 24 hours).
+    pub fn should_sync_connection(&self, connection_id: i64) -> bool {
+        let conn = match self.connections.iter().find(|c| c.id == Some(connection_id)) {
+            Some(c) => c,
+            None => return false,
+        };
+
+        // Skip ApiHttp connections (no database tables/schema)
+        if conn.connection_type == models::enums::DatabaseType::ApiHttp {
+            return false;
+        }
+
+        // Check if currently refreshing or pending pool creation
+        if self.refreshing_connections.contains(&connection_id)
+            || self.pending_connection_pools.contains(&connection_id)
+        {
+            return false;
+        }
+
+        // Check if connection was already synced within the last 24 hours
+        if let Some(last_sync) = self.connection_last_synced.get(&connection_id) {
+            let elapsed = chrono::Utc::now().signed_duration_since(*last_sync);
+            if elapsed < chrono::Duration::hours(24) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Record connection sync timestamp both in-memory and persistently in SQLite.
+    pub fn record_connection_synced(&mut self, connection_id: i64) {
+        let now = chrono::Utc::now();
+        self.connection_last_synced.insert(connection_id, now);
+
+        if let Some(pool) = &self.db_pool {
+            let pool = pool.clone();
+            let now_str = now.to_rfc3339();
+            let rt = self.get_runtime();
+            rt.spawn(async move {
+                let _ = sqlx::query(
+                    r#"INSERT INTO connection_sync_cache (connection_id, last_synced_at)
+                       VALUES (?, ?)
+                       ON CONFLICT(connection_id)
+                       DO UPDATE SET last_synced_at = excluded.last_synced_at"#,
+                )
+                .bind(connection_id)
+                .bind(now_str)
+                .execute(pool.as_ref())
+                .await;
+            });
+        }
+    }
+
+    /// Check if the application is idle (> 3 minutes without user activity)
+    /// and trigger background schema sync for connections that haven't synced in the last 24h.
+    pub fn check_idle_and_auto_sync(&mut self) {
+        const IDLE_DURATION: std::time::Duration = std::time::Duration::from_secs(180); // 3 minutes
+        const CHECK_THROTTLE: std::time::Duration = std::time::Duration::from_secs(15); // check every 15s when idle
+
+        if self.last_user_interaction.elapsed() < IDLE_DURATION {
+            return;
+        }
+
+        if self.last_idle_sync_check.elapsed() < CHECK_THROTTLE {
+            return;
+        }
+        self.last_idle_sync_check = std::time::Instant::now();
+
+        // If any connection is currently refreshing, wait for it to finish before starting another
+        if !self.refreshing_connections.is_empty() {
+            return;
+        }
+
+        // Find the first eligible connection that needs daily sync
+        let candidate_id = self
             .connections
             .iter()
-            .find(|c| c.id == Some(connection_id))
-            .map(|c| c.connection_type == models::enums::DatabaseType::ApiHttp)
-            .unwrap_or(true);
-        // insert() returns false if it was already present → already synced this session
-        let already = self.auto_synced_connections.contains(&connection_id);
-        autosync_log(&format!(
-            "[AUTO-SYNC] maybe_auto_sync_connection id={} is_http={} already_synced={} background_sender={}",
-            connection_id, is_http, already, self.background_sender.is_some()
-        ));
-        if is_http || !self.auto_synced_connections.insert(connection_id) {
+            .filter_map(|c| c.id)
+            .find(|&id| self.should_sync_connection(id));
+
+        if let Some(conn_id) = candidate_id {
+            autosync_log(&format!(
+                "[IDLE-SYNC] App idle for {}s. Starting background 24h table sync for connection id={}",
+                self.last_user_interaction.elapsed().as_secs(),
+                conn_id
+            ));
+            self.refreshing_connections.insert(conn_id);
+            if let Some(sender) = &self.background_sender {
+                if let Err(e) = sender.send(models::enums::BackgroundTask::RefreshConnection { connection_id: conn_id }) {
+                    autosync_log(&format!("[IDLE-SYNC] Failed to queue RefreshConnection task for id={}: {}", conn_id, e));
+                    self.refreshing_connections.remove(&conn_id);
+                }
+            } else {
+                self.refreshing_connections.remove(&conn_id);
+            }
+        }
+    }
+
+    /// Trigger a background schema-cache sync if the connection needs sync (e.g. on new connection add).
+    pub fn maybe_auto_sync_connection(&mut self, connection_id: i64) {
+        if !self.should_sync_connection(connection_id) {
             return;
         }
         autosync_log(&format!(
-            "[AUTO-SYNC] triggering background cache sync for id={} (badge should show)",
+            "[AUTO-SYNC] triggering background cache sync for id={}",
             connection_id
         ));
-        // Warm the schema cache in the background WITHOUT clearing existing cache pre-emptively.
-        // The SQLite cache will be updated atomically only after successful server fetch.
         self.refreshing_connections.insert(connection_id);
         if let Some(sender) = &self.background_sender {
             if let Err(e) =
@@ -281,14 +364,11 @@ impl super::Tabular {
             {
                 autosync_log(&format!("[AUTO-SYNC] Failed to send background auto-sync task for id={}: {}", connection_id, e));
                 self.refreshing_connections.remove(&connection_id);
-                cache_data::fetch_and_cache_connection_data(self, connection_id);
             } else {
                 autosync_log(&format!("[AUTO-SYNC] SUCCESSFULLY sent RefreshConnection task to background_sender for id={}", connection_id));
             }
         } else {
-            autosync_log(&format!("[AUTO-SYNC] background_sender is NONE for id={}!", connection_id));
             self.refreshing_connections.remove(&connection_id);
-            cache_data::fetch_and_cache_connection_data(self, connection_id);
         }
     }
 

@@ -121,6 +121,12 @@ pub struct Tabular {
     pub pending_auto_load: std::collections::HashSet<i64>,
     // Connections already auto-synced (schema cache) this session, so we don't re-sync on every open
     pub auto_synced_connections: std::collections::HashSet<i64>,
+    // Last user interaction time for idle sync detection (> 3 min)
+    pub last_user_interaction: std::time::Instant,
+    // Last time idle auto-sync was checked
+    pub last_idle_sync_check: std::time::Instant,
+    // Last sync timestamp per connection
+    pub connection_last_synced: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>>,
     // Query tab system
     pub query_tabs: Vec<models::structs::QueryTab>,
     pub active_tab_index: usize,

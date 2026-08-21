@@ -477,6 +477,10 @@ async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
             constraint_name TEXT NOT NULL DEFAULT '',\
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,\
             UNIQUE(connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name))",
+        "CREATE TABLE IF NOT EXISTS connection_sync_cache (\
+            connection_id INTEGER PRIMARY KEY,\
+            last_synced_at DATETIME NOT NULL,\
+            FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE)",
     ];
     let mut all_ok = true;
     for stmt in &creates {

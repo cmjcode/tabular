@@ -793,10 +793,6 @@ impl super::Tabular {
              }
         }
 
-        // Connections opened (expanded) this frame — auto-sync their schema cache
-        // after the borrow on `nodes` is released (below), so suggestions get warm.
-        let mut connections_just_opened: Vec<i64> = Vec::new();
-
         // Handle expansions after rendering
         for expansion_req in expansion_requests {
             match expansion_req.node_type {
@@ -815,7 +811,6 @@ impl super::Tabular {
                                 expansion_req.connection_id,
                                 connection_node,
                             );
-                            connections_just_opened.push(expansion_req.connection_id);
                         }
                     } else {
                         debug!(
@@ -996,12 +991,6 @@ impl super::Tabular {
                     debug!("Unhandled node type: {:?}", expansion_req.node_type);
                 }
             }
-        }
-
-        // Warm the schema cache for connections opened this frame (once per session).
-        // Done here — after the `nodes` borrow above is released — to avoid reentrancy.
-        for connection_id in connections_just_opened {
-            self.maybe_auto_sync_connection(connection_id);
         }
 
         // Handle table column expansions

@@ -1251,6 +1251,7 @@ pub struct DatabaseInitResult {
     pub team_members: std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
     pub shared_folders_cache: Vec<crate::sync::api_client::RemoteSharedFolder>,
     pub sync_account: Option<crate::sync::TabularAccount>,
+    pub connection_last_synced: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>>,
 }
 
 pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
@@ -1325,6 +1326,7 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
             CREATE TABLE IF NOT EXISTS index_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, index_name TEXT NOT NULL, method TEXT NULL, is_unique INTEGER NOT NULL DEFAULT 0, columns_json TEXT NOT NULL DEFAULT '[]', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name, index_name));
             CREATE TABLE IF NOT EXISTS partition_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, partition_name TEXT NOT NULL, partition_type TEXT NULL, partition_expression TEXT NULL, subpartition_type TEXT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name, partition_name));
             CREATE TABLE IF NOT EXISTS foreign_key_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, column_name TEXT NOT NULL, referenced_table_name TEXT NOT NULL, referenced_column_name TEXT NOT NULL, constraint_name TEXT NOT NULL DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name));
+            CREATE TABLE IF NOT EXISTS connection_sync_cache (connection_id INTEGER PRIMARY KEY, last_synced_at DATETIME NOT NULL, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE);
             "#
         ).execute(&pool).await;
 
@@ -1476,6 +1478,29 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
     let shared_folders_cache = rt.block_on(crate::sync::sync_teams_cache::load_shared_folders_from_cache(&pool));
     let sync_account = crate::sync::api_client::load_account();
 
+    // Load connection_sync_cache
+    let connection_last_synced: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>> = rt.block_on(async {
+        let rows = sqlx::query_as::<_, (i64, String)>("SELECT connection_id, last_synced_at FROM connection_sync_cache")
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+        let mut map = std::collections::HashMap::new();
+        for (id, ts_str) in rows {
+            let dt_opt = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .ok()
+                .or_else(|| {
+                    chrono::NaiveDateTime::parse_from_str(&ts_str, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                        .ok()
+                });
+            if let Some(dt) = dt_opt {
+                map.insert(id, dt);
+            }
+        }
+        map
+    });
+
     crate::log_startup_step("initialize_database_background completed");
     Some(DatabaseInitResult {
         db_pool: Arc::new(pool),
@@ -1486,6 +1511,7 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
         team_members,
         shared_folders_cache,
         sync_account,
+        connection_last_synced,
     })
 }
 
@@ -1791,6 +1817,19 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     .execute(&pool)
                     .await;
 
+                    // Create connection sync cache table
+                    let create_sync_cache_result = sqlx::query(
+                        r#"
+                        CREATE TABLE IF NOT EXISTS connection_sync_cache (
+                            connection_id INTEGER PRIMARY KEY,
+                            last_synced_at DATETIME NOT NULL,
+                            FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE
+                        )
+                        "#
+                    )
+                    .execute(&pool)
+                    .await;
+
                     // Log exactly which table(s) failed instead of a vague message.
                     let mut startup_corruption_detected = false;
                     for (name, res) in [
@@ -1803,6 +1842,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                         ("index_cache", &create_index_cache_result),
                         ("partition_cache", &create_partition_cache_result),
                         ("fk_cache", &create_fk_cache_result),
+                        ("sync_cache", &create_sync_cache_result),
                     ] {
                         if let Err(e) = res {
                             warn!("Failed to create/verify table '{}': {}", name, e);
@@ -1875,6 +1915,27 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
             }
             if !shares.is_empty() {
                 tabular.shared_folders_cache = shares;
+            }
+
+            // Load connection sync timestamps
+            let rows = rt.block_on(async {
+                sqlx::query_as::<_, (i64, String)>("SELECT connection_id, last_synced_at FROM connection_sync_cache")
+                    .fetch_all(pool.as_ref())
+                    .await
+                    .unwrap_or_default()
+            });
+            for (id, ts_str) in rows {
+                let dt_opt = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .ok()
+                    .or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(&ts_str, "%Y-%m-%d %H:%M:%S")
+                            .map(|ndt| ndt.and_utc())
+                            .ok()
+                    });
+                if let Some(dt) = dt_opt {
+                    tabular.connection_last_synced.insert(id, dt);
+                }
             }
         }
         crate::log_startup_step("initialize_database completed successfully");
