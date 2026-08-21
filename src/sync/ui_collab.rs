@@ -2,9 +2,9 @@
 //!
 //! Renders as a floating panel or a sidebar section when user is in collab mode.
 
-use eframe::egui;
-use crate::window_egui::Tabular;
 use super::{CollabRoom, crdt_editor};
+use crate::window_egui::Tabular;
+use eframe::egui;
 
 /// Render the collab panel (call from sidebar or floating window)
 pub fn render_collab_panel(tabular: &mut Tabular, ctx: &egui::Context) {
@@ -61,10 +61,21 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
         ui.group(|ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(72, 199, 116)).small());
-                ui.label(egui::RichText::new(format!("Room: {}", room_id)).small().strong());
+                ui.label(
+                    egui::RichText::new("●")
+                        .color(egui::Color32::from_rgb(72, 199, 116))
+                        .small(),
+                );
+                ui.label(
+                    egui::RichText::new(format!("Room: {}", room_id))
+                        .small()
+                        .strong(),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(crate::window_egui::style::btn_danger_ctx(ui.ctx(), "Leave")).clicked() {
+                    if ui
+                        .add(crate::window_egui::style::btn_danger_ctx(ui.ctx(), "Leave"))
+                        .clicked()
+                    {
                         disconnect_requested = true;
                     }
                 });
@@ -94,25 +105,36 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     // ── Create & Refresh room row ───────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+        let row_h = if metrics.is_touch { 34.0 } else { 28.0 };
+        let btn_w = if metrics.is_touch { 32.0 } else { 28.0 };
+        let refresh_w = if metrics.is_touch { 32.0 } else { 28.0 };
 
-        let avail_width = ui.available_width();
-        let btn_width = 24.0;
-        let refresh_width = 24.0;
-        let input_width = (avail_width - btn_width - refresh_width - 16.0).max(40.0);
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+        ui.spacing_mut().interact_size.y = row_h;
+
+        let total_avail = (ui.available_width() - 8.0).max(60.0);
+        let spacing_total = ui.spacing().item_spacing.x * 2.0;
+        let input_w = (total_avail - btn_w - refresh_w - spacing_total).max(40.0);
 
         ui.add_sized(
-            [input_width, 24.0],
+            [input_w, row_h],
             egui::TextEdit::singleline(&mut tabular.new_collab_room_name)
                 .hint_text("Room name…")
+                .desired_width(input_w)
+                .margin(egui::Margin::symmetric(6, 4))
+                .vertical_align(egui::Align::Center),
         );
 
         let can_create = !tabular.new_collab_room_name.trim().is_empty();
-        let create_btn = egui::Button::new(egui::RichText::new("+").strong()).corner_radius(4.0);
-        let create_resp = ui.add_enabled_ui(can_create, |ui| {
-            ui.add_sized([btn_width, 24.0], create_btn)
-        }).inner;
+        let create_btn = egui::Button::new(
+            egui::RichText::new("+").size(if metrics.is_touch { 16.0 } else { 14.0 }).strong()
+        )
+        .min_size(egui::vec2(btn_w, row_h))
+        .corner_radius(egui::CornerRadius::same(5));
+
+        let create_resp = ui.add_enabled(can_create, create_btn);
         let create_resp = if can_create {
             create_resp.on_hover_text("Create room")
         } else {
@@ -122,10 +144,16 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             create_room(tabular);
         }
 
-        if ui.add_sized(
-            [refresh_width, 24.0],
-            egui::Button::new(egui::RichText::new("🔄").small()).corner_radius(4.0)
-        ).on_hover_text("Refresh room list").clicked() {
+        let refresh_btn = egui::Button::new(
+            egui::RichText::new("🔄").size(if metrics.is_touch { 15.0 } else { 13.0 })
+        )
+        .min_size(egui::vec2(refresh_w, row_h))
+        .corner_radius(egui::CornerRadius::same(5));
+
+        if ui.add(refresh_btn)
+            .on_hover_text("Refresh room list")
+            .clicked()
+        {
             refresh_rooms(tabular);
         }
     });
@@ -135,7 +163,11 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     // ── Room list ─────────────────────────────────────────────────────────
     if tabular.collab_rooms.is_empty() {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("No rooms yet. Create one to start collaborating.").small().weak());
+        ui.label(
+            egui::RichText::new("No rooms yet. Create one to start collaborating.")
+                .small()
+                .weak(),
+        );
     } else {
         let rooms = tabular.collab_rooms.clone();
         for room in &rooms {
@@ -143,29 +175,36 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(&room.name).small().strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
                             .on_hover_text("Delete room")
                             .clicked()
                         {
                             delete_room(tabular, &room.id);
                         }
 
-                        let is_current = tabular.crdt_state
+                        let is_current = tabular
+                            .crdt_state
                             .as_ref()
                             .map(|c| c.room_id == room.id)
                             .unwrap_or(false);
 
                         if is_current {
-                            ui.label(egui::RichText::new("● Connected").color(egui::Color32::from_rgb(72, 199, 116)).small());
+                            ui.label(
+                                egui::RichText::new("● Connected")
+                                    .color(egui::Color32::from_rgb(72, 199, 116))
+                                    .small(),
+                            );
                         } else if ui.small_button("Join").clicked() {
                             join_room(tabular, room);
                         }
                     });
                 });
                 if let Some(desc) = &room.description
-                    && !desc.is_empty() {
-                        ui.label(egui::RichText::new(desc).small().weak());
-                    }
+                    && !desc.is_empty()
+                {
+                    ui.label(egui::RichText::new(desc).small().weak());
+                }
             });
             ui.add_space(2.0);
         }
@@ -191,13 +230,20 @@ pub fn render_sidebar_collab_section(tabular: &mut Tabular, ui: &mut egui::Ui) {
     };
 
     let header_text = if session_expired {
-        egui::RichText::new(header_title).strong().size(12.0).color(egui::Color32::from_rgb(255, 170, 0))
+        egui::RichText::new(header_title)
+            .strong()
+            .size(12.0)
+            .color(egui::Color32::from_rgb(255, 170, 0))
     } else {
         egui::RichText::new(header_title).strong().size(12.0)
     };
 
     let id = ui.make_persistent_id("sidebar_collab_accordion");
-    let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, session_expired);
+    let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        id,
+        session_expired,
+    );
     let is_open_before = state.is_open();
 
     let header_res = state
@@ -228,7 +274,8 @@ pub fn join_room(tabular: &mut Tabular, room: &CollabRoom) {
         old.disconnect();
     }
 
-    let display_name = account.display_name
+    let display_name = account
+        .display_name
         .clone()
         .unwrap_or_else(|| account.email.clone());
 
@@ -288,7 +335,10 @@ pub fn delete_room(tabular: &mut Tabular, room_id: &str) {
     let room_id_clone = room_id.to_string();
     super::spawn_async(async move {
         let client = super::api_client::ApiClient::new(&server);
-        let result = client.delete_room(&token, &room_id_clone).await.map(|_| room_id_clone);
+        let result = client
+            .delete_room(&token, &room_id_clone)
+            .await
+            .map(|_| room_id_clone);
         let _ = tx.send(result);
     });
 

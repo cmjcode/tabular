@@ -66,25 +66,36 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     // ── Create & Refresh Team row ─────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+        let row_h = if metrics.is_touch { 34.0 } else { 28.0 };
+        let btn_w = if metrics.is_touch { 32.0 } else { 28.0 };
+        let refresh_w = if metrics.is_touch { 32.0 } else { 28.0 };
 
-        let avail_width = ui.available_width();
-        let btn_width = 26.0;
-        let refresh_width = 26.0;
-        let row_h = 28.0;
-        let input_width = (avail_width - btn_width - refresh_width - 12.0).max(40.0);
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+        ui.spacing_mut().interact_size.y = row_h;
+
+        let total_avail = (ui.available_width() - 8.0).max(60.0);
+        let spacing_total = ui.spacing().item_spacing.x * 2.0;
+        let input_w = (total_avail - btn_w - refresh_w - spacing_total).max(40.0);
 
         ui.add_sized(
-            [input_width, row_h],
-            egui::TextEdit::singleline(&mut tabular.new_team_name).hint_text("Team name…"),
+            [input_w, row_h],
+            egui::TextEdit::singleline(&mut tabular.new_team_name)
+                .hint_text("Team name…")
+                .desired_width(input_w)
+                .margin(egui::Margin::symmetric(6, 4))
+                .vertical_align(egui::Align::Center),
         );
 
         let can_create = !tabular.new_team_name.trim().is_empty();
-        let create_btn = egui::Button::new(egui::RichText::new("+").strong()).corner_radius(egui::CornerRadius::same(4));
-        let create_resp = ui
-            .add_enabled_ui(can_create, |ui| ui.add_sized([btn_width, row_h], create_btn))
-            .inner;
+        let create_btn = egui::Button::new(
+            egui::RichText::new("+").size(if metrics.is_touch { 16.0 } else { 14.0 }).strong()
+        )
+        .min_size(egui::vec2(btn_w, row_h))
+        .corner_radius(egui::CornerRadius::same(5));
 
+        let create_resp = ui.add_enabled(can_create, create_btn);
         let create_resp = if can_create {
             create_resp.on_hover_text("Create Team")
         } else {
@@ -95,11 +106,13 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             create_team(tabular);
         }
 
-        if ui
-            .add_sized(
-                [refresh_width, row_h],
-                egui::Button::new(egui::RichText::new("🔄").small()).corner_radius(egui::CornerRadius::same(4)),
-            )
+        let refresh_btn = egui::Button::new(
+            egui::RichText::new("🔄").size(if metrics.is_touch { 15.0 } else { 13.0 })
+        )
+        .min_size(egui::vec2(refresh_w, row_h))
+        .corner_radius(egui::CornerRadius::same(5));
+
+        if ui.add(refresh_btn)
             .on_hover_text("Refresh Teams")
             .clicked()
         {
@@ -136,17 +149,18 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             let is_open_before = team_state.is_open();
 
             let team_res = team_state.show_header(ui, |ui| {
-                ui.label(egui::RichText::new(team_header_text).strong().size(13.0));
-                if is_owner {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(team_header_text).strong().size(13.0));
+                    if is_owner {
+                        ui.add_space(2.0);
                         if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
                             .on_hover_text("Delete Team")
                             .clicked()
                         {
                             delete_team(tabular, &team.id);
                         }
-                    });
-                }
+                    }
+                });
             }).body(|ui| {
                 ui.indent(format!("team_body_{}", team.id), |ui| {
                     if let Some(desc) = &team.description
@@ -168,11 +182,17 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut open_add_dialog = false;
                     members_state.show_header(ui, |ui| {
-                        ui.label(egui::RichText::new(members_header_title).strong().small());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add_sized([20.0, 18.0], egui::Button::new(egui::RichText::new("+").size(11.0).strong()).corner_radius(egui::CornerRadius::same(3)))
-                                .on_hover_text("Tambah Member (Popup)")
-                                .clicked()
+                        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(members_header_title).strong().small());
+                            ui.add_space(2.0);
+                            if ui.add_sized(
+                                [18.0, 18.0],
+                                egui::Button::new(egui::RichText::new("+").size(11.0).strong())
+                                    .corner_radius(egui::CornerRadius::same(3)),
+                            )
+                            .on_hover_text("Tambah Member (Popup)")
+                            .clicked()
                             {
                                 open_add_dialog = true;
                             }
@@ -194,14 +214,13 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                             ui.label(egui::RichText::new(format!("[{}]", m.role)).small().weak());
 
                                             if is_owner && m.user_id != account.user_id {
-                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                    if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
-                                                        .on_hover_text("Remove member")
-                                                        .clicked()
-                                                    {
-                                                        remove_team_member(tabular, &team.id, &m.user_id);
-                                                    }
-                                                });
+                                                ui.add_space(2.0);
+                                                if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
+                                                    .on_hover_text("Remove member")
+                                                    .clicked()
+                                                {
+                                                    remove_team_member(tabular, &team.id, &m.user_id);
+                                                }
                                             }
                                         });
                                     }
@@ -237,11 +256,17 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut add_share_clicked = false;
                     shares_state.show_header(ui, |ui| {
-                        ui.label(egui::RichText::new(shares_header_title).strong().small());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add_sized([20.0, 18.0], egui::Button::new(egui::RichText::new("+").size(11.0).strong()).corner_radius(egui::CornerRadius::same(3)))
-                                .on_hover_text("Share Folder (Connection/Query/HTTP)")
-                                .clicked()
+                        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(shares_header_title).strong().small());
+                            ui.add_space(2.0);
+                            if ui.add_sized(
+                                [18.0, 18.0],
+                                egui::Button::new(egui::RichText::new("+").size(11.0).strong())
+                                    .corner_radius(egui::CornerRadius::same(3)),
+                            )
+                            .on_hover_text("Share Folder (Connection/Query/HTTP)")
+                            .clicked()
                             {
                                 add_share_clicked = true;
                             }
@@ -253,15 +278,24 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             } else {
                                 for sf in &team_shares {
                                     ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(format!("📁 [{}] {}", sf.resource_type.to_uppercase(), sf.folder_path)).small());
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        let icon = match sf.resource_type.as_str() {
+                                            "connection" => "🔌",
+                                            "query" => "📝",
+                                            "http" => "🌐",
+                                            _ => "📁",
+                                        };
+                                        ui.label(egui::RichText::new(format!("{} {}", icon, sf.folder_path)).small());
+                                        ui.label(egui::RichText::new(format!("({})", sf.resource_type)).small().weak());
+
+                                        if is_owner {
+                                            ui.add_space(2.0);
                                             if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
                                                 .on_hover_text("Unshare folder")
                                                 .clicked()
                                             {
                                                 unshare_folder_action(tabular, &team.id, &sf.id);
                                             }
-                                        });
+                                        }
                                     });
                                 }
                             }
@@ -292,11 +326,17 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
                     let mut add_room_clicked = false;
                     rooms_state.show_header(ui, |ui| {
-                        ui.label(egui::RichText::new(rooms_header_title).strong().small());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add_sized([20.0, 18.0], egui::Button::new(egui::RichText::new("+").size(11.0).strong()).corner_radius(egui::CornerRadius::same(3)))
-                                .on_hover_text("Buat Room baru untuk Team ini")
-                                .clicked()
+                        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(rooms_header_title).strong().small());
+                            ui.add_space(2.0);
+                            if ui.add_sized(
+                                [18.0, 18.0],
+                                egui::Button::new(egui::RichText::new("+").size(11.0).strong())
+                                    .corner_radius(egui::CornerRadius::same(3)),
+                            )
+                            .on_hover_text("Buat Room baru untuk Team ini")
+                            .clicked()
                             {
                                 add_room_clicked = true;
                             }
@@ -309,25 +349,26 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                 for r in &team_rooms {
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(format!("☁ {}", r.name)).small());
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if is_owner {
+                                            ui.add_space(2.0);
                                             if ui.add(egui::Button::new(egui::RichText::new("🗑").small()).frame(false))
                                                 .on_hover_text("Delete room")
                                                 .clicked()
                                             {
                                                 super::ui_collab::delete_room(tabular, &r.id);
                                             }
+                                        }
 
-                                            let is_current = tabular.crdt_state
-                                                .as_ref()
-                                                .map(|c| c.room_id == r.id)
-                                                .unwrap_or(false);
+                                        let is_current = tabular.crdt_state
+                                            .as_ref()
+                                            .map(|c| c.room_id == r.id)
+                                            .unwrap_or(false);
 
-                                            if is_current {
-                                                ui.label(egui::RichText::new("● Connected").color(egui::Color32::from_rgb(72, 199, 116)).small());
-                                            } else if ui.small_button("Join").clicked() {
-                                                super::ui_collab::join_room(tabular, r);
-                                            }
-                                        });
+                                        if is_current {
+                                            ui.label(egui::RichText::new("● Connected").color(egui::Color32::from_rgb(72, 199, 116)).small());
+                                        } else if ui.small_button("Join").clicked() {
+                                            super::ui_collab::join_room(tabular, r);
+                                        }
                                     });
                                 }
                             }
@@ -539,7 +580,8 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             if let Some((res_type, folder_path)) = &preset_target {
                 ui.label(
-                    egui::RichText::new(format!("Share {} folder:", res_type.to_uppercase())).strong(),
+                    egui::RichText::new(format!("Share {} folder:", res_type.to_uppercase()))
+                        .strong(),
                 );
                 ui.label(
                     egui::RichText::new(folder_path)
@@ -799,22 +841,23 @@ pub fn share_folder_action(
 
         // Local connections in this folder — captured now (sync, on the UI
         // thread) since the spawned task below can't safely borrow `tabular`.
-        let matching_connections: Vec<crate::models::structs::ConnectionConfig> = if resource_type == "connection" {
-            tabular
-                .connections
-                .iter()
-                .filter(|c| {
-                    c.folder
-                        .clone()
-                        .filter(|f| !f.trim().is_empty())
-                        .unwrap_or_else(|| "/".to_string())
-                        == folder_path
-                })
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let matching_connections: Vec<crate::models::structs::ConnectionConfig> =
+            if resource_type == "connection" {
+                tabular
+                    .connections
+                    .iter()
+                    .filter(|c| {
+                        c.folder
+                            .clone()
+                            .filter(|f| !f.trim().is_empty())
+                            .unwrap_or_else(|| "/".to_string())
+                            == folder_path
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         let (tx2, rx2) = std::sync::mpsc::channel();
         super::spawn_async(async move {
@@ -822,10 +865,21 @@ pub fn share_folder_action(
             let mut team_keys = std::collections::HashMap::new();
             let result = async {
                 let key = super::vault_sync::ensure_own_team_key(
-                    &client, &token2, &my_user_id, &vault, &team_id_owned, &mut team_keys,
+                    &client,
+                    &token2,
+                    &my_user_id,
+                    &vault,
+                    &team_id_owned,
+                    &mut team_keys,
                 )
                 .await?;
-                super::vault_sync::grant_pending_team_key_envelopes(&client, &token2, &team_id_owned, &key).await?;
+                super::vault_sync::grant_pending_team_key_envelopes(
+                    &client,
+                    &token2,
+                    &team_id_owned,
+                    &key,
+                )
+                .await?;
                 Ok::<_, anyhow::Error>(key)
             }
             .await
@@ -1212,4 +1266,3 @@ fn collect_http_subfolders(
         collect_http_subfolders(&f.children, out);
     }
 }
-

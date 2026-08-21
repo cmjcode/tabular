@@ -1582,7 +1582,7 @@ impl Tabular {
                                     // ── Sub-tabs: Teams / Collaboration ──────────
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 3.0;
-                                        let sub_avail_width = ui.available_width();
+                                        let sub_avail_width = (ui.available_width() - 8.0).max(40.0);
                                         let sub_button_width = (sub_avail_width - 4.0) / 2.0;
                                         let sub_button_height = if metrics.is_touch { 36.0 } else { 30.0 };
                                         let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
