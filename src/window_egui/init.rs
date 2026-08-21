@@ -1089,6 +1089,7 @@ impl super::Tabular {
                                         }
                                     }
                                     Err(err_msg) => {
+                                        eprintln!("[POOL] EnsureConnectionPool id={} error: {}", connection_id, err_msg);
                                         let _ = result_sender_thread.send(models::enums::BackgroundResult::ConnectionFailed {
                                             connection_id,
                                             error_message: err_msg,
@@ -1120,19 +1121,6 @@ impl super::Tabular {
                                 });
 
                                 if let Some(conn) = conn_opt {
-                                    if let Err(e) = crate::connection::pool::check_host_reachability(&conn, 2500) {
-                                        log::warn!("Background FetchTableStructure reachability failed: {}", e);
-                                        let _ = result_sender_thread.send(
-                                            models::enums::BackgroundResult::TableStructureFetched {
-                                                connection_id,
-                                                database_name,
-                                                table_name,
-                                                columns: None,
-                                            },
-                                        );
-                                        return;
-                                    }
-
                                     let cols = crate::connection::fetch_columns_from_database(
                                         connection_id,
                                         &database_name,

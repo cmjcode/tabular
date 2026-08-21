@@ -18,13 +18,13 @@ impl super::Tabular {
             return;
         }
 
-        // 5-second auto-hide timer check for Query Message toast
+        // 3.5-second auto-hide timer check for Query Message toast
         let mut msg_hovered = false;
         if self.show_message_panel && has_message
             && let Some(shown_at) = self.message_shown_at
-            && shown_at.elapsed() < std::time::Duration::from_secs(5)
+            && shown_at.elapsed() < std::time::Duration::from_millis(3500)
         {
-            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
         let is_msg_open = self.show_message_panel && has_message;
@@ -39,134 +39,80 @@ impl super::Tabular {
         let mut format_clicked = false;
         let toast_width = 380.0;
 
-        // 1. MESSAGE TOAST CARD (Anchored at fixed RIGHT_BOTTOM position with slide-up animation)
+        // 1. COMPACT MESSAGE TOAST PILL (Anchored at RIGHT_BOTTOM with subtle slide-up animation)
         if is_msg_open {
             let msg_anim = ctx.animate_value_with_time(egui::Id::new("toast_msg_slide_anim"), 1.0, 0.16);
             let eased_anim = super::style::ease_out_cubic(msg_anim);
-            let y_offset = -44.0 + (1.0 - eased_anim) * 25.0;
+            let y_offset = -44.0 + (1.0 - eased_anim) * 20.0;
 
             let area_resp = egui::Area::new(egui::Id::new("message_toast_overlay"))
                 .order(egui::Order::Foreground)
-                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, y_offset))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.0, y_offset))
                 .show(ctx, |ui| {
                     let container_fill = if ctx.global_style().visuals.dark_mode {
-                        egui::Color32::from_rgb(30, 31, 36)
+                        egui::Color32::from_rgba_premultiplied(24, 26, 32, 240)
                     } else {
-                        egui::Color32::from_rgb(255, 250, 245)
+                        egui::Color32::from_rgba_premultiplied(250, 250, 254, 240)
                     };
                     let stroke_color = if self.query_message_is_error {
                         super::style::theme_danger(ctx)
                     } else {
-                        super::style::theme_accent(ctx)
+                        super::style::theme_accent(ctx).linear_multiply(0.5)
                     };
                     let container_stroke = egui::Stroke::new(1.0, stroke_color);
 
                     egui::Frame::new()
                         .fill(container_fill)
                         .stroke(container_stroke)
-                        .corner_radius(egui::CornerRadius::same(10u8))
-                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .corner_radius(egui::CornerRadius::same(7u8))
+                        .inner_margin(egui::Margin::symmetric(10, 5))
                         .shadow(egui::Shadow {
-                            offset: [0, 4],
-                            blur: 12,
+                            offset: [0, 2],
+                            blur: 8,
                             spread: 0,
-                            color: egui::Color32::from_black_alpha(120),
+                            color: egui::Color32::from_black_alpha(90),
                         })
                         .show(ui, |ui| {
-                            ui.set_min_width(toast_width);
-                            ui.set_max_width(toast_width);
-                            ui.vertical(|ui| {
-                                let (title, title_color) = if self.query_message_is_error {
-                                    ("❌ Error Details", super::style::theme_danger(ctx))
+                            ui.set_max_width(420.0);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+
+                                let icon = if self.query_message_is_error { "❌" } else { "⚡" };
+                                ui.label(egui::RichText::new(icon).size(11.0));
+
+                                let text_color = if self.query_message_is_error {
+                                    super::style::theme_danger(ctx)
                                 } else {
-                                    ("💬 Query Message", super::style::theme_accent(ctx))
+                                    ui.visuals().text_color()
                                 };
 
-                                // Header row with title, copy button, & close button (X) aligned right
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(title)
-                                            .color(title_color)
-                                            .strong(),
-                                    );
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.spacing_mut().item_spacing.x = 4.0;
-                                            if super::style::render_close_icon_button(ui).clicked() {
-                                                close_msg_toast = true;
-                                            }
-                                            if ui.small_button("📋 Copy").on_hover_text("Copy message to clipboard").clicked() {
-                                                ui.ctx().copy_text(self.query_message.clone());
-                                            }
-                                        },
-                                    );
-                                });
+                                ui.label(
+                                    egui::RichText::new(&self.query_message)
+                                        .color(text_color)
+                                        .size(11.5),
+                                );
 
-                                ui.add_space(4.0);
-                                ui.separator();
-                                ui.add_space(4.0);
-
-                                // Scrollable message text box
-                                egui::ScrollArea::vertical()
-                                    .max_height(180.0)
-                                    .show(ui, |ui| {
-                                        if self.query_message_display_buffer != self.query_message {
-                                            self.query_message_display_buffer = self.query_message.clone();
-                                        }
-
-                                        let message_text_id = egui::Id::new("tabular_message_toast_text");
-                                        let text_color = if self.query_message_is_error {
-                                            super::style::theme_danger(ctx)
-                                        } else {
-                                            ui.visuals().text_color()
-                                        };
-                                        let output = egui::TextEdit::multiline(&mut self.query_message_display_buffer)
-                                            .id(message_text_id)
-                                            .desired_width(f32::INFINITY)
-                                            .text_color(text_color)
-                                            .font(egui::TextStyle::Body)
-                                            .frame(egui::Frame::NONE)
-                                            .interactive(true)
-                                            .show(ui);
-
-                                        if output.response.clicked() {
-                                            output.response.request_focus();
-                                        }
-
-                                        output.response.context_menu(|ui| {
-                                            if ui.button("📋 Copy Text").clicked() {
-                                                ui.ctx().copy_text(self.query_message.clone());
-                                                ui.close();
-                                            }
-                                        });
-                                    });
-
-                                // Auto-hide progress bar
-                                if let Some(shown_at) = self.message_shown_at {
-                                    let elapsed = shown_at.elapsed().as_secs_f32();
-                                    if elapsed < 5.0 {
-                                        let remaining_pct = (1.0 - (elapsed / 5.0)).clamp(0.0, 1.0);
-                                        let bar_rect = egui::Rect::from_min_size(
-                                            ui.cursor().min,
-                                            egui::vec2(toast_width * remaining_pct, 2.0),
-                                        );
-                                        ui.painter().rect_filled(
-                                            bar_rect,
-                                            egui::CornerRadius::same(1u8),
-                                            stroke_color.linear_multiply(0.8),
-                                        );
-                                        ui.add_space(2.0);
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    if ui.add(egui::Button::new(egui::RichText::new("✕").size(10.0).weak()).frame(false))
+                                        .on_hover_text("Close")
+                                        .clicked()
+                                    {
+                                        close_msg_toast = true;
                                     }
-                                }
+                                    if ui.add(egui::Button::new(egui::RichText::new("📋").size(11.0).weak()).frame(false))
+                                        .on_hover_text("Copy message")
+                                        .clicked()
+                                    {
+                                        ui.ctx().copy_text(self.query_message.clone());
+                                    }
+                                });
                             });
                         });
                 });
 
             let h = area_resp.response.rect.height();
-            if h > 30.0 {
-                self.message_panel_height = h;
-            }
+            self.message_panel_height = h;
             if area_resp.response.hovered() {
                 msg_hovered = true;
             }
@@ -175,7 +121,7 @@ impl super::Tabular {
         // 2. LINT DETAIL TOAST CARD (Positioned right above Message Toast if Message Toast is open)
         if is_lint_open {
             let lint_y_offset = if is_msg_open {
-                -44.0 - self.message_panel_height.max(70.0) - 8.0
+                -44.0 - self.message_panel_height.max(30.0) - 6.0
             } else {
                 -44.0
             };
@@ -284,11 +230,11 @@ impl super::Tabular {
                 });
         }
 
-        // 5-second auto-hide check for Message Toast
+        // 3.5-second auto-hide check for Message Toast
         if is_msg_open
             && !msg_hovered
             && let Some(shown_at) = self.message_shown_at
-            && shown_at.elapsed() >= std::time::Duration::from_secs(5)
+            && shown_at.elapsed() >= std::time::Duration::from_millis(3500)
         {
             close_msg_toast = true;
         }

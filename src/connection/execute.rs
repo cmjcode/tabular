@@ -159,26 +159,6 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
     let query = job.options.query.clone();
     let dba_special_mode = job.options.dba_special_mode.clone();
 
-    if let Err(reachability_err) =
-        super::pool::check_host_reachability_async(&job.options.connection, 2500).await
-    {
-        return QueryResultMessage {
-            job_id: job.job_id,
-            connection_id,
-            success: false,
-            headers: vec!["Error".to_string()],
-            rows: vec![vec![reachability_err.clone()]],
-            error: Some(reachability_err),
-            duration: start.elapsed(),
-            query,
-            dba_special_mode,
-            ast_debug_sql: None,
-            ast_headers: None,
-            affected_rows: None,
-            column_metadata: None,
-        };
-    }
-
     let outcome = match job.options.connection.connection_type {
         models::enums::DatabaseType::MySQL => {
             execute_mysql_query_job(&job.options, job.connection_pool.clone()).await
@@ -1678,13 +1658,6 @@ pub(crate) fn execute_table_query_sync(
     query: &str,
 ) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     debug!("Executing query synchronously: {}", query);
-
-    if let Err(reachability_err) = super::pool::check_host_reachability(connection, 2500) {
-        return Some((
-            vec!["Error".to_string()],
-            vec![vec![reachability_err]],
-        ));
-    }
 
     let runtime = match &tabular.runtime {
         Some(rt) => rt.clone(),

@@ -170,6 +170,7 @@ fn resolve_addrs_blocking(
 /// Blocking variant, for callers that are genuinely synchronous. Async callers
 /// must use [`check_host_reachability_async`] — this one cannot be cancelled by
 /// `tokio::time::timeout` and would block a runtime worker thread.
+#[allow(dead_code)]
 pub(crate) fn check_host_reachability(
     connection: &models::structs::ConnectionConfig,
     timeout_ms: u64,
@@ -206,6 +207,7 @@ pub(crate) fn check_host_reachability(
 
 /// Async reachability probe. Every step yields, so an enclosing
 /// `tokio::time::timeout` (or a task abort) can actually cancel it.
+#[allow(dead_code)]
 pub(crate) async fn check_host_reachability_async(
     connection: &models::structs::ConnectionConfig,
     timeout_ms: u64,
@@ -393,7 +395,7 @@ pub(crate) fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
 /// so this timeout — and an outer task abort — can genuinely cancel the attempt.
 pub(crate) async fn create_connection_pool_for_config(
     connection: &models::structs::ConnectionConfig,
-) -> Option<models::enums::DatabasePool> {
+) -> Result<models::enums::DatabasePool, String> {
     let attempt = async {
         match tokio::time::timeout(
             CONNECT_TIMEOUT,
@@ -401,14 +403,16 @@ pub(crate) async fn create_connection_pool_for_config(
         )
         .await
         {
-            Ok(pool) => pool,
+            Ok(res) => res,
             Err(_) => {
-                debug!(
-                    "⏰ Connect timed out after {}s for connection {:?}",
+                let msg = format!(
+                    "Connect timed out after {}s for host {}:{}",
                     CONNECT_TIMEOUT.as_secs(),
-                    connection.id
+                    connection.host,
+                    connection.port
                 );
-                None
+                debug!("⏰ {}", msg);
+                Err(msg)
             }
         }
     };
@@ -420,27 +424,19 @@ pub(crate) async fn create_connection_pool_for_config(
     };
 
     tokio::select! {
-        pool = attempt => pool,
+        res = attempt => res,
         _ = wait_for_cancel(flag) => {
             // Dropping `attempt` here tears down the half-open socket instead of
             // leaving it to run to completion in the background.
             debug!("🚫 Connect cancelled for connection {:?}", connection.id);
-            None
+            Err("Percobaan koneksi dibatalkan.".to_string())
         }
     }
 }
 
 async fn create_connection_pool_for_config_inner(
     connection: &models::structs::ConnectionConfig,
-) -> Option<models::enums::DatabasePool> {
-    if let Err(e) = check_host_reachability_async(connection, 2500).await {
-        debug!(
-            "❌ Fast-fail TCP reachability check failed for connection {:?}: {}",
-            connection.id, e
-        );
-        return None;
-    }
-
+) -> Result<models::enums::DatabasePool, String> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
             let (target_host, target_port) = match resolve_connection_target_async(connection).await
@@ -451,7 +447,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for MySQL connection {:?}: {}",
                         connection.id, err
                     );
-                    return None;
+                    return Err(format!("Gagal resolve target host: {}", err));
                 }
             };
             let _encoded_username = modules::url_encode(&connection.username);
@@ -466,8 +462,8 @@ async fn create_connection_pool_for_config_inner(
             for attempt in 1..=2u8 {
                 let start = std::time::Instant::now();
                 let (min_conns, test_before, acquire_secs) = match attempt {
-                    1 => (0u32, false, 5u64),
-                    _ => (1u32, true, 5u64),
+                    1 => (0u32, false, 15u64),
+                    _ => (1u32, true, 15u64),
                 };
 
                 let pool_result = MySqlPoolOptions::new()
@@ -507,7 +503,7 @@ async fn create_connection_pool_for_config_inner(
                             "✅ Created MySQL connection pool (attempt {}, {} ms) for connection {:?}",
                             attempt, elapsed, connection.id
                         );
-                        return Some(models::enums::DatabasePool::MySQL(Arc::new(pool)));
+                        return Ok(models::enums::DatabasePool::MySQL(Arc::new(pool)));
                     }
                     Err(e) => {
                         let elapsed = start.elapsed().as_millis();
@@ -530,8 +526,10 @@ async fn create_connection_pool_for_config_inner(
                     "❌ Failed to create MySQL pool for connection {:?} after retries: {:?}",
                     connection.id, e
                 );
+                Err(format!("MySQL connection failed: {}", e))
+            } else {
+                Err("MySQL connection failed: Unknown error".to_string())
             }
-            None
         }
         models::enums::DatabaseType::PostgreSQL => {
             let (target_host, target_port) = match resolve_connection_target_async(connection).await
@@ -542,7 +540,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for PostgreSQL connection {:?}: {}",
                         connection.id, err
                     );
-                    return None;
+                    return Err(format!("Gagal resolve target host: {}", err));
                 }
             };
             let connection_string = format!(
@@ -557,7 +555,7 @@ async fn create_connection_pool_for_config_inner(
             let pool_result = PgPoolOptions::new()
                 .max_connections(15)
                 .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(10))
+                .acquire_timeout(std::time::Duration::from_secs(15))
                 .idle_timeout(std::time::Duration::from_secs(300))
                 .max_lifetime(std::time::Duration::from_secs(1800))
                 .test_before_acquire(false)
@@ -567,11 +565,11 @@ async fn create_connection_pool_for_config_inner(
             match pool_result {
                 Ok(pool) => {
                     let database_pool = models::enums::DatabasePool::PostgreSQL(Arc::new(pool));
-                    Some(database_pool)
+                    Ok(database_pool)
                 }
                 Err(e) => {
                     debug!("Failed to create PostgreSQL pool: {}", e);
-                    None
+                    Err(format!("PostgreSQL connection failed: {}", e))
                 }
             }
         }
@@ -591,11 +589,11 @@ async fn create_connection_pool_for_config_inner(
             match pool_result {
                 Ok(pool) => {
                     let database_pool = models::enums::DatabasePool::SQLite(Arc::new(pool));
-                    Some(database_pool)
+                    Ok(database_pool)
                 }
                 Err(e) => {
                     debug!("Failed to create SQLite pool: {}", e);
-                    None
+                    Err(format!("SQLite connection failed: {}", e))
                 }
             }
         }
@@ -608,7 +606,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for Redis connection {:?}: {}",
                         connection.id, err
                     );
-                    return None;
+                    return Err(format!("Gagal resolve target host: {}", err));
                 }
             };
             let connection_string = if connection.password.is_empty() {
@@ -632,24 +630,25 @@ async fn create_connection_pool_for_config_inner(
                         Ok(Ok(manager)) => {
                             let database_pool =
                                 models::enums::DatabasePool::Redis(Arc::new(manager));
-                            Some(database_pool)
+                            Ok(database_pool)
                         }
                         Ok(Err(e)) => {
                             debug!("Failed to create Redis connection manager: {}", e);
-                            None
+                            Err(format!("Redis connection failed: {}", e))
                         }
                         Err(_) => {
-                            debug!(
+                            let msg = format!(
                                 "Redis connection manager timed out after {}s",
                                 DRIVER_TIMEOUT.as_secs()
                             );
-                            None
+                            debug!("{}", msg);
+                            Err(msg)
                         }
                     }
                 }
                 Err(e) => {
                     debug!("Failed to create Redis client: {}", e);
-                    None
+                    Err(format!("Redis client initialization failed: {}", e))
                 }
             }
         }
@@ -662,7 +661,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for MongoDB connection {:?}: {}",
                         connection.id, err
                     );
-                    return None;
+                    return Err(format!("Gagal resolve target host: {}", err));
                 }
             };
             let uri = if connection.username.is_empty() {
@@ -689,11 +688,15 @@ async fn create_connection_pool_for_config_inner(
             {
                 Ok(Ok(client)) => {
                     let pool = models::enums::DatabasePool::MongoDB(Arc::new(client));
-                    Some(pool)
+                    Ok(pool)
                 }
-                _ => {
-                    debug!("Failed to create MongoDB client (timeout or error)");
-                    None
+                Ok(Err(e)) => {
+                    debug!("Failed to create MongoDB client: {}", e);
+                    Err(format!("MongoDB connection failed: {}", e))
+                }
+                Err(_) => {
+                    debug!("Failed to create MongoDB client (timeout)");
+                    Err("MongoDB connection timed out after 10s".to_string())
                 }
             }
         }
@@ -706,7 +709,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for MsSQL connection {:?}: {}",
                         connection.id, err
                     );
-                    return None;
+                    return Err(format!("Gagal resolve target host: {}", err));
                 }
             };
 
@@ -727,219 +730,34 @@ async fn create_connection_pool_for_config_inner(
             )
             .await
             {
-                Ok(Ok(pool)) => Some(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
+                Ok(Ok(pool)) => Ok(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
                 Ok(Err(e)) => {
                     debug!("MsSQL pool creation failed: {}", e);
-                    None
+                    Err(format!("MsSQL connection failed: {}", e))
                 }
                 Err(_) => {
-                    debug!(
+                    let msg = format!(
                         "MsSQL pool creation timed out after {}s",
                         DRIVER_TIMEOUT.as_secs()
                     );
-                    None
+                    debug!("{}", msg);
+                    Err(msg)
                 }
             }
         }
         models::enums::DatabaseType::ApiHttp => {
             // API-HTTP connections do not use a database pool
-            None
+            Err("API-HTTP connections do not use a database pool".to_string())
         }
     }
 }
 
 /// Create a database pool (legacy / refresh path). Delegates to create_connection_pool_for_config.
-///
-/// Bounded by [`CONNECT_TIMEOUT`], same as the primary path.
 #[allow(dead_code)]
 pub(crate) async fn create_database_pool(
     connection: &models::structs::ConnectionConfig,
 ) -> Option<models::enums::DatabasePool> {
-    match tokio::time::timeout(CONNECT_TIMEOUT, create_database_pool_inner(connection)).await {
-        Ok(pool) => pool,
-        Err(_) => {
-            debug!(
-                "⏰ Connect (refresh path) timed out after {}s for connection {:?}",
-                CONNECT_TIMEOUT.as_secs(),
-                connection.id
-            );
-            None
-        }
-    }
-}
-
-async fn create_database_pool_inner(
-    connection: &models::structs::ConnectionConfig,
-) -> Option<models::enums::DatabasePool> {
-    match connection.connection_type {
-        models::enums::DatabaseType::MySQL => {
-            return create_connection_pool_for_config(connection).await;
-        }
-        models::enums::DatabaseType::PostgreSQL => {
-            let (target_host, target_port) = match resolve_connection_target_async(connection).await
-            {
-                Ok(tuple) => tuple,
-                Err(err) => {
-                    debug!(
-                        "Failed to resolve connection target for PostgreSQL connection {:?}: {}",
-                        connection.id, err
-                    );
-                    return None;
-                }
-            };
-            let connection_string = format!(
-                "postgresql://{}:{}@{}:{}/{}",
-                connection.username,
-                connection.password,
-                target_host,
-                target_port,
-                connection.database
-            );
-
-            match PgPoolOptions::new()
-                .max_connections(3)
-                .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(10))
-                .idle_timeout(std::time::Duration::from_secs(300))
-                .connect(&connection_string)
-                .await
-            {
-                Ok(pool) => Some(models::enums::DatabasePool::PostgreSQL(Arc::new(pool))),
-                Err(_e) => None,
-            }
-        }
-        models::enums::DatabaseType::SQLite => {
-            let connection_string = format!("sqlite:{}", connection.host);
-
-            match SqlitePoolOptions::new()
-                .max_connections(3)
-                .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(10))
-                .idle_timeout(std::time::Duration::from_secs(300))
-                .connect(&connection_string)
-                .await
-            {
-                Ok(pool) => Some(models::enums::DatabasePool::SQLite(Arc::new(pool))),
-                Err(_e) => None,
-            }
-        }
-        models::enums::DatabaseType::Redis => {
-            let (target_host, target_port) = match resolve_connection_target_async(connection).await
-            {
-                Ok(tuple) => tuple,
-                Err(err) => {
-                    debug!(
-                        "Failed to resolve connection target for Redis connection {:?}: {}",
-                        connection.id, err
-                    );
-                    return None;
-                }
-            };
-            let connection_string = if connection.password.is_empty() {
-                format!("redis://{}:{}", target_host, target_port)
-            } else {
-                format!(
-                    "redis://{}:{}@{}:{}",
-                    connection.username, connection.password, target_host, target_port
-                )
-            };
-
-            match Client::open(connection_string) {
-                Ok(client) => {
-                    match tokio::time::timeout(DRIVER_TIMEOUT, ConnectionManager::new(client)).await
-                    {
-                        Ok(Ok(manager)) => {
-                            Some(models::enums::DatabasePool::Redis(Arc::new(manager)))
-                        }
-                        _ => None,
-                    }
-                }
-                Err(_e) => None,
-            }
-        }
-        models::enums::DatabaseType::MsSQL => {
-            let (target_host, target_port) = match resolve_connection_target_async(connection).await
-            {
-                Ok(tuple) => tuple,
-                Err(err) => {
-                    debug!(
-                        "Failed to resolve connection target for MsSQL connection {:?}: {}",
-                        connection.id, err
-                    );
-                    return None;
-                }
-            };
-
-            let client_config = crate::driver_mssql::mssql_config(
-                &target_host,
-                target_port.parse::<u16>().unwrap_or(1433),
-                &connection.username,
-                &connection.password,
-                Some(&connection.database),
-            );
-
-            match tokio::time::timeout(
-                DRIVER_TIMEOUT,
-                mssql_driver_pool::Pool::builder()
-                    .client_config(client_config)
-                    .max_connections(5) // smaller size for temp/check connections
-                    .build(),
-            )
-            .await
-            {
-                Ok(Ok(pool)) => Some(models::enums::DatabasePool::MsSQL(Arc::new(pool))),
-                Ok(Err(e)) => {
-                    debug!("MsSQL temp pool creation failed: {}", e);
-                    None
-                }
-                Err(_) => {
-                    debug!(
-                        "MsSQL temp pool creation timed out after {}s",
-                        DRIVER_TIMEOUT.as_secs()
-                    );
-                    None
-                }
-            }
-        }
-        models::enums::DatabaseType::MongoDB => {
-            let (target_host, target_port) = match resolve_connection_target_async(connection).await
-            {
-                Ok(tuple) => tuple,
-                Err(err) => {
-                    debug!(
-                        "Failed to resolve connection target for MongoDB connection {:?}: {}",
-                        connection.id, err
-                    );
-                    return None;
-                }
-            };
-            let uri = if connection.username.is_empty() {
-                format!("mongodb://{}:{}", target_host, target_port)
-            } else if connection.password.is_empty() {
-                format!(
-                    "mongodb://{}@{}:{}",
-                    connection.username, target_host, target_port
-                )
-            } else {
-                let enc_user = modules::url_encode(&connection.username);
-                let enc_pass = modules::url_encode(&connection.password);
-                format!(
-                    "mongodb://{}:{}@{}:{}",
-                    enc_user, enc_pass, target_host, target_port
-                )
-            };
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                MongoClient::with_uri_str(uri),
-            )
-            .await
-            {
-                Ok(Ok(client)) => Some(models::enums::DatabasePool::MongoDB(Arc::new(client))),
-                _ => None,
-            }
-        }
-        models::enums::DatabaseType::ApiHttp => None,
-    }
+    create_connection_pool_for_config(connection).await.ok()
 }
 
 /// Try to create pool quickly (with short timeout); returns None if it times out.
@@ -960,7 +778,7 @@ async fn try_quick_pool_creation(
     .await;
 
     match result {
-        Ok(pool) => pool,
+        Ok(res) => res.ok(),
         Err(_) => {
             debug!(
                 "⚡ Quick creation timed out for connection {}, will try in background",
@@ -1146,13 +964,14 @@ pub(crate) async fn create_connection_pool_by_id(
     };
 
     match create_connection_pool_for_config(&connection).await {
-        Some(pool) => Ok(pool),
-        // Distinguish a deliberate cancel from a genuine failure, so the sidebar
-        // doesn't tell the user to check credentials they never got to use.
-        None if connect_was_cancelled(connection_id) => {
-            Err("Percobaan koneksi dibatalkan.".to_string())
+        Ok(pool) => Ok(pool),
+        Err(err) => {
+            if connect_was_cancelled(connection_id) {
+                Err("Percobaan koneksi dibatalkan.".to_string())
+            } else {
+                Err(err)
+            }
         }
-        None => Err("Failed to connect to database server. Please check host, port, credentials, or network.".to_string()),
     }
 }
 
@@ -1198,7 +1017,7 @@ pub(crate) fn start_background_pool_creation(tabular: &mut Tabular, connection_i
             );
 
             match create_connection_pool_for_config(&connection).await {
-                Some(pool) => {
+                Ok(pool) => {
                     debug!(
                         "✅ Background: Successfully created pool for connection {}",
                         connection_id
@@ -1207,10 +1026,10 @@ pub(crate) fn start_background_pool_creation(tabular: &mut Tabular, connection_i
                         shared_pools.insert(connection_id, pool);
                     }
                 }
-                None => {
+                Err(err) => {
                     debug!(
-                        "❌ Background: Failed to create pool for connection {}",
-                        connection_id
+                        "❌ Background: Failed to create pool for connection {}: {}",
+                        connection_id, err
                     );
                 }
             }

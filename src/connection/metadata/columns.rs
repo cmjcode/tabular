@@ -10,11 +10,6 @@ pub(crate) fn fetch_columns_from_database(
     table_name: &str,
     connection: &models::structs::ConnectionConfig,
 ) -> Option<Vec<(String, String)>> {
-    if let Err(e) = crate::connection::pool::check_host_reachability(connection, 2000) {
-        debug!("Fast-fail in fetch_columns_from_database: {}", e);
-        return None;
-    }
-
     let rt = tokio::runtime::Runtime::new().ok()?;
 
     let connection_clone = connection.clone();
