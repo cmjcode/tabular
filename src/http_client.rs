@@ -1,9 +1,9 @@
-use std::sync::{Arc, Mutex, mpsc};
-use eframe::egui;
 use crate::models::structs::{
-    HttpClientState, HttpClientResponse,
-    HttpMethod, HttpBodyType, HttpAuthType, HttpRequestTab, HttpResponseTab, CodeLang,
+    CodeLang, HttpAuthType, HttpBodyType, HttpClientResponse, HttpClientState, HttpMethod,
+    HttpRequestTab, HttpResponseTab,
 };
+use eframe::egui;
+use std::sync::{Arc, Mutex, mpsc};
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
@@ -156,9 +156,7 @@ fn render_url_bar(
 
     let bar_h = if metrics.is_touch { 36.0 } else { 28.0 };
     let method_w = if metrics.is_touch { 92.0 } else { 78.0 };
-    let send_w = if metrics.is_touch { 88.0 } else { 76.0 };
-    let save_w = if metrics.is_touch { 88.0 } else { 76.0 };
-    let code_w = if metrics.is_touch { 42.0 } else { 36.0 };
+    let send_save_code_w = if metrics.is_touch { 71.0 } else { 61.0 };
     let font_sz = if metrics.is_touch { 14.0 } else { 12.5 };
 
     ui.horizontal(|ui| {
@@ -186,7 +184,7 @@ fn render_url_bar(
             });
 
         // URL input — fills all remaining space so the right buttons align flush to the right
-        let total_right_w = send_w + save_w + code_w;
+        let total_right_w = send_save_code_w + send_save_code_w + send_save_code_w;
         let total_spacing = ui.spacing().item_spacing.x * 4.0;
         let url_w = (ui.available_width() - total_right_w - total_spacing).max(80.0);
         let url_resp = ui.add_sized(
@@ -216,7 +214,7 @@ fn render_url_bar(
             }
         }
 
-        // SEND button — identical height and corner radius as Save and Code
+        // SEND button — identical width, height, and corner radius as Save and Code
         let send_label = if state.is_loading {
             "⏳ Sending"
         } else {
@@ -232,24 +230,28 @@ fn render_url_bar(
         .fill(crate::window_egui::style::theme_accent(ui.ctx()))
         .corner_radius(egui::CornerRadius::same(5));
 
-        let send_resp = ui.add_enabled_ui(can_send, |ui| {
-            ui.add_sized([send_w, bar_h], send_btn)
-        }).inner;
+        let send_resp = ui
+            .add_enabled_ui(can_send, |ui| {
+                ui.add_sized([send_save_code_w, bar_h], send_btn)
+            })
+            .inner;
 
         if send_resp.clicked() {
             execute_request(state);
         }
 
-        // SAVE button — identical height and corner radius as Send and Code
-        let save_btn = ui.add_sized(
-            [save_w, bar_h],
-            egui::Button::new(
-                egui::RichText::new("💾 Save")
-                    .color(ui.visuals().text_color())
-                    .size(font_sz),
+        // SAVE button — identical width, height, and corner radius as Send and Code
+        let save_btn = ui
+            .add_sized(
+                [send_save_code_w, bar_h],
+                egui::Button::new(
+                    egui::RichText::new("💾 Save")
+                        .color(ui.visuals().text_color())
+                        .size(font_sz),
+                )
+                .corner_radius(egui::CornerRadius::same(5)),
             )
-            .corner_radius(egui::CornerRadius::same(5)),
-        ).on_hover_text("Save / Update request (Cmd+S)");
+            .on_hover_text("Save / Update request (Cmd+S)");
 
         if save_btn.clicked() {
             if save_or_update_http_tab(connection_id, state, toasts) {
@@ -257,16 +259,23 @@ fn render_url_bar(
             }
         }
 
-        // CODE button — identical height and corner radius as Send and Save
-        let code_btn = ui.add_sized(
-            [code_w, bar_h],
-            egui::Button::new(
-                egui::RichText::new("</>")
-                    .color(ui.visuals().text_color())
-                    .size(font_sz),
+        // CODE button
+        let code_label = if send_save_code_w >= 60.0 {
+            "</> Code"
+        } else {
+            "</>"
+        };
+        let code_btn = ui
+            .add_sized(
+                [send_save_code_w, bar_h],
+                egui::Button::new(
+                    egui::RichText::new(code_label)
+                        .color(ui.visuals().text_color())
+                        .size(font_sz),
+                )
+                .corner_radius(egui::CornerRadius::same(5)),
             )
-            .corner_radius(egui::CornerRadius::same(5)),
-        ).on_hover_text("Copy request as code (curl, Python, Go, …)");
+            .on_hover_text("Copy request as code (curl, Python, Go, …)");
         if code_btn.clicked() {
             state.show_code_dialog = true;
         }
@@ -355,7 +364,9 @@ fn render_save_dialog(
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let save_btn = egui::Button::new(
-                            egui::RichText::new("Save").color(egui::Color32::WHITE).strong(),
+                            egui::RichText::new("Save")
+                                .color(egui::Color32::WHITE)
+                                .strong(),
                         )
                         .fill(crate::window_egui::style::theme_accent(ui.ctx()));
 
@@ -464,29 +475,28 @@ fn render_code_dialog(
             // reserve their own space via egui's normal layout pass instead.
             let mut code = crate::http_code_export::generate(&state.code_dialog_lang, state);
 
-            egui::Panel::bottom("http_code_dialog_footer")
-                .show(ui, |ui| {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let copy_btn = egui::Button::new(
-                                egui::RichText::new("📋 Copy to Clipboard")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+            egui::Panel::bottom("http_code_dialog_footer").show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let copy_btn = egui::Button::new(
+                            egui::RichText::new("📋 Copy to Clipboard")
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
 
-                            if ui.add(copy_btn).clicked() {
-                                ui.ctx().copy_text(code.clone());
-                                copy_clicked = true;
-                            }
-                            if ui.button("Close").clicked() {
-                                close_requested = true;
-                            }
-                        });
+                        if ui.add(copy_btn).clicked() {
+                            ui.ctx().copy_text(code.clone());
+                            copy_clicked = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close_requested = true;
+                        }
                     });
-                    ui.add_space(6.0);
                 });
+                ui.add_space(6.0);
+            });
 
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -502,13 +512,14 @@ fn render_code_dialog(
 
                 let dark = ui.visuals().dark_mode;
                 let lang_for_highlight = state.code_dialog_lang.clone();
-                let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                    let s = buf.as_str();
-                    let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
-                    let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
-                    job.wrap.max_width = wrap_width;
-                    ui.fonts_mut(|f| f.layout_job(job))
-                };
+                let mut layouter =
+                    move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                        let s = buf.as_str();
+                        let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                        let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
+                        job.wrap.max_width = wrap_width;
+                        ui.fonts_mut(|f| f.layout_job(job))
+                    };
 
                 egui::ScrollArea::both()
                     .id_salt("http_code_preview_scroll")
@@ -551,7 +562,10 @@ pub fn save_or_update_http_tab(
         let mut workspaces = crate::http_collection::load_workspaces();
         let mut updated = false;
 
-        fn update_saved_req(req: &mut crate::http_collection::SavedRequest, state: &HttpClientState) {
+        fn update_saved_req(
+            req: &mut crate::http_collection::SavedRequest,
+            state: &HttpClientState,
+        ) {
             req.url = state.url.clone();
             req.method = state.method.clone();
             req.params = state.params.clone();
@@ -623,7 +637,6 @@ pub fn save_or_update_http_tab(
     }
 }
 
-
 // ─── Request panel (tabs + content) ─────────────────────────────────────────
 
 fn render_request_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
@@ -638,7 +651,11 @@ fn render_request_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
         } else {
             "Headers".to_string()
         };
-        ui.selectable_value(&mut state.active_tab, HttpRequestTab::Headers, headers_label);
+        ui.selectable_value(
+            &mut state.active_tab,
+            HttpRequestTab::Headers,
+            headers_label,
+        );
         ui.selectable_value(&mut state.active_tab, HttpRequestTab::Auth, "Auth");
     });
 
@@ -651,7 +668,10 @@ fn render_request_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
     let is_text_body = matches!(state.active_tab, HttpRequestTab::Body)
         && matches!(
             state.body_type,
-            HttpBodyType::Json | HttpBodyType::Xml | HttpBodyType::GraphQL | HttpBodyType::OtherText
+            HttpBodyType::Json
+                | HttpBodyType::Xml
+                | HttpBodyType::GraphQL
+                | HttpBodyType::OtherText
         );
 
     if is_text_body {
@@ -659,15 +679,11 @@ fn render_request_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
     } else {
         egui::ScrollArea::vertical()
             .id_salt("http_request_scroll")
-            .show(ui, |ui| {
-                match state.active_tab.clone() {
-                    HttpRequestTab::Body => render_body_panel(ui, state),
-                    HttpRequestTab::Params => render_kv_table(ui, &mut state.params, "http_params"),
-                    HttpRequestTab::Headers => {
-                        render_kv_table(ui, &mut state.headers, "http_headers")
-                    }
-                    HttpRequestTab::Auth => render_auth_panel(ui, state),
-                }
+            .show(ui, |ui| match state.active_tab.clone() {
+                HttpRequestTab::Body => render_body_panel(ui, state),
+                HttpRequestTab::Params => render_kv_table(ui, &mut state.params, "http_params"),
+                HttpRequestTab::Headers => render_kv_table(ui, &mut state.headers, "http_headers"),
+                HttpRequestTab::Auth => render_auth_panel(ui, state),
             });
     }
 }
@@ -703,7 +719,11 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 ui.selectable_value(&mut state.body_type, HttpBodyType::GraphQL, "GraphQL");
                 ui.selectable_value(&mut state.body_type, HttpBodyType::Xml, "XML");
                 ui.selectable_value(&mut state.body_type, HttpBodyType::OtherText, "Raw Text");
-                ui.selectable_value(&mut state.body_type, HttpBodyType::BinaryFile, "Binary File");
+                ui.selectable_value(
+                    &mut state.body_type,
+                    HttpBodyType::BinaryFile,
+                    "Binary File",
+                );
             });
     });
 
@@ -748,12 +768,9 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
             let dark = ui.visuals().dark_mode;
             let body_type_cap = state.body_type.clone();
-            let mut layouter = move |ui: &egui::Ui,
-                                     buf: &dyn egui::TextBuffer,
-                                     wrap_width: f32| {
+            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
                 let s = buf.as_str();
-                let font_id =
-                    ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
                 let mut job = match &body_type_cap {
                     HttpBodyType::Json => highlight_body_json(s, dark, font_id),
                     HttpBodyType::GraphQL => highlight_body_graphql(s, dark, font_id),
@@ -798,35 +815,38 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 let ctx = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("http_req_beautify_overlay"))
                     .order(egui::Order::Foreground)
-                    .fixed_pos(egui::pos2(panel_rect.right() - 28.0, panel_rect.bottom() - 28.0))
+                    .fixed_pos(egui::pos2(
+                        panel_rect.right() - 28.0,
+                        panel_rect.bottom() - 28.0,
+                    ))
                     .show(&ctx, |ui| {
-                    let btn = ui.add_sized(
-                        [22.0, 22.0],
-                        egui::Button::new(
-                            egui::RichText::new("⚡")
-                                .color(crate::window_egui::style::theme_accent(ui.ctx())),
-                        )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::NONE),
-                    );
-                    if btn.clicked() {
-                        match state.body_type {
-                            HttpBodyType::Json | HttpBodyType::GraphQL => {
-                                if let Some(pretty) = beautify_json(&state.body_text) {
-                                    state.body_text = pretty;
+                        let btn = ui.add_sized(
+                            [22.0, 22.0],
+                            egui::Button::new(
+                                egui::RichText::new("⚡")
+                                    .color(crate::window_egui::style::theme_accent(ui.ctx())),
+                            )
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE),
+                        );
+                        if btn.clicked() {
+                            match state.body_type {
+                                HttpBodyType::Json | HttpBodyType::GraphQL => {
+                                    if let Some(pretty) = beautify_json(&state.body_text) {
+                                        state.body_text = pretty;
+                                    }
                                 }
-                            }
-                            HttpBodyType::Xml => {
-                                let pretty = beautify_xml(&state.body_text);
-                                if !pretty.is_empty() {
-                                    state.body_text = pretty;
+                                HttpBodyType::Xml => {
+                                    let pretty = beautify_xml(&state.body_text);
+                                    if !pretty.is_empty() {
+                                        state.body_text = pretty;
+                                    }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
-                    }
-                    btn.on_hover_text("Beautify body");
-                });
+                        btn.on_hover_text("Beautify body");
+                    });
             }
         }
     }
@@ -834,11 +854,7 @@ fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
 
 // ─── Key-Value table (params / headers / form data) ─────────────────────────
 
-fn render_kv_table(
-    ui: &mut egui::Ui,
-    rows: &mut Vec<(String, String, bool)>,
-    id: &str,
-) {
+fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id: &str) {
     let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
         ui.ctx(),
         crate::config::UiModePreference::Auto,
@@ -858,8 +874,14 @@ fn render_kv_table(
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = row_h;
         ui.add_space(checkbox_w + spacing);
-        ui.add_sized([field_w, row_h], egui::Label::new(egui::RichText::new("Key").strong().size(font_sz)));
-        ui.add_sized([field_w, row_h], egui::Label::new(egui::RichText::new("Value").strong().size(font_sz)));
+        ui.add_sized(
+            [field_w, row_h],
+            egui::Label::new(egui::RichText::new("Key").strong().size(font_sz)),
+        );
+        ui.add_sized(
+            [field_w, row_h],
+            egui::Label::new(egui::RichText::new("Value").strong().size(font_sz)),
+        );
     });
     ui.separator();
 
@@ -915,11 +937,14 @@ fn render_kv_table(
 
     ui.add_space(4.0);
     let add_btn_w = if metrics.is_touch { 110.0 } else { 90.0 };
-    if ui.add_sized(
-        [add_btn_w, row_h],
-        egui::Button::new(egui::RichText::new("+ Add row").size(font_sz).strong())
-            .corner_radius(egui::CornerRadius::same(5)),
-    ).clicked() {
+    if ui
+        .add_sized(
+            [add_btn_w, row_h],
+            egui::Button::new(egui::RichText::new("+ Add row").size(font_sz).strong())
+                .corner_radius(egui::CornerRadius::same(5)),
+        )
+        .clicked()
+    {
         rows.push(("".to_string(), "".to_string(), true));
     }
 }
@@ -1050,7 +1075,10 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
         | HttpAuthType::NtlmAuth => {
             ui.colored_label(
                 ui.style().visuals.weak_text_color(),
-                format!("{:?} authentication is not yet implemented.", state.auth_type),
+                format!(
+                    "{:?} authentication is not yet implemented.",
+                    state.auth_type
+                ),
             );
         }
     }
@@ -1082,7 +1110,10 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
     // Status bar
     ui.horizontal(|ui| {
         if let Some(err) = &state.response_error {
-            ui.colored_label(crate::window_egui::style::theme_danger(ui.ctx()), format!("Error: {}", err));
+            ui.colored_label(
+                crate::window_egui::style::theme_danger(ui.ctx()),
+                format!("Error: {}", err),
+            );
         } else if let Some(status) = state.response_status {
             let color = if status < 300 {
                 crate::window_egui::style::theme_success(ui.ctx())
@@ -1091,7 +1122,10 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
             } else {
                 crate::window_egui::style::theme_danger(ui.ctx())
             };
-            ui.colored_label(color, format!("Status: {} {}", status, state.response_status_text));
+            ui.colored_label(
+                color,
+                format!("Status: {} {}", status, state.response_status_text),
+            );
         }
 
         if let Some(ms) = state.response_time_ms {
@@ -1132,16 +1166,13 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 .map(|(_, v)| v.to_lowercase())
                 .unwrap_or_default();
             let is_json = content_type.contains("json");
-            let is_xml  = content_type.contains("xml") || content_type.contains("html");
+            let is_xml = content_type.contains("xml") || content_type.contains("html");
 
             // ── Syntax-highlighted editor, fills remaining height ──────
             let dark = ui.visuals().dark_mode;
-            let mut layouter = move |ui: &egui::Ui,
-                                     buf: &dyn egui::TextBuffer,
-                                     wrap_width: f32| {
+            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
                 let s = buf.as_str();
-                let font_id =
-                    ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
                 let mut job = if is_json {
                     highlight_body_json(s, dark, font_id)
                 } else if is_xml {
@@ -1192,31 +1223,34 @@ fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 let ctx = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("http_resp_beautify_overlay"))
                     .order(egui::Order::Foreground)
-                    .fixed_pos(egui::pos2(panel_rect.right() - 28.0, panel_rect.bottom() - 28.0))
+                    .fixed_pos(egui::pos2(
+                        panel_rect.right() - 28.0,
+                        panel_rect.bottom() - 28.0,
+                    ))
                     .show(&ctx, |ui| {
-                    let btn = ui.add_sized(
-                        [22.0, 22.0],
-                        egui::Button::new(
-                            egui::RichText::new("⚡")
-                                .color(crate::window_egui::style::theme_accent(ui.ctx())),
-                        )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::NONE),
-                    );
-                    if btn.clicked() {
-                        if is_json {
-                            if let Some(pretty) = beautify_json(&state.response_body) {
-                                state.response_body = pretty;
-                            }
-                        } else {
-                            let pretty = beautify_xml(&state.response_body);
-                            if !pretty.is_empty() {
-                                state.response_body = pretty;
+                        let btn = ui.add_sized(
+                            [22.0, 22.0],
+                            egui::Button::new(
+                                egui::RichText::new("⚡")
+                                    .color(crate::window_egui::style::theme_accent(ui.ctx())),
+                            )
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE),
+                        );
+                        if btn.clicked() {
+                            if is_json {
+                                if let Some(pretty) = beautify_json(&state.response_body) {
+                                    state.response_body = pretty;
+                                }
+                            } else {
+                                let pretty = beautify_xml(&state.response_body);
+                                if !pretty.is_empty() {
+                                    state.response_body = pretty;
+                                }
                             }
                         }
-                    }
-                    btn.on_hover_text("Beautify response body");
-                });
+                        btn.on_hover_text("Beautify response body");
+                    });
             }
         }
         HttpResponseTab::Headers => {
@@ -1354,10 +1388,9 @@ fn execute_request(state: &mut HttpClientState) {
                 HttpAuthType::BasicAuth => {
                     req_builder = req_builder.basic_auth(&basic_user, Some(&basic_pass));
                 }
-                HttpAuthType::ApiKey
-                    if api_key_in_header && !api_key_name.is_empty() => {
-                        req_builder = req_builder.header(api_key_name.as_str(), api_key_value.as_str());
-                    }
+                HttpAuthType::ApiKey if api_key_in_header && !api_key_name.is_empty() => {
+                    req_builder = req_builder.header(api_key_name.as_str(), api_key_value.as_str());
+                }
                 _ => {}
             }
 
@@ -1373,9 +1406,7 @@ fn execute_request(state: &mut HttpClientState) {
                     .header("Content-Type", "application/json")
                     .body(body_text.clone()),
                 HttpBodyType::OtherText => req_builder.body(body_text.clone()),
-                HttpBodyType::UrlEncoded => {
-                    req_builder.form(&form_data)
-                }
+                HttpBodyType::UrlEncoded => req_builder.form(&form_data),
                 HttpBodyType::MultiPart => {
                     let mut form = reqwest::multipart::Form::new();
                     for (k, v) in form_data {
@@ -1397,12 +1428,7 @@ fn execute_request(state: &mut HttpClientState) {
                     let resp_headers: Vec<(String, String)> = response
                         .headers()
                         .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.to_string(),
-                                v.to_str().unwrap_or("<binary>").to_string(),
-                            )
-                        })
+                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<binary>").to_string()))
                         .collect();
                     let body = response.text().await.unwrap_or_default();
                     let time_ms = start.elapsed().as_millis();
@@ -1446,8 +1472,8 @@ fn apply_response(state: &mut HttpClientState, resp: HttpClientResponse) {
         state.response_error = None;
         state.response_status = Some(resp.status);
         state.response_status_text = resp.status_text;
-        state.response_body = maybe_beautify_json_response(&resp.headers, &resp.body)
-            .unwrap_or(resp.body);
+        state.response_body =
+            maybe_beautify_json_response(&resp.headers, &resp.body).unwrap_or(resp.body);
         state.response_headers = resp.headers;
     }
     state.response_time_ms = Some(resp.time_ms);
@@ -1587,29 +1613,33 @@ fn xml_tag_end(input: &str) -> usize {
 /// JSON syntax highlighter.
 /// Colors: cyan = keys, green = string values, orange = numbers,
 ///         purple = true/false/null, gray = punctuation.
-fn highlight_body_json(
-    text: &str,
-    dark: bool,
-    font_id: egui::FontId,
-) -> egui::text::LayoutJob {
-    use egui::{text::LayoutJob, Color32, TextFormat};
+fn highlight_body_json(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+    use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
-    let key_col   = Color32::from_rgb(130, 200, 255); // cyan   – keys
-    let str_col   = Color32::from_rgb(152, 195, 121); // green  – string values
-    let num_col   = Color32::from_rgb(209, 154, 102); // orange – numbers
-    let kw_col    = Color32::from_rgb(198, 120, 221); // purple – true/false/null
+    let key_col = Color32::from_rgb(130, 200, 255); // cyan   – keys
+    let str_col = Color32::from_rgb(152, 195, 121); // green  – string values
+    let num_col = Color32::from_rgb(209, 154, 102); // orange – numbers
+    let kw_col = Color32::from_rgb(198, 120, 221); // purple – true/false/null
     let punct_col = Color32::from_rgb(171, 178, 191); // gray   – brackets/commas
-    let norm_col  = if dark { Color32::from_rgb(220, 220, 220) } else { Color32::from_rgb(30, 30, 30) };
+    let norm_col = if dark {
+        Color32::from_rgb(220, 220, 220)
+    } else {
+        Color32::from_rgb(30, 30, 30)
+    };
 
     macro_rules! tf {
         ($c:expr) => {
-            TextFormat { font_id: font_id.clone(), color: $c, ..Default::default() }
+            TextFormat {
+                font_id: font_id.clone(),
+                color: $c,
+                ..Default::default()
+            }
         };
     }
 
     let bs = text.as_bytes();
-    let n  = bs.len();
+    let n = bs.len();
     let mut i = 0;
 
     while i < n {
@@ -1619,48 +1649,86 @@ fn highlight_body_json(
                 let start = i;
                 i += 1;
                 while i < n {
-                    if bs[i] == b'\\' { i += 2; continue; }
-                    if bs[i] == b'"'  { i += 1; break; }
+                    if bs[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bs[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
                     i += 1;
                 }
                 // look-ahead: if next non-ws char is ':', this is an object key
                 let mut k = i;
-                while k < n && bs[k].is_ascii_whitespace() { k += 1; }
-                let color = if k < n && bs[k] == b':' { key_col } else { str_col };
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(color)); }
+                while k < n && bs[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                let color = if k < n && bs[k] == b':' {
+                    key_col
+                } else {
+                    str_col
+                };
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(color));
+                }
             }
             // ── positive number ─────────────────────────────────────────
             b'0'..=b'9' => {
                 let start = i;
-                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.' || bs[i] == b'e' || bs[i] == b'E') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+                while i < n
+                    && (bs[i].is_ascii_digit() || bs[i] == b'.' || bs[i] == b'e' || bs[i] == b'E')
+                {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(num_col));
+                }
             }
             // ── negative number ─────────────────────────────────────────
             b'-' if i + 1 < n && bs[i + 1].is_ascii_digit() => {
                 let start = i;
                 i += 1;
-                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.' || bs[i] == b'e' || bs[i] == b'E') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+                while i < n
+                    && (bs[i].is_ascii_digit() || bs[i] == b'.' || bs[i] == b'e' || bs[i] == b'E')
+                {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(num_col));
+                }
             }
             // ── keyword (true / false / null) ───────────────────────────
             b'a'..=b'z' | b'A'..=b'Z' => {
                 let start = i;
-                while i < n && bs[i].is_ascii_alphanumeric() { i += 1; }
+                while i < n && bs[i].is_ascii_alphanumeric() {
+                    i += 1;
+                }
                 let word = text.get(start..i).unwrap_or("");
-                let col  = if matches!(word, "true" | "false" | "null") { kw_col } else { norm_col };
+                let col = if matches!(word, "true" | "false" | "null") {
+                    kw_col
+                } else {
+                    norm_col
+                };
                 job.append(word, 0.0, tf!(col));
             }
             // ── structural punctuation ──────────────────────────────────
             b'{' | b'}' | b'[' | b']' | b':' | b',' => {
-                if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+                if let Some(s) = text.get(i..i + 1) {
+                    job.append(s, 0.0, tf!(punct_col));
+                }
                 i += 1;
             }
             // ── whitespace / other ──────────────────────────────────────
             _ => {
                 let start = i;
                 i += 1;
-                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(norm_col)); }
+                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(norm_col));
+                }
             }
         }
     }
@@ -1671,40 +1739,49 @@ fn highlight_body_json(
 /// Colors: blue = tag names, light-blue = attr names, green = attr values,
 ///         gray = punctuation, muted-green = comments, yellow = CDATA,
 ///         purple = processing instructions.
-fn highlight_body_xml(
-    text: &str,
-    dark: bool,
-    font_id: egui::FontId,
-) -> egui::text::LayoutJob {
-    use egui::{text::LayoutJob, Color32, TextFormat};
+fn highlight_body_xml(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+    use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
-    let tag_col      = Color32::from_rgb( 86, 156, 214); // blue        – tag names
+    let tag_col = Color32::from_rgb(86, 156, 214); // blue        – tag names
     let attr_key_col = Color32::from_rgb(146, 202, 245); // light blue  – attr names
     let attr_val_col = Color32::from_rgb(152, 195, 121); // green       – attr values
-    let punct_col    = Color32::from_rgb(171, 178, 191); // gray        – <, >, /, =
-    let comment_col  = Color32::from_rgb(106, 153,  85); // muted green – comments
-    let cdata_col    = Color32::from_rgb(220, 220, 170); // pale yellow – CDATA
-    let pi_col       = Color32::from_rgb(198, 120, 221); // purple      – <?...?>
-    let norm_col     = if dark { Color32::from_rgb(220, 220, 220) } else { Color32::from_rgb(30, 30, 30) };
+    let punct_col = Color32::from_rgb(171, 178, 191); // gray        – <, >, /, =
+    let comment_col = Color32::from_rgb(106, 153, 85); // muted green – comments
+    let cdata_col = Color32::from_rgb(220, 220, 170); // pale yellow – CDATA
+    let pi_col = Color32::from_rgb(198, 120, 221); // purple      – <?...?>
+    let norm_col = if dark {
+        Color32::from_rgb(220, 220, 220)
+    } else {
+        Color32::from_rgb(30, 30, 30)
+    };
 
     macro_rules! tf {
         ($c:expr) => {
-            TextFormat { font_id: font_id.clone(), color: $c, ..Default::default() }
+            TextFormat {
+                font_id: font_id.clone(),
+                color: $c,
+                ..Default::default()
+            }
         };
     }
 
     let bs = text.as_bytes();
-    let n  = bs.len();
+    let n = bs.len();
     let mut i = 0;
 
     while i < n {
         if bs[i] != b'<' {
             // ── text content ─────────────────────────────────────────────
             let start = i;
-            while i < n && bs[i] != b'<' { i += 1; }
+            while i < n && bs[i] != b'<' {
+                i += 1;
+            }
             if let Some(s) = text.get(start..i)
-                && !s.is_empty() { job.append(s, 0.0, tf!(norm_col)); }
+                && !s.is_empty()
+            {
+                job.append(s, 0.0, tf!(norm_col));
+            }
             continue;
         }
 
@@ -1713,10 +1790,15 @@ fn highlight_body_xml(
             let start = i;
             i += 4;
             while i < n {
-                if text[i..].starts_with("-->") { i += 3; break; }
+                if text[i..].starts_with("-->") {
+                    i += 3;
+                    break;
+                }
                 i += 1;
             }
-            if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(comment_col)); }
+            if let Some(s) = text.get(start..i) {
+                job.append(s, 0.0, tf!(comment_col));
+            }
             continue;
         }
 
@@ -1725,10 +1807,15 @@ fn highlight_body_xml(
             let start = i;
             i += 9;
             while i < n {
-                if text[i..].starts_with("]]>") { i += 3; break; }
+                if text[i..].starts_with("]]>") {
+                    i += 3;
+                    break;
+                }
                 i += 1;
             }
-            if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(cdata_col)); }
+            if let Some(s) = text.get(start..i) {
+                job.append(s, 0.0, tf!(cdata_col));
+            }
             continue;
         }
 
@@ -1736,29 +1823,45 @@ fn highlight_body_xml(
         job.append("<", 0.0, tf!(punct_col));
         i += 1;
 
-        let is_pi      = i < n && bs[i] == b'?';
+        let is_pi = i < n && bs[i] == b'?';
         let is_closing = i < n && bs[i] == b'/';
         if is_closing || is_pi {
-            if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+            if let Some(s) = text.get(i..i + 1) {
+                job.append(s, 0.0, tf!(punct_col));
+            }
             i += 1;
         }
 
         // tag name
         let name_start = i;
-        while i < n && !bs[i].is_ascii_whitespace() && bs[i] != b'>' && bs[i] != b'/' && bs[i] != b'?' { i += 1; }
+        while i < n
+            && !bs[i].is_ascii_whitespace()
+            && bs[i] != b'>'
+            && bs[i] != b'/'
+            && bs[i] != b'?'
+        {
+            i += 1;
+        }
         if let Some(name) = text.get(name_start..i)
-            && !name.is_empty() {
-                job.append(name, 0.0, tf!(if is_pi { pi_col } else { tag_col }));
-            }
+            && !name.is_empty()
+        {
+            job.append(name, 0.0, tf!(if is_pi { pi_col } else { tag_col }));
+        }
 
         // attributes
         while i < n && bs[i] != b'>' {
             if bs[i].is_ascii_whitespace() {
                 let s = i;
-                while i < n && bs[i].is_ascii_whitespace() { i += 1; }
-                if let Some(ws) = text.get(s..i) { job.append(ws, 0.0, tf!(norm_col)); }
+                while i < n && bs[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if let Some(ws) = text.get(s..i) {
+                    job.append(ws, 0.0, tf!(norm_col));
+                }
             } else if bs[i] == b'/' || bs[i] == b'?' {
-                if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+                if let Some(s) = text.get(i..i + 1) {
+                    job.append(s, 0.0, tf!(punct_col));
+                }
                 i += 1;
             } else if bs[i] == b'=' {
                 job.append("=", 0.0, tf!(punct_col));
@@ -1767,14 +1870,30 @@ fn highlight_body_xml(
                 let q = bs[i];
                 let s = i;
                 i += 1;
-                while i < n && bs[i] != q { i += 1; }
-                if i < n { i += 1; }
-                if let Some(slice) = text.get(s..i) { job.append(slice, 0.0, tf!(attr_val_col)); }
+                while i < n && bs[i] != q {
+                    i += 1;
+                }
+                if i < n {
+                    i += 1;
+                }
+                if let Some(slice) = text.get(s..i) {
+                    job.append(slice, 0.0, tf!(attr_val_col));
+                }
             } else {
                 let s = i;
-                while i < n && bs[i] != b'=' && bs[i] != b'>' && !bs[i].is_ascii_whitespace() && bs[i] != b'/' { i += 1; }
+                while i < n
+                    && bs[i] != b'='
+                    && bs[i] != b'>'
+                    && !bs[i].is_ascii_whitespace()
+                    && bs[i] != b'/'
+                {
+                    i += 1;
+                }
                 if let Some(name) = text.get(s..i)
-                    && !name.is_empty() { job.append(name, 0.0, tf!(attr_key_col)); }
+                    && !name.is_empty()
+                {
+                    job.append(name, 0.0, tf!(attr_key_col));
+                }
             }
         }
 
@@ -1789,31 +1908,35 @@ fn highlight_body_xml(
 /// GraphQL syntax highlighter.
 /// Colors: purple = keywords, green = strings, muted-green = comments,
 ///         orange = types (uppercase), cyan = fields, gray = punctuation.
-fn highlight_body_graphql(
-    text: &str,
-    dark: bool,
-    font_id: egui::FontId,
-) -> egui::text::LayoutJob {
-    use egui::{text::LayoutJob, Color32, TextFormat};
+fn highlight_body_graphql(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+    use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
-    let kw_col      = Color32::from_rgb(198, 120, 221); // purple
-    let str_col     = Color32::from_rgb(152, 195, 121); // green
-    let comment_col = Color32::from_rgb(106, 153,  85); // muted green
-    let type_col    = Color32::from_rgb(230, 180,  80); // orange  – TYPE names
-    let field_col   = Color32::from_rgb(130, 200, 255); // cyan    – field names
-    let num_col     = Color32::from_rgb(209, 154, 102); // orange  – numbers
-    let punct_col   = Color32::from_rgb(171, 178, 191); // gray
-    let norm_col    = if dark { Color32::from_rgb(220, 220, 220) } else { Color32::from_rgb(30, 30, 30) };
+    let kw_col = Color32::from_rgb(198, 120, 221); // purple
+    let str_col = Color32::from_rgb(152, 195, 121); // green
+    let comment_col = Color32::from_rgb(106, 153, 85); // muted green
+    let type_col = Color32::from_rgb(230, 180, 80); // orange  – TYPE names
+    let field_col = Color32::from_rgb(130, 200, 255); // cyan    – field names
+    let num_col = Color32::from_rgb(209, 154, 102); // orange  – numbers
+    let punct_col = Color32::from_rgb(171, 178, 191); // gray
+    let norm_col = if dark {
+        Color32::from_rgb(220, 220, 220)
+    } else {
+        Color32::from_rgb(30, 30, 30)
+    };
 
     macro_rules! tf {
         ($c:expr) => {
-            TextFormat { font_id: font_id.clone(), color: $c, ..Default::default() }
+            TextFormat {
+                font_id: font_id.clone(),
+                color: $c,
+                ..Default::default()
+            }
         };
     }
 
     let bs = text.as_bytes();
-    let n  = bs.len();
+    let n = bs.len();
     let mut i = 0;
 
     while i < n {
@@ -1821,8 +1944,12 @@ fn highlight_body_graphql(
             // ── line comment ────────────────────────────────────────────
             b'#' => {
                 let start = i;
-                while i < n && bs[i] != b'\n' { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(comment_col)); }
+                while i < n && bs[i] != b'\n' {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(comment_col));
+                }
             }
             // ── triple-quoted or regular string ─────────────────────────
             b'"' => {
@@ -1830,35 +1957,56 @@ fn highlight_body_graphql(
                 if text[i..].starts_with("\"\"\"") {
                     i += 3;
                     while i < n {
-                        if text[i..].starts_with("\"\"\"") { i += 3; break; }
+                        if text[i..].starts_with("\"\"\"") {
+                            i += 3;
+                            break;
+                        }
                         i += 1;
                     }
                 } else {
                     i += 1;
                     while i < n {
-                        if bs[i] == b'\\' { i += 2; continue; }
-                        if bs[i] == b'"'  { i += 1; break; }
+                        if bs[i] == b'\\' {
+                            i += 2;
+                            continue;
+                        }
+                        if bs[i] == b'"' {
+                            i += 1;
+                            break;
+                        }
                         i += 1;
                     }
                 }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(str_col)); }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(str_col));
+                }
             }
             // ── number ─────────────────────────────────────────────────
             b'0'..=b'9' => {
                 let start = i;
-                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(num_col));
+                }
             }
             b'-' if i + 1 < n && bs[i + 1].is_ascii_digit() => {
                 let start = i;
                 i += 1;
-                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(num_col));
+                }
             }
             // ── identifier (keyword / type / field) ─────────────────────
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let start = i;
-                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'_') { i += 1; }
+                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'_') {
+                    i += 1;
+                }
                 let word = text.get(start..i).unwrap_or("");
                 let col = if is_graphql_keyword(word) {
                     kw_col
@@ -1871,15 +2019,21 @@ fn highlight_body_graphql(
             }
             // ── punctuation ─────────────────────────────────────────────
             b'{' | b'}' | b'(' | b')' | b'[' | b']' | b':' | b',' | b'!' | b'@' | b'$' | b'.' => {
-                if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+                if let Some(s) = text.get(i..i + 1) {
+                    job.append(s, 0.0, tf!(punct_col));
+                }
                 i += 1;
             }
             // ── whitespace / other ──────────────────────────────────────
             _ => {
                 let start = i;
                 i += 1;
-                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(norm_col)); }
+                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(norm_col));
+                }
             }
         }
     }
@@ -1889,11 +2043,28 @@ fn highlight_body_graphql(
 fn is_graphql_keyword(word: &str) -> bool {
     matches!(
         word,
-        "query" | "mutation" | "subscription" | "fragment" | "on"
-        | "type" | "interface" | "union" | "enum" | "input" | "extend"
-        | "schema" | "scalar" | "directive" | "implements"
-        | "true" | "false" | "null"
-        | "if" | "include" | "skip" | "repeatable"
+        "query"
+            | "mutation"
+            | "subscription"
+            | "fragment"
+            | "on"
+            | "type"
+            | "interface"
+            | "union"
+            | "enum"
+            | "input"
+            | "extend"
+            | "schema"
+            | "scalar"
+            | "directive"
+            | "implements"
+            | "true"
+            | "false"
+            | "null"
+            | "if"
+            | "include"
+            | "skip"
+            | "repeatable"
     )
 }
 
@@ -1912,64 +2083,86 @@ fn highlight_code(
     dark: bool,
     font_id: egui::FontId,
 ) -> egui::text::LayoutJob {
-    use egui::{text::LayoutJob, Color32, TextFormat};
+    use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
-    let str_col     = Color32::from_rgb(152, 195, 121); // green   – strings
-    let comment_col = Color32::from_rgb(106, 153,  85); // muted green – comments
-    let num_col     = Color32::from_rgb(209, 154, 102); // orange  – numbers
-    let kw_col      = Color32::from_rgb(198, 120, 221); // purple  – keywords / curl flags
-    let type_col    = Color32::from_rgb(230, 180,  80); // yellow  – Capitalized identifiers
-    let var_col     = Color32::from_rgb(130, 200, 255); // cyan    – $variables (PHP)
-    let punct_col   = Color32::from_rgb(171, 178, 191); // gray    – punctuation
-    let norm_col    = if dark { Color32::from_rgb(220, 220, 220) } else { Color32::from_rgb(30, 30, 30) };
+    let str_col = Color32::from_rgb(152, 195, 121); // green   – strings
+    let comment_col = Color32::from_rgb(106, 153, 85); // muted green – comments
+    let num_col = Color32::from_rgb(209, 154, 102); // orange  – numbers
+    let kw_col = Color32::from_rgb(198, 120, 221); // purple  – keywords / curl flags
+    let type_col = Color32::from_rgb(230, 180, 80); // yellow  – Capitalized identifiers
+    let var_col = Color32::from_rgb(130, 200, 255); // cyan    – $variables (PHP)
+    let punct_col = Color32::from_rgb(171, 178, 191); // gray    – punctuation
+    let norm_col = if dark {
+        Color32::from_rgb(220, 220, 220)
+    } else {
+        Color32::from_rgb(30, 30, 30)
+    };
 
     macro_rules! tf {
         ($c:expr) => {
-            TextFormat { font_id: font_id.clone(), color: $c, ..Default::default() }
+            TextFormat {
+                font_id: font_id.clone(),
+                color: $c,
+                ..Default::default()
+            }
         };
     }
 
-    let (line_comment, block_comment, keywords): (Option<&str>, Option<(&str, &str)>, &[&str]) = match lang {
-        CodeLang::Curl => (Some("#"), None, &[]),
-        CodeLang::Python => (
-            Some("#"),
-            None,
-            &[
-                "import", "as", "def", "return", "if", "else", "elif", "for", "while", "in",
-                "True", "False", "None", "and", "or", "not", "print",
-            ],
-        ),
-        CodeLang::JavaScript | CodeLang::NodeJs => (
-            Some("//"),
-            Some(("/*", "*/")),
-            &[
-                "const", "let", "var", "function", "return", "new", "require", "then",
-                "catch", "true", "false", "null", "undefined", "async", "await",
-            ],
-        ),
-        CodeLang::Go => (
-            Some("//"),
-            Some(("/*", "*/")),
-            &[
-                "package", "import", "func", "return", "if", "err", "nil", "var", "true",
-                "false", "defer", "struct", "type",
-            ],
-        ),
-        CodeLang::Php => (
-            Some("//"),
-            Some(("/*", "*/")),
-            &["php", "echo", "if", "else", "true", "false", "null"],
-        ),
-        CodeLang::Rust => (
-            Some("//"),
-            Some(("/*", "*/")),
-            &[
-                "use", "fn", "let", "mut", "match", "struct", "impl", "return", "if", "else",
-                "true", "false", "Some", "None", "Ok", "Err", "panic",
-            ],
-        ),
-    };
+    let (line_comment, block_comment, keywords): (Option<&str>, Option<(&str, &str)>, &[&str]) =
+        match lang {
+            CodeLang::Curl => (Some("#"), None, &[]),
+            CodeLang::Python => (
+                Some("#"),
+                None,
+                &[
+                    "import", "as", "def", "return", "if", "else", "elif", "for", "while", "in",
+                    "True", "False", "None", "and", "or", "not", "print",
+                ],
+            ),
+            CodeLang::JavaScript | CodeLang::NodeJs => (
+                Some("//"),
+                Some(("/*", "*/")),
+                &[
+                    "const",
+                    "let",
+                    "var",
+                    "function",
+                    "return",
+                    "new",
+                    "require",
+                    "then",
+                    "catch",
+                    "true",
+                    "false",
+                    "null",
+                    "undefined",
+                    "async",
+                    "await",
+                ],
+            ),
+            CodeLang::Go => (
+                Some("//"),
+                Some(("/*", "*/")),
+                &[
+                    "package", "import", "func", "return", "if", "err", "nil", "var", "true",
+                    "false", "defer", "struct", "type",
+                ],
+            ),
+            CodeLang::Php => (
+                Some("//"),
+                Some(("/*", "*/")),
+                &["php", "echo", "if", "else", "true", "false", "null"],
+            ),
+            CodeLang::Rust => (
+                Some("//"),
+                Some(("/*", "*/")),
+                &[
+                    "use", "fn", "let", "mut", "match", "struct", "impl", "return", "if", "else",
+                    "true", "false", "Some", "None", "Ok", "Err", "panic",
+                ],
+            ),
+        };
 
     let bs = text.as_bytes();
     let n = bs.len();
@@ -1981,8 +2174,12 @@ fn highlight_code(
             && text[i..].starts_with(lc)
         {
             let start = i;
-            while i < n && bs[i] != b'\n' { i += 1; }
-            if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(comment_col)); }
+            while i < n && bs[i] != b'\n' {
+                i += 1;
+            }
+            if let Some(s) = text.get(start..i) {
+                job.append(s, 0.0, tf!(comment_col));
+            }
             continue;
         }
 
@@ -1992,9 +2189,13 @@ fn highlight_code(
         {
             let start = i;
             i += bstart.len();
-            while i < n && !text[i..].starts_with(bend) { i += 1; }
+            while i < n && !text[i..].starts_with(bend) {
+                i += 1;
+            }
             i = (i + bend.len()).min(n);
-            if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(comment_col)); }
+            if let Some(s) = text.get(start..i) {
+                job.append(s, 0.0, tf!(comment_col));
+            }
             continue;
         }
 
@@ -2005,17 +2206,29 @@ fn highlight_code(
                 let start = i;
                 i += 1;
                 while i < n {
-                    if quote != b'`' && bs[i] == b'\\' { i += 2; continue; }
-                    if bs[i] == quote { i += 1; break; }
+                    if quote != b'`' && bs[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bs[i] == quote {
+                        i += 1;
+                        break;
+                    }
                     i += 1;
                 }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(str_col)); }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(str_col));
+                }
             }
             // ── number ────────────────────────────────────────────────
             b'0'..=b'9' => {
                 let start = i;
-                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(num_col)); }
+                while i < n && (bs[i].is_ascii_digit() || bs[i] == b'.') {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(num_col));
+                }
             }
             // ── curl-style flag (-X, --header, …) ────────────────────────
             b'-' if matches!(lang, CodeLang::Curl)
@@ -2024,14 +2237,20 @@ fn highlight_code(
             {
                 let start = i;
                 i += 1;
-                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'-' || bs[i] == b'.') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(kw_col)); }
+                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'-' || bs[i] == b'.') {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(kw_col));
+                }
             }
             // ── identifier / keyword / $variable ─────────────────────────
             b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => {
                 let start = i;
                 i += 1;
-                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'_') { i += 1; }
+                while i < n && (bs[i].is_ascii_alphanumeric() || bs[i] == b'_') {
+                    i += 1;
+                }
                 let word = text.get(start..i).unwrap_or("");
                 let col = if word.starts_with('$') {
                     var_col
@@ -2045,20 +2264,25 @@ fn highlight_code(
                 job.append(word, 0.0, tf!(col));
             }
             // ── punctuation ───────────────────────────────────────────────
-            b'{' | b'}' | b'[' | b']' | b'(' | b')' | b':' | b',' | b';' | b'=' | b'.'
-            | b'<' | b'>' | b'&' | b'|' | b'!' | b'+' | b'*' | b'/' | b'@' | b'#' => {
-                if let Some(s) = text.get(i..i + 1) { job.append(s, 0.0, tf!(punct_col)); }
+            b'{' | b'}' | b'[' | b']' | b'(' | b')' | b':' | b',' | b';' | b'=' | b'.' | b'<'
+            | b'>' | b'&' | b'|' | b'!' | b'+' | b'*' | b'/' | b'@' | b'#' => {
+                if let Some(s) = text.get(i..i + 1) {
+                    job.append(s, 0.0, tf!(punct_col));
+                }
                 i += 1;
             }
             // ── whitespace / other ────────────────────────────────────────
             _ => {
                 let start = i;
                 i += 1;
-                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') { i += 1; }
-                if let Some(s) = text.get(start..i) { job.append(s, 0.0, tf!(norm_col)); }
+                while i < n && matches!(bs[i], b' ' | b'\t' | b'\n' | b'\r') {
+                    i += 1;
+                }
+                if let Some(s) = text.get(start..i) {
+                    job.append(s, 0.0, tf!(norm_col));
+                }
             }
         }
     }
     job
 }
-
