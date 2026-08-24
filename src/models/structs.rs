@@ -1234,6 +1234,73 @@ mod serde_option_pos2 {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FilterOperator {
+    #[default]
+    Equals,
+    NotEquals,
+    Contains,
+    StartsWith,
+    EndsWith,
+    GreaterThan,
+    LessThan,
+    GreaterThanOrEqual,
+    LessThanOrEqual,
+    IsNull,
+    IsNotNull,
+    In,
+}
+
+impl FilterOperator {
+    pub fn label(&self) -> &'static str {
+        match self {
+            FilterOperator::Equals => "= (equals)",
+            FilterOperator::NotEquals => "!= (not equals)",
+            FilterOperator::Contains => "contains (LIKE %...%)",
+            FilterOperator::StartsWith => "starts with (LIKE ...%)",
+            FilterOperator::EndsWith => "ends with (LIKE %...)",
+            FilterOperator::GreaterThan => "> (greater than)",
+            FilterOperator::LessThan => "< (less than)",
+            FilterOperator::GreaterThanOrEqual => ">= (greater or equal)",
+            FilterOperator::LessThanOrEqual => "<= (less or equal)",
+            FilterOperator::IsNull => "IS NULL",
+            FilterOperator::IsNotNull => "IS NOT NULL",
+            FilterOperator::In => "IN (...)",
+        }
+    }
+
+    pub fn all() -> &'static [FilterOperator] {
+        &[
+            FilterOperator::Equals,
+            FilterOperator::NotEquals,
+            FilterOperator::Contains,
+            FilterOperator::StartsWith,
+            FilterOperator::EndsWith,
+            FilterOperator::GreaterThan,
+            FilterOperator::LessThan,
+            FilterOperator::GreaterThanOrEqual,
+            FilterOperator::LessThanOrEqual,
+            FilterOperator::IsNull,
+            FilterOperator::IsNotNull,
+            FilterOperator::In,
+        ]
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct FilterCondition {
+    pub column: String,
+    pub operator: FilterOperator,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct VisualFilterState {
+    pub conditions: Vec<FilterCondition>,
+    pub match_all: bool, // true = AND, false = OR
+    pub is_open: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

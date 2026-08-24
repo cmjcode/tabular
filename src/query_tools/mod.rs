@@ -231,63 +231,11 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
     messages
 }
 
-pub fn format_sql(sql: &str) -> Option<String> {
-    let trimmed = sql.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut tokens = trimmed.split_whitespace().peekable();
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-
-    while let Some(tok) = tokens.next() {
-        let mut token = tok.to_string();
-        let mut upper = token.to_ascii_uppercase();
-        if matches!(
-            upper.as_str(),
-            "LEFT" | "RIGHT" | "INNER" | "OUTER" | "FULL" | "CROSS"
-        ) && let Some(next) = tokens.peek()
-            && next.eq_ignore_ascii_case("JOIN")
-        {
-            let join = tokens.next().unwrap();
-            token = format!("{} {}", tok, join);
-            upper = "JOIN".to_string();
-        }
-
-        let break_before = matches!(
-            upper.as_str(),
-            "SELECT" | "FROM" | "WHERE" | "GROUP" | "ORDER" | "HAVING" | "LIMIT" | "JOIN"
-        );
-
-        if break_before && !current.is_empty() {
-            lines.push(current.trim_end().to_string());
-            current.clear();
-        }
-
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(&token);
-    }
-
-    if !current.trim().is_empty() {
-        lines.push(current.trim_end().to_string());
-    }
-
-    let formatted = lines.join("\n").trim().to_string();
-    if formatted == trimmed {
-        None
-    } else {
-        Some(formatted)
-    }
-}
-
 // Centralized sqlformat options used across the app
 pub fn default_sqlformat_options() -> FormatOptions<'static> {
     FormatOptions {
         joins_as_top_level: true,
-        indent: Indent::Spaces(6),
+        indent: Indent::Spaces(4),
         uppercase: Some(true),
         lines_between_queries: 2,
         inline: false,
@@ -295,5 +243,53 @@ pub fn default_sqlformat_options() -> FormatOptions<'static> {
         max_inline_arguments: Some(40),
         max_inline_top_level: Some(40),
         ..Default::default()
+    }
+}
+
+pub fn format_sql(sql: &str) -> Option<String> {
+    format_sql_with_options(sql, &default_sqlformat_options())
+}
+
+pub fn format_sql_with_options(sql: &str, options: &FormatOptions) -> Option<String> {
+    let trimmed = sql.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let formatted = sqlformat::format(trimmed, &sqlformat::QueryParams::None, options);
+    let trimmed_formatted = formatted.trim();
+
+    if trimmed_formatted.is_empty() || trimmed_formatted == trimmed {
+        None
+    } else {
+        Some(formatted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_sql_basic() {
+        let unformatted = "select a,b from users where a=1 order by b";
+        let formatted = format_sql(unformatted).expect("should format");
+        assert!(formatted.contains("SELECT"));
+        assert!(formatted.contains("FROM"));
+        assert!(formatted.contains("WHERE"));
+        assert!(formatted.contains("ORDER BY"));
+    }
+
+    #[test]
+    fn test_format_sql_joins() {
+        let sql = "select u.id, o.amount from users u left join orders o on u.id = o.user_id where o.amount > 100";
+        let formatted = format_sql(sql).expect("should format");
+        assert!(formatted.contains("LEFT JOIN"));
+    }
+
+    #[test]
+    fn test_format_sql_empty() {
+        assert!(format_sql("   ").is_none());
+        assert!(format_sql("").is_none());
     }
 }

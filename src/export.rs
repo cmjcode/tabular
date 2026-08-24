@@ -292,6 +292,168 @@ pub fn build_sql_inserts(
     out
 }
 
+pub fn export_to_sql_dump(
+    all_table_data: &[Vec<String>],
+    current_table_headers: &[String],
+    current_table_name: &str,
+    db_type: Option<&DatabaseType>,
+    column_metadata: Option<&[crate::models::structs::ColumnMetadata]>,
+    structure_columns: Option<&[crate::models::structs::ColumnStructInfo]>,
+) {
+    let clean_table = current_table_name
+        .trim()
+        .strip_prefix("Table:")
+        .map(str::trim)
+        .unwrap_or(current_table_name.trim())
+        .replace(' ', "_");
+    let default_name = if clean_table.is_empty() {
+        "dump".to_string()
+    } else {
+        clean_table
+    };
+
+    let file_dialog = rfd::FileDialog::new()
+        .add_filter("SQL dump files", &["sql"])
+        .set_file_name(format!("{}_dump.sql", default_name));
+
+    if let Some(path) = file_dialog.save_file() {
+        let sql = build_sql_dump(
+            all_table_data,
+            current_table_headers,
+            current_table_name,
+            db_type,
+            column_metadata,
+            structure_columns,
+        );
+        match std::fs::write(&path, sql) {
+            Ok(_) => debug!(
+                "✓ Successfully exported {} rows as SQL Dump: {:?}",
+                all_table_data.len(),
+                path
+            ),
+            Err(e) => debug!("❌ Failed to export SQL dump: {}", e),
+        }
+    }
+}
+
+pub fn build_sql_dump(
+    all_table_data: &[Vec<String>],
+    headers: &[String],
+    table_caption: &str,
+    db_type: Option<&DatabaseType>,
+    column_metadata: Option<&[crate::models::structs::ColumnMetadata]>,
+    structure_columns: Option<&[crate::models::structs::ColumnStructInfo]>,
+) -> String {
+    let table_name = table_caption
+        .trim()
+        .strip_prefix("Table:")
+        .map(str::trim)
+        .unwrap_or(table_caption.trim())
+        .replace(' ', "_");
+    let table_name = if table_name.is_empty() {
+        "exported_table".to_string()
+    } else {
+        table_name
+    };
+
+    let quote_ident = |s: &str| -> String {
+        match db_type {
+            Some(DatabaseType::MySQL) => format!("`{}`", s.replace('`', "``")),
+            Some(DatabaseType::MsSQL) => format!("[{}]", s.trim_matches(['[', ']'])),
+            _ => format!("\"{}\"", s.replace('"', "\"\"")),
+        }
+    };
+
+    let mut out = String::new();
+    out.push_str("-- --------------------------------------------------------\n");
+    out.push_str(&format!("-- Tabular SQL Dump for table: {}\n", table_name));
+    out.push_str(&format!("-- Exported at: {}\n", chrono::Utc::now().to_rfc3339()));
+    out.push_str("-- --------------------------------------------------------\n\n");
+
+    // 1. DROP TABLE IF EXISTS
+    out.push_str(&format!("DROP TABLE IF EXISTS {};\n\n", quote_ident(&table_name)));
+
+    // 2. CREATE TABLE
+    out.push_str(&format!("CREATE TABLE {} (\n", quote_ident(&table_name)));
+    let mut col_defs = Vec::new();
+
+    if let Some(struct_cols) = structure_columns.filter(|c| !c.is_empty()) {
+        for col in struct_cols {
+            let mut def = format!("  {} {}", quote_ident(&col.name), if col.data_type.is_empty() { "TEXT" } else { &col.data_type });
+            if let Some(nullable) = col.nullable {
+                if !nullable {
+                    def.push_str(" NOT NULL");
+                }
+            }
+            if let Some(ref def_val) = col.default_value {
+                if !def_val.is_empty() {
+                    def.push_str(&format!(" DEFAULT {}", def_val));
+                }
+            }
+            if let Some(ref extra) = col.extra {
+                if !extra.is_empty() {
+                    def.push_str(&format!(" {}", extra));
+                }
+            }
+            col_defs.push(def);
+        }
+    } else if let Some(meta_cols) = column_metadata.filter(|c| !c.is_empty()) {
+        for col in meta_cols {
+            let col_type = if col.type_name.is_empty() { "TEXT" } else { &col.type_name };
+            let mut def = format!("  {} {}", quote_ident(&col.name), col_type);
+            if col.is_primary_key {
+                def.push_str(" PRIMARY KEY");
+            }
+            col_defs.push(def);
+        }
+    } else {
+        // Fallback: infer types from headers and sample data
+        for (i, header) in headers.iter().enumerate() {
+            let mut is_numeric = !all_table_data.is_empty();
+            let mut is_integer = !all_table_data.is_empty();
+            let mut has_values = false;
+
+            for row in all_table_data.iter().take(50) {
+                if let Some(val) = row.get(i) {
+                    let v = val.trim();
+                    if !v.is_empty() && !v.eq_ignore_ascii_case("null") {
+                        has_values = true;
+                        if v.parse::<i64>().is_err() {
+                            is_integer = false;
+                        }
+                        if v.parse::<f64>().is_err() {
+                            is_numeric = false;
+                        }
+                    }
+                }
+            }
+
+            let type_str = if !has_values {
+                "VARCHAR(255)"
+            } else if is_integer {
+                "BIGINT"
+            } else if is_numeric {
+                "NUMERIC"
+            } else {
+                "TEXT"
+            };
+
+            col_defs.push(format!("  {} {}", quote_ident(header), type_str));
+        }
+    }
+
+    out.push_str(&col_defs.join(",\n"));
+    out.push_str("\n);\n\n");
+
+    // 3. INSERTs
+    if !all_table_data.is_empty() {
+        out.push_str(&format!("-- Dumping data for table {}\n", quote_ident(&table_name)));
+        out.push_str(&build_sql_inserts(all_table_data, headers, table_caption, db_type));
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +469,27 @@ mod tests {
         assert!(sql.starts_with("INSERT INTO `users` (`id`, `name`) VALUES"));
         assert!(sql.contains("('1', 'it''s')"));
         assert!(sql.contains("('2', NULL)"));
+    }
+
+    #[test]
+    fn sql_dump_generation() {
+        let data = vec![
+            vec!["1".to_string(), "Alice".to_string()],
+            vec!["2".to_string(), "Bob".to_string()],
+        ];
+        let headers = vec!["id".to_string(), "name".to_string()];
+        let dump = build_sql_dump(
+            &data,
+            &headers,
+            "Table: customers",
+            Some(&DatabaseType::PostgreSQL),
+            None,
+            None,
+        );
+        assert!(dump.contains("DROP TABLE IF EXISTS \"customers\";"));
+        assert!(dump.contains("CREATE TABLE \"customers\" ("));
+        assert!(dump.contains("INSERT INTO \"customers\""));
+        assert!(dump.contains("('1', 'Alice')"));
     }
 
     #[test]

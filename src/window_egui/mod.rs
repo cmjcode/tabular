@@ -512,6 +512,8 @@ pub struct Tabular {
     pub ai_inline_receiver: Option<(u64, usize, usize, std::sync::mpsc::Receiver<Result<String, String>>)>,
     // Centralized, non-blocking toast/notification surface (see notifications.rs)
     pub toasts: notifications::ToastManager,
+    // Visual data filter state for table browsing
+    pub visual_filter: models::structs::VisualFilterState,
     // CSV Import wizard
     pub show_csv_import_dialog: bool,
     pub csv_import_state: Option<models::structs::CsvImportState>,

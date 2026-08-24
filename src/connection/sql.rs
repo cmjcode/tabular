@@ -512,13 +512,19 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
 ///
 /// Honors quoted strings (`'…'`, `"…"`, `` `…` ``) with doubled-quote and
 /// backslash escapes, line comments (`--`, and `#` when `hash_is_comment`
-/// is true — MySQL only, since `#` is an operator elsewhere) and block
-/// comments (`/* … */`). Comments stay part of their statement's text.
+/// Split a SQL script into individual statements on top-level semicolons.
+///
+/// Honors quoted strings (`'…'`, `"…"`, `` `…` ``) with doubled-quote and
+/// backslash escapes, line comments (`--`, and `#` when `hash_is_comment`
+/// is true — MySQL only, since `#` is an operator elsewhere), block
+/// comments (`/* … */`), and PostgreSQL dollar-quoted strings (`$$…$$`, `$tag$…$tag$`).
+/// Comments stay part of their statement's text.
 pub fn split_sql_statements(sql: &str, hash_is_comment: bool) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();
     let mut chars = sql.chars().peekable();
     let mut inside_quote: Option<char> = None;
+    let mut inside_dollar_tag: Option<String> = None;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
 
@@ -535,6 +541,17 @@ pub fn split_sql_statements(sql: &str, hash_is_comment: bool) -> Vec<String> {
             if c == '*' && chars.peek() == Some(&'/') {
                 current.push(chars.next().unwrap());
                 in_block_comment = false;
+            }
+            continue;
+        }
+        if let Some(ref tag) = inside_dollar_tag {
+            current.push(c);
+            if c == '$' {
+                // Check if the closing tag matches
+                let tag_len = tag.len();
+                if current.len() >= tag_len && current.ends_with(tag) {
+                    inside_dollar_tag = None;
+                }
             }
             continue;
         }
@@ -559,6 +576,33 @@ pub fn split_sql_statements(sql: &str, hash_is_comment: bool) -> Vec<String> {
             '\'' | '"' | '`' => {
                 inside_quote = Some(c);
                 current.push(c);
+            }
+            '$' if !hash_is_comment => {
+                // Potential PostgreSQL dollar-quoting tag: $$ or $tag$
+                current.push(c);
+                let mut tag = String::from("$");
+                let mut peek_chars = chars.clone();
+                let mut is_tag = false;
+                while let Some(&next_c) = peek_chars.peek() {
+                    if next_c == '$' {
+                        tag.push('$');
+                        is_tag = true;
+                        break;
+                    } else if next_c.is_ascii_alphanumeric() || next_c == '_' {
+                        tag.push(next_c);
+                        peek_chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if is_tag {
+                    // Consume the rest of the tag from chars
+                    for _ in 1..tag.len() {
+                        let consumed = chars.next().unwrap();
+                        current.push(consumed);
+                    }
+                    inside_dollar_tag = Some(tag);
+                }
             }
             '-' if chars.peek() == Some(&'-') => {
                 current.push(c);
@@ -667,5 +711,20 @@ mod tests {
         // PostgreSQL: '#' is an operator, the semicolon splits normally
         let pg = split_sql_statements("SELECT a # b; SELECT 2", false);
         assert_eq!(pg, vec!["SELECT a # b", "SELECT 2"]);
+    }
+
+    #[test]
+    fn split_postgresql_dollar_quoting() {
+        let pg_func = "CREATE FUNCTION foo() RETURNS void AS $$ BEGIN SELECT 1; SELECT 2; END; $$ LANGUAGE plpgsql; SELECT 3;";
+        let stmts = split_sql_statements(pg_func, false);
+        assert_eq!(stmts.len(), 2);
+        assert!(stmts[0].starts_with("CREATE FUNCTION foo()"));
+        assert!(stmts[0].ends_with("LANGUAGE plpgsql"));
+        assert_eq!(stmts[1], "SELECT 3");
+
+        let tagged = "CREATE FUNCTION bar() RETURNS void AS $BODY$ SELECT ';'; $BODY$; SELECT 4;";
+        let stmts2 = split_sql_statements(tagged, false);
+        assert_eq!(stmts2.len(), 2);
+        assert_eq!(stmts2[1], "SELECT 4");
     }
 }
