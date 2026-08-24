@@ -1,6 +1,25 @@
 use crate::models;
 use log::debug;
 
+/// Render an `ObjectName` back to a plain "db.table" string, ignoring any
+/// quote style (backtick/double-quote/bracket) the parser recorded for each
+/// identifier part. `ObjectName`'s own `Display` impl re-adds the original
+/// quote characters, which caused table names like `` `branches` `` (quoted
+/// in the user's query) to be inferred WITH the backticks still attached —
+/// downstream code that quotes the identifier again (e.g. building
+/// `` ALTER TABLE `{table}` ADD COLUMN ... `` ) then produced a doubled
+/// backtick and a MySQL syntax error.
+fn object_name_plain(name: &sqlparser::ast::ObjectName) -> String {
+    name.0
+        .iter()
+        .map(|part| match part.as_ident() {
+            Some(ident) => ident.value.clone(),
+            None => part.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 /// Infer column origins (which table each column belongs to) from a SQL SELECT query.
 pub(crate) fn infer_column_origins(query: &str) -> (Option<Vec<Option<String>>>, Vec<String>) {
     let dialect = sqlparser::dialect::MySqlDialect {};
@@ -25,7 +44,7 @@ pub(crate) fn infer_column_origins(query: &str) -> (Option<Vec<Option<String>>>,
         for (i, table_with_join) in select.from.iter().enumerate() {
             let relation = &table_with_join.relation;
             if let sqlparser::ast::TableFactor::Table { name, alias, .. } = relation {
-                let real_name = name.to_string();
+                let real_name = object_name_plain(name);
                 if i == 0 {
                     primary_table = Some(real_name.clone());
                 }
@@ -42,7 +61,7 @@ pub(crate) fn infer_column_origins(query: &str) -> (Option<Vec<Option<String>>>,
             }
             for join in &table_with_join.joins {
                 if let sqlparser::ast::TableFactor::Table { name, alias, .. } = &join.relation {
-                    let real_name = name.to_string();
+                    let real_name = object_name_plain(name);
                     table_map.insert(real_name.clone(), real_name.clone());
                     if !all_tables.contains(&real_name) {
                         all_tables.push(real_name.clone());

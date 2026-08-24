@@ -29,6 +29,17 @@ pub mod style;
 pub mod sync_tick;
 pub mod device_profile;
 
+/// A structure-modifying statement (ADD COLUMN, DROP COLUMN, CREATE INDEX, …)
+/// dispatched through the same background query-job pipeline the "Run"
+/// button uses, so it no longer blocks the UI thread while the database
+/// processes it (e.g. waiting on a metadata lock). `on_success` runs once
+/// the job reports success; on failure `error_prefix` is prepended to the
+/// database error and shown in the error dialog instead.
+pub struct PendingStructureJob {
+    pub error_prefix: String,
+    pub on_success: Box<dyn FnOnce(&mut Tabular)>,
+}
+
 pub struct Tabular {
     pub editor: EditorBuffer,
     // Transitional multi-selection model (will move to lapce-core selection)
@@ -105,6 +116,9 @@ pub struct Tabular {
     /// the whole batch (cancelling any member cancels the entire batch).
     pub query_job_batches: Vec<(Vec<u64>, tokio::task::AbortHandle)>,
     pub pending_paginated_jobs: std::collections::HashSet<u64>,
+    /// Structure-editor statements (Add/Drop Column, Create/Drop Index, …)
+    /// running via the background job pipeline. See [`PendingStructureJob`].
+    pub pending_structure_jobs: std::collections::HashMap<u64, PendingStructureJob>,
     pub next_query_job_id: u64,
     // Background refresh status tracking
     pub refreshing_connections: std::collections::HashSet<i64>,

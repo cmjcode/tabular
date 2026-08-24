@@ -1,6 +1,101 @@
 use eframe::egui;
-use crate::{models, window_egui};
+use crate::{connection, models, window_egui};
 use super::{load_structure_info_for_current_table, infer_current_table_name};
+
+/// Run a structure-editing statement (ADD COLUMN, DROP COLUMN, CREATE INDEX,
+/// …) without blocking the UI thread on the database round trip. Previously
+/// these all called `connection::execute_query_with_connection` directly,
+/// which runs on a `tokio` runtime via `block_on` on the UI thread itself —
+/// any slow response (network latency, or MySQL waiting on a metadata lock
+/// for an in-progress transaction on the table) froze the whole app until it
+/// returned or hit its internal timeout.
+///
+/// This dispatches through the same background job pipeline the editor's
+/// "Run" button already uses (see `connection::prepare_query_job` /
+/// `spawn_query_job`), so the UI stays responsive while it runs. `on_success`
+/// fires once the statement succeeds; on failure `error_prefix` is prefixed
+/// to the database error and shown via the normal error dialog. Falls back
+/// to the old synchronous call only if the job can't be prepared/spawned at
+/// all (e.g. no pool cached yet), matching the safety-net pattern already
+/// used for paginated queries.
+fn run_structure_statement(
+    tabular: &mut window_egui::Tabular,
+    conn_id: i64,
+    stmt: String,
+    error_prefix: &str,
+    on_success: impl FnOnce(&mut window_egui::Tabular) + 'static,
+) {
+    let job_id = tabular.next_query_job_id;
+    tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+
+    match connection::prepare_query_job(tabular, conn_id, stmt.clone(), job_id) {
+        Ok(job) => {
+            match connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone()) {
+                Ok(handle) => {
+                    tabular.active_query_jobs.insert(
+                        job_id,
+                        connection::QueryJobStatus {
+                            job_id,
+                            connection_id: conn_id,
+                            query_preview: stmt.chars().take(80).collect(),
+                            started_at: std::time::Instant::now(),
+                            completed: false,
+                        },
+                    );
+                    tabular.active_query_handles.insert(job_id, handle);
+                    tabular.pending_structure_jobs.insert(
+                        job_id,
+                        window_egui::PendingStructureJob {
+                            error_prefix: error_prefix.to_string(),
+                            on_success: Box::new(on_success),
+                        },
+                    );
+                    tabular.query_execution_in_progress = true;
+                    tabular.extend_query_icon_hold();
+                }
+                Err(err) => {
+                    log::debug!(
+                        "⚠️ Failed to spawn structure job ({error_prefix}): {err:?}. Falling back to sync execution."
+                    );
+                    run_structure_statement_sync(tabular, conn_id, stmt, error_prefix, on_success);
+                }
+            }
+        }
+        Err(err) => {
+            log::debug!(
+                "⚠️ Failed to prepare structure job ({error_prefix}): {err:?}. Falling back to sync execution."
+            );
+            run_structure_statement_sync(tabular, conn_id, stmt, error_prefix, on_success);
+        }
+    }
+}
+
+/// Safety-net path for `run_structure_statement`: identical outcome, just
+/// synchronous. Only reached when the background job couldn't be prepared.
+fn run_structure_statement_sync(
+    tabular: &mut window_egui::Tabular,
+    conn_id: i64,
+    stmt: String,
+    error_prefix: &str,
+    on_success: impl FnOnce(&mut window_egui::Tabular),
+) {
+    if let Some((headers, data)) =
+        connection::execute_query_with_connection(tabular, conn_id, stmt)
+    {
+        let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
+        if is_error {
+            let err = data
+                .first()
+                .and_then(|row| row.first())
+                .cloned()
+                .unwrap_or_else(|| "Unknown error".to_string());
+            tabular.error_message = format!("{}: {}", error_prefix, err);
+            tabular.show_error_message = true;
+        } else {
+            on_success(tabular);
+        }
+    }
+}
 
 pub(crate) fn data_types_for_current_conn(tabular: &window_egui::Tabular) -> &'static [&'static str] {
     let conn = tabular
@@ -1618,24 +1713,12 @@ pub(crate) fn commit_edit_column(tabular: &mut window_egui::Tabular) {
         }
     }
     tabular.editing_column = false;
-    // Execute sequentially
-    if let Some((headers, data)) =
-        crate::connection::execute_query_with_connection(tabular, conn_id, full.clone())
-    {
-        let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
-        if is_error {
-            if let Some(row) = data.first()
-                && let Some(err) = row.first()
-            {
-                tabular.error_message = format!("Gagal edit kolom: {}", err);
-                tabular.show_error_message = true;
-            }
-        } else {
-            tabular.request_structure_refresh = true;
-            load_structure_info_for_current_table(tabular);
-            crate::sidebar_database::refresh_connections_tree(tabular);
-        }
-    }
+    // Execute in the background so a slow/locked ALTER doesn't freeze the UI.
+    run_structure_statement(tabular, conn_id, full, "Gagal edit kolom", |tabular| {
+        tabular.request_structure_refresh = true;
+        load_structure_info_for_current_table(tabular);
+        crate::sidebar_database::refresh_connections_tree(tabular);
+    });
 }
 
 pub(crate) fn render_drop_column_confirmation(
@@ -1671,17 +1754,20 @@ pub(crate) fn render_drop_column_confirmation(
                     if let Some(conn_id) = tabular.current_connection_id
                         && !stmt.starts_with("--")
                     {
-                        let _ = crate::connection::execute_query_with_connection(
+                        let victim = col_name.clone();
+                        run_structure_statement(
                             tabular,
                             conn_id,
                             stmt.clone(),
+                            "Gagal drop kolom",
+                            move |tabular| {
+                                tabular.structure_columns.retain(|it| it.name != victim);
+                                tabular.request_structure_refresh = true;
+                                load_structure_info_for_current_table(tabular);
+                                crate::sidebar_database::refresh_connections_tree(tabular);
+                            },
                         );
                     }
-                    let victim = col_name.clone();
-                    tabular.structure_columns.retain(|it| it.name != victim);
-                    tabular.request_structure_refresh = true;
-                    load_structure_info_for_current_table(tabular);
-                    crate::sidebar_database::refresh_connections_tree(tabular);
                     tabular.pending_drop_column_name = None;
                     tabular.pending_drop_column_stmt = None;
                 }
@@ -1706,14 +1792,24 @@ fn commit_new_column(tabular: &mut window_egui::Tabular) {
         tabular.adding_column = false;
         return;
     };
-    let table_name = infer_current_table_name(tabular);
+    // Strip any identifier-quote characters the inferred name may already carry
+    // (e.g. when the active query quoted the table as `` `branches` ``, the
+    // origin-inference in `sql.rs` used to leak the backticks into the plain
+    // name). Without this, wrapping it in backticks again below produces a
+    // doubled backtick and a MySQL 1064 syntax error.
+    let table_name = infer_current_table_name(tabular)
+        .trim_matches(|c| matches!(c, '`' | '"' | '[' | ']'))
+        .to_string();
     if table_name.is_empty() {
         // Inform user explicitly
         tabular.error_message = "Gagal menambah kolom: nama tabel tidak ditemukan (buka data table atau klik tabel dulu).".to_string();
         tabular.show_error_message = true;
         return;
     }
-    let col_name = tabular.new_column_name.trim();
+    let col_name = tabular
+        .new_column_name
+        .trim()
+        .trim_matches(|c| matches!(c, '`' | '"' | '[' | ']'));
     if col_name.is_empty() {
         return;
     }
@@ -1780,25 +1876,15 @@ fn commit_new_column(tabular: &mut window_egui::Tabular) {
     tabular.new_column_default.clear();
     tabular.new_column_name.clear();
 
-    // Execute and refresh structure on success
-    if !stmt.starts_with("--")
-        && let Some((headers, data)) =
-            crate::connection::execute_query_with_connection(tabular, conn_id, stmt.clone())
-    {
-        let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
-        if is_error {
-            if let Some(first_row) = data.first()
-                && let Some(err) = first_row.first()
-            {
-                tabular.error_message = format!("Gagal menambah kolom: {}", err);
-                tabular.show_error_message = true;
-            }
-        } else {
+    // Execute in the background and refresh structure on success, so a
+    // slow/locked ALTER TABLE doesn't freeze the UI thread.
+    if !stmt.starts_with("--") {
+        run_structure_statement(tabular, conn_id, stmt, "Gagal menambah kolom", |tabular| {
             // Reload from source to ensure correct view
             tabular.request_structure_refresh = true;
             load_structure_info_for_current_table(tabular);
             crate::sidebar_database::refresh_connections_tree(tabular);
-        }
+        });
     }
 }
 
@@ -1980,23 +2066,13 @@ fn commit_new_index(tabular: &mut window_egui::Tabular) {
     tabular.new_index_columns.clear();
     tabular.new_index_method.clear();
     tabular.new_index_name.clear();
-    // Auto execute and refresh
-    if !stmt.starts_with("--")
-        && let Some((headers, data)) =
-            crate::connection::execute_query_with_connection(tabular, conn_id, stmt.clone())
-    {
-        let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
-        if is_error {
-            if let Some(first_row) = data.first()
-                && let Some(err) = first_row.first()
-            {
-                tabular.error_message = format!("Gagal CREATE INDEX: {}", err);
-                tabular.show_error_message = true;
-            }
-        } else {
+    // Auto execute in the background and refresh, so a slow/locked CREATE
+    // INDEX doesn't freeze the UI thread.
+    if !stmt.starts_with("--") {
+        run_structure_statement(tabular, conn_id, stmt, "Gagal CREATE INDEX", |tabular| {
             tabular.request_structure_refresh = true;
             load_structure_info_for_current_table(tabular);
-        }
+        });
     }
 }
 
@@ -2033,16 +2109,19 @@ pub(crate) fn render_drop_index_confirmation(
                     if let Some(conn_id) = tabular.current_connection_id
                         && !stmt.starts_with("--")
                     {
-                        let _ = crate::connection::execute_query_with_connection(
+                        let victim = idx_name.clone();
+                        run_structure_statement(
                             tabular,
                             conn_id,
                             stmt.clone(),
+                            "Gagal drop index",
+                            move |tabular| {
+                                tabular.structure_indexes.retain(|it| it.name != victim);
+                                tabular.request_structure_refresh = true;
+                                load_structure_info_for_current_table(tabular);
+                            },
                         );
                     }
-                    let victim = idx_name.clone();
-                    tabular.structure_indexes.retain(|it| it.name != victim);
-                    tabular.request_structure_refresh = true;
-                    load_structure_info_for_current_table(tabular);
                     tabular.pending_drop_index_name = None;
                     tabular.pending_drop_index_stmt = None;
                 }
