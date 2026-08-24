@@ -9,7 +9,7 @@ use super::{
     copy_selected_as_sql_inserts, copy_selected_as_markdown,
     export_selected_to_sql_inserts, export_selected_to_markdown,
     apply_sql_filter, sort_table_data,
-    render_pagination_bar,
+    render_pagination_bar, render_visual_filter_panel,
 };
 use super::utils::parse_enum_values;
 
@@ -30,12 +30,31 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     |ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
                         ui.add_space(2.0);
+
+                        // Visual Filter toggle button
+                        let cond_count = tabular.visual_filter.conditions.len();
+                        let filter_btn_text = if cond_count > 0 {
+                            format!("⊞ Filter ({})", cond_count)
+                        } else {
+                            "⊞ Filter".to_string()
+                        };
+                        let is_filter_open = tabular.visual_filter.is_open;
+                        if ui
+                            .selectable_label(is_filter_open, egui::RichText::new(filter_btn_text).strong())
+                            .on_hover_text("Open Visual Filter Builder")
+                            .clicked()
+                        {
+                            tabular.visual_filter.is_open = !tabular.visual_filter.is_open;
+                        }
+
+                        ui.separator();
+
                         ui.label(
                             egui::RichText::new("🔍 WHERE:")
                                 .strong()
                                 .size(if metrics.is_touch { 14.5 } else { 13.0 }),
                         );
-                        let filter_width = (ui.available_width() - if metrics.is_touch { 180.0 } else { 140.0 }).max(160.0);
+                        let filter_width = (ui.available_width() - if metrics.is_touch { 270.0 } else { 220.0 }).max(140.0);
                         let input_height = if metrics.is_touch { 34.0 } else { 26.0 };
                         let filter_response = ui.add_sized(
                             [filter_width, input_height],
@@ -76,6 +95,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             .clicked()
                         {
                             tabular.sql_filter_text.clear();
+                            tabular.visual_filter.conditions.clear();
                             apply_sql_filter(tabular);
                         }
                         if tabular.spreadsheet_state.is_dirty {
@@ -88,6 +108,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     },
                 );
                 ui.add_space(2.0);
+
+                if tabular.visual_filter.is_open {
+                    render_visual_filter_panel(tabular, ui);
+                    ui.add_space(4.0);
+                }
+
                 ui.separator();
                 ui.add_space(2.0);
             }
@@ -1024,6 +1050,26 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         );
                                                         ui.close();
                                                     }
+                                                    if ui.button("💾 Export SQL Dump").clicked() {
+                                                        let db_type = tabular
+                                                            .current_connection_id
+                                                            .and_then(|cid| {
+                                                                tabular
+                                                                    .connections
+                                                                    .iter()
+                                                                    .find(|c| c.id == Some(cid))
+                                                            })
+                                                            .map(|c| c.connection_type.clone());
+                                                        export::export_to_sql_dump(
+                                                            &tabular.all_table_data,
+                                                            &tabular.current_table_headers,
+                                                            &tabular.current_table_name,
+                                                            db_type.as_ref(),
+                                                            tabular.current_column_metadata.as_deref(),
+                                                            Some(&tabular.structure_columns),
+                                                        );
+                                                        ui.close();
+                                                    }
                                                     if tabular.is_table_browse_mode
                                                         && ui.button("📥 Import CSV...").clicked()
                                                     {
@@ -1147,6 +1193,23 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     &tabular.current_table_headers,
                                     &tabular.current_table_name,
                                     db_type.as_ref(),
+                                );
+                                ui.close();
+                            }
+                            if ui.button("💾 Export SQL Dump").clicked() {
+                                let db_type = tabular
+                                    .current_connection_id
+                                    .and_then(|cid| {
+                                        tabular.connections.iter().find(|c| c.id == Some(cid))
+                                    })
+                                    .map(|c| c.connection_type.clone());
+                                export::export_to_sql_dump(
+                                    &tabular.all_table_data,
+                                    &tabular.current_table_headers,
+                                    &tabular.current_table_name,
+                                    db_type.as_ref(),
+                                    tabular.current_column_metadata.as_deref(),
+                                    Some(&tabular.structure_columns),
                                 );
                                 ui.close();
                             }
