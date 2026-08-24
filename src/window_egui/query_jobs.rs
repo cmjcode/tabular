@@ -33,6 +33,28 @@ impl super::Tabular {
         }
         self.active_query_jobs.remove(&message.job_id);
 
+        // Structure-editor statements (Add/Drop Column, …) run through this
+        // same job pipeline but drive their own success/error handling
+        // instead of the query-tab/result-panel flow below — see
+        // `PendingStructureJob`.
+        if let Some(job) = self.pending_structure_jobs.remove(&message.job_id) {
+            if message.success {
+                (job.on_success)(self);
+            } else {
+                let err = message
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Unknown error".to_string());
+                self.error_message = format!("{}: {}", job.error_prefix, err);
+                self.show_error_message = true;
+            }
+            if self.active_query_jobs.is_empty() {
+                self.query_execution_in_progress = false;
+                self.extend_query_icon_hold();
+            }
+            return;
+        }
+
         let was_paginated = self.pending_paginated_jobs.remove(&message.job_id);
 
         if let Some(ast_sql) = message.ast_debug_sql.clone() {
