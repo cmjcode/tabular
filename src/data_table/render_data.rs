@@ -153,10 +153,62 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             let mut delete_row_index_request: Option<usize> = None;
             let mut add_row_request: Option<usize> = None;
             let mut open_csv_import = false;
+            let mut pin_toggle_requests: Vec<(String, bool)> = Vec::new();
+            let mut clear_all_pins_request = false;
+            let mut fk_nav_request: Option<(i64, String, String, String, String)> = None;
 
             // Ensure column widths are initialized
             if tabular.column_widths.len() != headers.len() {
                 initialize_column_widths(tabular);
+            }
+
+            // Detect Foreign Keys for active table and map to column indices
+            let conn_id = tabular.current_connection_id;
+            let db_name = tabular
+                .query_tabs
+                .get(tabular.active_tab_index)
+                .and_then(|t| t.database_name.clone())
+                .unwrap_or_default();
+            let curr_table = infer_current_table_name(tabular);
+            let clean_table = curr_table.trim_matches(|c| c == '`' || c == '"' || c == '\'');
+
+            let mut fk_by_col_idx: std::collections::HashMap<usize, crate::models::structs::ForeignKey> =
+                std::collections::HashMap::new();
+            if let Some(cid) = conn_id {
+                if let Some(fks) = crate::cache_data::get_foreign_keys_from_cache(tabular, cid, &db_name) {
+                    for (i, h) in headers.iter().enumerate() {
+                        let table_hint = if let Some(meta) = &tabular.current_column_metadata
+                            && let Some(col_meta) = meta.get(i)
+                            && let Some(t_name) = &col_meta.table_name
+                            && !t_name.is_empty()
+                        {
+                            t_name.as_str()
+                        } else {
+                            clean_table
+                        };
+                        if let Some(fk) = fks.iter().find(|fk| {
+                            (fk.table_name.eq_ignore_ascii_case(table_hint) || table_hint.is_empty())
+                                && fk.column_name.eq_ignore_ascii_case(h)
+                        }) {
+                            fk_by_col_idx.insert(i, fk.clone());
+                        }
+                    }
+                }
+            }
+
+            // Compute display column ordering (pinned columns placed first)
+            let mut display_col_indices: Vec<usize> = Vec::with_capacity(headers.len());
+            let mut pinned_count = 0;
+            for (i, h) in headers.iter().enumerate() {
+                if tabular.pinned_columns.contains(h) {
+                    display_col_indices.push(i);
+                    pinned_count += 1;
+                }
+            }
+            for (i, h) in headers.iter().enumerate() {
+                if !tabular.pinned_columns.contains(h) {
+                    display_col_indices.push(i);
+                }
             }
 
             // If this is an error table (usually 1 column, header contains "error"), set error column width to max
@@ -184,8 +236,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             );
             {
                 let total_content_w: f32 = 60.0
-                    + headers.iter().enumerate().map(|(i, _)| {
-                        get_column_width(tabular, i).max(30.0)
+                    + display_col_indices.iter().map(|&i| {
+                        if Some(i) == error_column_index {
+                            get_column_width(tabular, i).max(100.0)
+                        } else {
+                            get_column_width(tabular, i).max(30.0)
+                        }
                     }).sum::<f32>();
                 let content_rect = egui::Rect::from_min_size(
                     egui::pos2(
@@ -250,8 +306,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 );
                 current_header_x += no_col_w;
 
-                // Column header cells
-                for (col_index, header) in headers.iter().enumerate() {
+                // Column header cells (in display order with pinned columns first)
+                for (vis_idx, &col_index) in display_col_indices.iter().enumerate() {
+                    let header = &headers[col_index];
+                    let is_pinned = tabular.pinned_columns.contains(header);
+                    let is_last_pinned = is_pinned && (vis_idx + 1 == pinned_count);
+                    let fk_info = fk_by_col_idx.get(&col_index);
+
                     let column_width = if Some(col_index) == error_column_index {
                         if get_column_width(tabular, col_index) <= 180.0 {
                             set_column_width(tabular, col_index, 600.0);
@@ -275,30 +336,58 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 egui::Color32::from_gray(200)
                             };
                             let thin_stroke = egui::Stroke::new(0.5, border_color);
-                            let hdr_fill = if ui.visuals().dark_mode {
+                            let hdr_fill = if is_pinned {
+                                if ui.visuals().dark_mode {
+                                    egui::Color32::from_rgba_unmultiplied(45, 60, 95, 230)
+                                } else {
+                                    egui::Color32::from_rgba_unmultiplied(225, 238, 255, 240)
+                                }
+                            } else if ui.visuals().dark_mode {
                                 egui::Color32::from_gray(40)
                             } else {
                                 egui::Color32::from_gray(240)
                             };
                             ui.painter().rect_filled(rect, 0.0, hdr_fill);
                             ui.painter().line_segment([rect.left_top(), rect.right_top()], thin_stroke);
-                            ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
                             ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
                             ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
 
-                            let sort_button_width = if metrics.is_touch { 48.0 } else { 38.0 };
+                            // Right border: freeze divider if last pinned column
+                            if is_last_pinned {
+                                let freeze_color = crate::window_egui::style::theme_accent(ui.ctx());
+                                ui.painter().line_segment([rect.right_top(), rect.right_bottom()], egui::Stroke::new(2.5, freeze_color));
+                            } else {
+                                ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
+                            }
+
+                            let sort_button_width = if metrics.is_touch { 34.0 } else { 26.0 };
+                            let pin_button_width = if metrics.is_touch { 28.0 } else { 22.0 };
+                            let total_buttons_w = sort_button_width + pin_button_width;
+
                             let label_rect = egui::Rect::from_min_max(
                                 rect.min,
-                                egui::pos2((rect.max.x - sort_button_width).max(rect.min.x), rect.max.y),
+                                egui::pos2((rect.max.x - total_buttons_w).max(rect.min.x), rect.max.y),
                             );
 
-                            let text_color = ui.visuals().text_color();
-                            let font_size = if metrics.is_touch { 14.0 } else { 13.0 };
-                            let max_header_chars = ((label_rect.width() / 8.0).floor() as usize).max(3);
-                            let display_header = if header.chars().count() > max_header_chars {
-                                format!("{}...", header.chars().take(max_header_chars.saturating_sub(3)).collect::<String>())
+                            let text_color = if is_pinned {
+                                if ui.visuals().dark_mode {
+                                    egui::Color32::from_rgb(180, 215, 255)
+                                } else {
+                                    egui::Color32::from_rgb(25, 80, 185)
+                                }
                             } else {
-                                header.clone()
+                                ui.visuals().text_color()
+                            };
+                            let font_size = if metrics.is_touch { 14.0 } else { 13.0 };
+                            let mut header_display_title = header.clone();
+                            if fk_info.is_some() {
+                                header_display_title = format!("🔗 {}", header_display_title);
+                            }
+                            let max_header_chars = ((label_rect.width() / 8.0).floor() as usize).max(3);
+                            let display_header = if header_display_title.chars().count() > max_header_chars {
+                                format!("{}...", header_display_title.chars().take(max_header_chars.saturating_sub(3)).collect::<String>())
+                            } else {
+                                header_display_title
                             };
                             ui.painter().text(
                                 label_rect.center(),
@@ -308,6 +397,53 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 text_color,
                             );
 
+                            // Pin column button
+                            let pin_rect = egui::Rect::from_min_max(
+                                egui::pos2((rect.max.x - total_buttons_w).max(rect.min.x), rect.min.y),
+                                egui::pos2((rect.max.x - sort_button_width).max(rect.min.x), rect.max.y),
+                            );
+                            let pin_response = ui.interact(
+                                pin_rect,
+                                egui::Id::new(("col_pin_btn", col_index)),
+                                egui::Sense::click(),
+                            );
+                            if pin_response.hovered() {
+                                ui.painter().rect_filled(
+                                    pin_rect.shrink(2.0),
+                                    3.0,
+                                    if ui.visuals().dark_mode {
+                                        egui::Color32::from_white_alpha(15)
+                                    } else {
+                                        egui::Color32::from_black_alpha(15)
+                                    },
+                                );
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            let pin_icon_color = if is_pinned {
+                                crate::window_egui::style::theme_accent(ui.ctx())
+                            } else if pin_response.hovered() {
+                                ui.visuals().text_color()
+                            } else {
+                                ui.visuals().text_color().gamma_multiply(0.2)
+                            };
+                            ui.painter().text(
+                                pin_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "📌",
+                                egui::FontId::proportional(11.0),
+                                pin_icon_color,
+                            );
+                            let pin_tooltip = if is_pinned {
+                                format!("Column '{}' is pinned (click to unpin)", header)
+                            } else {
+                                format!("Pin column '{}' to left (freeze column)", header)
+                            };
+                            let pin_response = pin_response.on_hover_text(pin_tooltip);
+                            if pin_response.clicked() {
+                                pin_toggle_requests.push((header.clone(), !is_pinned));
+                            }
+
+                            // Sort button
                             let (is_sorted_column, is_asc) =
                                 if current_sort_column == Some(col_index) {
                                     (true, current_sort_ascending)
@@ -387,10 +523,47 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 egui::Id::new(("col_hdr_s", col_index)),
                                 egui::Sense::click(),
                             );
+                            if let Some(fk) = fk_info {
+                                header_click_resp.clone().on_hover_text(format!("🔗 Foreign Key -> {}.{}", fk.referenced_table_name, fk.referenced_column_name));
+                            }
                             if header_click_resp.clicked() {
                                 let modifiers = ui.input(|i| i.modifiers);
                                 col_sel_requests.push((col_index, modifiers));
                             }
+
+                            // Header context menu
+                            header_click_resp.context_menu(|ui| {
+                                ui.set_min_width(160.0);
+                                ui.vertical(|ui| {
+                                    let pin_text = if is_pinned {
+                                        format!("📌 Unpin Column '{}'", header)
+                                    } else {
+                                        format!("📌 Pin Column '{}' to Left", header)
+                                    };
+                                    if ui.button(pin_text).clicked() {
+                                        pin_toggle_requests.push((header.clone(), !is_pinned));
+                                        ui.close();
+                                    }
+                                    if !tabular.pinned_columns.is_empty() && ui.button("📌 Unpin All Columns").clicked() {
+                                        clear_all_pins_request = true;
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if ui.button(if current_sort_column == Some(col_index) && current_sort_ascending { "🔽 Sort Descending" } else { "🔼 Sort Ascending" }).clicked() {
+                                        let new_ascending = if current_sort_column == Some(col_index) {
+                                            !current_sort_ascending
+                                        } else {
+                                            true
+                                        };
+                                        sort_requests.push((col_index, new_ascending));
+                                        ui.close();
+                                    }
+                                    if let Some(fk) = fk_info {
+                                        ui.separator();
+                                        ui.label(egui::RichText::new(format!("🔗 FK -> {}.{}", fk.referenced_table_name, fk.referenced_column_name)).italics().weak());
+                                    }
+                                });
+                            });
 
                             // Resize handle
                             let handle_x = rect.max.x;
@@ -452,8 +625,14 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // Pre-compute total content width (matches sticky header formula)
             let total_content_w: f32 = 60.0
-                + headers.iter().enumerate()
-                    .map(|(i, _)| get_column_width(tabular, i).max(30.0))
+                + display_col_indices.iter()
+                    .map(|&i| {
+                        if Some(i) == error_column_index {
+                            get_column_width(tabular, i).max(100.0)
+                        } else {
+                            get_column_width(tabular, i).max(30.0)
+                        }
+                    })
                     .sum::<f32>();
 
             let scroll_out = egui::ScrollArea::both()
@@ -584,11 +763,17 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                         }
                                     },
                                 );
-                                for (col_index, cell) in row.iter().enumerate() {
+                                for (vis_idx, &col_index) in display_col_indices.iter().enumerate() {
+                                    let cell = row.get(col_index).cloned().unwrap_or_default();
+                                    let is_pinned = tabular.pinned_columns.contains(&headers[col_index]);
+                                    let is_last_pinned = is_pinned && (vis_idx + 1 == pinned_count);
                                     let is_selected_cell =
                                         tabular.selected_cell == Some((row_index, col_index));
                                     let is_selected_col =
                                         tabular.selected_columns.contains(&col_index);
+                                    let fk_info = fk_by_col_idx.get(&col_index);
+                                    let is_fk_link = fk_info.is_some() && !cell.is_empty() && cell != "NULL";
+
                                     let column_width = if Some(col_index) == error_column_index {
                                         get_column_width(tabular, col_index).max(100.0)
                                     } else {
@@ -599,6 +784,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
                                             let rect = ui.available_rect_before_wrap();
+                                            // Pinned column background tint
+                                            if is_pinned && !is_selected_cell && !is_selected_col {
+                                                let pin_bg = if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 5)
+                                                } else {
+                                                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 5)
+                                                };
+                                                ui.painter().rect_filled(rect, 0.0, pin_bg);
+                                            }
                                             // Column-selection overlay (row highlight already on row_rect)
                                             if is_selected_col {
                                                 let overlay = if ui.visuals().dark_mode {
@@ -648,10 +842,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 thin_stroke,
                                             );
                                             ui.painter().line_segment(
-                                                [rect.right_top(), rect.right_bottom()],
-                                                thin_stroke,
-                                            );
-                                            ui.painter().line_segment(
                                                 [rect.right_bottom(), rect.left_bottom()],
                                                 thin_stroke,
                                             );
@@ -659,6 +849,20 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 [rect.left_bottom(), rect.left_top()],
                                                 thin_stroke,
                                             );
+                                            // Right border: freeze divider if last pinned column
+                                            if is_last_pinned {
+                                                let freeze_color = crate::window_egui::style::theme_accent(ui.ctx());
+                                                ui.painter().line_segment(
+                                                    [rect.right_top(), rect.right_bottom()],
+                                                    egui::Stroke::new(2.5, freeze_color),
+                                                );
+                                            } else {
+                                                ui.painter().line_segment(
+                                                    [rect.right_top(), rect.right_bottom()],
+                                                    thin_stroke,
+                                                );
+                                            }
+
                                             if is_selected_cell {
                                                 let stroke = egui::Stroke::new(
                                                     2.0,
@@ -698,42 +902,57 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 rect.size(),
                                                 egui::Sense::click_and_drag(),
                                             );
-                                            
-                                            // Log once per frame (approx) - using a simple counter or just log.
-                                            // log::debug!("Rendering cell"); // Too spammy
-                                            
+
                                             // DETACHED double click check
                                             cell_response.double_clicked();
 
                                             // ALLOW EDITING ALWAYS (for custom queries too)
                                             if cell_response.double_clicked() {
                                                 // queue edit start to avoid mutable borrow inside iteration
-
                                                 start_edit_request = Some((row_index, col_index));
                                             } else if cell_response.clicked() {
-
-                                                let shift = ui.input(|i| i.modifiers.shift);
-                                                if shift {
-                                                    if tabular.table_sel_anchor.is_none() {
-                                                        tabular.table_sel_anchor = Some(
-                                                            tabular
-                                                                .selected_cell
-                                                                .unwrap_or((row_index, col_index)),
-                                                        );
+                                                let is_cmd = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+                                                if is_cmd && is_fk_link && let Some(fk) = fk_info {
+                                                    if let Some(cid) = conn_id {
+                                                        fk_nav_request = Some((
+                                                            cid,
+                                                            db_name.clone(),
+                                                            fk.referenced_table_name.clone(),
+                                                            fk.referenced_column_name.clone(),
+                                                            cell.clone(),
+                                                        ));
                                                     }
-                                                    tabular.selected_cell =
-                                                        Some((row_index, col_index));
                                                 } else {
-                                                    cell_sel_requests.push((row_index, col_index));
-                                                    tabular.table_sel_anchor = None;
+                                                    let shift = ui.input(|i| i.modifiers.shift);
+                                                    if shift {
+                                                        if tabular.table_sel_anchor.is_none() {
+                                                            tabular.table_sel_anchor = Some(
+                                                                tabular
+                                                                    .selected_cell
+                                                                    .unwrap_or((row_index, col_index)),
+                                                            );
+                                                        }
+                                                        tabular.selected_cell =
+                                                            Some((row_index, col_index));
+                                                    } else {
+                                                        cell_sel_requests.push((row_index, col_index));
+                                                        tabular.table_sel_anchor = None;
+                                                    }
                                                 }
                                             }
-                                            // Attach hover text without moving away the response we keep using
+
+                                            // Attach hover text and cursor
                                             let mut cell_resp = cell_response;
-                                            if cell.chars().count() > max_chars || !cell.is_empty()
-                                            {
-                                                cell_resp = cell_resp.on_hover_text(cell);
+                                            if is_fk_link && let Some(fk) = fk_info {
+                                                cell_resp = cell_resp.on_hover_text(format!(
+                                                    "🔗 Foreign Key -> {}.{}\nValue: {}\n(Cmd/Ctrl+Click or right-click to jump to record)",
+                                                    fk.referenced_table_name, fk.referenced_column_name, cell
+                                                ));
+                                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                            } else if cell.chars().count() > max_chars || !cell.is_empty() {
+                                                cell_resp = cell_resp.on_hover_text(&cell);
                                             }
+
                                             // Drag-to-select lifecycle
                                             if cell_resp.drag_started() {
                                                 if tabular.table_sel_anchor.is_none() {
@@ -898,6 +1117,51 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                                                 // Store the updated text to apply later
                                                 cell_edit_text_update = Some(edit_text);
+                                            } else if is_fk_link {
+                                                // Foreign key hyperlink styled text
+                                                let fk_color = if is_selected_cell {
+                                                    if ui.visuals().dark_mode {
+                                                        egui::Color32::WHITE
+                                                    } else {
+                                                        egui::Color32::BLACK
+                                                    }
+                                                } else if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgb(110, 185, 255)
+                                                } else {
+                                                    egui::Color32::from_rgb(20, 110, 225)
+                                                };
+                                                let text_pos = rect.left_top() + egui::vec2(5.0, rect.height() * 0.5);
+                                                let font_id = egui::FontId::default();
+                                                let text_galley = ui.painter().layout_no_wrap(
+                                                    display_text.clone(),
+                                                    font_id.clone(),
+                                                    fk_color,
+                                                );
+                                                let text_w = text_galley.size().x;
+                                                let text_h = text_galley.size().y;
+                                                let text_rect = egui::Rect::from_min_size(
+                                                    egui::pos2(text_pos.x, text_pos.y - text_h * 0.5),
+                                                    egui::vec2(text_w, text_h),
+                                                );
+                                                ui.painter().galley(text_rect.min, text_galley, fk_color);
+
+                                                // Hyperlink underline
+                                                let underline_y = text_rect.max.y + 1.0;
+                                                ui.painter().line_segment(
+                                                    [egui::pos2(text_rect.min.x, underline_y), egui::pos2(text_rect.min.x + text_w, underline_y)],
+                                                    egui::Stroke::new(1.0, fk_color.gamma_multiply(0.7)),
+                                                );
+
+                                                // Small ↗ icon
+                                                if rect.width() > text_w + 24.0 {
+                                                    ui.painter().text(
+                                                        egui::pos2(text_rect.max.x + 3.0, text_pos.y),
+                                                        egui::Align2::LEFT_CENTER,
+                                                        "↗",
+                                                        egui::FontId::proportional(11.0),
+                                                        fk_color.gamma_multiply(0.75),
+                                                    );
+                                                }
                                             } else {
                                                 // Show normal cell text
                                                 let text_pos = rect.left_top()
@@ -919,8 +1183,34 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 );
                                             }
                                             cell_resp.context_menu(|ui| {
-                                                ui.set_min_width(150.0);
+                                                ui.set_min_width(160.0);
                                                 ui.vertical(|ui| {
+                                                    if is_fk_link && let Some(fk) = fk_info && let Some(cid) = conn_id {
+                                                        if ui.button(format!("🔗 Open {}.{} = '{}'", fk.referenced_table_name, fk.referenced_column_name, cell)).clicked() {
+                                                            fk_nav_request = Some((
+                                                                cid,
+                                                                db_name.clone(),
+                                                                fk.referenced_table_name.clone(),
+                                                                fk.referenced_column_name.clone(),
+                                                                cell.clone(),
+                                                            ));
+                                                            ui.close();
+                                                        }
+                                                        ui.separator();
+                                                    }
+                                                    let col_name = headers.get(col_index).cloned().unwrap_or_default();
+                                                    if tabular.pinned_columns.contains(&col_name) {
+                                                        if ui.button(format!("📌 Unpin Column '{}'", col_name)).clicked() {
+                                                            pin_toggle_requests.push((col_name.clone(), false));
+                                                            ui.close();
+                                                        }
+                                                    } else {
+                                                        if ui.button(format!("📌 Pin Column '{}' to Left", col_name)).clicked() {
+                                                            pin_toggle_requests.push((col_name.clone(), true));
+                                                            ui.close();
+                                                        }
+                                                    }
+                                                    ui.separator();
                                                     if ui.button("🔄 Refresh Data").clicked() {
                                                         refresh_request_data = true;
                                                         ui.close();
@@ -934,8 +1224,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     }
                                                     ui.separator();
                                                     if ui.button("🔍 Inspect Value (JSON / Hex / Image)...").clicked() {
-                                                        let col_name = tabular.current_table_headers.get(col_index).cloned().unwrap_or_else(|| format!("Col {}", col_index + 1));
-                                                        tabular.cell_inspector.open(cell.clone(), col_name, row_index, col_index);
+                                                        let col_title = tabular.current_table_headers.get(col_index).cloned().unwrap_or_else(|| format!("Col {}", col_index + 1));
+                                                        tabular.cell_inspector.open(cell.clone(), col_title, row_index, col_index);
                                                         ui.close();
                                                     }
                                                     if ui.button("📋 Copy Cell Value").clicked() {
@@ -1265,9 +1555,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     // even when the target cell is outside the rendered viewport.
                     if tabular.scroll_to_selected_cell
                         && let Some((sel_row, sel_col)) = tabular.selected_cell {
+                            let vis_pos = display_col_indices.iter().position(|&idx| idx == sel_col).unwrap_or(sel_col);
                             let col_x: f32 = 60.0
-                                + (0..sel_col)
-                                    .map(|i| get_column_width(tabular, i).max(50.0))
+                                + display_col_indices[..vis_pos]
+                                    .iter()
+                                    .map(|&i| get_column_width(tabular, i).max(50.0))
                                     .sum::<f32>();
                             let col_w = get_column_width(tabular, sel_col).max(50.0);
                             let rect = egui::Rect::from_min_size(
@@ -1350,6 +1642,27 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.spreadsheet_state.cell_edit_text = new_text;
             }
 
+            // Apply deferred pin requests
+            for (col_name, should_pin) in pin_toggle_requests {
+                if should_pin {
+                    tabular.pinned_columns.insert(col_name.clone());
+                    if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                        active_tab.pinned_columns.insert(col_name);
+                    }
+                } else {
+                    tabular.pinned_columns.remove(&col_name);
+                    if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                        active_tab.pinned_columns.remove(&col_name);
+                    }
+                }
+            }
+            if clear_all_pins_request {
+                tabular.pinned_columns.clear();
+                if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    active_tab.pinned_columns.clear();
+                }
+            }
+
             // Apply deferred selection changes after UI borrow ends
             if select_all_rows_request {
                 if tabular.selected_rows.len() == tabular.current_table_data.len() {
@@ -1419,6 +1732,74 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     }
                 }
             }
+
+            // Handle Foreign Key Navigation request
+            if let Some((cid, dbn, target_table, target_col, filter_val)) = fk_nav_request {
+                let conn = tabular.connections.iter().find(|c| c.id == Some(cid)).cloned();
+                let db_type = conn.as_ref().map(|c| &c.connection_type);
+                let val_escaped = filter_val.replace('\'', "''");
+
+                let query_sql = match db_type {
+                    Some(crate::models::enums::DatabaseType::PostgreSQL) => {
+                        if !dbn.is_empty() && dbn != "public" {
+                            format!("SELECT * FROM \"{}\".\"{}\" WHERE \"{}\" = '{}' LIMIT 100;", dbn, target_table, target_col, val_escaped)
+                        } else {
+                            format!("SELECT * FROM \"{}\" WHERE \"{}\" = '{}' LIMIT 100;", target_table, target_col, val_escaped)
+                        }
+                    }
+                    Some(crate::models::enums::DatabaseType::MySQL) => {
+                        if !dbn.is_empty() {
+                            format!("USE `{}`;\nSELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;", dbn, target_table, target_col, val_escaped)
+                        } else {
+                            format!("SELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;", target_table, target_col, val_escaped)
+                        }
+                    }
+                    Some(crate::models::enums::DatabaseType::MsSQL) => {
+                        if !dbn.is_empty() {
+                            format!("USE [{}];\nSELECT TOP 100 * FROM [{}] WHERE [{}] = '{}';", dbn, target_table, target_col, val_escaped)
+                        } else {
+                            format!("SELECT TOP 100 * FROM [{}] WHERE [{}] = '{}';", target_table, target_col, val_escaped)
+                        }
+                    }
+                    _ => {
+                        format!("SELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;", target_table, target_col, val_escaped)
+                    }
+                };
+
+                let tab_title = format!("FK: {} ({}={})", target_table, target_col, filter_val);
+                crate::editor::create_new_tab_with_connection_and_database(
+                    tabular,
+                    tab_title.clone(),
+                    query_sql.clone(),
+                    Some(cid),
+                    if dbn.is_empty() { None } else { Some(dbn.clone()) },
+                );
+                tabular.current_connection_id = Some(cid);
+                tabular.reset_spreadsheet_state();
+                tabular.current_table_name = format!("Table: {} (FK: {} = {})", target_table, target_col, filter_val);
+
+                if let Some((res_headers, res_data)) = crate::connection::execute_query_with_connection(tabular, cid, query_sql.clone()) {
+                    tabular.current_table_headers = res_headers.clone();
+                    tabular.current_table_data = res_data.clone();
+                    tabular.all_table_data = res_data.clone();
+                    tabular.total_rows = res_data.len();
+                    tabular.current_page = 0;
+                    tabular.is_table_browse_mode = false;
+                    if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                        active_tab.result_headers = res_headers;
+                        active_tab.result_rows = res_data.clone();
+                        active_tab.result_all_rows = res_data;
+                        active_tab.result_table_name = tabular.current_table_name.clone();
+                        active_tab.total_rows = tabular.total_rows;
+                        active_tab.is_table_browse_mode = false;
+                        active_tab.has_executed_query = true;
+                        active_tab.query_message = format!("Loaded {} records from {} where {} = '{}'", tabular.total_rows, target_table, target_col, filter_val);
+                        active_tab.query_message_is_error = false;
+                    }
+                }
+                tabular.toasts.info(format!("Navigated to FK: {}.{} = {}", target_table, target_col, filter_val));
+            }
+
             if let Some((r, c)) = start_edit_request.take() {
                 // If we're switching from one editing cell to another, commit the previous edit first
                 if tabular.spreadsheet_state.editing_cell.is_some()
@@ -1448,15 +1829,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                              if t_type.contains("enum") || t_type.contains("set") {
                                  type_might_be_enum = true;
                              }
-                             // If basic type is unknown or weird, we might want to check anyway? 
-                             // But usually sqlx gives "VARCHAR" for enums in MySQL sometimes? 
-                             // Wait, if sqlx gives "VARCHAR", then we WON'T detect it here, and we WON'T trigger cache miss.
-                             // That means we might miss ENUM dropdowns.
-                             // BUT user specifically said: "Harusnya ini muncul kalo ada kolom yang di cache belum jelas tipedatanya"
-                             // (This should appear if there is a column in cache with unclear datatype).
-                             // If sqlx says "ENUM", we MUST check cache.
-                             // If sqlx says "VARCHAR", we ignore. That seems safe for now to stop the annoyance.
-                             
                              t_name.clone()
                          } else {
                              // fallback
@@ -1465,13 +1837,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                      } else {
                          infer_current_table_name(tabular)
                      };
-                     
-                     // If we inferred table name but skipped metadata check (e.g. no metadata), assume we might need to check?
-                     // No, let's be conservative. If we don't know it's an ENUM, don't popup.
-                     // Exception: If we have NO metadata (e.g. browsing a table directly?), we rely on cache entirely.
-                     // In table browse mode, we usually don't have types in `current_column_metadata`? 
-                     // Actually `execute_mysql_query_job` populates it.
-                     // Let's assume `type_might_be_enum` is the gate.
                      
                      if !table_name.is_empty() && type_might_be_enum {
                          let clean_table = table_name.trim_matches(|c| c == '`' || c == '"' || c == '\'');
@@ -1500,57 +1865,57 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             // Open CSV import dialog for the current table
             if open_csv_import
                 && let Some(conn_id) = tabular.current_connection_id
-                    && let Some(conn) = tabular.connections.iter().find(|c| c.id == Some(conn_id)) {
-                        let db_type = conn.connection_type.clone();
-                        // Extract bare table name (strip "Table: " prefix if present)
-                        let raw = tabular.current_table_name.trim();
-                        let table_name = raw.strip_prefix("Table:").map(str::trim).unwrap_or(raw).to_string();
-                        // Use current database from cache_miss_request context or best-effort
-                        // Walk items_tree recursively to find the database_name for this table
-                        fn find_db_name(
-                            nodes: &[crate::models::structs::TreeNode],
-                            conn_id: i64,
-                            table: &str,
-                        ) -> Option<String> {
-                            for n in nodes {
-                                if n.connection_id == Some(conn_id)
-                                    && n.table_name.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(table))
-                                    && n.database_name.is_some()
-                                {
-                                    return n.database_name.clone();
-                                }
-                                if let Some(found) = find_db_name(&n.children, conn_id, table) {
-                                    return Some(found);
-                                }
+                && let Some(conn) = tabular.connections.iter().find(|c| c.id == Some(conn_id)) {
+                    let db_type = conn.connection_type.clone();
+                    // Extract bare table name (strip "Table: " prefix if present)
+                    let raw = tabular.current_table_name.trim();
+                    let table_name = raw.strip_prefix("Table:").map(str::trim).unwrap_or(raw).to_string();
+                    // Use current database from cache_miss_request context or best-effort
+                    // Walk items_tree recursively to find the database_name for this table
+                    fn find_db_name(
+                        nodes: &[crate::models::structs::TreeNode],
+                        conn_id: i64,
+                        table: &str,
+                    ) -> Option<String> {
+                        for n in nodes {
+                            if n.connection_id == Some(conn_id)
+                                && n.table_name.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(table))
+                                && n.database_name.is_some()
+                            {
+                                return n.database_name.clone();
                             }
-                            None
+                            if let Some(found) = find_db_name(&n.children, conn_id, table) {
+                                return Some(found);
+                            }
                         }
-                        let database_name: Option<String> =
-                            find_db_name(&tabular.items_tree, conn_id, &table_name);
-                        let table_cols: Vec<String> = database_name.as_deref()
-                            .and_then(|db| crate::cache_data::get_columns_from_cache(tabular, conn_id, db, &table_name))
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|(name, _)| name)
-                            .collect();
-                        tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
-                            connection_id: conn_id,
-                            database_name,
-                            table_name,
-                            db_type,
-                            file_path: None,
-                            delimiter: ',',
-                            has_header_row: true,
-                            null_value: String::new(),
-                            preview_headers: vec![],
-                            preview_rows: vec![],
-                            table_columns: table_cols,
-                            column_mappings: vec![],
-                            status: crate::models::structs::CsvImportStatus::Idle,
-                            progress_message: String::new(),
-                        });
-                        tabular.show_csv_import_dialog = true;
+                        None
                     }
+                    let database_name: Option<String> =
+                        find_db_name(&tabular.items_tree, conn_id, &table_name);
+                    let table_cols: Vec<String> = database_name.as_deref()
+                        .and_then(|db| crate::cache_data::get_columns_from_cache(tabular, conn_id, db, &table_name))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .collect();
+                    tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
+                        connection_id: conn_id,
+                        database_name,
+                        table_name,
+                        db_type,
+                        file_path: None,
+                        delimiter: ',',
+                        has_header_row: true,
+                        null_value: String::new(),
+                        preview_headers: vec![],
+                        preview_rows: vec![],
+                        table_columns: table_cols,
+                        column_mappings: vec![],
+                        status: crate::models::structs::CsvImportStatus::Idle,
+                        progress_message: String::new(),
+                    });
+                    tabular.show_csv_import_dialog = true;
+                }
 
             // Perform deferred delete after UI borrows are released
             if let Some(ri) = delete_row_index_request.take() {

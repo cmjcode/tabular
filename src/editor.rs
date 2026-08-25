@@ -308,6 +308,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 tabular.active_tab_index, current_tab.base_query
             );
             std::mem::swap(&mut current_tab.object_ddl, &mut tabular.current_object_ddl);
+            std::mem::swap(&mut current_tab.pinned_columns, &mut tabular.pinned_columns);
             // Save query message state
             current_tab.query_message = tabular.query_message.clone();
             current_tab.query_message_is_error = tabular.query_message_is_error;
@@ -342,6 +343,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
                 tab_index, tabular.current_base_query, new_tab.connection_id
             );
             std::mem::swap(&mut tabular.current_object_ddl, &mut new_tab.object_ddl);
+            std::mem::swap(&mut tabular.pinned_columns, &mut new_tab.pinned_columns);
             // IMPORTANT: kembalikan connection id aktif sesuai tab baru
             tabular.current_connection_id = new_tab.connection_id;
             // Restore query message state
