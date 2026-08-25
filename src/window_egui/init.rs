@@ -528,6 +528,7 @@ impl super::Tabular {
             ai_inline_receiver: None,
             toasts: crate::window_egui::notifications::ToastManager::default(),
             visual_filter: crate::models::structs::VisualFilterState::default(),
+            pinned_columns: std::collections::HashSet::new(),
             show_csv_import_dialog: false,
             csv_import_state: None,
             rename_symbol_active: false,

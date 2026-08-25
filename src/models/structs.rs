@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, mpsc};
 use serde::{Deserialize, Serialize};
 
@@ -413,6 +414,160 @@ pub struct ForeignKey {
     pub referenced_column_name: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ForeignKeyRelation {
+    pub source_col: String,
+    pub target_table: String,
+    pub target_col: String,
+    pub target_schema: Option<String>,
+}
+
+impl ForeignKeyRelation {
+    pub fn new(
+        source_col: impl Into<String>,
+        target_table: impl Into<String>,
+        target_col: impl Into<String>,
+        target_schema: Option<String>,
+    ) -> Self {
+        Self {
+            source_col: source_col.into(),
+            target_table: target_table.into(),
+            target_col: target_col.into(),
+            target_schema,
+        }
+    }
+}
+
+/// Zero-copy & memory-efficient cell representation for large payloads (JSON, BLOB, Text)
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum CellValue {
+    Null,
+    Text(String),
+    Number(f64),
+    Integer(i64),
+    Boolean(bool),
+    Json(String),
+    Bytes(Arc<[u8]>),
+}
+
+impl Default for CellValue {
+    fn default() -> Self {
+        CellValue::Null
+    }
+}
+
+impl std::fmt::Display for CellValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CellValue::Null => write!(f, "NULL"),
+            CellValue::Text(s) => write!(f, "{}", s),
+            CellValue::Number(n) => write!(f, "{}", n),
+            CellValue::Integer(i) => write!(f, "{}", i),
+            CellValue::Boolean(b) => write!(f, "{}", b),
+            CellValue::Json(j) => write!(f, "{}", j),
+            CellValue::Bytes(b) => write!(f, "<BLOB {} bytes>", b.len()),
+        }
+    }
+}
+
+impl CellValue {
+    pub fn is_null(&self) -> bool {
+        matches!(self, CellValue::Null)
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            CellValue::Text(s) | CellValue::Json(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn to_display_string(&self) -> String {
+        match self {
+            CellValue::Null => "NULL".to_string(),
+            CellValue::Text(s) => s.clone(),
+            CellValue::Number(n) => n.to_string(),
+            CellValue::Integer(i) => i.to_string(),
+            CellValue::Boolean(b) => b.to_string(),
+            CellValue::Json(j) => j.clone(),
+            CellValue::Bytes(b) => format!("<BLOB {} bytes>", b.len()),
+        }
+    }
+
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            CellValue::Bytes(b) => Some(b.as_ref()),
+            CellValue::Text(s) | CellValue::Json(s) => Some(s.as_bytes()),
+            _ => None,
+        }
+    }
+
+    pub fn from_str_lossy(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("null") {
+            CellValue::Null
+        } else {
+            CellValue::Text(s.to_string())
+        }
+    }
+}
+
+impl From<String> for CellValue {
+    fn from(s: String) -> Self {
+        CellValue::Text(s)
+    }
+}
+
+impl From<&str> for CellValue {
+    fn from(s: &str) -> Self {
+        CellValue::Text(s.to_string())
+    }
+}
+
+impl From<i64> for CellValue {
+    fn from(i: i64) -> Self {
+        CellValue::Integer(i)
+    }
+}
+
+impl From<i32> for CellValue {
+    fn from(i: i32) -> Self {
+        CellValue::Integer(i as i64)
+    }
+}
+
+impl From<f64> for CellValue {
+    fn from(f: f64) -> Self {
+        CellValue::Number(f)
+    }
+}
+
+impl From<bool> for CellValue {
+    fn from(b: bool) -> Self {
+        CellValue::Boolean(b)
+    }
+}
+
+impl From<Vec<u8>> for CellValue {
+    fn from(v: Vec<u8>) -> Self {
+        CellValue::Bytes(Arc::from(v.into_boxed_slice()))
+    }
+}
+
+impl From<Arc<[u8]>> for CellValue {
+    fn from(b: Arc<[u8]>) -> Self {
+        CellValue::Bytes(b)
+    }
+}
+
+impl From<Option<String>> for CellValue {
+    fn from(opt: Option<String>) -> Self {
+        match opt {
+            Some(s) => CellValue::Text(s),
+            None => CellValue::Null,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CustomView {
     pub name: String,
@@ -531,6 +686,8 @@ pub struct QueryResult {
     pub query_message_is_error: bool,
     pub execution_time_ms: u128,
     pub explain_plan_json: Option<String>,
+    #[serde(default)]
+    pub pinned_columns: HashSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -580,6 +737,7 @@ pub struct QueryTab {
     pub tx_mode: bool,
     pub tx_active: bool,
     pub session: Option<crate::connection::session::SessionHandle>,
+    pub pinned_columns: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1237,61 +1395,126 @@ mod serde_option_pos2 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FilterOperator {
     #[default]
+    Equal,
+    NotEqual,
     Equals,
     NotEquals,
-    Contains,
-    StartsWith,
-    EndsWith,
+    Like,
+    ILike,
+    In,
+    IsNull,
+    IsNotNull,
+    Between,
     GreaterThan,
     LessThan,
     GreaterThanOrEqual,
     LessThanOrEqual,
-    IsNull,
-    IsNotNull,
-    In,
+    Contains,
+    StartsWith,
+    EndsWith,
 }
 
 impl FilterOperator {
     pub fn label(&self) -> &'static str {
         match self {
-            FilterOperator::Equals => "= (equals)",
-            FilterOperator::NotEquals => "!= (not equals)",
-            FilterOperator::Contains => "contains (LIKE %...%)",
-            FilterOperator::StartsWith => "starts with (LIKE ...%)",
-            FilterOperator::EndsWith => "ends with (LIKE %...)",
+            FilterOperator::Equal | FilterOperator::Equals => "= (equals)",
+            FilterOperator::NotEqual | FilterOperator::NotEquals => "!= (not equals)",
+            FilterOperator::Like => "LIKE (pattern)",
+            FilterOperator::ILike => "ILIKE (case insensitive)",
+            FilterOperator::In => "IN (...)",
+            FilterOperator::IsNull => "IS NULL",
+            FilterOperator::IsNotNull => "IS NOT NULL",
+            FilterOperator::Between => "BETWEEN (val1 AND val2)",
             FilterOperator::GreaterThan => "> (greater than)",
             FilterOperator::LessThan => "< (less than)",
             FilterOperator::GreaterThanOrEqual => ">= (greater or equal)",
             FilterOperator::LessThanOrEqual => "<= (less or equal)",
-            FilterOperator::IsNull => "IS NULL",
-            FilterOperator::IsNotNull => "IS NOT NULL",
-            FilterOperator::In => "IN (...)",
+            FilterOperator::Contains => "contains (LIKE %...%)",
+            FilterOperator::StartsWith => "starts with (LIKE ...%)",
+            FilterOperator::EndsWith => "ends with (LIKE %...)",
         }
     }
 
     pub fn all() -> &'static [FilterOperator] {
         &[
-            FilterOperator::Equals,
-            FilterOperator::NotEquals,
-            FilterOperator::Contains,
-            FilterOperator::StartsWith,
-            FilterOperator::EndsWith,
+            FilterOperator::Equal,
+            FilterOperator::NotEqual,
+            FilterOperator::Like,
+            FilterOperator::ILike,
+            FilterOperator::In,
+            FilterOperator::IsNull,
+            FilterOperator::IsNotNull,
+            FilterOperator::Between,
             FilterOperator::GreaterThan,
             FilterOperator::LessThan,
             FilterOperator::GreaterThanOrEqual,
             FilterOperator::LessThanOrEqual,
-            FilterOperator::IsNull,
-            FilterOperator::IsNotNull,
-            FilterOperator::In,
+            FilterOperator::Contains,
+            FilterOperator::StartsWith,
+            FilterOperator::EndsWith,
         ]
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FilterGroup {
+    #[default]
+    #[serde(alias = "AND", alias = "and")]
+    And,
+    #[serde(alias = "OR", alias = "or")]
+    Or,
+}
+
+impl FilterGroup {
+    pub const AND: Self = Self::And;
+    pub const OR: Self = Self::Or;
+
+    pub fn as_sql(&self) -> &'static str {
+        match self {
+            FilterGroup::And => "AND",
+            FilterGroup::Or => "OR",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            FilterGroup::And => "AND",
+            FilterGroup::Or => "OR",
+        }
+    }
+
+    pub fn all() -> &'static [FilterGroup] {
+        &[FilterGroup::And, FilterGroup::Or]
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct FilterCondition {
     pub column: String,
     pub operator: FilterOperator,
     pub value: String,
+    #[serde(default)]
+    pub value2: Option<String>,
+}
+
+impl FilterCondition {
+    pub fn new(column: impl Into<String>, operator: FilterOperator, value: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            operator,
+            value: value.into(),
+            value2: None,
+        }
+    }
+
+    pub fn between(column: impl Into<String>, val1: impl Into<String>, val2: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            operator: FilterOperator::Between,
+            value: val1.into(),
+            value2: Some(val2.into()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -1299,6 +1522,10 @@ pub struct VisualFilterState {
     pub conditions: Vec<FilterCondition>,
     pub match_all: bool, // true = AND, false = OR
     pub is_open: bool,
+    #[serde(default)]
+    pub group: FilterGroup,
+    #[serde(default)]
+    pub pinned_columns: HashSet<String>,
 }
 
 #[cfg(test)]
@@ -1333,5 +1560,112 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(conn.display_name(), "Staging");
+    }
+
+    #[test]
+    fn test_filter_operator_labels_and_all() {
+        let ops = FilterOperator::all();
+        assert!(ops.contains(&FilterOperator::Equal));
+        assert!(ops.contains(&FilterOperator::NotEqual));
+        assert!(ops.contains(&FilterOperator::Like));
+        assert!(ops.contains(&FilterOperator::ILike));
+        assert!(ops.contains(&FilterOperator::In));
+        assert!(ops.contains(&FilterOperator::IsNull));
+        assert!(ops.contains(&FilterOperator::IsNotNull));
+        assert!(ops.contains(&FilterOperator::Between));
+        assert!(ops.contains(&FilterOperator::GreaterThan));
+        assert!(ops.contains(&FilterOperator::LessThan));
+
+        assert_eq!(FilterOperator::Equal.label(), "= (equals)");
+        assert_eq!(FilterOperator::Between.label(), "BETWEEN (val1 AND val2)");
+    }
+
+    #[test]
+    fn test_filter_group() {
+        assert_eq!(FilterGroup::And.as_sql(), "AND");
+        assert_eq!(FilterGroup::Or.as_sql(), "OR");
+        assert_eq!(FilterGroup::AND, FilterGroup::And);
+        assert_eq!(FilterGroup::OR, FilterGroup::Or);
+        assert_eq!(FilterGroup::all(), &[FilterGroup::And, FilterGroup::Or]);
+    }
+
+    #[test]
+    fn test_filter_condition_constructors() {
+        let cond1 = FilterCondition::new("age", FilterOperator::GreaterThan, "25");
+        assert_eq!(cond1.column, "age");
+        assert_eq!(cond1.operator, FilterOperator::GreaterThan);
+        assert_eq!(cond1.value, "25");
+        assert_eq!(cond1.value2, None);
+
+        let cond2 = FilterCondition::between("created_at", "2026-01-01", "2026-12-31");
+        assert_eq!(cond2.column, "created_at");
+        assert_eq!(cond2.operator, FilterOperator::Between);
+        assert_eq!(cond2.value, "2026-01-01");
+        assert_eq!(cond2.value2, Some("2026-12-31".to_string()));
+    }
+
+    #[test]
+    fn test_foreign_key_relation() {
+        let fk = ForeignKeyRelation::new("user_id", "users", "id", Some("public".to_string()));
+        assert_eq!(fk.source_col, "user_id");
+        assert_eq!(fk.target_table, "users");
+        assert_eq!(fk.target_col, "id");
+        assert_eq!(fk.target_schema, Some("public".to_string()));
+    }
+
+    #[test]
+    fn test_cell_value_enum_and_conversions() {
+        let val_null = CellValue::Null;
+        assert!(val_null.is_null());
+        assert_eq!(val_null.to_display_string(), "NULL");
+        assert_eq!(format!("{}", val_null), "NULL");
+
+        let val_text: CellValue = "hello world".into();
+        assert!(!val_text.is_null());
+        assert_eq!(val_text.as_str(), Some("hello world"));
+        assert_eq!(val_text.to_display_string(), "hello world");
+
+        let val_int: CellValue = 42i64.into();
+        assert_eq!(val_int.to_display_string(), "42");
+
+        let val_num: CellValue = 3.14159.into();
+        assert_eq!(val_num.to_display_string(), "3.14159");
+
+        let val_bool: CellValue = true.into();
+        assert_eq!(val_bool.to_display_string(), "true");
+
+        let bytes_vec = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let val_bytes: CellValue = bytes_vec.into();
+        assert_eq!(val_bytes.as_bytes(), Some(&[0xDE, 0xAD, 0xBE, 0xEF][..]));
+        assert_eq!(val_bytes.to_display_string(), "<BLOB 4 bytes>");
+
+        let val_opt: CellValue = Some("dynamic".to_string()).into();
+        assert_eq!(val_opt.as_str(), Some("dynamic"));
+
+        let val_none: CellValue = None.into();
+        assert!(val_none.is_null());
+
+        let from_lossy = CellValue::from_str_lossy("null");
+        assert!(from_lossy.is_null());
+        let from_lossy_str = CellValue::from_str_lossy("active");
+        assert_eq!(from_lossy_str.as_str(), Some("active"));
+    }
+
+    #[test]
+    fn test_pinned_columns() {
+        let mut pinned = HashSet::new();
+        pinned.insert("id".to_string());
+        pinned.insert("name".to_string());
+
+        let state = VisualFilterState {
+            conditions: Vec::new(),
+            match_all: true,
+            is_open: false,
+            group: FilterGroup::And,
+            pinned_columns: pinned.clone(),
+        };
+
+        assert!(state.pinned_columns.contains("id"));
+        assert!(state.pinned_columns.contains("name"));
     }
 }

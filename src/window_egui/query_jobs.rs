@@ -116,6 +116,7 @@ impl super::Tabular {
             execution_time_ms: message.duration.as_millis(),
             column_metadata: message.column_metadata.clone(),
             explain_plan_json: None,
+            pinned_columns: std::collections::HashSet::new(),
         };
 
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {

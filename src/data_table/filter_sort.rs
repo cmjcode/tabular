@@ -272,11 +272,42 @@ pub fn build_where_from_visual_filter(
         let val = cond.value.trim();
 
         let clause = match cond.operator {
-            models::structs::FilterOperator::Equals => {
+            models::structs::FilterOperator::Equal | models::structs::FilterOperator::Equals => {
                 format!("{} = {}", q_col, quote_val(val))
             }
-            models::structs::FilterOperator::NotEquals => {
+            models::structs::FilterOperator::NotEqual | models::structs::FilterOperator::NotEquals => {
                 format!("{} != {}", q_col, quote_val(val))
+            }
+            models::structs::FilterOperator::Like => {
+                format!("{} LIKE {}", q_col, quote_val(val))
+            }
+            models::structs::FilterOperator::ILike => {
+                format!("{} ILIKE {}", q_col, quote_val(val))
+            }
+            models::structs::FilterOperator::Between => {
+                if let Some(ref v2) = cond.value2 {
+                    format!("{} BETWEEN {} AND {}", q_col, quote_val(val), quote_val(v2))
+                } else if val.contains(" AND ") || val.contains(" and ") {
+                    let parts: Vec<&str> = if val.contains(" AND ") {
+                        val.split(" AND ").collect()
+                    } else {
+                        val.split(" and ").collect()
+                    };
+                    if parts.len() == 2 {
+                        format!("{} BETWEEN {} AND {}", q_col, quote_val(parts[0].trim()), quote_val(parts[1].trim()))
+                    } else {
+                        format!("{} = {}", q_col, quote_val(val))
+                    }
+                } else if val.contains(',') {
+                    let parts: Vec<&str> = val.split(',').collect();
+                    if parts.len() == 2 {
+                        format!("{} BETWEEN {} AND {}", q_col, quote_val(parts[0].trim()), quote_val(parts[1].trim()))
+                    } else {
+                        format!("{} = {}", q_col, quote_val(val))
+                    }
+                } else {
+                    format!("{} = {}", q_col, quote_val(val))
+                }
             }
             models::structs::FilterOperator::Contains => {
                 let pattern = format!("%{}%", val.replace('%', "\\%").replace('_', "\\_"));
@@ -330,7 +361,12 @@ pub fn build_where_from_visual_filter(
     } else if parts.len() == 1 {
         parts.remove(0)
     } else {
-        let glue = if filter.match_all { " AND " } else { " OR " };
+        let glue = match filter.group {
+            models::structs::FilterGroup::Or => " OR ",
+            models::structs::FilterGroup::And => {
+                if filter.match_all { " AND " } else { " OR " }
+            }
+        };
         parts.join(glue)
     }
 }
@@ -375,11 +411,11 @@ pub(crate) fn render_visual_filter_panel(tabular: &mut window_egui::Tabular, ui:
                         .first()
                         .cloned()
                         .unwrap_or_default();
-                    tabular.visual_filter.conditions.push(models::structs::FilterCondition {
-                        column: first_col,
-                        operator: models::structs::FilterOperator::Equals,
-                        value: String::new(),
-                    });
+                    tabular.visual_filter.conditions.push(models::structs::FilterCondition::new(
+                        first_col,
+                        models::structs::FilterOperator::Equal,
+                        String::new(),
+                    ));
                 }
 
                 if !tabular.visual_filter.conditions.is_empty() {
@@ -497,19 +533,13 @@ mod tests {
     fn test_build_where_equals_and_like() {
         let mut filter = models::structs::VisualFilterState {
             conditions: vec![
-                models::structs::FilterCondition {
-                    column: "name".to_string(),
-                    operator: models::structs::FilterOperator::Equals,
-                    value: "John".to_string(),
-                },
-                models::structs::FilterCondition {
-                    column: "age".to_string(),
-                    operator: models::structs::FilterOperator::GreaterThan,
-                    value: "25".to_string(),
-                },
+                models::structs::FilterCondition::new("name", models::structs::FilterOperator::Equals, "John"),
+                models::structs::FilterCondition::new("age", models::structs::FilterOperator::GreaterThan, "25"),
             ],
             match_all: true,
             is_open: true,
+            group: models::structs::FilterGroup::And,
+            pinned_columns: Default::default(),
         };
 
         let where_clause = build_where_from_visual_filter(&filter, Some(&models::enums::DatabaseType::PostgreSQL));
@@ -524,19 +554,13 @@ mod tests {
     fn test_build_where_null_and_in() {
         let filter = models::structs::VisualFilterState {
             conditions: vec![
-                models::structs::FilterCondition {
-                    column: "deleted_at".to_string(),
-                    operator: models::structs::FilterOperator::IsNull,
-                    value: "".to_string(),
-                },
-                models::structs::FilterCondition {
-                    column: "status".to_string(),
-                    operator: models::structs::FilterOperator::In,
-                    value: "active, pending".to_string(),
-                },
+                models::structs::FilterCondition::new("deleted_at", models::structs::FilterOperator::IsNull, ""),
+                models::structs::FilterCondition::new("status", models::structs::FilterOperator::In, "active, pending"),
             ],
             match_all: true,
             is_open: true,
+            group: models::structs::FilterGroup::And,
+            pinned_columns: Default::default(),
         };
 
         let clause = build_where_from_visual_filter(&filter, Some(&models::enums::DatabaseType::PostgreSQL));
