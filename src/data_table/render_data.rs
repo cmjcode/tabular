@@ -47,6 +47,23 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             tabular.visual_filter.is_open = !tabular.visual_filter.is_open;
                         }
 
+                        // Cell Value Inspector button
+                        let has_sel_cell = tabular.selected_cell.is_some();
+                        if ui
+                            .add_enabled(has_sel_cell, egui::Button::new("🔍 Inspect"))
+                            .on_hover_text("Inspect selected cell (JSON, Hex, Image, Raw Text) — Shortcut: ⌘I")
+                            .clicked()
+                        {
+                            if let Some((r, c)) = tabular.selected_cell {
+                                if let Some(row_data) = tabular.current_table_data.get(r) {
+                                    if let Some(val) = row_data.get(c) {
+                                        let col_name = tabular.current_table_headers.get(c).cloned().unwrap_or_else(|| format!("Col {}", c + 1));
+                                        tabular.cell_inspector.open(val.clone(), col_name, r, c);
+                                    }
+                                }
+                            }
+                        }
+
                         ui.separator();
 
                         ui.label(
@@ -916,6 +933,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.close();
                                                     }
                                                     ui.separator();
+                                                    if ui.button("🔍 Inspect Value (JSON / Hex / Image)...").clicked() {
+                                                        let col_name = tabular.current_table_headers.get(col_index).cloned().unwrap_or_else(|| format!("Col {}", col_index + 1));
+                                                        tabular.cell_inspector.open(cell.clone(), col_name, row_index, col_index);
+                                                        ui.close();
+                                                    }
                                                     if ui.button("📋 Copy Cell Value").clicked() {
                                                         ui.ctx().copy_text(cell.clone());
                                                         ui.close();
@@ -1380,6 +1402,22 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.table_sel_anchor = None;
                 tabular.table_dragging = false;
                 tabular.table_recently_clicked = true; // Mark that table was clicked
+            }
+
+            // Keyboard shortcut for Value Inspector (Cmd+I / Ctrl+I)
+            let is_cell_editing = tabular.spreadsheet_state.editing_cell.is_some();
+            let inspect_shortcut = ui.input(|i| {
+                (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::I)
+            });
+            if !is_cell_editing && inspect_shortcut {
+                if let Some((r, c)) = tabular.selected_cell {
+                    if let Some(row_data) = tabular.current_table_data.get(r) {
+                        if let Some(val) = row_data.get(c) {
+                            let col_name = tabular.current_table_headers.get(c).cloned().unwrap_or_else(|| format!("Col {}", c + 1));
+                            tabular.cell_inspector.open(val.clone(), col_name, r, c);
+                        }
+                    }
+                }
             }
             if let Some((r, c)) = start_edit_request.take() {
                 // If we're switching from one editing cell to another, commit the previous edit first

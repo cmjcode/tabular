@@ -4612,6 +4612,7 @@ impl App for Tabular {
         dialog::render_csv_import_dialog(self, ctx);
         dialog::render_parameter_dialog(self, ctx);
         dialog::render_unsafe_dml_dialog(self, ctx);
+        crate::data_table::render_cell_inspector(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_rename_query_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
