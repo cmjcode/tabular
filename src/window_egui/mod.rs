@@ -514,6 +514,8 @@ pub struct Tabular {
     pub toasts: notifications::ToastManager,
     // Visual data filter state for table browsing
     pub visual_filter: models::structs::VisualFilterState,
+    // Dedicated Cell Value Inspector (JSON, Hex, Image, Raw Virtual Text)
+    pub cell_inspector: crate::data_table::CellInspectorState,
     // Pinned columns for data table freeze
     pub pinned_columns: std::collections::HashSet<String>,
     // CSV Import wizard
