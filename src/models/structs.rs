@@ -450,6 +450,9 @@ pub enum CellValue {
     Bytes(Arc<[u8]>),
 }
 
+/// Type alias for SQL values and query parameters
+pub type SqlValue = CellValue;
+
 impl Default for CellValue {
     fn default() -> Self {
         CellValue::Null
