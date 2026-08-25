@@ -514,6 +514,8 @@ pub struct Tabular {
     pub toasts: notifications::ToastManager,
     // Visual data filter state for table browsing
     pub visual_filter: models::structs::VisualFilterState,
+    // Pinned columns for data table freeze
+    pub pinned_columns: std::collections::HashSet<String>,
     // CSV Import wizard
     pub show_csv_import_dialog: bool,
     pub csv_import_state: Option<models::structs::CsvImportState>,

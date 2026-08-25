@@ -57,6 +57,7 @@ pub(crate) fn create_new_tab(
         tx_mode: false,
         tx_active: false,
         session: None,
+        pinned_columns: std::collections::HashSet::new(),
     };
 
     tabular.query_tabs.push(new_tab);
