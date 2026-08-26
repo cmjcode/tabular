@@ -216,9 +216,9 @@ fn render_url_bar(
 
         // SEND button — identical width, height, and corner radius as Save and Code
         let send_label = if state.is_loading {
-            "⏳ Sending"
+            format!("{}  Sending…", egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint)
         } else {
-            "▶  Send"
+            format!("{}  Send", egui_icons::icons::ICON_PLAY_ARROW.codepoint)
         };
         let can_send = !state.is_loading && !state.url.is_empty();
         let send_btn = egui::Button::new(
@@ -241,11 +241,12 @@ fn render_url_bar(
         }
 
         // SAVE button — identical width, height, and corner radius as Send and Code
+        let save_label = format!("{} Save", egui_icons::icons::ICON_SAVE.codepoint);
         let save_btn = ui
             .add_sized(
                 [send_save_code_w, bar_h],
                 egui::Button::new(
-                    egui::RichText::new("💾 Save")
+                    egui::RichText::new(save_label)
                         .color(ui.visuals().text_color())
                         .size(font_sz),
                 )
@@ -261,9 +262,9 @@ fn render_url_bar(
 
         // CODE button
         let code_label = if send_save_code_w >= 60.0 {
-            "</> Code"
+            format!("{} Code", egui_icons::icons::MDI_CODE_BRACES.codepoint)
         } else {
-            "</>"
+            egui_icons::icons::MDI_CODE_BRACES.codepoint.to_string()
         };
         let code_btn = ui
             .add_sized(
@@ -479,8 +480,9 @@ fn render_code_dialog(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let copy_label = format!("{} Copy to Clipboard", egui_icons::icons::ICON_CONTENT_COPY.codepoint);
                         let copy_btn = egui::Button::new(
-                            egui::RichText::new("📋 Copy to Clipboard")
+                            egui::RichText::new(copy_label)
                                 .color(egui::Color32::WHITE)
                                 .strong(),
                         )
@@ -914,9 +916,8 @@ fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id
             );
 
             let del_btn = egui::Button::new(
-                egui::RichText::new("×")
-                    .size(if metrics.is_touch { 16.0 } else { 13.0 })
-                    .strong(),
+                egui_icons::icons::ICON_CLOSE.rich_text()
+                    .size(if metrics.is_touch { 14.0 } else { 11.0 }),
             )
             .corner_radius(egui::CornerRadius::same(5));
 
@@ -937,10 +938,11 @@ fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id
 
     ui.add_space(4.0);
     let add_btn_w = if metrics.is_touch { 110.0 } else { 90.0 };
+    let add_label = format!("{} Add row", egui_icons::icons::ICON_ADD.codepoint);
     if ui
         .add_sized(
             [add_btn_w, row_h],
-            egui::Button::new(egui::RichText::new("+ Add row").size(font_sz).strong())
+            egui::Button::new(egui::RichText::new(add_label).size(font_sz).strong())
                 .corner_radius(egui::CornerRadius::same(5)),
         )
         .clicked()

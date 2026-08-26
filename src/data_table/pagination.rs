@@ -147,13 +147,13 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
 
                     ui.add_enabled(
                         has_data && tabular.current_page > 0,
-                        crate::window_egui::style::btn_secondary("⏮ First"),
+                        crate::window_egui::style::btn_secondary(&format!("{} First", egui_icons::icons::ICON_FIRST_PAGE.codepoint)),
                     )
                     .clicked()
                     .then(|| go_to_page(tabular, 0));
                     ui.add_enabled(
                         has_data && tabular.current_page > 0,
-                        crate::window_egui::style::btn_secondary("◀ Prev"),
+                        crate::window_egui::style::btn_secondary(&format!("{} Prev", egui_icons::icons::ICON_CHEVRON_LEFT.codepoint)),
                     )
                     .clicked()
                     .then(|| previous_page(tabular));
@@ -164,16 +164,19 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     ));
                     ui.add_enabled(
                         has_data && tabular.current_page < total_pages.saturating_sub(1),
-                        crate::window_egui::style::btn_secondary("Next ▶"),
+                        crate::window_egui::style::btn_secondary(&format!("Next {}", egui_icons::icons::ICON_CHEVRON_RIGHT.codepoint)),
                     )
                     .clicked()
                     .then(|| next_page(tabular));
-                    ui.add_enabled(has_data && total_pages > 1, crate::window_egui::style::btn_secondary("Last ⏭"))
-                        .clicked()
-                        .then(|| {
-                            let last_page = total_pages.saturating_sub(1);
-                            go_to_page(tabular, last_page);
-                        });
+                    ui.add_enabled(
+                        has_data && total_pages > 1,
+                        crate::window_egui::style::btn_secondary(&format!("Last {}", egui_icons::icons::ICON_LAST_PAGE.codepoint)),
+                    )
+                    .clicked()
+                    .then(|| {
+                        let last_page = total_pages.saturating_sub(1);
+                        go_to_page(tabular, last_page);
+                    });
 
                     ui.separator();
                     if ui.add(crate::window_egui::style::btn_secondary("Clear selection")).clicked() {
@@ -240,7 +243,7 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
             // Show Details (Lint Issue) Button
             if has_lint {
                 let count = tabular.lint_messages.len();
-                let lint_text_label = format!("⚠️ Details ({})", count);
+                let lint_text_label = format!("{} Details ({})", egui_icons::icons::ICON_WARNING.codepoint, count);
                 let is_lint_open = tabular.show_lint_panel;
 
                 let lint_bg = if is_lint_open {
@@ -293,7 +296,7 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 };
 
                 let msg_btn = egui::Button::new(
-                    egui::RichText::new("💬 Messages")
+                    egui::RichText::new(format!("{} Messages", egui_icons::icons::ICON_CHAT.codepoint))
                         .small()
                         .strong()
                         .color(messages_text_color),
@@ -326,7 +329,7 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
             };
 
             let data_btn = egui::Button::new(
-                egui::RichText::new("📊 Data")
+                egui::RichText::new(format!("{} Data", egui_icons::icons::MDI_TABLE.codepoint))
                     .small()
                     .strong()
                     .color(data_text_color),
@@ -365,7 +368,7 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 };
 
                 let explain_btn = egui::Button::new(
-                    egui::RichText::new("🔍 Explain")
+                    egui::RichText::new(format!("{} Explain", egui_icons::icons::ICON_INSIGHTS.codepoint))
                         .small()
                         .strong()
                         .color(explain_text_color),

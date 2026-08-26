@@ -2154,7 +2154,7 @@ impl Tabular {
                                 ui.add_sized(
                                     gear_btn_size,
                                     egui::Button::new(
-                                        egui::RichText::new("⚙")
+                                        egui_icons::icons::ICON_SETTINGS.rich_text()
                                             .size(gear_icon_size)
                                             .color(ui.visuals().text_color()),
                                     )
@@ -2173,14 +2173,13 @@ impl Tabular {
                             // Popup area logic for gear / account menu
                             if self.show_settings_menu {
                                 let menu_width = if metrics.is_touch { 260.0 } else { 220.0 };
-                                let pos = egui::pos2(
-                                    gear_response.rect.right() - menu_width,
-                                    gear_response.rect.bottom() + 6.0,
-                                );
                                 let mut menu_rect: Option<egui::Rect> = None;
-                                egui::Area::new(egui::Id::new("settings_menu"))
+                                egui::Area::new(egui::Id::new("settings_gear_popup"))
                                     .order(egui::Order::Foreground)
-                                    .fixed_pos(pos)
+                                    .fixed_pos(egui::pos2(
+                                        gear_response.rect.max.x - menu_width,
+                                        gear_response.rect.max.y + 4.0,
+                                    ))
                                     .show(ui.ctx(), |ui| {
                                         let dark = ui.visuals().dark_mode;
                                         let frame_bg = if dark {
@@ -2360,37 +2359,37 @@ impl Tabular {
                                                     self.show_settings_menu = false;
                                                 }
 
-                                                if draw_menu_item(ui, "👤", "Account & Profile", None) {
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_ACCOUNT_CIRCLE.codepoint, "Account & Profile", None) {
                                                     crate::sync::ui_login::open_account_dialog(self);
                                                     self.show_settings_menu = false;
                                                 }
                                             } else {
-                                                if draw_menu_item(ui, "👤", "Sign In / Account", None) {
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_ACCOUNT_CIRCLE.codepoint, "Sign In / Account", None) {
                                                     crate::sync::ui_login::open_account_dialog(self);
                                                     self.show_settings_menu = false;
                                                 }
                                             }
 
-                                            if draw_menu_item(ui, "⚙", "Preferences", Some("⌘,")) {
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_SETTINGS.codepoint, "Preferences", Some("⌘,")) {
                                                 self.show_settings_window = true;
                                                 self.show_settings_menu = false;
                                             }
 
                                             draw_menu_sep(ui);
 
-                                            if draw_menu_item(ui, "🔄", "Check for Updates", None) {
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_REFRESH.codepoint, "Check for Updates", None) {
                                                 self.check_for_updates(true);
                                                 self.show_settings_menu = false;
                                             }
 
-                                            if draw_menu_item(ui, "ℹ", "About Tabular", None) {
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_INFO.codepoint, "About Tabular", None) {
                                                 self.show_about_dialog = true;
                                                 self.show_settings_menu = false;
                                             }
 
                                             if self.sync_account.is_some() {
                                                 draw_menu_sep(ui);
-                                                if draw_menu_item(ui, "🚪", "Sign Out", None) {
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_LOGOUT.codepoint, "Sign Out", None) {
                                                     crate::sync::ui_login::do_logout(self);
                                                     self.show_settings_menu = false;
                                                 }
@@ -2428,7 +2427,7 @@ impl Tabular {
                             };
                             let ai_btn_size = if metrics.is_touch { [42.0, 38.0] } else { [28.0, 26.0] };
                             let ai_icon_size = if metrics.is_touch { 18.0 } else { 14.0 };
-                            let ai_btn_label = egui::RichText::new("✨")
+                            let ai_btn_label = egui_icons::icons::ICON_AUTO_AWESOME.rich_text()
                                 .size(ai_icon_size)
                                 .color(if self.show_ai_panel {
                                     egui::Color32::WHITE

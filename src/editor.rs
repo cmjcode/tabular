@@ -1007,40 +1007,100 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         jump_to_definition_at_cursor(tabular);
         ui.ctx().request_repaint();
     }
-    
-    // Find & Replace panel
-    if tabular.advanced_editor.show_find_replace {
-        ui.horizontal(|ui| {
-            ui.label("Find:");
-            ui.add_sized(
-                [200.0, 20.0],
-                egui::TextEdit::singleline(&mut tabular.advanced_editor.find_text),
-            );
 
-            ui.label("Replace:");
-            ui.add_sized(
-                [200.0, 20.0],
-                egui::TextEdit::singleline(&mut tabular.advanced_editor.replace_text),
-            );
-
-            ui.checkbox(
-                &mut tabular.advanced_editor.case_sensitive,
-                "Case Sensitive",
-            );
-            ui.checkbox(&mut tabular.advanced_editor.use_regex, "Regex");
-
-            if ui.button("Replace All").clicked() {
-                perform_replace_all(tabular);
-            }
-
-            if ui.button("Find Next").clicked() {
-                find_next(tabular);
-            }
-
-            if ui.button("✕").clicked() {
-                tabular.advanced_editor.show_find_replace = false;
-            }
+    // Shortcut: Find (Cmd/Ctrl + F)
+    let mut trigger_find = false;
+    ui.input(|i| {
+        let cmd_or_ctrl = i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl;
+        if cmd_or_ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::F) {
+            trigger_find = true;
+        }
+    });
+    if trigger_find {
+        ui.ctx().input_mut(|ri| {
+            ri.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::F,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
         });
+        tabular.advanced_editor.show_find_replace = true;
+        tabular.advanced_editor.focus_find_input = true;
+        if tabular.selection_start < tabular.selection_end
+            && tabular.selection_end <= tabular.editor.text.len()
+        {
+            let sel = tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
+            if !sel.contains('\n') && !sel.is_empty() {
+                tabular.advanced_editor.find_text = sel;
+            }
+            if tabular.advanced_editor.in_selection {
+                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+            }
+        }
+        ui.ctx().request_repaint();
+    }
+
+    // Shortcut: Replace (Cmd/Ctrl + H)
+    let mut trigger_replace = false;
+    ui.input(|i| {
+        let cmd_or_ctrl = i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl;
+        if cmd_or_ctrl && i.key_pressed(egui::Key::H) {
+            trigger_replace = true;
+        }
+    });
+    if trigger_replace {
+        ui.ctx().input_mut(|ri| {
+            ri.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::H,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+        });
+        tabular.advanced_editor.show_find_replace = true;
+        tabular.advanced_editor.show_replace_row = true;
+        tabular.advanced_editor.focus_find_input = true;
+        if tabular.selection_start < tabular.selection_end
+            && tabular.selection_end <= tabular.editor.text.len()
+        {
+            let sel = tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
+            if !sel.contains('\n') && !sel.is_empty() {
+                tabular.advanced_editor.find_text = sel;
+            }
+            if tabular.advanced_editor.in_selection {
+                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+            }
+        }
+        ui.ctx().request_repaint();
+    }
+
+    // Shortcut: Find Next (F3 or Cmd/Ctrl + G) & Find Previous (Shift+F3 or Cmd/Ctrl + Shift + G)
+    let mut trigger_find_next_key = false;
+    let mut trigger_find_prev_key = false;
+    ui.input(|i| {
+        let cmd_or_ctrl = i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl;
+        if i.key_pressed(egui::Key::F3) || (cmd_or_ctrl && i.key_pressed(egui::Key::G)) {
+            if i.modifiers.shift {
+                trigger_find_prev_key = true;
+            } else {
+                trigger_find_next_key = true;
+            }
+        }
+    });
+    if trigger_find_next_key {
+        find_next_match(tabular, ui);
+    }
+    if trigger_find_prev_key {
+        find_previous_match(tabular, ui);
     }
 
     // ----- Pre-widget key handling & indentation (no active borrow of editor_text) -----
@@ -3263,6 +3323,114 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         }
     }
 
+    // Paint find & replace match highlights on buffer
+    if tabular.advanced_editor.show_find_replace && !tabular.advanced_editor.find_text.is_empty() {
+        let matches_res = get_search_matches(
+            &tabular.editor.text,
+            &tabular.advanced_editor.find_text,
+            tabular.advanced_editor.case_sensitive,
+            tabular.advanced_editor.whole_word,
+            tabular.advanced_editor.use_regex,
+            tabular.advanced_editor.in_selection,
+            tabular.advanced_editor.selection_range,
+        );
+
+        match matches_res {
+            Ok(matches) => {
+                tabular.advanced_editor.regex_error = None;
+                tabular.advanced_editor.match_count = matches.len();
+
+                let match_painter = ui.painter().with_clip_rect(text_clip_rect);
+                let to_char_index = |s: &str, byte_idx: usize| -> usize {
+                    let clamped = byte_idx.min(s.len());
+                    s[..clamped].chars().count()
+                };
+
+                // Draw scope background if in_selection is enabled
+                if tabular.advanced_editor.in_selection {
+                    if let Some((sel_s, sel_e)) = tabular.advanced_editor.selection_range {
+                        let sel_s = sel_s.min(tabular.editor.text.len());
+                        let sel_e = sel_e.min(tabular.editor.text.len());
+                        if sel_s < sel_e {
+                            let s_ci = to_char_index(&tabular.editor.text, sel_s);
+                            let e_ci = to_char_index(&tabular.editor.text, sel_e);
+                            let r = CCursorRange::two(CCursor::new(s_ci), CCursor::new(e_ci));
+                            let [min_c, max_c] = r.sorted_cursors();
+                            let min_l = galley.layout_from_cursor(min_c);
+                            let max_l = galley.layout_from_cursor(max_c);
+                            for row_idx in min_l.row..=max_l.row {
+                                if row_idx < galley.rows.len() {
+                                    let placed_row = &galley.rows[row_idx];
+                                    let row = &placed_row.row;
+                                    let left_local = if row_idx == min_l.row { row.x_offset(min_l.column) } else { 0.0 };
+                                    let right_local = if row_idx == max_l.row { row.x_offset(max_l.column) } else { row.size.x };
+                                    let row_top = galley_pos.y + placed_row.min_y();
+                                    let row_bottom = galley_pos.y + placed_row.max_y();
+                                    let left = galley_pos.x + placed_row.pos.x + left_local;
+                                    let right = galley_pos.x + placed_row.pos.x + right_local;
+                                    let scope_rect = egui::Rect::from_min_max(egui::pos2(left, row_top), egui::pos2(right, row_bottom));
+                                    if scope_rect.is_positive() {
+                                        match_painter.rect_filled(scope_rect, 1.0, egui::Color32::from_rgba_unmultiplied(59, 130, 246, 30));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Draw each match highlight
+                for (idx, m) in matches.iter().enumerate() {
+                    let is_active = idx == tabular.advanced_editor.current_match_index;
+                    let fill_color = if is_active {
+                        egui::Color32::from_rgba_unmultiplied(245, 158, 11, 170) // Amber bright
+                    } else {
+                        egui::Color32::from_rgba_unmultiplied(234, 179, 8, 75) // Translucent yellow
+                    };
+                    let stroke = if is_active {
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(251, 191, 36))
+                    } else {
+                        egui::Stroke::NONE
+                    };
+
+                    let start_ci = to_char_index(&tabular.editor.text, m.start);
+                    let end_ci = to_char_index(&tabular.editor.text, m.end);
+                    let range = CCursorRange::two(CCursor::new(start_ci), CCursor::new(end_ci));
+                    let [min_c, max_c] = range.sorted_cursors();
+                    let min_l = galley.layout_from_cursor(min_c);
+                    let max_l = galley.layout_from_cursor(max_c);
+
+                    for row_idx in min_l.row..=max_l.row {
+                        if row_idx < galley.rows.len() {
+                            let placed_row = &galley.rows[row_idx];
+                            let row = &placed_row.row;
+                            let left_local = if row_idx == min_l.row { row.x_offset(min_l.column) } else { 0.0 };
+                            let right_local = if row_idx == max_l.row {
+                                row.x_offset(max_l.column)
+                            } else {
+                                let newline_size = if placed_row.ends_with_newline { row.height() / 2.0 } else { 0.0 };
+                                row.size.x + newline_size
+                            };
+
+                            let row_top = galley_pos.y + placed_row.min_y();
+                            let row_bottom = galley_pos.y + placed_row.max_y();
+                            let left = galley_pos.x + placed_row.pos.x + left_local;
+                            let right = galley_pos.x + placed_row.pos.x + right_local;
+
+                            let h_rect = egui::Rect::from_min_max(egui::pos2(left, row_top), egui::pos2(right, row_bottom));
+                            if h_rect.is_positive() {
+                                match_painter.rect(h_rect, 2.0, fill_color, stroke, egui::StrokeKind::Outside);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tabular.advanced_editor.regex_error = Some(e);
+                tabular.advanced_editor.match_count = 0;
+            }
+        }
+    }
+
     // Paint extra cursors and selection highlights (after gutter so they appear above text)
     if !tabular.multi_selection.is_empty() {
         let galley = galley.clone();
@@ -4174,6 +4342,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.scroll_to_rect(caret_rect, None);
         log::debug!("📜 Requesting scroll to {:?} (newline={})", caret_rect, inserted_newline_this_frame);
     }
+
+    // Render floating Find & Replace panel overlay
+    if tabular.advanced_editor.show_find_replace {
+        render_find_replace_floating_panel(tabular, ui, response.rect);
+    }
 }
 
 // ─── Inline --AI...-- block helpers ──────────────────────────────────────────
@@ -4371,10 +4544,10 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                     ).on_hover_text(format!("Schema context will be sent with every prompt:\n\n{}", &schema_preview.chars().take(600).collect::<String>()));
                 };
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕").on_hover_text("Close panel (Cmd+Shift+A)").clicked() {
+                    if ui.small_button(egui_icons::icons::ICON_CLOSE.codepoint).on_hover_text("Close panel (Cmd+Shift+A)").clicked() {
                         tabular.show_ai_panel = false;
                     }
-                    if ui.small_button("⚙").on_hover_text("Open AI settings").clicked() {
+                    if ui.small_button(egui_icons::icons::ICON_SETTINGS.codepoint).on_hover_text("Open AI settings").clicked() {
                         tabular.show_settings_window = true;
                         tabular.settings_active_pref_tab = crate::window_egui::PrefTab::AiAssistant;
                     }
@@ -4762,61 +4935,681 @@ pub(crate) fn toggle_line_comment(tabular: &mut window_egui::Tabular) {
     editor_autocomplete::update_autocomplete(tabular);
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorSearchMatch {
+    pub start: usize,
+    pub end: usize,
+}
+
+pub fn get_search_matches(
+    text: &str,
+    pattern: &str,
+    case_sensitive: bool,
+    whole_word: bool,
+    use_regex: bool,
+    in_selection: bool,
+    selection_range: Option<(usize, usize)>,
+) -> Result<Vec<EditorSearchMatch>, String> {
+    if pattern.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let (scope_start, scope_end) = if in_selection {
+        if let Some((s, e)) = selection_range {
+            let s_clamped = s.min(text.len());
+            let e_clamped = e.min(text.len());
+            if s_clamped < e_clamped {
+                (s_clamped, e_clamped)
+            } else {
+                (0, text.len())
+            }
+        } else {
+            (0, text.len())
+        }
+    } else {
+        (0, text.len())
+    };
+
+    let scoped_text = &text[scope_start..scope_end];
+
+    if use_regex {
+        let pattern_to_compile = if whole_word {
+            format!(r"\b(?:{})\b", pattern)
+        } else {
+            pattern.to_string()
+        };
+
+        let re = regex::RegexBuilder::new(&pattern_to_compile)
+            .case_insensitive(!case_sensitive)
+            .multi_line(true)
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let matches = re
+            .find_iter(scoped_text)
+            .map(|m| EditorSearchMatch {
+                start: scope_start + m.start(),
+                end: scope_start + m.end(),
+            })
+            .collect();
+        Ok(matches)
+    } else if whole_word {
+        let escaped = regex::escape(pattern);
+        let pattern_to_compile = format!(r"\b{}\b", escaped);
+        let re = regex::RegexBuilder::new(&pattern_to_compile)
+            .case_insensitive(!case_sensitive)
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let matches = re
+            .find_iter(scoped_text)
+            .map(|m| EditorSearchMatch {
+                start: scope_start + m.start(),
+                end: scope_start + m.end(),
+            })
+            .collect();
+        Ok(matches)
+    } else if case_sensitive {
+        let mut matches = Vec::new();
+        let pat_len = pattern.len();
+        if pat_len == 0 {
+            return Ok(matches);
+        }
+        let mut cursor = 0;
+        while let Some(pos) = scoped_text[cursor..].find(pattern) {
+            let start = scope_start + cursor + pos;
+            let end = start + pat_len;
+            matches.push(EditorSearchMatch { start, end });
+            cursor += pos + pat_len.max(1);
+            if cursor >= scoped_text.len() {
+                break;
+            }
+        }
+        Ok(matches)
+    } else {
+        let mut matches = Vec::new();
+        let pat_lower = pattern.to_lowercase();
+        let scoped_lower = scoped_text.to_lowercase();
+        let pat_len = pattern.len();
+        if pat_len == 0 {
+            return Ok(matches);
+        }
+        let mut cursor = 0;
+        while let Some(pos) = scoped_lower[cursor..].find(&pat_lower) {
+            let start = scope_start + cursor + pos;
+            let end = start + pat_len;
+            matches.push(EditorSearchMatch { start, end });
+            cursor += pos + pat_len.max(1);
+            if cursor >= scoped_lower.len() {
+                break;
+            }
+        }
+        Ok(matches)
+    }
+}
+
+pub(crate) fn find_next_match(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
+    let matches = match get_search_matches(
+        &tabular.editor.text,
+        &tabular.advanced_editor.find_text,
+        tabular.advanced_editor.case_sensitive,
+        tabular.advanced_editor.whole_word,
+        tabular.advanced_editor.use_regex,
+        tabular.advanced_editor.in_selection,
+        tabular.advanced_editor.selection_range,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            tabular.advanced_editor.regex_error = Some(e);
+            return;
+        }
+    };
+    tabular.advanced_editor.regex_error = None;
+    tabular.advanced_editor.match_count = matches.len();
+
+    if matches.is_empty() {
+        return;
+    }
+
+    let next_idx = if tabular.advanced_editor.current_match_index + 1 >= matches.len() {
+        0
+    } else {
+        tabular.advanced_editor.current_match_index + 1
+    };
+    tabular.advanced_editor.current_match_index = next_idx;
+    let target = &matches[next_idx];
+
+    // Select the match in the editor
+    tabular.selection_start = target.start;
+    tabular.selection_end = target.end;
+    tabular.cursor_position = target.end;
+    tabular.pending_cursor_set = Some(target.end);
+    tabular.selected_text = tabular.editor.text[target.start..target.end].to_string();
+
+    let id = ui.make_persistent_id("sql_editor");
+    let to_char_index = |s: &str, byte_idx: usize| -> usize {
+        let b = byte_idx.min(s.len());
+        s[..b].chars().count()
+    };
+    let start_ci = to_char_index(&tabular.editor.text, target.start);
+    let end_ci = to_char_index(&tabular.editor.text, target.end);
+    crate::editor_state_adapter::EditorStateAdapter::set_selection(
+        ui.ctx(),
+        id,
+        start_ci,
+        end_ci,
+        end_ci,
+    );
+    ui.ctx().request_repaint();
+}
+
+pub(crate) fn find_previous_match(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
+    let matches = match get_search_matches(
+        &tabular.editor.text,
+        &tabular.advanced_editor.find_text,
+        tabular.advanced_editor.case_sensitive,
+        tabular.advanced_editor.whole_word,
+        tabular.advanced_editor.use_regex,
+        tabular.advanced_editor.in_selection,
+        tabular.advanced_editor.selection_range,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            tabular.advanced_editor.regex_error = Some(e);
+            return;
+        }
+    };
+    tabular.advanced_editor.regex_error = None;
+    tabular.advanced_editor.match_count = matches.len();
+
+    if matches.is_empty() {
+        return;
+    }
+
+    let prev_idx = if tabular.advanced_editor.current_match_index == 0 {
+        matches.len().saturating_sub(1)
+    } else {
+        tabular.advanced_editor.current_match_index - 1
+    };
+    tabular.advanced_editor.current_match_index = prev_idx;
+    let target = &matches[prev_idx];
+
+    // Select the match in the editor
+    tabular.selection_start = target.start;
+    tabular.selection_end = target.end;
+    tabular.cursor_position = target.end;
+    tabular.pending_cursor_set = Some(target.end);
+    tabular.selected_text = tabular.editor.text[target.start..target.end].to_string();
+
+    let id = ui.make_persistent_id("sql_editor");
+    let to_char_index = |s: &str, byte_idx: usize| -> usize {
+        let b = byte_idx.min(s.len());
+        s[..b].chars().count()
+    };
+    let start_ci = to_char_index(&tabular.editor.text, target.start);
+    let end_ci = to_char_index(&tabular.editor.text, target.end);
+    crate::editor_state_adapter::EditorStateAdapter::set_selection(
+        ui.ctx(),
+        id,
+        start_ci,
+        end_ci,
+        end_ci,
+    );
+    ui.ctx().request_repaint();
+}
+
+pub(crate) fn perform_replace_current(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
+    if tabular.advanced_editor.find_text.is_empty() {
+        return;
+    }
+    let matches = match get_search_matches(
+        &tabular.editor.text,
+        &tabular.advanced_editor.find_text,
+        tabular.advanced_editor.case_sensitive,
+        tabular.advanced_editor.whole_word,
+        tabular.advanced_editor.use_regex,
+        tabular.advanced_editor.in_selection,
+        tabular.advanced_editor.selection_range,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            tabular.advanced_editor.regex_error = Some(e);
+            return;
+        }
+    };
+    tabular.advanced_editor.regex_error = None;
+    tabular.advanced_editor.match_count = matches.len();
+
+    if matches.is_empty() {
+        return;
+    }
+
+    let cur_idx = tabular.advanced_editor.current_match_index.min(matches.len() - 1);
+    let target = &matches[cur_idx];
+
+    let replacement = if tabular.advanced_editor.use_regex {
+        if let Ok(re) = regex::RegexBuilder::new(&tabular.advanced_editor.find_text)
+            .case_insensitive(!tabular.advanced_editor.case_sensitive)
+            .build()
+        {
+            let matched_slice = &tabular.editor.text[target.start..target.end];
+            re.replace(matched_slice, &tabular.advanced_editor.replace_text).to_string()
+        } else {
+            tabular.advanced_editor.replace_text.clone()
+        }
+    } else {
+        tabular.advanced_editor.replace_text.clone()
+    };
+
+    let rep_len = replacement.len();
+    let old_range = target.start..target.end;
+    tabular.editor.apply_single_replace(old_range, &replacement);
+    tabular.highlight_cache.clear();
+
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.content = tabular.editor.text.clone();
+        tab.is_modified = true;
+    }
+
+    // After replacing, compute new matches and advance cursor to next match
+    let new_matches = get_search_matches(
+        &tabular.editor.text,
+        &tabular.advanced_editor.find_text,
+        tabular.advanced_editor.case_sensitive,
+        tabular.advanced_editor.whole_word,
+        tabular.advanced_editor.use_regex,
+        tabular.advanced_editor.in_selection,
+        tabular.advanced_editor.selection_range,
+    ).unwrap_or_default();
+
+    tabular.advanced_editor.match_count = new_matches.len();
+    if !new_matches.is_empty() {
+        let next_idx = cur_idx.min(new_matches.len() - 1);
+        tabular.advanced_editor.current_match_index = next_idx;
+        let next_target = &new_matches[next_idx];
+        tabular.selection_start = next_target.start;
+        tabular.selection_end = next_target.end;
+        tabular.cursor_position = next_target.end;
+        tabular.pending_cursor_set = Some(next_target.end);
+        tabular.selected_text = tabular.editor.text[next_target.start..next_target.end].to_string();
+
+        let id = ui.make_persistent_id("sql_editor");
+        let to_char_index = |s: &str, byte_idx: usize| -> usize {
+            let b = byte_idx.min(s.len());
+            s[..b].chars().count()
+        };
+        let start_ci = to_char_index(&tabular.editor.text, next_target.start);
+        let end_ci = to_char_index(&tabular.editor.text, next_target.end);
+        crate::editor_state_adapter::EditorStateAdapter::set_selection(
+            ui.ctx(),
+            id,
+            start_ci,
+            end_ci,
+            end_ci,
+        );
+    } else {
+        tabular.advanced_editor.current_match_index = 0;
+        tabular.cursor_position = target.start + rep_len;
+        tabular.selection_start = tabular.cursor_position;
+        tabular.selection_end = tabular.cursor_position;
+    }
+    ui.ctx().request_repaint();
+}
+
 pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
     if tabular.advanced_editor.find_text.is_empty() {
         return;
     }
 
-    let find_text = &tabular.advanced_editor.find_text;
-    let replace_text = &tabular.advanced_editor.replace_text;
-
-    let new_text = if tabular.advanced_editor.use_regex {
-        if let Ok(re) = regex::Regex::new(find_text) {
-            re.replace_all(&tabular.editor.text, replace_text)
-                .into_owned()
-        } else {
+    let matches = match get_search_matches(
+        &tabular.editor.text,
+        &tabular.advanced_editor.find_text,
+        tabular.advanced_editor.case_sensitive,
+        tabular.advanced_editor.whole_word,
+        tabular.advanced_editor.use_regex,
+        tabular.advanced_editor.in_selection,
+        tabular.advanced_editor.selection_range,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            tabular.advanced_editor.regex_error = Some(e);
             return;
         }
-    } else if tabular.advanced_editor.case_sensitive {
-        tabular.editor.text.replace(find_text, replace_text)
+    };
+    tabular.advanced_editor.regex_error = None;
+
+    if matches.is_empty() {
+        return;
+    }
+
+    let find_text = tabular.advanced_editor.find_text.clone();
+    let replace_text = tabular.advanced_editor.replace_text.clone();
+    let use_regex = tabular.advanced_editor.use_regex;
+
+    let regex_compiled = if use_regex {
+        let pattern_to_compile = if tabular.advanced_editor.whole_word {
+            format!(r"\b(?:{})\b", find_text)
+        } else {
+            find_text.clone()
+        };
+        regex::RegexBuilder::new(&pattern_to_compile)
+            .case_insensitive(!tabular.advanced_editor.case_sensitive)
+            .build()
+            .ok()
     } else {
-        // case-insensitive simple replace
-        let src = tabular.editor.text.clone();
-        let find_lower = find_text.to_lowercase();
-        let mut result = String::new();
-        let mut last = 0;
-        let src_lower = src.to_lowercase();
-        let mut i = 0;
-        while let Some(pos) = src_lower[i..].find(&find_lower) {
-            let start = i + pos;
-            result.push_str(&src[last..start]);
-            result.push_str(replace_text);
-            last = start + find_lower.len();
-            i = last;
-        }
-        result.push_str(&src[last..]);
-        result
+        None
     };
 
-    // Bulk set text via buffer to keep rope in sync and record undo
-    tabular.editor.set_text(new_text.clone());
-    // Keep cursor within bounds
+    for m in matches.into_iter().rev() {
+        let rep = if let Some(ref re) = regex_compiled {
+            let matched_slice = &tabular.editor.text[m.start..m.end];
+            re.replace(matched_slice, &replace_text).to_string()
+        } else {
+            replace_text.clone()
+        };
+        tabular.editor.apply_single_replace(m.start..m.end, &rep);
+    }
+
+    tabular.highlight_cache.clear();
     tabular.cursor_position = tabular.cursor_position.min(tabular.editor.text.len());
-    // Update current tab content
+    tabular.selection_start = tabular.cursor_position;
+    tabular.selection_end = tabular.cursor_position;
+    tabular.selected_text.clear();
+    tabular.advanced_editor.match_count = 0;
+    tabular.advanced_editor.current_match_index = 0;
+
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-        tab.content = new_text;
+        tab.content = tabular.editor.text.clone();
         tab.is_modified = true;
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn find_next(tabular: &mut window_egui::Tabular) {
-    // This is a simplified find implementation
-    // In a real implementation, you'd want to track cursor position and highlight matches
-    if !tabular.advanced_editor.find_text.is_empty()
-        && let Some(_pos) = tabular.editor.text.find(&tabular.advanced_editor.find_text)
-    {
-        // In a full implementation, you would scroll to and highlight the match
-        debug!("Found match for: {}", tabular.advanced_editor.find_text);
+    if !tabular.advanced_editor.find_text.is_empty() {
+        let matches = get_search_matches(
+            &tabular.editor.text,
+            &tabular.advanced_editor.find_text,
+            tabular.advanced_editor.case_sensitive,
+            tabular.advanced_editor.whole_word,
+            tabular.advanced_editor.use_regex,
+            tabular.advanced_editor.in_selection,
+            tabular.advanced_editor.selection_range,
+        ).unwrap_or_default();
+        if !matches.is_empty() {
+            let next_idx = (tabular.advanced_editor.current_match_index + 1) % matches.len();
+            tabular.advanced_editor.current_match_index = next_idx;
+            tabular.cursor_position = matches[next_idx].end;
+            tabular.selection_start = matches[next_idx].start;
+            tabular.selection_end = matches[next_idx].end;
+        }
+    }
+}
+
+fn render_toggle_button(
+    ui: &mut egui::Ui,
+    is_active: &mut bool,
+    text: &str,
+    tooltip: &str,
+) -> egui::Response {
+    let active = *is_active;
+    let bg = if active {
+        if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(37, 99, 235)
+        } else {
+            egui::Color32::from_rgb(59, 130, 246)
+        }
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let fg = if active {
+        egui::Color32::WHITE
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let stroke = if active {
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(96, 165, 250))
+    } else {
+        egui::Stroke::NONE
+    };
+
+    let btn = egui::Button::new(egui::RichText::new(text).monospace().size(11.0).color(fg))
+        .fill(bg)
+        .stroke(stroke)
+        .min_size(egui::vec2(22.0, 20.0))
+        .corner_radius(egui::CornerRadius::same(3u8));
+
+    let resp = ui.add(btn).on_hover_text(tooltip);
+    if resp.clicked() {
+        *is_active = !*is_active;
+    }
+    resp
+}
+
+pub(crate) fn render_find_replace_floating_panel(
+    tabular: &mut window_egui::Tabular,
+    ui: &mut egui::Ui,
+    _editor_rect: egui::Rect,
+) {
+    let visible_rect = ui.clip_rect();
+    let panel_pos = egui::pos2(
+        (visible_rect.max.x - 16.0).max(visible_rect.min.x + 300.0),
+        visible_rect.min.y + 8.0,
+    );
+
+    let area_id = egui::Id::new("floating_find_replace_panel");
+    let mut close_requested = false;
+    let mut find_next_requested = false;
+    let mut find_prev_requested = false;
+    let mut replace_current_requested = false;
+    let mut replace_all_requested = false;
+
+    egui::Area::new(area_id)
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(panel_pos)
+        .show(ui.ctx(), |area_ui| {
+            let is_dark = area_ui.visuals().dark_mode;
+            let bg_color = if is_dark {
+                egui::Color32::from_rgb(26, 28, 35)
+            } else {
+                egui::Color32::from_rgb(248, 249, 252)
+            };
+            let border_color = if is_dark {
+                egui::Color32::from_rgb(55, 62, 78)
+            } else {
+                egui::Color32::from_rgb(210, 216, 228)
+            };
+            let shadow_color = if is_dark {
+                egui::Color32::from_black_alpha(120)
+            } else {
+                egui::Color32::from_black_alpha(40)
+            };
+
+            egui::Frame::new()
+                .fill(bg_color)
+                .stroke(egui::Stroke::new(1.0, border_color))
+                .corner_radius(egui::CornerRadius::same(7u8))
+                .shadow(egui::Shadow {
+                    offset: [0, 4],
+                    blur: 12,
+                    spread: 0,
+                    color: shadow_color,
+                })
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(area_ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(5.0, 4.0);
+
+                    // Row 1: Find Row
+                    ui.horizontal(|ui| {
+                        // Chevron toggle for replace row
+                        let chevron_icon = if tabular.advanced_editor.show_replace_row {
+                            egui_icons::icons::ICON_EXPAND_MORE
+                        } else {
+                            egui_icons::icons::ICON_CHEVRON_RIGHT
+                        };
+                        let chevron_btn = egui::Button::new(
+                            chevron_icon.rich_text().size(13.0).color(ui.visuals().weak_text_color())
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::NONE)
+                        .min_size(egui::vec2(16.0, 20.0));
+
+                        if ui.add(chevron_btn).on_hover_text("Toggle Replace (Cmd+H)").clicked() {
+                            tabular.advanced_editor.show_replace_row = !tabular.advanced_editor.show_replace_row;
+                        }
+
+                        // Find Input Field
+                        let find_input_id = ui.make_persistent_id("editor_find_input");
+                        let find_edit = egui::TextEdit::singleline(&mut tabular.advanced_editor.find_text)
+                            .id(find_input_id)
+                            .hint_text("Find")
+                            .desired_width(150.0);
+
+                        let find_resp = ui.add(find_edit);
+
+                        if tabular.advanced_editor.focus_find_input {
+                            find_resp.request_focus();
+                            tabular.advanced_editor.focus_find_input = false;
+                        }
+
+                        // Keyboard shortcuts when Find input is focused
+                        if find_resp.has_focus() {
+                            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                if ui.input(|i| i.modifiers.shift) {
+                                    find_prev_requested = true;
+                                } else {
+                                    find_next_requested = true;
+                                }
+                            }
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                close_requested = true;
+                            }
+                        }
+
+                        // Toggle Buttons (Aa, \b, .*, ☵)
+                        render_toggle_button(ui, &mut tabular.advanced_editor.case_sensitive, "Aa", "Match Case (Alt+C)");
+                        render_toggle_button(ui, &mut tabular.advanced_editor.whole_word, "\\b", "Match Whole Word (Alt+W)");
+                        render_toggle_button(ui, &mut tabular.advanced_editor.use_regex, ".*", "Use Regular Expression (Alt+R)");
+
+                        let in_sel_changed = render_toggle_button(ui, &mut tabular.advanced_editor.in_selection, "☵", "Find in Selection (Alt+L)").changed();
+                        if in_sel_changed && tabular.advanced_editor.in_selection {
+                            if tabular.selection_start < tabular.selection_end {
+                                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+                            } else {
+                                tabular.advanced_editor.selection_range = None;
+                            }
+                        }
+
+                        // Match Count or Status
+                        let count_text = if tabular.advanced_editor.regex_error.is_some() {
+                            egui::RichText::new("⚠️ Regex error").size(11.0).color(egui::Color32::from_rgb(239, 68, 68))
+                        } else if tabular.advanced_editor.find_text.is_empty() {
+                            egui::RichText::new("").size(11.0)
+                        } else if tabular.advanced_editor.match_count > 0 {
+                            let curr = tabular.advanced_editor.current_match_index + 1;
+                            let total = tabular.advanced_editor.match_count;
+                            egui::RichText::new(format!("{} of {}", curr, total))
+                                .size(11.0)
+                                .color(ui.visuals().weak_text_color())
+                        } else {
+                            egui::RichText::new("No results")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(239, 68, 68))
+                        };
+
+                        let count_label = ui.add_sized([55.0, 20.0], egui::Label::new(count_text));
+                        if let Some(ref err) = tabular.advanced_editor.regex_error {
+                            count_label.on_hover_text(format!("Regex error: {}", err));
+                        }
+
+                        // Previous / Next buttons
+                        let prev_btn = egui::Button::new(egui_icons::icons::ICON_KEYBOARD_ARROW_UP.rich_text().size(13.0))
+                            .min_size(egui::vec2(22.0, 20.0));
+                        if ui.add(prev_btn).on_hover_text("Previous Match (Shift+Enter)").clicked() {
+                            find_prev_requested = true;
+                        }
+
+                        let next_btn = egui::Button::new(egui_icons::icons::ICON_KEYBOARD_ARROW_DOWN.rich_text().size(13.0))
+                            .min_size(egui::vec2(22.0, 20.0));
+                        if ui.add(next_btn).on_hover_text("Next Match (Enter)").clicked() {
+                            find_next_requested = true;
+                        }
+
+                        // Close Button
+                        let close_btn = egui::Button::new(egui_icons::icons::ICON_CLOSE.rich_text().size(12.0))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE)
+                            .min_size(egui::vec2(20.0, 20.0));
+                        if ui.add(close_btn).on_hover_text("Close (Escape)").clicked() {
+                            close_requested = true;
+                        }
+                    });
+
+                    // Row 2: Replace Row (if enabled)
+                    if tabular.advanced_editor.show_replace_row {
+                        ui.horizontal(|ui| {
+                            // Empty spacing to align with chevron
+                            ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::hover());
+
+                            let replace_input_id = ui.make_persistent_id("editor_replace_input");
+                            let replace_edit = egui::TextEdit::singleline(&mut tabular.advanced_editor.replace_text)
+                                .id(replace_input_id)
+                                .hint_text("Replace")
+                                .desired_width(150.0);
+
+                            let replace_resp = ui.add(replace_edit);
+
+                            if replace_resp.has_focus() {
+                                let alt_pressed = ui.input(|i| i.modifiers.alt);
+                                let cmd_pressed = ui.input(|i| i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl);
+
+                                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    if alt_pressed || (cmd_pressed && alt_pressed) {
+                                        replace_all_requested = true;
+                                    } else {
+                                        replace_current_requested = true;
+                                    }
+                                }
+                                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    close_requested = true;
+                                }
+                            }
+
+                            // Replace buttons
+                            let rep_btn = egui::Button::new(egui::RichText::new("Replace").size(11.0))
+                                .min_size(egui::vec2(58.0, 20.0));
+                            if ui.add(rep_btn).on_hover_text("Replace (Enter)").clicked() {
+                                replace_current_requested = true;
+                            }
+
+                            let rep_all_btn = egui::Button::new(egui::RichText::new("Replace All").size(11.0))
+                                .min_size(egui::vec2(76.0, 20.0));
+                            if ui.add(rep_all_btn).on_hover_text("Replace All (Alt+Enter)").clicked() {
+                                replace_all_requested = true;
+                            }
+                        });
+                    }
+                });
+        });
+
+    if close_requested {
+        tabular.advanced_editor.show_find_replace = false;
+        let id = ui.make_persistent_id("sql_editor");
+        ui.memory_mut(|m| m.request_focus(id));
+        ui.ctx().request_repaint();
+    }
+    if find_next_requested {
+        find_next_match(tabular, ui);
+    }
+    if find_prev_requested {
+        find_previous_match(tabular, ui);
+    }
+    if replace_current_requested {
+        perform_replace_current(tabular, ui);
+    }
+    if replace_all_requested {
+        perform_replace_all(tabular);
     }
 }
 
@@ -5091,17 +5884,17 @@ pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &e
 
                                                 // Parse category & shortcut
                                                 let (cat, icon) = if command.starts_with("Table: ") {
-                                                    ("Tables & Views", "📋")
+                                                    ("Tables & Views", egui_icons::icons::MDI_TABLE.codepoint)
                                                 } else if command.starts_with("View: ") {
-                                                    ("Tables & Views", "👁️")
+                                                    ("Tables & Views", egui_icons::icons::ICON_VISIBILITY.codepoint)
                                                 } else if command.starts_with("Preferences: ") {
-                                                    ("Preferences", "⚙️")
+                                                    ("Preferences", egui_icons::icons::ICON_SETTINGS.codepoint)
                                                 } else if command.starts_with("Data: ") {
-                                                    ("Data Tools", "📊")
+                                                    ("Data Tools", egui_icons::icons::ICON_BAR_CHART.codepoint)
                                                 } else if command.starts_with("Transaction: ") {
-                                                    ("Transactions", "🔒")
+                                                    ("Transactions", egui_icons::icons::ICON_LOCK.codepoint)
                                                 } else {
-                                                    ("Actions", "⚡")
+                                                    ("Actions", egui_icons::icons::ICON_BOLT.codepoint)
                                                 };
 
                                                 if cat != last_category && tabular.command_palette_input.is_empty() {

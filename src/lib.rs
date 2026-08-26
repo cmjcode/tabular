@@ -158,8 +158,9 @@ pub fn run() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Tabular",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
             log_startup_step("eframe creation closure entered");
+            egui_icons::initialize(&cc.egui_ctx);
             let app = window_egui::Tabular::new();
             log_startup_step("Tabular::new() returned");
             Ok(Box::new(app))

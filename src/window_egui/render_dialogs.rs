@@ -747,7 +747,7 @@ impl super::Tabular {
 
                 let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), self.ui_mode);
                 let button_size = if metrics.is_touch { egui::vec2(44.0, 40.0) } else { egui::vec2(26.0, 24.0) };
-                let icon_size = if metrics.is_touch { 16.0 } else { 8.0 };
+                let icon_size = if metrics.is_touch { 18.0 } else { 12.0 };
                 let _button_spacing = 2.0;
                 let button_corner = if metrics.is_touch { 6_u8 } else { 2_u8 };
                 let right_margin = 6.0; // Compact right margin to align closely with editor border
@@ -757,9 +757,9 @@ impl super::Tabular {
                 );
                 let is_loading = self.query_execution_in_progress || self.pool_wait_in_progress;
                 let play_text = if is_loading {
-                    egui::RichText::new("⏳").color(egui::Color32::WHITE).size(icon_size)
+                    egui_icons::icons::ICON_HOURGLASS_EMPTY.rich_text().color(egui::Color32::WHITE).size(icon_size)
                 } else {
-                    egui::RichText::new("▶")
+                    egui_icons::icons::ICON_PLAY_ARROW.rich_text()
                         .color(egui::Color32::WHITE)
                         .size(icon_size)
                 };
@@ -901,7 +901,7 @@ impl super::Tabular {
                                         ui.add_space(4.0);
                                     }
 
-                                    let format_button = egui::Button::new(egui::RichText::new("</>").size(icon_size))
+                                    let format_button = egui::Button::new(egui_icons::icons::MDI_CODE_BRACES.rich_text().size(icon_size))
                                         .min_size(egui::vec2(button_size.x, button_size.y))
                                         .fill(base_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))
@@ -914,7 +914,7 @@ impl super::Tabular {
                                         format_clicked = true;
                                     }
 
-                                    let explain_button = egui::Button::new(egui::RichText::new("🔍").size(icon_size))
+                                    let explain_button = egui::Button::new(egui_icons::icons::ICON_INSIGHTS.rich_text().size(icon_size))
                                         .min_size(egui::vec2(button_size.x, button_size.y))
                                         .fill(base_fill)
                                         .stroke(egui::Stroke::new(1.0, base_border))

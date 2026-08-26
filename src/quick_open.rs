@@ -38,14 +38,14 @@ impl QuickOpenKind {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            Self::Table => "📋",
-            Self::View => "👁️",
-            Self::Procedure => "📦",
-            Self::Function => "⚡",
-            Self::SavedQuery => "📜",
-            Self::History => "🕒",
-            Self::Connection => "🔗",
-            Self::Command => "⚡",
+            Self::Table => egui_icons::icons::MDI_TABLE.codepoint,
+            Self::View => egui_icons::icons::ICON_VISIBILITY.codepoint,
+            Self::Procedure => egui_icons::icons::MDI_PACKAGE_VARIANT.codepoint,
+            Self::Function => egui_icons::icons::MDI_FUNCTION.codepoint,
+            Self::SavedQuery => egui_icons::icons::ICON_DESCRIPTION.codepoint,
+            Self::History => egui_icons::icons::ICON_HISTORY.codepoint,
+            Self::Connection => egui_icons::icons::MDI_DATABASE.codepoint,
+            Self::Command => egui_icons::icons::ICON_TERMINAL.codepoint,
         }
     }
 
@@ -976,7 +976,7 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        egui::RichText::new("🔍")
+                                        egui_icons::icons::ICON_SEARCH.rich_text()
                                             .size(18.0)
                                             .color(accent_color),
                                     );
@@ -1025,19 +1025,23 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
 
                         // ─── CATEGORY FILTER PILLS ──────────────────────────────────
                         egui::Frame::new()
-                            .fill(if is_dark { egui::Color32::from_rgb(28, 30, 42) } else { egui::Color32::from_rgb(248, 250, 253) })
-                            .inner_margin(egui::Margin::symmetric(14, 8))
+                            .inner_margin(egui::Margin::symmetric(14, 6))
+                            .fill(if is_dark {
+                                egui::Color32::from_rgb(22, 25, 36)
+                            } else {
+                                egui::Color32::from_rgb(240, 243, 250)
+                            })
                             .show(ui, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     let categories: &[(Option<QuickOpenKind>, &str, &str)] = &[
-                                        (None, "All", "🌐"),
-                                        (Some(QuickOpenKind::Table), "Tables", "📋"),
-                                        (Some(QuickOpenKind::View), "Views", "👁️"),
-                                        (Some(QuickOpenKind::Procedure), "Procedures", "📦"),
-                                        (Some(QuickOpenKind::SavedQuery), "Saved Queries", "📜"),
-                                        (Some(QuickOpenKind::History), "History", "🕒"),
-                                        (Some(QuickOpenKind::Connection), "Connections", "🔗"),
-                                        (Some(QuickOpenKind::Command), "Commands", "⚡"),
+                                        (None, "All", egui_icons::icons::ICON_SELECT_ALL.codepoint),
+                                        (Some(QuickOpenKind::Table), "Tables", egui_icons::icons::MDI_TABLE.codepoint),
+                                        (Some(QuickOpenKind::View), "Views", egui_icons::icons::ICON_VISIBILITY.codepoint),
+                                        (Some(QuickOpenKind::Procedure), "Procedures", egui_icons::icons::MDI_PACKAGE_VARIANT.codepoint),
+                                        (Some(QuickOpenKind::SavedQuery), "Saved Queries", egui_icons::icons::ICON_DESCRIPTION.codepoint),
+                                        (Some(QuickOpenKind::History), "History", egui_icons::icons::ICON_HISTORY.codepoint),
+                                        (Some(QuickOpenKind::Connection), "Connections", egui_icons::icons::MDI_DATABASE.codepoint),
+                                        (Some(QuickOpenKind::Command), "Commands", egui_icons::icons::ICON_TERMINAL.codepoint),
                                     ];
 
                                     for (cat, label, icon) in categories {
