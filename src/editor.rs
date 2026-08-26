@@ -937,6 +937,52 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().request_repaint();
     }
 
+    // Shortcut: Explain Query (Cmd/Ctrl + Shift + E)
+    let mut trigger_explain_query = false;
+    ui.input(|i| {
+        if (i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl)
+            && i.modifiers.shift
+            && i.key_pressed(egui::Key::E)
+        {
+            trigger_explain_query = true;
+        }
+    });
+    if trigger_explain_query {
+        ui.ctx().input_mut(|ri| {
+            ri.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::E,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+        });
+        let id = egui::Id::new("sql_editor");
+        let mut direct_selected = String::new();
+        if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+            let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                s.char_indices().map(|(b, _)| b).chain(std::iter::once(s.len())).nth(char_idx).unwrap_or(s.len())
+            };
+            let start_b = to_byte_index(&tabular.editor.text, range.start);
+            let end_b = to_byte_index(&tabular.editor.text, range.end);
+            if start_b < end_b && end_b <= tabular.editor.text.len() {
+                direct_selected = tabular.editor.text[start_b..end_b].to_string();
+            }
+        }
+        let captured = if !direct_selected.trim().is_empty() {
+            direct_selected
+        } else if !tabular.selected_text.trim().is_empty() {
+            tabular.selected_text.clone()
+        } else {
+            extract_query_from_cursor(tabular)
+        };
+        explain_current_query(tabular, captured);
+        ui.ctx().request_repaint();
+    }
+
     // Shortcut: Go to DDL / Declaration (F12 or Cmd/Ctrl + B)
     let mut trigger_goto_def = false;
     ui.input(|i| {
@@ -4774,7 +4820,13 @@ pub(crate) fn find_next(tabular: &mut window_egui::Tabular) {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn open_command_palette(tabular: &mut window_egui::Tabular) {
+    crate::quick_open::open_quick_open(tabular);
+}
+
+#[allow(dead_code)]
+pub(crate) fn open_legacy_command_palette(tabular: &mut window_egui::Tabular) {
     tabular.show_command_palette = true;
     tabular.command_palette_input.clear();
     tabular.show_theme_selector = false;
@@ -5716,10 +5768,10 @@ pub(crate) fn explain_current_query(
         .map(|c| c.connection_type.clone());
 
     let prefix = match connection_type {
-        Some(crate::models::enums::DatabaseType::PostgreSQL) => "EXPLAIN (ANALYZE, FORMAT JSON) ",
+        Some(crate::models::enums::DatabaseType::PostgreSQL) => "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ",
         Some(crate::models::enums::DatabaseType::MySQL) => "EXPLAIN FORMAT=JSON ",
         Some(crate::models::enums::DatabaseType::SQLite) => "EXPLAIN QUERY PLAN ",
-        // MsSQL needs SET SHOWPLAN_ALL in its own batch — follow-up work.
+        Some(crate::models::enums::DatabaseType::MsSQL) => "SET STATISTICS XML ON; ",
         _ => {
             tabular
                 .toasts
@@ -6307,8 +6359,33 @@ pub(crate) fn process_query_result(
         } else {
             debug!("Skip saving to history karena hasil error");
         }
+        // Detect EXPLAIN output JSON/XML/text and set active view to Explain
+        let first_cell = tabular.current_table_data.first().and_then(|r| r.first()).cloned().unwrap_or_default();
+        let all_text = if tabular.current_table_data.len() > 1 {
+            tabular.current_table_data.iter().map(|r| r.first().map(|s| s.as_str()).unwrap_or("")).collect::<Vec<_>>().join("\n")
+        } else {
+            first_cell.clone()
+        };
+        let is_explain = query.trim_start().to_uppercase().starts_with("EXPLAIN")
+            || query.to_uppercase().contains("STATISTICS XML")
+            || query.to_uppercase().contains("SHOWPLAN_XML")
+            || tabular.current_table_headers.iter().any(|h| h.to_uppercase().contains("EXPLAIN") || h.to_uppercase().contains("QUERY PLAN"))
+            || first_cell.trim().starts_with('[')
+            || first_cell.trim().starts_with('{')
+            || first_cell.trim().contains("<ShowPlanXML")
+            || all_text.trim().contains("<ShowPlanXML");
+
+        if is_explain && !all_text.trim().is_empty() {
+            tabular.table_bottom_view = models::structs::TableBottomView::Explain;
+            tabular.show_message_panel = false;
+            tabular.show_lint_panel = false;
+        }
+
         // Persist into tab state
         if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+            if is_explain && !all_text.trim().is_empty() {
+                tab.explain_plan_json = Some(all_text.clone());
+            }
             tab.result_headers = tabular.current_table_headers.clone();
             tab.result_rows = tabular.current_table_data.clone();
             tab.result_all_rows = tabular.all_table_data.clone();

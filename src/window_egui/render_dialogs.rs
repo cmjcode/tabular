@@ -921,7 +921,7 @@ impl super::Tabular {
                                         .corner_radius(egui::CornerRadius::same(button_corner));
                                     if ui
                                         .add_sized(button_size, explain_button)
-                                        .on_hover_text("Explain query plan (EXPLAIN)")
+                                        .on_hover_text("Explain Query Plan (Cmd+Shift+E)")
                                         .clicked()
                                     {
                                         explain_clicked = true;
@@ -1069,8 +1069,8 @@ impl super::Tabular {
                     ui.ctx().request_repaint();
                 }
 
-                // Keyboard shortcut
-                if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::Enter)) {
+                // Keyboard shortcut: Run (Cmd/Ctrl + Enter)
+                if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd || i.modifiers.command) && !i.modifiers.shift && i.key_pressed(egui::Key::Enter)) {
                     let has_q = if !self.selected_text.trim().is_empty() {
                         true
                     } else {
@@ -1098,6 +1098,29 @@ impl super::Tabular {
                         };
                         editor::execute_query_with_text(self, captured_selection);
                     }
+                }
+
+                // Keyboard shortcut: Explain (Cmd/Ctrl + Shift + E)
+                if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd || i.modifiers.command) && i.modifiers.shift && i.key_pressed(egui::Key::E)) {
+                    let id = egui::Id::new("sql_editor");
+                    let mut direct_selected = String::new();
+                    if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+                        let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                            s.char_indices().map(|(b, _)| b).chain(std::iter::once(s.len())).nth(char_idx).unwrap_or(s.len())
+                        };
+                        let start_b = to_byte_index(&self.editor.text, range.start);
+                        let end_b = to_byte_index(&self.editor.text, range.end);
+                        if start_b < end_b && end_b <= self.editor.text.len() {
+                            direct_selected = self.editor.text[start_b..end_b].to_string();
+                        }
+                    }
+                    let captured = if !direct_selected.is_empty() {
+                        direct_selected
+                    } else {
+                        self.selected_text.clone()
+                    };
+                    editor::explain_current_query(self, captured);
+                    ui.ctx().request_repaint();
                 }
             });
 
