@@ -55,6 +55,7 @@ pub(crate) fn create_new_tab(
         http_client_state: None,
         redis_browser_state: None,
         dba_monitor_state: None,
+        user_manager_state: None,
         tx_mode: false,
         tx_active: false,
         session: None,
@@ -167,6 +168,46 @@ pub(crate) fn open_dba_monitor_tab(
 
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         tab.dba_monitor_state = Some(monitor_state);
+        tab.is_table_browse_mode = false;
+    }
+    tab_id
+}
+
+/// Open or switch to a User & Privileges Manager tab for a connection
+pub(crate) fn open_user_manager_tab(
+    tabular: &mut window_egui::Tabular,
+    conn_id: i64,
+    initial_tab: crate::user_manager::UserManagerTab,
+) -> usize {
+    let conn = tabular.connections.iter().find(|c| c.id == Some(conn_id));
+    let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "DB".to_string());
+    let title = format!("👥 Users: {}", conn_name);
+
+    // If an existing user manager tab for this connection is already open, just switch to it
+    for (idx, tab) in tabular.query_tabs.iter().enumerate() {
+        if tab.user_manager_state.is_some() && tab.connection_id == Some(conn_id) {
+            switch_to_tab(tabular, idx);
+            if let Some(tab_mut) = tabular.query_tabs.get_mut(idx) {
+                if let Some(state) = &mut tab_mut.user_manager_state {
+                    state.selected_tab = initial_tab;
+                }
+            }
+            return idx;
+        }
+    }
+
+    let mut user_mgr_state = crate::user_manager::UserManagerState::default();
+    user_mgr_state.selected_tab = initial_tab;
+
+    let tab_id = create_new_tab_with_connection(
+        tabular,
+        title,
+        String::new(),
+        Some(conn_id),
+    );
+
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.user_manager_state = Some(user_mgr_state);
         tab.is_table_browse_mode = false;
     }
     tab_id
@@ -6200,6 +6241,20 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
                 open_dba_monitor_tab(tabular, conn_id, models::enums::DbaMonitorTab::LockTree);
             } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
                 open_dba_monitor_tab(tabular, first_conn, models::enums::DbaMonitorTab::LockTree);
+            }
+        }
+        "DBA: Manage Users & Privileges" => {
+            if let Some(conn_id) = tabular.current_connection_id {
+                open_user_manager_tab(tabular, conn_id, crate::user_manager::UserManagerTab::Users);
+            } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
+                open_user_manager_tab(tabular, first_conn, crate::user_manager::UserManagerTab::Users);
+            }
+        }
+        "DBA: Create New User" => {
+            if let Some(conn_id) = tabular.current_connection_id {
+                open_user_manager_tab(tabular, conn_id, crate::user_manager::UserManagerTab::CreateUser);
+            } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
+                open_user_manager_tab(tabular, first_conn, crate::user_manager::UserManagerTab::CreateUser);
             }
         }
         "View: Refresh" => {

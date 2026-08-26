@@ -455,6 +455,13 @@ pub async fn fetch_databases_background_task(
             let ssh_accept_unknown_host_keys = row
                 .try_get::<i64, _>("ssh_accept_unknown_host_keys")
                 .unwrap_or(0);
+            let ssh_jump_host = row.try_get::<String, _>("ssh_jump_host").unwrap_or_default();
+            let ssl_enabled = row.try_get::<i64, _>("ssl_enabled").unwrap_or(0);
+            let ssl_ca_cert = row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default();
+            let ssl_client_cert = row.try_get::<String, _>("ssl_client_cert").unwrap_or_default();
+            let ssl_client_key = row.try_get::<String, _>("ssl_client_key").unwrap_or_default();
+            let ssl_key_passphrase = row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default();
+            let ssl_verify_server = row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1);
 
             let password = crate::secrets::resolve_readonly(
                 &crate::secrets::connection_secret_name(id, "password"),
@@ -494,6 +501,13 @@ pub async fn fetch_databases_background_task(
                 ssh_private_key,
                 ssh_password,
                 ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+                ssh_jump_host,
+                ssl_enabled: ssl_enabled != 0,
+                ssl_ca_cert,
+                ssl_client_cert,
+                ssl_client_key,
+                ssl_key_passphrase,
+                ssl_verify_server: ssl_verify_server != 0,
                 custom_views: Vec::new(),
                 replication_master_id: None,
             }

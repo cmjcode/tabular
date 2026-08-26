@@ -45,6 +45,7 @@ pub mod sidebar_query;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
 pub mod sync;
+pub mod user_manager;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
 #[cfg(feature = "query_ast")]
 pub mod query_ast;

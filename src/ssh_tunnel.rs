@@ -120,11 +120,12 @@ fn make_key(connection: &models::structs::ConnectionConfig) -> Result<String, St
             );
         }
         Ok(format!(
-            "tmp:{}@{}:{}:{}->{:?}:{}:{}",
+            "tmp:{}@{}:{}:{}:jump[{}]->{:?}:{}:{}",
             connection.ssh_username.trim(),
             connection.ssh_host.trim(),
             connection.ssh_port.trim(),
             connection.ssh_auth_method.as_db_value(),
+            connection.ssh_jump_host.trim(),
             connection.connection_type,
             connection.host.trim(),
             connection.port.trim()
@@ -149,6 +150,80 @@ fn parse_ssh_port(ssh_port: &str) -> String {
     }
 }
 
+/// Builds the argument list for standard OpenSSH client, supporting multi-hop jump hosts.
+pub fn build_ssh_args(
+    connection: &models::structs::ConnectionConfig,
+    local_port: u16,
+    ssh_port: &str,
+) -> Result<Vec<String>, String> {
+    let remote_port = parse_remote_port(connection)?;
+    let use_password = matches!(
+        connection.ssh_auth_method,
+        models::enums::SshAuthMethod::Password
+    );
+
+    let mut args = Vec::new();
+    args.push("-N".to_string());
+    args.push("-o".to_string());
+    args.push("ExitOnForwardFailure=yes".to_string());
+    args.push("-o".to_string());
+    args.push("ServerAliveInterval=30".to_string());
+    args.push("-o".to_string());
+    args.push("ServerAliveCountMax=3".to_string());
+    args.push("-o".to_string());
+    args.push("ConnectTimeout=15".to_string());
+
+    if use_password {
+        args.push("-o".to_string());
+        args.push("BatchMode=no".to_string());
+        args.push("-o".to_string());
+        args.push("PreferredAuthentications=password".to_string());
+        args.push("-o".to_string());
+        args.push("PubkeyAuthentication=no".to_string());
+    } else {
+        args.push("-o".to_string());
+        args.push("BatchMode=yes".to_string());
+    }
+
+    if connection.ssh_accept_unknown_host_keys {
+        args.push("-o".to_string());
+        args.push("StrictHostKeyChecking=no".to_string());
+        args.push("-o".to_string());
+        args.push("UserKnownHostsFile=/dev/null".to_string());
+    }
+
+    // Enterprise Multi-Hop Jump Host Support (ProxyJump / -J)
+    let jump_host = connection.ssh_jump_host.trim();
+    if !jump_host.is_empty() {
+        args.push("-J".to_string());
+        args.push(jump_host.to_string());
+    }
+
+    args.push("-L".to_string());
+    args.push(format!(
+        "{}:{}:{}",
+        local_port,
+        connection.host.trim(),
+        remote_port
+    ));
+
+    args.push("-p".to_string());
+    args.push(ssh_port.to_string());
+
+    if !use_password && !connection.ssh_private_key.trim().is_empty() {
+        args.push("-i".to_string());
+        args.push(connection.ssh_private_key.trim().to_string());
+    }
+
+    args.push(format!(
+        "{}@{}",
+        connection.ssh_username.trim(),
+        connection.ssh_host.trim()
+    ));
+
+    Ok(args)
+}
+
 fn spawn_tunnel(
     connection: &models::structs::ConnectionConfig,
     local_port: u16,
@@ -165,6 +240,8 @@ fn spawn_tunnel(
         return Err("SSH password cannot be empty when using password authentication".to_string());
     }
 
+    let ssh_args = build_ssh_args(connection, local_port, ssh_port)?;
+
     let binary = if use_password { "sshpass" } else { "ssh" };
     let mut command = Command::new(binary);
 
@@ -173,48 +250,22 @@ fn spawn_tunnel(
         command.arg("ssh");
     }
 
-    command.arg("-N");
-    command.arg("-o").arg("ExitOnForwardFailure=yes");
-    command.arg("-o").arg("ServerAliveInterval=30");
-    command.arg("-o").arg("ServerAliveCountMax=3");
-    command.arg("-o").arg("ConnectTimeout=15");
-    if use_password {
-        command.arg("-o").arg("BatchMode=no");
-        command.arg("-o").arg("PreferredAuthentications=password");
-        command.arg("-o").arg("PubkeyAuthentication=no");
-    } else {
-        command.arg("-o").arg("BatchMode=yes");
+    for arg in &ssh_args {
+        command.arg(arg);
     }
-    if connection.ssh_accept_unknown_host_keys {
-        command.arg("-o").arg("StrictHostKeyChecking=no");
-        command.arg("-o").arg("UserKnownHostsFile=/dev/null");
-    }
-    command.arg("-L").arg(format!(
-        "{}:{}:{}",
-        local_port,
-        connection.host.trim(),
-        remote_port
-    ));
-    command.arg("-p").arg(ssh_port);
-    if !use_password && !connection.ssh_private_key.trim().is_empty() {
-        command.arg("-i").arg(connection.ssh_private_key.trim());
-    }
+
     command.stdin(Stdio::null());
     command.stdout(Stdio::null());
     command.stderr(Stdio::piped());
-    command.arg(format!(
-        "{}@{}",
-        connection.ssh_username.trim(),
-        connection.ssh_host.trim()
-    ));
 
     debug!(
-        "Starting SSH tunnel for key {} -> {}:{} via {}:{}",
+        "Starting SSH tunnel for key {} -> {}:{} via {}:{} (jump: {})",
         key,
         connection.host.trim(),
         remote_port,
         connection.ssh_host.trim(),
-        ssh_port
+        ssh_port,
+        if connection.ssh_jump_host.trim().is_empty() { "none" } else { connection.ssh_jump_host.trim() }
     );
 
     let mut child = command.spawn().map_err(|e| {
@@ -398,3 +449,53 @@ pub fn cleanup_idle_tunnels(max_idle: Duration) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::enums::{DatabaseType, SshAuthMethod};
+
+    #[test]
+    fn test_build_ssh_args_basic_key() {
+        let mut conn = models::structs::ConnectionConfig::default();
+        conn.host = "192.168.1.100".to_string();
+        conn.port = "5432".to_string();
+        conn.connection_type = DatabaseType::PostgreSQL;
+        conn.ssh_enabled = true;
+        conn.ssh_host = "bastion.example.com".to_string();
+        conn.ssh_port = "2222".to_string();
+        conn.ssh_username = "ubuntu".to_string();
+        conn.ssh_auth_method = SshAuthMethod::Key;
+        conn.ssh_private_key = "/home/user/.ssh/id_ed25519".to_string();
+
+        let args = build_ssh_args(&conn, 54321, "2222").unwrap();
+        assert!(args.contains(&"-N".to_string()));
+        assert!(args.contains(&"-L".to_string()));
+        assert!(args.contains(&"54321:192.168.1.100:5432".to_string()));
+        assert!(args.contains(&"-i".to_string()));
+        assert!(args.contains(&"/home/user/.ssh/id_ed25519".to_string()));
+        assert!(args.contains(&"ubuntu@bastion.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_build_ssh_args_jump_host() {
+        let mut conn = models::structs::ConnectionConfig::default();
+        conn.host = "db-internal.lan".to_string();
+        conn.port = "3306".to_string();
+        conn.connection_type = DatabaseType::MySQL;
+        conn.ssh_enabled = true;
+        conn.ssh_host = "private-app-server.lan".to_string();
+        conn.ssh_port = "22".to_string();
+        conn.ssh_username = "deploy".to_string();
+        conn.ssh_auth_method = SshAuthMethod::Key;
+        conn.ssh_private_key = "/keys/app.pem".to_string();
+        conn.ssh_jump_host = "bastion-gateway.corp.com:2222".to_string();
+
+        let args = build_ssh_args(&conn, 33060, "22").unwrap();
+        assert!(args.contains(&"-J".to_string()));
+        assert!(args.contains(&"bastion-gateway.corp.com:2222".to_string()));
+        assert!(args.contains(&"33060:db-internal.lan:3306".to_string()));
+        assert!(args.contains(&"deploy@private-app-server.lan".to_string()));
+    }
+}
+

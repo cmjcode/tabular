@@ -737,6 +737,8 @@ pub struct QueryTab {
     pub redis_browser_state: Option<RedisBrowserState>,
     // DBA Process & Lock monitor state
     pub dba_monitor_state: Option<DbaMonitorState>,
+    // User & Privileges Manager state
+    pub user_manager_state: Option<crate::user_manager::UserManagerState>,
 
     // Manual-commit (transaction) mode — see connection/session.rs
     pub tx_mode: bool,
@@ -885,9 +887,27 @@ pub struct ConnectionConfig {
     pub ssh_password: String,
     pub ssh_accept_unknown_host_keys: bool,
     #[serde(default)]
+    pub ssh_jump_host: String,
+    #[serde(default)]
+    pub ssl_enabled: bool,
+    #[serde(default)]
+    pub ssl_ca_cert: String,
+    #[serde(default)]
+    pub ssl_client_cert: String,
+    #[serde(default)]
+    pub ssl_client_key: String,
+    #[serde(default)]
+    pub ssl_key_passphrase: String,
+    #[serde(default = "default_true")]
+    pub ssl_verify_server: bool,
+    #[serde(default)]
     pub custom_views: Vec<CustomView>,
     #[serde(default)]
     pub replication_master_id: Option<i64>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for ConnectionConfig {
@@ -910,6 +930,13 @@ impl Default for ConnectionConfig {
             ssh_private_key: String::new(),
             ssh_password: String::new(),
             ssh_accept_unknown_host_keys: false,
+            ssh_jump_host: String::new(),
+            ssl_enabled: false,
+            ssl_ca_cert: String::new(),
+            ssl_client_cert: String::new(),
+            ssl_client_key: String::new(),
+            ssl_key_passphrase: String::new(),
+            ssl_verify_server: true,
             custom_views: Vec::new(),
             replication_master_id: None,
         }

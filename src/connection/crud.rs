@@ -40,7 +40,7 @@ pub(crate) fn update_connection_in_database(
 
             let result = rt.block_on(async {
                 sqlx::query(
-                    "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ? WHERE id = ?"
+                    "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, ssh_jump_host = ?, ssl_enabled = ?, ssl_ca_cert = ?, ssl_client_cert = ?, ssl_client_key = ?, ssl_key_passphrase = ?, ssl_verify_server = ? WHERE id = ?"
                 )
                 .bind(connection.name)
                 .bind(connection.host)
@@ -58,6 +58,13 @@ pub(crate) fn update_connection_in_database(
                 .bind(ssh_key_stored)
                 .bind(ssh_password_stored)
                 .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
+                .bind(connection.ssh_jump_host)
+                .bind(if connection.ssl_enabled { 1 } else { 0 })
+                .bind(connection.ssl_ca_cert)
+                .bind(connection.ssl_client_cert)
+                .bind(connection.ssl_client_key)
+                .bind(connection.ssl_key_passphrase)
+                .bind(if connection.ssl_verify_server { 1 } else { 0 })
                 .bind(id)
                 .execute(pool_clone.as_ref())
                 .await
@@ -518,7 +525,14 @@ pub(crate) async fn refresh_connection_background_async(
                     COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
                     COALESCE(ssh_private_key, '') AS ssh_private_key, \
                     COALESCE(ssh_password, '') AS ssh_password, \
-                    COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+                    COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
+                    COALESCE(ssh_jump_host, '') AS ssh_jump_host, \
+                    COALESCE(ssl_enabled, 0) AS ssl_enabled, \
+                    COALESCE(ssl_ca_cert, '') AS ssl_ca_cert, \
+                    COALESCE(ssl_client_cert, '') AS ssl_client_cert, \
+                    COALESCE(ssl_client_key, '') AS ssl_client_key, \
+                    COALESCE(ssl_key_passphrase, '') AS ssl_key_passphrase, \
+                    COALESCE(ssl_verify_server, 1) AS ssl_verify_server \
              FROM connections WHERE id = ?"
         )
         .bind(connection_id)
@@ -558,6 +572,13 @@ pub(crate) async fn refresh_connection_background_async(
             let ssh_accept_unknown_host_keys = row
                 .try_get::<i64, _>("ssh_accept_unknown_host_keys")
                 .unwrap_or(0);
+            let ssh_jump_host = row.try_get::<String, _>("ssh_jump_host").unwrap_or_default();
+            let ssl_enabled = row.try_get::<i64, _>("ssl_enabled").unwrap_or(0);
+            let ssl_ca_cert = row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default();
+            let ssl_client_cert = row.try_get::<String, _>("ssl_client_cert").unwrap_or_default();
+            let ssl_client_key = row.try_get::<String, _>("ssl_client_key").unwrap_or_default();
+            let ssl_key_passphrase = row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default();
+            let ssl_verify_server = row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1);
 
             // Hydrate credentials from the secret store (read-only; the main
             // loader in sidebar_database.rs owns legacy plaintext migration).
@@ -599,6 +620,13 @@ pub(crate) async fn refresh_connection_background_async(
                 ssh_private_key,
                 ssh_password,
                 ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+                ssh_jump_host,
+                ssl_enabled: ssl_enabled != 0,
+                ssl_ca_cert,
+                ssl_client_cert,
+                ssl_client_key,
+                ssl_key_passphrase,
+                ssl_verify_server: ssl_verify_server != 0,
                 custom_views: Vec::new(),
                 replication_master_id: None,
             };

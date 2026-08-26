@@ -450,12 +450,36 @@ async fn create_connection_pool_for_config_inner(
                     return Err(format!("Gagal resolve target host: {}", err));
                 }
             };
-            let _encoded_username = modules::url_encode(&connection.username);
-            let _encoded_password = modules::url_encode(&connection.password);
-            let connection_string = format!(
-                "mysql://{}:{}@{}:{}/{}",
-                _encoded_username, _encoded_password, target_host, target_port, connection.database
-            );
+            let port_num = target_port.parse::<u16>().unwrap_or(3306);
+            let mut connect_opts = sqlx::mysql::MySqlConnectOptions::new()
+                .host(&target_host)
+                .port(port_num)
+                .username(&connection.username)
+                .password(&connection.password)
+                .database(&connection.database);
+
+            if connection.ssl_enabled {
+                let ssl_mode = if !connection.ssl_verify_server {
+                    sqlx::mysql::MySqlSslMode::Required
+                } else if !connection.ssl_ca_cert.trim().is_empty() {
+                    sqlx::mysql::MySqlSslMode::VerifyCa
+                } else {
+                    sqlx::mysql::MySqlSslMode::Required
+                };
+                connect_opts = connect_opts.ssl_mode(ssl_mode);
+
+                if !connection.ssl_ca_cert.trim().is_empty() {
+                    connect_opts = connect_opts.ssl_ca(connection.ssl_ca_cert.trim());
+                }
+                if !connection.ssl_client_cert.trim().is_empty() {
+                    connect_opts = connect_opts.ssl_client_cert(connection.ssl_client_cert.trim());
+                }
+                if !connection.ssl_client_key.trim().is_empty() {
+                    connect_opts = connect_opts.ssl_client_key(connection.ssl_client_key.trim());
+                }
+            } else {
+                connect_opts = connect_opts.ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
+            }
 
             let mut last_err: Option<sqlx::Error> = None;
 
@@ -493,7 +517,7 @@ async fn create_connection_pool_for_config_inner(
                             Ok(())
                         })
                     })
-                    .connect(&connection_string)
+                    .connect_with(connect_opts.clone())
                     .await;
 
                 match pool_result {
@@ -543,14 +567,36 @@ async fn create_connection_pool_for_config_inner(
                     return Err(format!("Gagal resolve target host: {}", err));
                 }
             };
-            let connection_string = format!(
-                "postgresql://{}:{}@{}:{}/{}",
-                connection.username,
-                connection.password,
-                target_host,
-                target_port,
-                connection.database
-            );
+            let port_num = target_port.parse::<u16>().unwrap_or(5432);
+            let mut connect_opts = sqlx::postgres::PgConnectOptions::new()
+                .host(&target_host)
+                .port(port_num)
+                .username(&connection.username)
+                .password(&connection.password)
+                .database(&connection.database);
+
+            if connection.ssl_enabled {
+                let ssl_mode = if !connection.ssl_verify_server {
+                    sqlx::postgres::PgSslMode::Require
+                } else if !connection.ssl_ca_cert.trim().is_empty() {
+                    sqlx::postgres::PgSslMode::VerifyCa
+                } else {
+                    sqlx::postgres::PgSslMode::Require
+                };
+                connect_opts = connect_opts.ssl_mode(ssl_mode);
+
+                if !connection.ssl_ca_cert.trim().is_empty() {
+                    connect_opts = connect_opts.ssl_root_cert(connection.ssl_ca_cert.trim());
+                }
+                if !connection.ssl_client_cert.trim().is_empty() {
+                    connect_opts = connect_opts.ssl_client_cert(connection.ssl_client_cert.trim());
+                }
+                if !connection.ssl_client_key.trim().is_empty() {
+                    connect_opts = connect_opts.ssl_client_key(connection.ssl_client_key.trim());
+                }
+            } else {
+                connect_opts = connect_opts.ssl_mode(sqlx::postgres::PgSslMode::Prefer);
+            }
 
             let pool_result = PgPoolOptions::new()
                 .max_connections(15)
@@ -559,7 +605,7 @@ async fn create_connection_pool_for_config_inner(
                 .idle_timeout(std::time::Duration::from_secs(300))
                 .max_lifetime(std::time::Duration::from_secs(1800))
                 .test_before_acquire(false)
-                .connect(&connection_string)
+                .connect_with(connect_opts)
                 .await;
 
             match pool_result {
@@ -803,7 +849,14 @@ pub(crate) async fn load_connection_by_id(
                 COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
                 COALESCE(ssh_private_key, '') AS ssh_private_key, \
                 COALESCE(ssh_password, '') AS ssh_password, \
-                COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+                COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
+                COALESCE(ssh_jump_host, '') AS ssh_jump_host, \
+                COALESCE(ssl_enabled, 0) AS ssl_enabled, \
+                COALESCE(ssl_ca_cert, '') AS ssl_ca_cert, \
+                COALESCE(ssl_client_cert, '') AS ssl_client_cert, \
+                COALESCE(ssl_client_key, '') AS ssl_client_key, \
+                COALESCE(ssl_key_passphrase, '') AS ssl_key_passphrase, \
+                COALESCE(ssl_verify_server, 1) AS ssl_verify_server \
          FROM connections WHERE id = ?"
     )
     .bind(connection_id)
@@ -828,6 +881,13 @@ pub(crate) async fn load_connection_by_id(
     let ssh_private_key: String = row.try_get("ssh_private_key").unwrap_or_default();
     let ssh_password: String = row.try_get("ssh_password").unwrap_or_default();
     let ssh_accept_unknown_host_keys: i64 = row.try_get("ssh_accept_unknown_host_keys").unwrap_or(0);
+    let ssh_jump_host: String = row.try_get("ssh_jump_host").unwrap_or_default();
+    let ssl_enabled: i64 = row.try_get("ssl_enabled").unwrap_or(0);
+    let ssl_ca_cert: String = row.try_get("ssl_ca_cert").unwrap_or_default();
+    let ssl_client_cert: String = row.try_get("ssl_client_cert").unwrap_or_default();
+    let ssl_client_key: String = row.try_get("ssl_client_key").unwrap_or_default();
+    let ssl_key_passphrase: String = row.try_get("ssl_key_passphrase").unwrap_or_default();
+    let ssl_verify_server: i64 = row.try_get("ssl_verify_server").unwrap_or(1);
 
     Some(models::structs::ConnectionConfig {
         id,
@@ -857,6 +917,13 @@ pub(crate) async fn load_connection_by_id(
         ssh_private_key,
         ssh_password,
         ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+        ssh_jump_host,
+        ssl_enabled: ssl_enabled != 0,
+        ssl_ca_cert,
+        ssl_client_cert,
+        ssl_client_key,
+        ssl_key_passphrase,
+        ssl_verify_server: ssl_verify_server != 0,
         custom_views: Vec::new(),
         replication_master_id: None,
     })
@@ -876,7 +943,14 @@ pub(crate) async fn create_connection_pool_by_id(
                 COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
                 COALESCE(ssh_private_key, '') AS ssh_private_key, \
                 COALESCE(ssh_password, '') AS ssh_password, \
-                COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+                COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
+                COALESCE(ssh_jump_host, '') AS ssh_jump_host, \
+                COALESCE(ssl_enabled, 0) AS ssl_enabled, \
+                COALESCE(ssl_ca_cert, '') AS ssl_ca_cert, \
+                COALESCE(ssl_client_cert, '') AS ssl_client_cert, \
+                COALESCE(ssl_client_key, '') AS ssl_client_key, \
+                COALESCE(ssl_key_passphrase, '') AS ssl_key_passphrase, \
+                COALESCE(ssl_verify_server, 1) AS ssl_verify_server \
          FROM connections WHERE id = ?"
     )
     .bind(connection_id)
@@ -920,6 +994,13 @@ pub(crate) async fn create_connection_pool_by_id(
     let ssh_accept_unknown_host_keys = row
         .try_get::<i64, _>("ssh_accept_unknown_host_keys")
         .unwrap_or(0);
+    let ssh_jump_host = row.try_get::<String, _>("ssh_jump_host").unwrap_or_default();
+    let ssl_enabled = row.try_get::<i64, _>("ssl_enabled").unwrap_or(0);
+    let ssl_ca_cert = row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default();
+    let ssl_client_cert = row.try_get::<String, _>("ssl_client_cert").unwrap_or_default();
+    let ssl_client_key = row.try_get::<String, _>("ssl_client_key").unwrap_or_default();
+    let ssl_key_passphrase = row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default();
+    let ssl_verify_server = row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1);
 
     let password = crate::secrets::resolve_readonly(
         &crate::secrets::connection_secret_name(id, "password"),
@@ -959,6 +1040,13 @@ pub(crate) async fn create_connection_pool_by_id(
         ssh_private_key,
         ssh_password,
         ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+        ssh_jump_host,
+        ssl_enabled: ssl_enabled != 0,
+        ssl_ca_cert,
+        ssl_client_cert,
+        ssl_client_key,
+        ssl_key_passphrase,
+        ssl_verify_server: ssl_verify_server != 0,
         custom_views: Vec::new(),
         replication_master_id: None,
     };
