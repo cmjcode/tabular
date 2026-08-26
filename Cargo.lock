@@ -2045,6 +2045,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_icons"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e081222cdb816f2996e937c21dad3e789670082a0ff3d3bb82d1507783534319"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6696,6 +6705,7 @@ dependencies = [
  "eframe",
  "egui_commonmark",
  "egui_extras",
+ "egui_icons",
  "env_logger",
  "flate2",
  "futures",

@@ -18,6 +18,7 @@ info = "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient."
 
 [dependencies]
 eframe = "0.36"
+egui_icons = "0.0.1"
 image = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sqlx = { version = "0.9", features = [

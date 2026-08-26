@@ -767,8 +767,16 @@ pub struct AdvancedEditor {
     pub find_text: String,
     pub replace_text: String,
     pub show_find_replace: bool,
+    pub show_replace_row: bool,
     pub case_sensitive: bool,
+    pub whole_word: bool,
     pub use_regex: bool,
+    pub in_selection: bool,
+    pub selection_range: Option<(usize, usize)>,
+    pub current_match_index: usize,
+    pub match_count: usize,
+    pub regex_error: Option<String>,
+    pub focus_find_input: bool,
 }
 
 impl Default for AdvancedEditor {
@@ -785,8 +793,16 @@ impl Default for AdvancedEditor {
             find_text: String::new(),
             replace_text: String::new(),
             show_find_replace: false,
+            show_replace_row: false,
             case_sensitive: false,
+            whole_word: false,
             use_regex: false,
+            in_selection: false,
+            selection_range: None,
+            current_match_index: 0,
+            match_count: 0,
+            regex_error: None,
+            focus_find_input: false,
         }
     }
 }
