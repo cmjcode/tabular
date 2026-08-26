@@ -253,6 +253,9 @@ pub struct Tabular {
     // Gear menu and about / account dialogs
     pub show_about_dialog: bool,
     pub show_account_dialog: bool,
+    // Plugin Extensibility & Wasm Automation
+    pub plugin_manager: crate::plugin_runtime::PluginManager,
+    pub plugin_modal_state: crate::plugin_runtime::PluginModalState,
     // Avatar texture for profile / top bar
     pub avatar_texture: Option<egui::TextureHandle>,
     pub avatar_texture_url: Option<String>,

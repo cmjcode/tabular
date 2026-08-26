@@ -1382,6 +1382,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         );
                                                         ui.close();
                                                     }
+                                                    ui.separator();
+                                                    if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
+                                                        tabular.plugin_modal_state.is_open = true;
+                                                        ui.close();
+                                                    }
                                                     if tabular.is_table_browse_mode
                                                         && ui.button("📥 Import CSV...").clicked()
                                                     {
@@ -1523,6 +1528,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     tabular.current_column_metadata.as_deref(),
                                     Some(&tabular.structure_columns),
                                 );
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
+                                tabular.plugin_modal_state.is_open = true;
                                 ui.close();
                             }
                             if tabular.is_table_browse_mode

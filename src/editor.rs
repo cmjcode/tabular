@@ -1167,6 +1167,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().request_repaint();
     }
 
+    // Shortcut: Plugins & Code Generators (Cmd/Ctrl + Shift + P)
+    let mut trigger_plugins = false;
+    ui.input(|i| {
+        let cmd_or_ctrl = i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl;
+        if cmd_or_ctrl && i.modifiers.shift && i.key_pressed(egui::Key::P) {
+            trigger_plugins = true;
+        }
+    });
+    if trigger_plugins {
+        tabular.plugin_modal_state.is_open = !tabular.plugin_modal_state.is_open;
+        ui.ctx().request_repaint();
+    }
+
     // Shortcut: Find Next (F3 or Cmd/Ctrl + G) & Find Previous (Shift+F3 or Cmd/Ctrl + Shift + G)
     let mut trigger_find_next_key = false;
     let mut trigger_find_prev_key = false;
@@ -6256,6 +6269,9 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
             } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
                 open_user_manager_tab(tabular, first_conn, crate::user_manager::UserManagerTab::CreateUser);
             }
+        }
+        "Plugins: Extensibility & Wasm Automation" | "Plugins: Open Plugins Manager" => {
+            tabular.plugin_modal_state.is_open = true;
         }
         "View: Refresh" => {
             crate::data_table::refresh_current_table_data(tabular);
