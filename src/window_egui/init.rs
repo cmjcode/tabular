@@ -339,6 +339,9 @@ impl super::Tabular {
             // Gear menu and about / account dialogs
             show_about_dialog: false,
             show_account_dialog: false,
+            // Plugin Extensibility
+            plugin_manager: crate::plugin_runtime::PluginManager::new(),
+            plugin_modal_state: crate::plugin_runtime::PluginModalState::default(),
             avatar_texture: None,
             avatar_texture_url: None,
             avatar_image_receiver: None,

@@ -31,6 +31,7 @@ pub mod http_code_export;
 pub mod http_collection;
 pub mod models;
 pub mod modules;
+pub mod plugin_runtime;
 pub mod query_profiler;
 pub mod query_tools;
 pub mod quick_open;

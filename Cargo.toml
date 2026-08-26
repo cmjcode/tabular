@@ -56,6 +56,7 @@ csv = "1.4"
 rust_xlsxwriter = "0.98"                           # Pure-Rust xlsx writer (no libclang/C toolchain)
 hex = "0.4.3"
 rust_decimal = "1.42.1"
+wasmi = "1.1.0"
 log = "0.4"
 env_logger = "0.11"
 dotenv = "0.15.0"

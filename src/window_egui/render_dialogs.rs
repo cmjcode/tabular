@@ -2187,6 +2187,37 @@ impl super::Tabular {
             }
         }
     }
+
+    pub fn render_plugin_extensibility_modal(&mut self, ctx: &egui::Context) {
+        if !self.plugin_modal_state.is_open {
+            return;
+        }
+
+        let db_type = self
+            .current_connection_id
+            .and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)))
+            .map(|c| c.connection_type.clone());
+
+        let selected_rows_vec: Vec<Vec<String>> = self
+            .selected_rows
+            .iter()
+            .filter_map(|&idx| self.current_table_data.get(idx).cloned())
+            .collect();
+
+        crate::plugin_runtime::render_plugin_modal(
+            ctx,
+            &mut self.plugin_modal_state,
+            &mut self.plugin_manager,
+            &self.current_table_name,
+            &self.current_table_headers,
+            &selected_rows_vec,
+            &self.all_table_data,
+            Some(&self.structure_columns),
+            self.current_column_metadata.as_deref(),
+            db_type.as_ref(),
+        );
+    }
 }
+
 
 

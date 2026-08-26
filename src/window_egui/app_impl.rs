@@ -5025,6 +5025,8 @@ impl App for Tabular {
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_rename_query_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
+        // Plugin Extensibility & Wasm Automation Modal
+        self.render_plugin_extensibility_modal(ctx);
         // Update dialog
         self.render_update_dialog(ctx);
 
