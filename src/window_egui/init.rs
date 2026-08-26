@@ -285,6 +285,7 @@ impl super::Tabular {
             show_theme_selector: false,
             command_palette_items: Vec::new(),
             command_palette_selected_index: 0,
+            quick_open_state: crate::quick_open::QuickOpenState::default(),
             theme_selector_selected_index: 0,
             request_theme_selector: false,
             // App UI theme (default dark)
@@ -542,6 +543,10 @@ impl super::Tabular {
             show_schema_diff_dialog: false,
             schema_diff_state: None,
             schema_diff_receiver: None,
+            show_backup_dialog: false,
+            show_restore_dialog: false,
+            backup_state: None,
+            restore_state: None,
             // ── Sync & Collaboration ─────────────────────────────────────────
             sync_account: None,
             sync_server_url: std::env::var("TABULAR_SERVER_URL")

@@ -181,12 +181,13 @@ pub struct Tabular {
     // Selection range indices (start inclusive, end exclusive) for advanced editing (indent/outdent)
     pub selection_start: usize,
     pub selection_end: usize,
-    // Command Palette
+    // Command Palette & Universal Quick Open
     pub show_command_palette: bool,
     pub command_palette_input: String,
     pub show_theme_selector: bool,
     pub command_palette_items: Vec<String>,
     pub command_palette_selected_index: usize,
+    pub quick_open_state: crate::quick_open::QuickOpenState,
     pub theme_selector_selected_index: usize,
     // Flag to request theme selector on next frame
     pub request_theme_selector: bool,
@@ -536,6 +537,11 @@ pub struct Tabular {
     pub show_schema_diff_dialog: bool,
     pub schema_diff_state: Option<models::structs::SchemaDiffState>,
     pub schema_diff_receiver: Option<std::sync::mpsc::Receiver<models::structs::SchemaDiffResult>>,
+    // Backup & Restore dialogs
+    pub show_backup_dialog: bool,
+    pub show_restore_dialog: bool,
+    pub backup_state: Option<crate::dialog_backup_restore::BackupDialogState>,
+    pub restore_state: Option<crate::dialog_backup_restore::RestoreDialogState>,
 
     // ─── Sync & Collaboration ────────────────────────────────────────────────
     /// Logged-in Tabular cloud account (None = not signed in)

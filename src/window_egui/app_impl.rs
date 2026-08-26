@@ -4016,21 +4016,22 @@ impl App for Tabular {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
 
-            // CMD/CTRL+P, CMD+SHIFT+P, or CMD/CTRL+K to open spotlight / command palette
+            // CMD/CTRL+P, CMD+SHIFT+P, or CMD/CTRL+K to open universal quick open
             if (i.modifiers.mac_cmd || i.modifiers.ctrl)
                 && (i.key_pressed(egui::Key::P) || i.key_pressed(egui::Key::K))
                 && !self.show_command_palette
+                && !self.quick_open_state.is_open
             {
-                editor::open_command_palette(self);
+                crate::quick_open::open_quick_open(self);
             }
 
             // F12 — Go to definition (navigate sidebar to table under cursor)
-            if i.key_pressed(egui::Key::F12) && !self.show_command_palette {
+            if i.key_pressed(egui::Key::F12) && !self.show_command_palette && !self.quick_open_state.is_open {
                 editor::go_to_definition(self);
             }
 
             // F2 — Rename symbol under cursor
-            if i.key_pressed(egui::Key::F2) && !self.show_command_palette {
+            if i.key_pressed(egui::Key::F2) && !self.show_command_palette && !self.quick_open_state.is_open {
                 editor::begin_rename_symbol(self);
             }
 
@@ -4209,6 +4210,23 @@ impl App for Tabular {
                 }
             }
 
+            // Handle quick open navigation
+            if self.quick_open_state.is_open {
+                if i.key_pressed(egui::Key::ArrowDown) {
+                    crate::quick_open::navigate_quick_open(self, 1);
+                } else if i.key_pressed(egui::Key::ArrowUp) {
+                    crate::quick_open::navigate_quick_open(self, -1);
+                } else if i.key_pressed(egui::Key::PageDown) {
+                    crate::quick_open::navigate_quick_open(self, 8);
+                } else if i.key_pressed(egui::Key::PageUp) {
+                    crate::quick_open::navigate_quick_open(self, -8);
+                } else if i.key_pressed(egui::Key::Tab) {
+                    crate::quick_open::cycle_filter_category(self);
+                } else if i.key_pressed(egui::Key::Enter) {
+                    crate::quick_open::execute_selected_quick_open(self);
+                }
+            }
+
             // Handle command palette navigation
             if self.show_command_palette {
                 // Arrow key navigation
@@ -4240,7 +4258,9 @@ impl App for Tabular {
 
             // Escape to close overlays, cancel edits, or discard unsaved spreadsheet changes
             if i.key_pressed(egui::Key::Escape) {
-                if self.show_settings_window {
+                if self.quick_open_state.is_open {
+                    self.quick_open_state.close();
+                } else if self.show_settings_window {
                     self.show_settings_window = false;
                 } else if self.show_theme_selector {
                     self.show_theme_selector = false;
@@ -4340,6 +4360,11 @@ impl App for Tabular {
             }
         }
 
+        // Render universal quick open if open
+        if self.quick_open_state.is_open {
+            crate::quick_open::render_quick_open(self, ctx);
+        }
+
         // Render command palette if open
         if self.show_command_palette {
             editor::render_command_palette(self, ctx);
@@ -4363,6 +4388,16 @@ impl App for Tabular {
         // Schema Diff dialog
         if self.show_schema_diff_dialog {
             crate::window_egui::render_dialogs::render_schema_diff_dialog(self, ctx);
+        }
+
+        // Database Backup dialog
+        if self.show_backup_dialog {
+            crate::dialog_backup_restore::render_backup_dialog(self, ctx);
+        }
+
+        // Database Restore dialog
+        if self.show_restore_dialog {
+            crate::dialog_backup_restore::render_restore_dialog(self, ctx);
         }
 
         // Show cache miss dialog (topmost)
