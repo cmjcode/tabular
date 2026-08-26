@@ -991,7 +991,14 @@ pub(crate) async fn load_redis_connection_config(
                 COALESCE(ssh_auth_method, 'key') AS ssh_auth_method, \
                 COALESCE(ssh_private_key, '') AS ssh_private_key, \
                 COALESCE(ssh_password, '') AS ssh_password, \
-                COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys \
+                COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
+                COALESCE(ssh_jump_host, '') AS ssh_jump_host, \
+                COALESCE(ssl_enabled, 0) AS ssl_enabled, \
+                COALESCE(ssl_ca_cert, '') AS ssl_ca_cert, \
+                COALESCE(ssl_client_cert, '') AS ssl_client_cert, \
+                COALESCE(ssl_client_key, '') AS ssl_client_key, \
+                COALESCE(ssl_key_passphrase, '') AS ssl_key_passphrase, \
+                COALESCE(ssl_verify_server, 1) AS ssl_verify_server \
          FROM connections WHERE id = ?",
     )
     .bind(connection_id)
@@ -1035,6 +1042,13 @@ pub(crate) async fn load_redis_connection_config(
             &row.try_get::<String, _>("ssh_password").unwrap_or_default(),
         ),
         ssh_accept_unknown_host_keys: row.try_get::<i64, _>("ssh_accept_unknown_host_keys").unwrap_or(0) != 0,
+        ssh_jump_host: row.try_get::<String, _>("ssh_jump_host").unwrap_or_default(),
+        ssl_enabled: row.try_get::<i64, _>("ssl_enabled").unwrap_or(0) != 0,
+        ssl_ca_cert: row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default(),
+        ssl_client_cert: row.try_get::<String, _>("ssl_client_cert").unwrap_or_default(),
+        ssl_client_key: row.try_get::<String, _>("ssl_client_key").unwrap_or_default(),
+        ssl_key_passphrase: row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default(),
+        ssl_verify_server: row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1) != 0,
         custom_views: Vec::new(),
         replication_master_id: None,
     })

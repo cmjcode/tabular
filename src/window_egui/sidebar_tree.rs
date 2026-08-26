@@ -285,12 +285,23 @@ impl super::Tabular {
 
         // Process collected DBA click requests OUTSIDE the loop
         for (conn_id, node_type) in dba_click_requests {
-            let initial_tab = if node_type == models::enums::NodeType::BlockedQueriesFolder {
-                models::enums::DbaMonitorTab::LockTree
-            } else {
-                models::enums::DbaMonitorTab::Processlist
-            };
-            editor::open_dba_monitor_tab(self, conn_id, initial_tab);
+            match node_type {
+                models::enums::NodeType::BlockedQueriesFolder => {
+                    editor::open_dba_monitor_tab(self, conn_id, models::enums::DbaMonitorTab::LockTree);
+                }
+                models::enums::NodeType::ProcessesFolder => {
+                    editor::open_dba_monitor_tab(self, conn_id, models::enums::DbaMonitorTab::Processlist);
+                }
+                models::enums::NodeType::UsersFolder => {
+                    editor::open_user_manager_tab(self, conn_id, crate::user_manager::UserManagerTab::Users);
+                }
+                models::enums::NodeType::PrivilegesFolder => {
+                    editor::open_user_manager_tab(self, conn_id, crate::user_manager::UserManagerTab::ObjectGrants);
+                }
+                _ => {
+                    editor::open_dba_monitor_tab(self, conn_id, models::enums::DbaMonitorTab::Processlist);
+                }
+            }
         }
 
         // Process collected Custom View requests OUTSIDE the loop
@@ -303,6 +314,17 @@ impl super::Tabular {
                     models::enums::DbaMonitorTab::Processlist
                 };
                 editor::open_dba_monitor_tab(self, conn_id, initial_tab);
+                continue;
+            }
+
+            // If this is Users or Privileges DBA View, open the User Manager tab
+            if view_name == "Users" || view_name == "Privileges" {
+                let initial_tab = if view_name == "Privileges" {
+                    crate::user_manager::UserManagerTab::ObjectGrants
+                } else {
+                    crate::user_manager::UserManagerTab::Users
+                };
+                editor::open_user_manager_tab(self, conn_id, initial_tab);
                 continue;
             }
 
@@ -2632,6 +2654,12 @@ impl super::Tabular {
                             }
                             ui.close();
                         }
+                        if ui.button("👥 Manage Users & Privileges...").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                dba_click_request = Some((conn_id, models::enums::NodeType::UsersFolder));
+                            }
+                            ui.close();
+                        }
                         if ui.button("📋 Copy Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(conn_id + 10000); // Use +10000 to indicate copy
@@ -2884,6 +2912,10 @@ impl super::Tabular {
                                 }
                                 if ui.button("⚡ Live DBA Process Monitor...").clicked() {
                                     dba_click_request = Some((conn_id, models::enums::NodeType::ProcessesFolder));
+                                    ui.close();
+                                }
+                                if ui.button("👥 Manage Users & Privileges...").clicked() {
+                                    dba_click_request = Some((conn_id, models::enums::NodeType::UsersFolder));
                                     ui.close();
                                 }
                                 if ui.button("🔀 Schema Diff...").clicked() {

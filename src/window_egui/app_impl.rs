@@ -1268,6 +1268,52 @@ impl Tabular {
                 }
                 ctx.request_repaint();
             }
+
+            while let Ok((tab_index, result)) = self.user_manager_result_receiver.try_recv() {
+                if let Some(tab) = self.query_tabs.get_mut(tab_index) {
+                    if let Some(state) = &mut tab.user_manager_state {
+                        state.is_loading = false;
+                        match result {
+                            crate::user_manager::UserManagerResult::Data(res) => {
+                                state.last_refreshed = Some(std::time::Instant::now());
+                                match res {
+                                    Ok(payload) => {
+                                        state.users = payload.users;
+                                        state.roles = payload.roles;
+                                        state.object_grants = payload.object_grants.clone();
+                                        state.original_grants = payload.object_grants;
+                                        state.executed_queries = payload.executed_queries;
+                                        if state.selected_user_index.is_none() && !state.users.is_empty() {
+                                            state.selected_user_index = Some(0);
+                                            state.selected_grantee = Some(state.users[0].username.clone());
+                                            state.selected_grantee_host = state.users[0].host.clone();
+                                        }
+                                        state.status_message = None;
+                                    }
+                                    Err(err) => {
+                                        state.status_message = Some((format!("Error: {}", err), true));
+                                        state.show_diagnostics_panel = true;
+                                    }
+                                }
+                            }
+                            crate::user_manager::UserManagerResult::CommandExecuted { action_name, sql, result } => {
+                                if !sql.is_empty() {
+                                    state.generated_sql_log.push(sql);
+                                }
+                                match result {
+                                    Ok(msg) => {
+                                        state.status_message = Some((format!("{}: {}", action_name, msg), false));
+                                    }
+                                    Err(err) => {
+                                        state.status_message = Some((format!("{} failed: {}", action_name, err), true));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ctx.request_repaint();
+            }
     }
 
     /// Render the resizable left sidebar (connections/queries/history tree).
@@ -2776,11 +2822,14 @@ impl Tabular {
                         let mut rendered_http = false;
                         let mut rendered_redis_browser = false;
                         let mut rendered_dba_monitor = false;
+                        let mut rendered_user_manager = false;
                         let mut diagram_to_save = None;
                         let mut redis_action = None;
                         let mut redis_connection_id = None;
                         let mut dba_action = None;
                         let mut dba_conn_info = None;
+                        let mut user_mgr_action = None;
+                        let mut user_mgr_conn_info = None;
 
                         // Check for DBA Monitor tab
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
@@ -2812,6 +2861,35 @@ impl Tabular {
                                 );
                             }
                             rendered_dba_monitor = true;
+                        }
+
+                        // Check for User & Role Manager tab
+                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                            && tab.user_manager_state.is_some()
+                        {
+                            let conn_id = tab.connection_id;
+                            let conn = conn_id.and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)));
+                            let db_type = conn.map(|c| c.connection_type.clone());
+                            let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "Database".to_string());
+                            let db_name = tab.database_name.clone();
+                            let schema_name = tab.schema_name.clone();
+                            user_mgr_conn_info = Some((conn_id, db_type.clone(), db_name, schema_name));
+
+                            if let Some(state) = &mut tab.user_manager_state {
+                                // Auto-fetch initial data if empty and not loading
+                                if state.users.is_empty() && !state.is_loading && state.last_refreshed.is_none() {
+                                    user_mgr_action = Some(crate::user_manager::UserManagerAction::Refresh);
+                                }
+
+                                crate::user_manager::render_user_manager(
+                                    ui,
+                                    state,
+                                    db_type.as_ref(),
+                                    &conn_name,
+                                    &mut user_mgr_action,
+                                );
+                            }
+                            rendered_user_manager = true;
                         }
 
                         // Check for HTTP client tab
@@ -3023,7 +3101,186 @@ impl Tabular {
                             }
                         }
                     
-                        if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor {
+                        if let Some((Some(conn_id), Some(db_type), db_name, schema_name)) = user_mgr_conn_info
+                            && let Some(action) = user_mgr_action
+                        {
+                            let active_tab = self.active_tab_index;
+                            let sender = self.user_manager_result_sender.clone();
+                            let ctx = ui.ctx().clone();
+                            let pool_opt = self.connection_pools.get(&conn_id).cloned();
+                            let rt_opt = self.runtime.clone();
+
+                            match action {
+                                crate::user_manager::UserManagerAction::Refresh => {
+                                    if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                        if let Some(state) = &mut tab.user_manager_state {
+                                            state.is_loading = true;
+                                        }
+                                    }
+                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                        rt.spawn(async move {
+                                            let res = crate::user_manager::fetch_user_manager_data(
+                                                &pool,
+                                                &db_type,
+                                                db_name.as_deref(),
+                                                schema_name.as_deref(),
+                                            ).await;
+                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(res)));
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::CreateUser(form) => {
+                                    let sql = crate::user_manager::generate_create_user_sql(&form, &db_type);
+                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                        let sql_clone = sql.clone();
+                                        rt.spawn(async move {
+                                            let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
+                                            let cmd_res = exec_res.map(|_| format!("User '{}' created successfully", form.username));
+                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                action_name: "Create User".to_string(),
+                                                sql: sql_clone,
+                                                result: cmd_res,
+                                            }));
+
+                                            // Re-fetch users
+                                            let fetch_res = crate::user_manager::fetch_user_manager_data(
+                                                &pool,
+                                                &db_type,
+                                                db_name.as_deref(),
+                                                schema_name.as_deref(),
+                                            ).await;
+                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::ChangePassword(form) => {
+                                    let sql = crate::user_manager::generate_alter_password_sql(
+                                        &form.target_user,
+                                        &form.target_host,
+                                        &form.new_password,
+                                        &db_type,
+                                    );
+                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                        let sql_clone = sql.clone();
+                                        rt.spawn(async move {
+                                            let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
+                                            let cmd_res = exec_res.map(|_| format!("Password updated for user '{}'", form.target_user));
+                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                action_name: "Change Password".to_string(),
+                                                sql: sql_clone,
+                                                result: cmd_res,
+                                            }));
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::DropUser(user, host) => {
+                                    let sql = crate::user_manager::generate_drop_user_sql(&user, &host, &db_type);
+                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                        let sql_clone = sql.clone();
+                                        rt.spawn(async move {
+                                            let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
+                                            let cmd_res = exec_res.map(|_| format!("User '{}' dropped successfully", user));
+                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                action_name: "Drop User".to_string(),
+                                                sql: sql_clone,
+                                                result: cmd_res,
+                                            }));
+
+                                            // Re-fetch users
+                                            let fetch_res = crate::user_manager::fetch_user_manager_data(
+                                                &pool,
+                                                &db_type,
+                                                db_name.as_deref(),
+                                                schema_name.as_deref(),
+                                            ).await;
+                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::ApplyPrivilegeChanges { grantee, grantee_host: _, sql_statements } => {
+                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                        let all_sqls = sql_statements.join("\n");
+                                        rt.spawn(async move {
+                                            let mut errors = Vec::new();
+                                            for stmt in &sql_statements {
+                                                if let Err(e) = crate::user_manager::execute_user_manager_command(&pool, stmt).await {
+                                                    errors.push(e);
+                                                }
+                                            }
+                                            let cmd_res = if errors.is_empty() {
+                                                Ok(format!("Privileges updated for '{}'", grantee))
+                                            } else {
+                                                Err(errors.join("; "))
+                                            };
+                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                action_name: "Apply Privileges".to_string(),
+                                                sql: all_sqls,
+                                                result: cmd_res,
+                                            }));
+
+                                            // Re-fetch data
+                                            let fetch_res = crate::user_manager::fetch_user_manager_data(
+                                                &pool,
+                                                &db_type,
+                                                db_name.as_deref(),
+                                                schema_name.as_deref(),
+                                            ).await;
+                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::OpenChangePasswordModal(u, h) => {
+                                    if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                        if let Some(state) = &mut tab.user_manager_state {
+                                            state.change_password_form = Some(crate::user_manager::ChangePasswordForm {
+                                                target_user: u,
+                                                target_host: h,
+                                                new_password: String::new(),
+                                                confirm_password: String::new(),
+                                                show_password: false,
+                                                validation_error: None,
+                                            });
+                                        }
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::CloseChangePasswordModal => {
+                                    if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                        if let Some(state) = &mut tab.user_manager_state {
+                                            state.change_password_form = None;
+                                        }
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::OpenDropConfirmModal(u, h) => {
+                                    if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                        if let Some(state) = &mut tab.user_manager_state {
+                                            state.drop_confirm_user = Some((u, h));
+                                        }
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::CloseDropConfirmModal => {
+                                    if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                        if let Some(state) = &mut tab.user_manager_state {
+                                            state.drop_confirm_user = None;
+                                        }
+                                    }
+                                }
+                                crate::user_manager::UserManagerAction::SelectUser(u, h) => {
+                                    if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                        if let Some(state) = &mut tab.user_manager_state {
+                                            state.selected_grantee = Some(u);
+                                            state.selected_grantee_host = h;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    
+                        if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor && !rendered_user_manager {
                             self.render_query_editor_with_split(ui, "regular_query");
                         }
                     

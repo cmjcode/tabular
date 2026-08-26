@@ -532,6 +532,13 @@ pub(crate) fn render_connection_dialog(
                                 }
                             }
 
+                            ui.label("SSH Jump Host:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut connection_data.ssh_jump_host)
+                                    .hint_text("bastion.corp.com:22 (optional multi-hop)"),
+                            );
+                            ui.end_row();
+
                             ui.label("SSH Options:");
                             ui.checkbox(
                                 &mut connection_data.ssh_accept_unknown_host_keys,
@@ -549,6 +556,47 @@ pub(crate) fn render_connection_dialog(
                             ui.end_row();
                         }
                         } // end if != ApiHttp (SSH section)
+
+                        // SSL / TLS Enterprise & mTLS section
+                        let ssl_supported = matches!(
+                            connection_data.connection_type,
+                            models::enums::DatabaseType::MySQL | models::enums::DatabaseType::PostgreSQL
+                        );
+                        if ssl_supported {
+                            ui.label("SSL / TLS:");
+                            ui.checkbox(&mut connection_data.ssl_enabled, "Enable SSL / TLS & mTLS");
+                            ui.end_row();
+
+                            if connection_data.ssl_enabled {
+                                ui.label("CA Certificate:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut connection_data.ssl_ca_cert)
+                                        .hint_text("Path to ca.pem or ca.crt"),
+                                );
+                                ui.end_row();
+
+                                ui.label("Client Certificate:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut connection_data.ssl_client_cert)
+                                        .hint_text("Path to client-cert.pem (for mTLS)"),
+                                );
+                                ui.end_row();
+
+                                ui.label("Client Private Key:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut connection_data.ssl_client_key)
+                                        .hint_text("Path to client-key.pem"),
+                                );
+                                ui.end_row();
+
+                                ui.label("Verify Server:");
+                                ui.checkbox(
+                                    &mut connection_data.ssl_verify_server,
+                                    "Verify Server Certificate (CA/Hostname)",
+                                );
+                                ui.end_row();
+                            }
+                        }
                     });
 
                 ui.separator();
@@ -758,6 +806,13 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
              COALESCE(ssh_password, '') AS ssh_password, \
              COALESCE(ssh_password, '') AS ssh_password, \
              COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
+             COALESCE(ssh_jump_host, '') AS ssh_jump_host, \
+             COALESCE(ssl_enabled, 0) AS ssl_enabled, \
+             COALESCE(ssl_ca_cert, '') AS ssl_ca_cert, \
+             COALESCE(ssl_client_cert, '') AS ssl_client_cert, \
+             COALESCE(ssl_client_key, '') AS ssl_client_key, \
+             COALESCE(ssl_key_passphrase, '') AS ssl_key_passphrase, \
+             COALESCE(ssl_verify_server, 1) AS ssl_verify_server, \
              COALESCE(custom_views, '[]') AS custom_views, \
              replication_master_id \
          FROM connections",
@@ -792,6 +847,13 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                     let ssh_password = row.try_get::<String, _>("ssh_password").ok()?;
                     let ssh_accept_unknown_host_keys =
                         row.try_get::<i64, _>("ssh_accept_unknown_host_keys").ok()?;
+                    let ssh_jump_host = row.try_get::<String, _>("ssh_jump_host").unwrap_or_default();
+                    let ssl_enabled = row.try_get::<i64, _>("ssl_enabled").unwrap_or(0);
+                    let ssl_ca_cert = row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default();
+                    let ssl_client_cert = row.try_get::<String, _>("ssl_client_cert").unwrap_or_default();
+                    let ssl_client_key = row.try_get::<String, _>("ssl_client_key").unwrap_or_default();
+                    let ssl_key_passphrase = row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default();
+                    let ssl_verify_server = row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1);
                     let custom_views_json = row.try_get::<String, _>("custom_views").ok().unwrap_or_else(|| "[]".to_string());
                     let replication_master_id = row.try_get::<Option<i64>, _>("replication_master_id").ok().flatten();
 
@@ -845,6 +907,13 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                         ssh_private_key,
                         ssh_password,
                         ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+                        ssh_jump_host,
+                        ssl_enabled: ssl_enabled != 0,
+                        ssl_ca_cert,
+                        ssl_client_cert,
+                        ssl_client_key,
+                        ssl_key_passphrase,
+                        ssl_verify_server: ssl_verify_server != 0,
                         custom_views: serde_json::from_str(&custom_views_json).unwrap_or_default(),
                         replication_master_id,
                     })
@@ -1135,7 +1204,7 @@ pub(crate) fn save_connection_to_database(
 
         let result = rt.block_on(async {
           sqlx::query(
-          "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views, replication_master_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views, replication_master_id, ssh_jump_host, ssl_enabled, ssl_ca_cert, ssl_client_cert, ssl_client_key, ssl_key_passphrase, ssl_verify_server) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
           )
           .bind(connection.name)
           .bind(connection.host)
@@ -1155,6 +1224,13 @@ pub(crate) fn save_connection_to_database(
             .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
             .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
             .bind(connection.replication_master_id)
+            .bind(connection.ssh_jump_host)
+            .bind(if connection.ssl_enabled { 1 } else { 0 })
+            .bind(connection.ssl_ca_cert)
+            .bind(connection.ssl_client_cert)
+            .bind(connection.ssl_client_key)
+            .bind(connection.ssl_key_passphrase)
+            .bind(if connection.ssl_verify_server { 1 } else { 0 })
             .execute(pool_clone.as_ref())
             .await
        });
@@ -1216,7 +1292,7 @@ pub(crate) fn save_connection_to_database(
       ssh_password_stored: String,
   ) -> Result<(), sqlx::Error> {
       sqlx::query(
-          "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ? WHERE id = ?"
+          "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ?, ssh_jump_host = ?, ssl_enabled = ?, ssl_ca_cert = ?, ssl_client_cert = ?, ssl_client_key = ?, ssl_key_passphrase = ?, ssl_verify_server = ? WHERE id = ?"
       )
       .bind(connection.name)
       .bind(connection.host)
@@ -1236,6 +1312,13 @@ pub(crate) fn save_connection_to_database(
       .bind(if connection.ssh_accept_unknown_host_keys { 1 } else { 0 })
       .bind(serde_json::to_string(&connection.custom_views).unwrap_or_else(|_| "[]".to_string()))
       .bind(connection.replication_master_id)
+      .bind(connection.ssh_jump_host)
+      .bind(if connection.ssl_enabled { 1 } else { 0 })
+      .bind(connection.ssl_ca_cert)
+      .bind(connection.ssl_client_cert)
+      .bind(connection.ssl_client_key)
+      .bind(connection.ssl_key_passphrase)
+      .bind(if connection.ssl_verify_server { 1 } else { 0 })
       .bind(connection.id)
       .execute(pool)
       .await
@@ -1479,6 +1562,13 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
              COALESCE(ssh_private_key, '') AS ssh_private_key, \
              COALESCE(ssh_password, '') AS ssh_password, \
              COALESCE(ssh_accept_unknown_host_keys, 0) AS ssh_accept_unknown_host_keys, \
+             COALESCE(ssh_jump_host, '') AS ssh_jump_host, \
+             COALESCE(ssl_enabled, 0) AS ssl_enabled, \
+             COALESCE(ssl_ca_cert, '') AS ssl_ca_cert, \
+             COALESCE(ssl_client_cert, '') AS ssl_client_cert, \
+             COALESCE(ssl_client_key, '') AS ssl_client_key, \
+             COALESCE(ssl_key_passphrase, '') AS ssl_key_passphrase, \
+             COALESCE(ssl_verify_server, 1) AS ssl_verify_server, \
              COALESCE(custom_views, '[]') AS custom_views, \
              replication_master_id \
          FROM connections",
@@ -1509,6 +1599,13 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
                 let ssh_password = row.try_get::<String, _>("ssh_password").ok()?;
                 let ssh_accept_unknown_host_keys =
                     row.try_get::<i64, _>("ssh_accept_unknown_host_keys").ok()?;
+                let ssh_jump_host = row.try_get::<String, _>("ssh_jump_host").unwrap_or_default();
+                let ssl_enabled = row.try_get::<i64, _>("ssl_enabled").unwrap_or(0);
+                let ssl_ca_cert = row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default();
+                let ssl_client_cert = row.try_get::<String, _>("ssl_client_cert").unwrap_or_default();
+                let ssl_client_key = row.try_get::<String, _>("ssl_client_key").unwrap_or_default();
+                let ssl_key_passphrase = row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default();
+                let ssl_verify_server = row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1);
                 let custom_views_json = row.try_get::<String, _>("custom_views").ok().unwrap_or_else(|| "[]".to_string());
                 let replication_master_id = row.try_get::<Option<i64>, _>("replication_master_id").ok().flatten();
 
@@ -1560,6 +1657,13 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
                     ssh_private_key,
                     ssh_password,
                     ssh_accept_unknown_host_keys: ssh_accept_unknown_host_keys != 0,
+                    ssh_jump_host,
+                    ssl_enabled: ssl_enabled != 0,
+                    ssl_ca_cert,
+                    ssl_client_cert,
+                    ssl_client_key,
+                    ssl_key_passphrase,
+                    ssl_verify_server: ssl_verify_server != 0,
                     custom_views: serde_json::from_str(&custom_views_json).unwrap_or_default(),
                     replication_master_id,
                 })
@@ -1780,6 +1884,48 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
                     let _ = sqlx::query(
                         "ALTER TABLE connections ADD COLUMN replication_master_id INTEGER DEFAULT NULL"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssh_jump_host TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssl_enabled INTEGER NOT NULL DEFAULT 0"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssl_ca_cert TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssl_client_cert TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssl_client_key TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssl_key_passphrase TEXT NOT NULL DEFAULT ''"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN ssl_verify_server INTEGER NOT NULL DEFAULT 1"
                     )
                     .execute(&pool)
                     .await;
