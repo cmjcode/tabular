@@ -168,6 +168,8 @@ impl super::Tabular {
         let (result_sender, result_receiver) = mpsc::channel::<models::enums::BackgroundResult>();
         let (query_result_sender, query_result_receiver) =
             mpsc::channel::<connection::QueryResultMessage>();
+        let (dba_result_sender, dba_result_receiver) =
+            mpsc::channel::<(usize, Result<Vec<models::structs::ProcessInfo>, String>)>();
 
         // Create shared runtime for all database operations
         crate::log_startup_step("creating shared Tokio runtime");
@@ -232,6 +234,8 @@ impl super::Tabular {
             background_receiver: Some(result_receiver),
             query_result_sender,
             query_result_receiver,
+            dba_result_sender,
+            dba_result_receiver,
             active_query_jobs: std::collections::HashMap::new(),
             active_query_handles: std::collections::HashMap::new(),
             cancelled_query_jobs: std::collections::HashMap::new(),

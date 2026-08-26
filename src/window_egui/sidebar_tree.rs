@@ -97,6 +97,7 @@ impl super::Tabular {
         let mut delete_custom_view_requests: Vec<(i64, String)> = Vec::new();
         let mut edit_custom_view_requests: Vec<(i64, String, String)> = Vec::new();
         let mut csv_import_requests: Vec<(i64, Option<String>, String)> = Vec::new();
+        let mut dba_click_requests: Vec<(i64, models::enums::NodeType)> = Vec::new();
 
         for (index, node) in nodes.iter_mut().enumerate() {
             let (
@@ -178,6 +179,9 @@ impl super::Tabular {
                 alter_table_requests.push((conn_id, db_name, table_name));
             }
             // Collect DBA quick view requests
+            if let Some(req) = _dba_click_request {
+                dba_click_requests.push(req);
+            }
             // Collect Custom View click requests (Run immediately like DBA Views)
             if let Some(req) = custom_view_click_request {
                 custom_view_click_requests.push(req);
@@ -279,8 +283,29 @@ impl super::Tabular {
             }
         }
 
+        // Process collected DBA click requests OUTSIDE the loop
+        for (conn_id, node_type) in dba_click_requests {
+            let initial_tab = if node_type == models::enums::NodeType::BlockedQueriesFolder {
+                models::enums::DbaMonitorTab::LockTree
+            } else {
+                models::enums::DbaMonitorTab::Processlist
+            };
+            editor::open_dba_monitor_tab(self, conn_id, initial_tab);
+        }
+
         // Process collected Custom View requests OUTSIDE the loop
         for (conn_id, view_name, query) in custom_view_click_requests {
+            // If this is Processes or Blocked Query DBA View, open the Live DBA Monitor tab
+            if view_name == "Processes" || view_name == "Blocked Query" {
+                let initial_tab = if view_name == "Blocked Query" {
+                    models::enums::DbaMonitorTab::LockTree
+                } else {
+                    models::enums::DbaMonitorTab::Processlist
+                };
+                editor::open_dba_monitor_tab(self, conn_id, initial_tab);
+                continue;
+            }
+
             // If this DBA/custom view is already open in a tab, just activate it
             // instead of opening (and re-running) a duplicate tab.
             if let Some(existing_index) =
@@ -2601,6 +2626,12 @@ impl super::Tabular {
                             }
                             ui.close();
                         }
+                        if ui.button("⚡ Live DBA Process Monitor...").clicked() {
+                            if let Some(conn_id) = node.connection_id {
+                                dba_click_request = Some((conn_id, models::enums::NodeType::ProcessesFolder));
+                            }
+                            ui.close();
+                        }
                         if ui.button("📋 Copy Connection").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(conn_id + 10000); // Use +10000 to indicate copy
@@ -2849,6 +2880,10 @@ impl super::Tabular {
                                         .or_else(|| Some(node.name.clone()))
                                         .unwrap_or_default();
                                     open_diagram_request = Some((conn_id, database_name));
+                                    ui.close();
+                                }
+                                if ui.button("⚡ Live DBA Process Monitor...").clicked() {
+                                    dba_click_request = Some((conn_id, models::enums::NodeType::ProcessesFolder));
                                     ui.close();
                                 }
                                 if ui.button("🔀 Schema Diff...").clicked() {

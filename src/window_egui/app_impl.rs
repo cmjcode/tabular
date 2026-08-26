@@ -1249,6 +1249,25 @@ impl Tabular {
                 self.handle_query_result_message(message);
                 ctx.request_repaint();
             }
+
+            while let Ok((tab_index, result)) = self.dba_result_receiver.try_recv() {
+                if let Some(tab) = self.query_tabs.get_mut(tab_index) {
+                    if let Some(state) = &mut tab.dba_monitor_state {
+                        state.is_loading = false;
+                        state.last_refreshed = Some(std::time::Instant::now());
+                        match result {
+                            Ok(procs) => {
+                                state.processes = procs;
+                                state.status_message = None;
+                            }
+                            Err(err) => {
+                                state.status_message = Some((format!("Error: {}", err), true));
+                            }
+                        }
+                    }
+                }
+                ctx.request_repaint();
+            }
     }
 
     /// Render the resizable left sidebar (connections/queries/history tree).
@@ -2756,9 +2775,44 @@ impl Tabular {
                         let mut rendered_diagram = false;
                         let mut rendered_http = false;
                         let mut rendered_redis_browser = false;
+                        let mut rendered_dba_monitor = false;
                         let mut diagram_to_save = None;
                         let mut redis_action = None;
                         let mut redis_connection_id = None;
+                        let mut dba_action = None;
+                        let mut dba_conn_info = None;
+
+                        // Check for DBA Monitor tab
+                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                            && tab.dba_monitor_state.is_some()
+                        {
+                            let conn_id = tab.connection_id;
+                            let conn = conn_id.and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)));
+                            let db_type = conn.map(|c| c.connection_type.clone());
+                            let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "Database".to_string());
+                            dba_conn_info = Some((conn_id, db_type.clone()));
+
+                            if let Some(state) = &mut tab.dba_monitor_state {
+                                if state.auto_refresh && !state.is_loading {
+                                    let should_refresh = match state.last_refreshed {
+                                        Some(last) => last.elapsed() >= std::time::Duration::from_secs(state.refresh_interval_secs),
+                                        None => true,
+                                    };
+                                    if should_refresh {
+                                        dba_action = Some(crate::dba_monitor::DbaAction::Refresh);
+                                    }
+                                }
+
+                                crate::dba_monitor::render_dba_monitor(
+                                    ui,
+                                    state,
+                                    db_type.as_ref(),
+                                    &conn_name,
+                                    &mut dba_action,
+                                );
+                            }
+                            rendered_dba_monitor = true;
+                        }
 
                         // Check for HTTP client tab
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
@@ -2904,8 +2958,72 @@ impl Tabular {
                                 }
                             }
                         }
+
+                        if let Some((Some(conn_id), Some(db_type))) = dba_conn_info
+                            && let Some(action) = dba_action
+                        {
+                            let active_tab = self.active_tab_index;
+                            match action {
+                                crate::dba_monitor::DbaAction::Refresh => {
+                                    if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                        if let Some(state) = &mut tab.dba_monitor_state {
+                                            state.is_loading = true;
+                                        }
+                                    }
+                                    if let Some(pool) = self.connection_pools.get(&conn_id).cloned() {
+                                        if let Some(rt) = self.runtime.clone() {
+                                            let sender = self.dba_result_sender.clone();
+                                            let ctx = ui.ctx().clone();
+                                            rt.spawn(async move {
+                                                let res = crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await;
+                                                let _ = sender.send((active_tab, res));
+                                                ctx.request_repaint();
+                                            });
+                                        }
+                                    }
+                                }
+                                crate::dba_monitor::DbaAction::CancelQuery(pid) => {
+                                    if let Some(query) = crate::dba_monitor::get_cancel_query(&db_type, pid) {
+                                        if let Some(pool) = self.connection_pools.get(&conn_id).cloned() {
+                                            if let Some(rt) = self.runtime.clone() {
+                                                let sender = self.dba_result_sender.clone();
+                                                let ctx = ui.ctx().clone();
+                                                rt.spawn(async move {
+                                                    match crate::dba_monitor::execute_dba_command(&pool, &query).await {
+                                                        Ok(_) => log::info!("Cancelled query for PID {}", pid),
+                                                        Err(e) => log::error!("Failed to cancel query for PID {}: {}", pid, e),
+                                                    }
+                                                    let res = crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await;
+                                                    let _ = sender.send((active_tab, res));
+                                                    ctx.request_repaint();
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                                crate::dba_monitor::DbaAction::KillProcess(pid) => {
+                                    if let Some(query) = crate::dba_monitor::get_kill_query(&db_type, pid) {
+                                        if let Some(pool) = self.connection_pools.get(&conn_id).cloned() {
+                                            if let Some(rt) = self.runtime.clone() {
+                                                let sender = self.dba_result_sender.clone();
+                                                let ctx = ui.ctx().clone();
+                                                rt.spawn(async move {
+                                                    match crate::dba_monitor::execute_dba_command(&pool, &query).await {
+                                                        Ok(_) => log::info!("Killed process PID {}", pid),
+                                                        Err(e) => log::error!("Failed to kill process PID {}: {}", pid, e),
+                                                    }
+                                                    let res = crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await;
+                                                    let _ = sender.send((active_tab, res));
+                                                    ctx.request_repaint();
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     
-                        if !rendered_diagram && !rendered_http && !rendered_redis_browser {
+                        if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor {
                             self.render_query_editor_with_split(ui, "regular_query");
                         }
                     

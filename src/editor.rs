@@ -54,6 +54,7 @@ pub(crate) fn create_new_tab(
         should_run_on_open: false,
         http_client_state: None,
         redis_browser_state: None,
+        dba_monitor_state: None,
         tx_mode: false,
         tx_active: false,
         session: None,
@@ -127,6 +128,46 @@ pub(crate) fn create_new_http_tab(
         active_tab.connection_id = connection_id;
         active_tab.http_client_state = Some(models::structs::HttpClientState::default());
         tabular.current_connection_id = connection_id;
+    }
+    tab_id
+}
+
+/// Open or switch to a Live DBA Process & Lock Monitor tab for a connection
+pub(crate) fn open_dba_monitor_tab(
+    tabular: &mut window_egui::Tabular,
+    conn_id: i64,
+    initial_tab: models::enums::DbaMonitorTab,
+) -> usize {
+    let conn = tabular.connections.iter().find(|c| c.id == Some(conn_id));
+    let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "DB".to_string());
+    let title = format!("⚡ Monitor: {}", conn_name);
+
+    // If an existing monitor tab for this connection is already open, just switch to it
+    for (idx, tab) in tabular.query_tabs.iter().enumerate() {
+        if tab.dba_monitor_state.is_some() && tab.connection_id == Some(conn_id) {
+            switch_to_tab(tabular, idx);
+            if let Some(tab_mut) = tabular.query_tabs.get_mut(idx) {
+                if let Some(state) = &mut tab_mut.dba_monitor_state {
+                    state.selected_tab = initial_tab;
+                }
+            }
+            return idx;
+        }
+    }
+
+    let mut monitor_state = models::structs::DbaMonitorState::default();
+    monitor_state.selected_tab = initial_tab;
+
+    let tab_id = create_new_tab_with_connection(
+        tabular,
+        title,
+        String::new(),
+        Some(conn_id),
+    );
+
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.dba_monitor_state = Some(monitor_state);
+        tab.is_table_browse_mode = false;
     }
     tab_id
 }
@@ -246,6 +287,7 @@ pub(crate) fn find_unsaved_query_tab_for_connection(
             && tab.dba_special_mode.is_none()
             && tab.http_client_state.is_none()
             && tab.redis_browser_state.is_none()
+            && tab.dba_monitor_state.is_none()
     })
 }
 
@@ -263,6 +305,7 @@ pub(crate) fn find_initial_blank_tab(tabular: &window_egui::Tabular) -> Option<u
             && tab.diagram_state.is_none()
             && tab.http_client_state.is_none()
             && tab.redis_browser_state.is_none()
+            && tab.dba_monitor_state.is_none()
             && tab.results.is_empty()
             && tab.result_rows.is_empty()
         {
@@ -6144,6 +6187,20 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         }
         "Transaction: Rollback" => {
             send_session_tx_command(tabular, false);
+        }
+        "DBA: Live Process Monitor" => {
+            if let Some(conn_id) = tabular.current_connection_id {
+                open_dba_monitor_tab(tabular, conn_id, models::enums::DbaMonitorTab::Processlist);
+            } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
+                open_dba_monitor_tab(tabular, first_conn, models::enums::DbaMonitorTab::Processlist);
+            }
+        }
+        "DBA: Deadlock & Lock Tree" => {
+            if let Some(conn_id) = tabular.current_connection_id {
+                open_dba_monitor_tab(tabular, conn_id, models::enums::DbaMonitorTab::LockTree);
+            } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
+                open_dba_monitor_tab(tabular, first_conn, models::enums::DbaMonitorTab::LockTree);
+            }
         }
         "View: Refresh" => {
             crate::data_table::refresh_current_table_data(tabular);

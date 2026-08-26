@@ -548,6 +548,7 @@ pub(crate) fn open_query_file(
         should_run_on_open: false,
         http_client_state: None,
         redis_browser_state: None,
+        dba_monitor_state: None,
         tx_mode: false,
         tx_active: false,
         session: None,

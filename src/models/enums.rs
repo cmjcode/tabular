@@ -64,6 +64,20 @@ pub enum DBASpecialMode {
     MasterStatus,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessStateFilter {
+    All,
+    ActiveOnly,
+    BlockedOnly,
+    IdleOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DbaMonitorTab {
+    Processlist,
+    LockTree,
+}
+
 #[derive(Debug, Clone)]
 pub enum BackgroundTask {
     RefreshConnection {

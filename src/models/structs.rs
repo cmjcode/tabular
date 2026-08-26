@@ -735,12 +735,61 @@ pub struct QueryTab {
     // HTTP client state (Some(_) means this tab is an HTTP client)
     pub http_client_state: Option<HttpClientState>,
     pub redis_browser_state: Option<RedisBrowserState>,
+    // DBA Process & Lock monitor state
+    pub dba_monitor_state: Option<DbaMonitorState>,
 
     // Manual-commit (transaction) mode — see connection/session.rs
     pub tx_mode: bool,
     pub tx_active: bool,
     pub session: Option<crate::connection::session::SessionHandle>,
     pub pinned_columns: HashSet<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ProcessInfo {
+    pub pid: i64,
+    pub user: String,
+    pub db: String,
+    pub host: String,
+    pub state: String,
+    pub duration_secs: f64,
+    pub wait_event: Option<String>,
+    pub query: String,
+    pub is_blocking: bool,
+    pub blocked_by: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DbaMonitorState {
+    pub processes: Vec<ProcessInfo>,
+    pub is_loading: bool,
+    pub auto_refresh: bool,
+    pub refresh_interval_secs: u64,
+    pub last_refreshed: Option<std::time::Instant>,
+    pub selected_tab: models::enums::DbaMonitorTab,
+    pub filter_state: models::enums::ProcessStateFilter,
+    pub search_text: String,
+    pub selected_pid: Option<i64>,
+    pub confirm_action: Option<(i64, bool)>, // (pid, is_cancel_only)
+    pub status_message: Option<(String, bool)>, // (message, is_error)
+}
+
+impl Default for DbaMonitorState {
+    fn default() -> Self {
+        Self {
+            processes: Vec::new(),
+            is_loading: false,
+            auto_refresh: true,
+            refresh_interval_secs: 3,
+            last_refreshed: None,
+            selected_tab: models::enums::DbaMonitorTab::Processlist,
+            filter_state: models::enums::ProcessStateFilter::All,
+            search_text: String::new(),
+            selected_pid: None,
+            confirm_action: None,
+            status_message: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
