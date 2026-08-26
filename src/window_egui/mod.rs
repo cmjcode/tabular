@@ -109,6 +109,8 @@ pub struct Tabular {
     pub background_receiver: Option<Receiver<models::enums::BackgroundResult>>,
     pub query_result_sender: Sender<connection::QueryResultMessage>,
     pub query_result_receiver: Receiver<connection::QueryResultMessage>,
+    pub dba_result_sender: Sender<(usize, Result<Vec<models::structs::ProcessInfo>, String>)>,
+    pub dba_result_receiver: Receiver<(usize, Result<Vec<models::structs::ProcessInfo>, String>)>,
     pub active_query_jobs: std::collections::HashMap<u64, connection::QueryJobStatus>,
     pub active_query_handles: std::collections::HashMap<u64, tokio::task::JoinHandle<()>>,
     pub cancelled_query_jobs: std::collections::HashMap<u64, std::time::Instant>,

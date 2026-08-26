@@ -693,6 +693,8 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         ("Transaction: Begin / Toggle", "Toggle transactional execution mode", "⌘ Shift+T"),
         ("Transaction: Commit", "Commit pending transaction changes", ""),
         ("Transaction: Rollback", "Rollback pending transaction changes", ""),
+        ("DBA: Live Process Monitor", "Open real-time processlist monitor & kill queries", ""),
+        ("DBA: Deadlock & Lock Tree", "Inspect active lock dependencies and blocking hierarchy", ""),
         ("View: Refresh", "Refresh active database or table", "⌘R"),
         ("Preferences: Color Theme", "Change editor and UI color palette", ""),
         ("Preferences: Settings", "Configure application settings", "⌘,"),
