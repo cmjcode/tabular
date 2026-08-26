@@ -12,76 +12,102 @@ Your fast, native, cross‑platform SQL & NoSQL database client (Desktop, with e
 Tabular is a lightweight, native database client built with the `eframe`/`egui` stack. It focuses on instant startup, responsive UI, safe concurrency, and a distraction‑free workflow for developers, data engineers, and DBAs. Unlike web/electron apps, Tabular ships as a single native binary with a small memory footprint while still offering rich features like autocomplete, multiple drivers, query history, export tools, and self‑update.
 
 ## 2. Key Features
-- Unified UI for multiple relational & non‑relational databases
-- Drivers: PostgreSQL, MySQL/MariaDB, SQLite, SQL Server (TDS), Redis, MongoDB
-- Async runtime (Tokio) for non‑blocking execution
-- Multiple query tabs & saved query library (`queries/` folder)
-- Query history panel with search & filtering
-- Result grid with copy cell / row / full result set
-- Export to CSV & XLSX
-- Rich value formatting (dates, decimals, JSON, BSON, HEX)
-- Inline cell editing with date/time picker support
-- Connection caching & quick reconnect
-- **Connection folder organization** — group connections into folders with drag‑and‑drop reordering
-- Self‑update (GitHub Releases) with semantic version check
-- Configurable data directory (env `TABULAR_DATA_DIR`)
-- Native file dialogs (`rfd`)
-- Cross‑platform theming via egui
-- Sandboxing & notarization ready for macOS
+- **Ultra-Fast & Lightweight**: Native Rust single binary, instant startup (~0.1s), minimal memory footprint (~30-70 MB RAM)
+- **Multi-Database Support**: PostgreSQL, MySQL / MariaDB, SQLite, Microsoft SQL Server (TDS), Redis, MongoDB
+- **Async Tokio Runtime**: Fully non-blocking query execution, streaming transfers, and background tasks
+- **Visual Query Profiler & Execution Graph**: Interactive node graph for `EXPLAIN ANALYZE` (Postgres, MySQL, MSSQL) with Sugiyama hierarchical layout, cost percentages, and automated bottleneck/scan warnings
+- **Server-Side GUI Filter Builder**: Construct modular `WHERE` clauses with operator dropdowns (`=`, `!=`, `LIKE`, `IN`, `IS NULL`, `BETWEEN`, `>`, `<`) pushed directly to the server engine
+- **1-Click Foreign Key Navigation**: Hyperlinked FK cells to jump immediately to referenced rows or parent tables
+- **Multi-Tab Cell Inspector**: Dedicated modal with JSON Tree Formatter, Hex / Binary viewer, Image preview (PNG, JPEG, WebP, SVG), and Raw virtual scrolling text viewer
+- **Native Backup & Restore Wizard**: Dump & restore databases with progress streaming, compression (`.sql.gz`, `.tar`, `.dump`), and SQLite pure-Rust backup support
+- **Two-Way Schema Sync & Migration Generator**: Structural diffing with automated `ALTER TABLE` DDL forward and rollback script generation
+- **DBA Processlist & Deadlock Tree Monitor**: Real-time session monitoring with lock hierarchy graphs and 1-click `Kill Process / Cancel Query`
+- **User, Role & Privileges Management GUI**: Visual user creation, password updates, and granular database/table permission matrices
+- **Enterprise Security**: Custom CA & Client Certificates (mTLS), passphrase-protected Private Keys, and Multi-Hop Bastion Jump (SSH Tunneling)
+- **WebAssembly (Wasm) Plugin Runtime**: Pure-Rust sandboxed plugin execution with Host APIs, custom exporters (Parquet, DuckDB), and ORM Model Generators (Diesel, SeaORM, Prisma, TypeORM, SQLAlchemy)
+- **Universal Quick Open & Command Palette (`Cmd+P` / `Cmd+K`)**: Instant fuzzy search across tables, views, procedures, saved queries, history, connections, and commands with quick filter pills
+- **Semantic Find & Replace**: Editor search with Regex, Match Case, Whole Word, and In-Selection scope support
+- **End-to-End Encrypted Cloud Sync (Zero-Knowledge Vault)**: Argon2id KDF, AES-256-GCM encrypted connections and HTTP secrets synced securely across devices and teams
+- **Integrated HTTP Client**: REST API tester supporting JSON, form-data, custom auth, headers, and code export
+- **Redis Visual Key Browser**: Key explorer with cluster detection, type filtering, full-text search, and TTL/size metrics
+- **AI Assistant (`Cmd+Shift+A`)**: Schema-aware SQL completion with OpenAI, Anthropic Claude, Groq, GitHub Copilot, or custom endpoints
 
-### AI Assistant (New in v0.6)
-Context‑aware AI assistant integrated directly into the query editor. Press **Cmd+Shift+A** (macOS) / **Ctrl+Shift+A** (Linux/Windows) to toggle the panel.
-- Supported providers: **OpenAI (ChatGPT)**, **Anthropic (Claude)**, **Groq**, **GitHub Copilot/Models**, and **Custom OpenAI‑compatible** endpoints
-- Automatically injects active schema (tables + columns) as context
-- Configurable model, API key, and base URL per provider — all stored in Preferences → ✨ AI Assistant
+---
 
-### Redis Browser (New in v0.7)
+### Visual Query Profiler (New in v0.13)
+Analyze and optimize slow queries with interactive visual graphs instead of deciphering raw JSON outputs.
+- Supports PostgreSQL (`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`), MySQL (`EXPLAIN FORMAT=JSON`), and Microsoft SQL Server ShowPlan.
+- Hierarchical Sugiyama layout with smooth pan and zoom canvas.
+- Node coloring by total cost percentage (highlighting bottlenecks in red).
+- Instant warning triggers for Sequential Scans on large tables, Cartesian Products, and Disk Spills.
+
+### Server-Side GUI Filter Builder & FK Navigation (New in v0.13)
+Filter and navigate large data grids with speed and ease.
+- **Server-Side Filter Builder**: Builds dynamic parameter-safe `WHERE` conditions pushed directly to the database query.
+- **Foreign Key Hyperlinks**: 1-click jump from FK cell values to parent or related child rows.
+- **Pin & Freeze Columns**: Lock critical identifier columns while scrolling wide tables horizontally.
+- **Multi-Tab Value Inspector**: Deep dive into cell payloads (JSON trees, Hex binary, image rendering, virtual text).
+
+### Native Backup & Restore Wizard (New in v0.13)
+Comprehensive database lifecycle management from within Tabular.
+- Native wrappers for `pg_dump`, `pg_restore`, `mysqldump`, and `sqlite3_backup`.
+- Background async stream runner with real-time byte counters and stdout/stderr logs.
+- Export to `.sql`, `.sql.gz`, `.tar`, and `.dump` formats.
+- Context menu integration: Right-click any database in the sidebar → "💾 Backup Database..." or "📥 Restore Database...".
+
+### Real-Time DBA Processlist & User Management (New in v0.13)
+Monitor database health and manage access rights.
+- **Processlist & Lock Tree**: Inspect active queries, detect blocked transactions and deadlocks, and terminate unruly queries (`KILL PID`).
+- **User & Privileges GUI**: Create database accounts, alter passwords, and manage object permissions (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `EXECUTE`).
+
+### WebAssembly Plugin Runtime (New in v0.13)
+Extend Tabular with lightweight sandboxed Wasm modules (`wasmi` engine).
+- **Host APIs**: Read selected rows, access schema definitions, stream output, and write logs.
+- **Starter Plugins**: Apache Parquet & DuckDB export, ORM model generation for Rust (Diesel/SeaORM), TypeScript (Prisma/TypeORM), and Python (SQLAlchemy).
+- **Plugin Manager Modal**: Browse plugin catalog, run custom WAT/WASM modules, and view generated artifacts.
+
+### End-to-End Encrypted Cloud Sync (New in v0.12)
+- Zero-Knowledge Vault with client-side **Argon2id** and **AES-256-GCM** encryption.
+- Multi-user team sharing with **X25519** sealed boxes.
+- Server (`tabular-server`) stores only ciphertext it cannot read.
+
+### AI Assistant (Cmd+Shift+A)
+Context‑aware AI assistant integrated directly into the query editor.
+- Supported providers: **OpenAI (ChatGPT)**, **Anthropic (Claude)**, **Groq**, **GitHub Copilot/Models**, and **Custom OpenAI‑compatible** endpoints.
+- Automatically injects active schema (tables + columns) as context.
+
+### Redis Browser
 Dedicated visual key explorer for Redis connections.
-- **Auto‑detects** standalone vs. cluster mode on connect
-- Paginated key list (up to 500 keys) with background async loading
-- **Key type filter**: String, Hash, List, Set, Sorted Set, Stream, Other
-- Full‑text key search across the loaded keyspace
-- Preview panel for key values (TTL label, size label, type‑aware display)
-- Cluster support: scans all master nodes automatically
+- Auto-detects standalone vs. cluster mode.
+- Type filtering: String, Hash, List, Set, Sorted Set, Stream.
+- Key preview panel with TTL and memory size labels.
 
-### Built‑in HTTP Client (New in v0.5)
+### Built‑in HTTP Client
 Lightweight REST/HTTP testing panel available as a tab alongside SQL results.
-- GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS methods
-- Auth: Bearer token, Basic Auth, API Key header
-- Request body: JSON, form‑data, raw text
-- Syntax‑highlighted response viewer (JSON, plain)
-- Per‑connection state persisted to `~/.tabular/http_state/`
-
-### Query Editor (In Progress)
-The legacy `egui::TextEdit` editor is being replaced with a custom widget backed by a rope buffer. Current capabilities:
-- Multi‑caret editing
-- Per‑line syntax highlighting cache (SQL focus first)
-- Background / pointer highlight, colored multi‑result tabs
-- Scroll‑to‑caret, Undo/Redo
-- Multi‑line/column selection
-
-Planned next: full autocomplete integration, diff‑based edits, revision tracking, and removal of the legacy path after feature parity.
+- GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS methods.
+- Auth: Bearer token, Basic Auth, API Key header.
+- Syntax-highlighted response viewer and code generator.
 
 ## 3. Supported Databases
 | Category   | Engines / Protocols |
 |------------|----------------------|
 | Relational | PostgreSQL, MySQL/MariaDB, SQLite, Microsoft SQL Server |
 | Document   | MongoDB (BSON & compression) |
-| Key/Value  | Redis (async connection manager) |
+| Key/Value  | Redis (standalone & cluster async manager) |
 
 Notes:
-- Microsoft SQL Server uses `tiberius` (TDS over TLS)
-- Redis uses pooled async managers
-- SQLite runs in‑process (file mode) — ensure write permissions
+- Microsoft SQL Server uses `mssql-client` (TDS over TLS)
+- Redis uses pooled async connection managers
+- SQLite runs in‑process (bundled `libsqlite3-sys` file mode)
 
 ## 4. Installation
 
 ### Option A: Download Prebuilt Release (Recommended)
 1. Visit: https://github.com/tabular-id/tabular/releases
 2. Download the bundle for your platform:
-    - macOS: `.dmg` (notarized) or `.pkg` (if available)
-    - Linux: `.tar.gz` (extract, then place the binary in `$HOME/.local/bin` or `/usr/local/bin`)
-    - Windows: portable package is planned
+    - macOS: `.dmg` (notarized) or `.pkg`
+    - Linux: `.tar.gz`, `.deb`, or Flatpak
+    - Windows: `.zip` / installer
 3. (macOS) Drag `Tabular.app` into `/Applications`.
 4. Run Tabular.
 
@@ -89,16 +115,16 @@ Notes:
 General requirements:
 - Rust (stable; https://rustup.rs)
 - Cargo (bundled with rustup)
-- Clang/LLVM (for bindgen / some native crates)
+- Clang/LLVM (for bindgen / native crates)
 - libclang headers (Linux)
-- (Linux) pkg-config, OpenSSL dev packages may be required depending on environment
+- pkg-config, OpenSSL dev packages (Linux)
 
 #### Arch Linux
 ```bash
 sudo pacman -Syu --needed base-devel clang llvm pkgconf
 export LIBCLANG_PATH=/usr/lib
 git clone https://github.com/tabular-id/tabular.git
-cd tabular
+cd tabular/tabular-client
 cargo build --release
 ```
 
@@ -107,34 +133,16 @@ cargo build --release
 sudo apt update
 sudo apt install -y build-essential clang libclang-dev pkg-config
 git clone https://github.com/tabular-id/tabular.git
-cd tabular
+cd tabular/tabular-client
 cargo build --release
 ```
 
 #### macOS
 ```bash
-xcode-select --install   # Command Line Tools
-brew install llvm        # (opsional) clang lebih baru
+xcode-select --install
 git clone https://github.com/tabular-id/tabular.git
-cd tabular
+cd tabular/tabular-client
 cargo build --release
-```
-Jika memakai LLVM dari Homebrew:
-```bash
-export LIBCLANG_PATH="$(brew --prefix llvm)/lib"
-```
-
-#### Windows (MSVC) – planned
-Install the MSVC toolchain, then build with `cargo build --release`.
-
-#### Multi‑Arsitektur / Cross Compilation (Desktop + Eksperimental iOS)
-```bash
-cargo install cross
-cross build --target aarch64-apple-darwin --release
-
-# Eksperimental iPadOS (butuh wrapper Xcode/iOS)
-rustup target add aarch64-apple-ios
-cargo build --target aarch64-apple-ios --release
 ```
 
 ### Run
@@ -159,64 +167,56 @@ export APPLE_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 export NOTARIZE=1
 ./build.sh macos --deps
 ```
-Staple & verify:
-```bash
-xcrun stapler staple dist/macos/Tabular-<version>.dmg
-spctl -a -vv dist/macos/Tabular.app
-codesign --verify --deep --strict --verbose=2 dist/macos/Tabular.app
-```
-See `macos/Tabular.entitlements` for sandbox/network/file access settings. For App Store distribution use a distribution identity and provisioning profile:
-```bash
-export APPLE_IDENTITY="Apple Distribution: Your Name (TEAMID)"
-export PROVISIONING_PROFILE="/path/Tabular_AppStore.provisionprofile"
-make pkg-macos-store
-```
 
 ## 6. Data Directory (Configurable)
-Default location:
-- macOS / Linux: `~/.tabular`
-
-Change it via Preferences (native folder picker) or force it with:
-```bash
-export TABULAR_DATA_DIR="/absolute/custom/path"
-./tabular
-```
-Manual migration: copy the old folder to the new location before switching & restarting.
+Default location: `~/.tabular`
 
 Contents of the data directory:
 - `preferences.*` — UI & app settings
-- `cache.*` — metadata & driver caches
+- `cache.*` — metadata & driver caches (SQLite)
 - `queries/` — saved queries
 - `history/` — executed query history
+- `http_state/` — HTTP client collections & environments
 
 ## 7. Development Guide
-### Project Layout (selected)
+### Project Layout
 ```
 src/
-    main.rs                   # Entry point
-    window_egui/              # UI / egui integration (split into modules)
-    editor.rs                 # Query editor logic
-    editor_autocomplete.rs    # Legacy autocomplete
-    editor_autocomplete_new.rs# New autocomplete engine
-    editor_buffer.rs          # Rope-based editor buffer
-    editor_selection.rs       # Multi-caret / selection logic
-    ai_assistant.rs           # AI Assistant (schema context + provider requests)
-    http_client.rs            # Built-in HTTP client panel
-    redis_browser.rs          # Redis visual key browser
-    sidebar_*.rs              # Side panels (database tree, history, queries)
-    driver_*.rs               # Database driver abstractions
-    spreadsheet.rs            # Inline cell editing / data grid
-    export.rs                 # Export to CSV / XLSX
-    self_update.rs            # Self-update check & apply
-    config.rs                 # Preferences & data directory
-    models/                   # Data structures & enums
-    query_ast/                # Agnostic AST query layer
+├── main.rs                   # App entrypoint
+├── window_egui/              # Main UI / egui shell & sub-modules
+├── data_table/               # High-performance data grid & inspector
+│   ├── filter_sort.rs        # Server-side SQL filter builder & sorting
+│   ├── inspector.rs          # Multi-tab JSON, Hex, Image & Text inspector
+│   ├── render_data.rs        # Grid rendering, FK hyperlinks, column freeze
+│   └── pagination.rs         # Paginated streaming
+├── query_profiler/           # Visual EXPLAIN / EXPLAIN ANALYZE engine
+│   ├── mod.rs                # Public profiler API
+│   ├── parser.rs             # Multi-database JSON/XML EXPLAIN parser
+│   ├── graph.rs              # Hierarchical Sugiyama layout canvas
+│   └── warnings.rs           # Automated bottleneck & scan detector
+├── backup_restore.rs         # Native dump/restore runner (pg_dump, mysqldump, sqlite)
+├── dialog_backup_restore.rs  # Visual Backup & Restore wizard modal
+├── dba_monitor.rs            # Real-time processlist & lock tree monitor
+├── user_manager.rs           # User, role & permission management GUI
+├── ssh_tunnel.rs             # Multi-hop SSH bastion tunneling & mTLS
+├── plugin_runtime/           # WebAssembly (wasmi) plugin execution engine
+│   ├── engine.rs             # Sandbox runtime & Host API bindings
+│   ├── manager.rs            # Plugin registry & lifecycle
+│   ├── templates/            # Parquet, DuckDB & ORM starter templates
+│   └── ui.rs                 # Plugin manager & artifact viewer modal
+├── quick_open.rs             # Universal Quick Open palette (Cmd+P / Cmd+K)
+├── editor.rs                 # Custom editor widget, multi-caret, Find & Replace
+├── sync/                     # E2EE Cloud Sync & zero-knowledge vault
+├── driver_*.rs               # Database drivers (Postgres, MySQL, SQLite, MSSQL, Redis, Mongo)
+├── http_client.rs            # Built-in REST/HTTP tester
+├── redis_browser.rs          # Redis visual key browser
+└── query_ast/                # Database-agnostic AST query optimizer & emitter
 ```
 
 ### Quick Start (Dev)
 ```bash
 git clone https://github.com/tabular-id/tabular.git
-cd tabular
+cd tabular/tabular-client
 cargo run
 ```
 
@@ -230,94 +230,108 @@ cargo run
 | Format        | `cargo fmt`                      |
 | Release build | `cargo build --release`          |
 
-### Logging
-```bash
-RUST_LOG=info cargo run
-```
-
-RUST_LOG ini ada info, error
-
-### Adding a New Driver (short)
-1) Create `driver_<engine>.rs`  2) Implement connection & execution  3) Add feature flag if optional  4) Register in `modules.rs`/factory  5) Update README.
-
 ## 8. Core Dependencies (Crates)
 | Purpose        | Crate |
 |----------------|-------|
-| UI & App Shell | eframe, egui_extras |
-| Async Runtime  | tokio, futures, futures-util, tokio-util |
-| Relational DB  | sqlx (postgres, mysql, sqlite) |
-| SQL Server     | tiberius |
-| Redis          | redis |
-| MongoDB        | mongodb, bson |
-| Data Formats   | serde, serde_json, chrono, rust_decimal, hex, csv, xlsxwriter |
-| File Dialog    | rfd |
-| Update         | reqwest, self_update, semver |
-| Logging        | log, env_logger, dotenv |
-| Utilities      | dirs, regex, colorful |
+| UI & App Shell | `eframe`, `egui_extras`, `egui_commonmark` |
+| Async Runtime  | `tokio`, `futures`, `futures-util` |
+| Relational DB  | `sqlx` (postgres, mysql, sqlite), `mssql-client`, `mssql-driver-pool` |
+| Key-Value & Doc| `redis`, `mongodb`, `bson` |
+| Plugin Runtime | `wasmi` (pure-Rust WebAssembly engine) |
+| E2EE Crypto    | `argon2`, `aes-gcm`, `sha2`, `chacha20poly1305` |
+| Data Formats   | `serde`, `serde_json`, `chrono`, `rust_decimal`, `hex`, `csv`, `rust_xlsxwriter`, `flate2`, `tar`, `zip` |
+| Parser & Trees | `tree-sitter`, `tree-sitter-json`, `tree-sitter-javascript`, `sqlformat` |
+| Dialogs & OS   | `rfd`, `dirs`, `semver`, `reqwest` |
 
-See `Cargo.toml` for exact versions (current package version: **0.7.0**).
+Current package version: **0.13.0**.
 
 ## 9. Contributing
 Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested workflow:
 1. Fork & create a feature branch.
 2. Run `cargo fmt && cargo clippy` before committing.
-3. Ensure release build compiles: `cargo build --release`.
+3. Ensure test suite passes: `cargo test`.
 4. Open a PR with a concise description & screenshots (for UI changes).
 
 ## 10. Troubleshooting
 | Issue                           | Hint                                               |
 |---------------------------------|----------------------------------------------------|
 | Build fails: clang not found    | Install clang / set `LIBCLANG_PATH`                |
-| TLS errors on connect           | Verify certificates & network reachability         |
+| TLS errors on connect           | Verify certificates, CA bundle, or mTLS keys       |
 | SQLite file locked              | Close other processes; check file permissions      |
-| UI freeze on long queries       | Use server pagination; streaming improvements WIP  |
+| Backup binary not found         | Ensure `pg_dump` or `mysqldump` is in system PATH  |
 
 ## 11. Roadmap (High level)
 
 ### Recently Shipped ✅
-- AI Assistant with multi‑provider support (v0.6)
-- Redis visual key browser with cluster support (v0.7)
-- Built‑in HTTP client (v0.5)
-- Connection folder organization with drag‑and‑drop (v0.5)
-- Inline date/time cell editing (v0.5)
+- **Visual Query Profiler**: Interactive Sugiyama cost tree graph with bottleneck alerts (v0.13)
+- **Server-Side GUI Filter Builder**: Dynamic SQL WHERE builder with operator dropdowns (v0.13)
+- **Foreign Key Hyperlink Navigation**: 1-click jump to referenced parent/child rows (v0.13)
+- **Dedicated Multi-Tab Inspector Modal**: JSON Tree, Hex Editor, Image Renderer, Virtual Text (v0.13)
+- **Native Backup & Restore Wizard**: Full dump and restore with async stream tracking (v0.13)
+- **Two-Way Schema Sync & Migration Generator**: Schema diff with ALTER and Rollback DDL generation (v0.13)
+- **DBA Processlist & Deadlock Tree**: Live query monitoring and session termination (v0.13)
+- **User & Privileges Management GUI**: Account creation, password update, and permission matrix (v0.13)
+- **WebAssembly Plugin Runtime**: Sandboxed Wasm extensions, Parquet/DuckDB export, and ORM generator (v0.13)
+- **Universal Quick Open (`Cmd+P` / `Cmd+K`)**: Rapid navigation across tables, queries, history, and actions (v0.13)
+- **Semantic Find & Replace**: Regex and scoped search in query editor (v0.13)
+- **End-to-End Encrypted Cloud Sync**: Zero-Knowledge Vault with Argon2id + AES-256-GCM (v0.12)
+- **AI Assistant**: Multi-provider schema-aware SQL generation (v0.6)
+- **Redis Visual Key Browser**: Full cluster & standalone key viewer (v0.7)
 
 ### Upcoming
-- Windows build & signing
-- iPadOS adaptive layout
-- Query formatter / beautifier
-- Result pagination for large datasets
-- Scripting/extension layer
-- Secure secrets storage (Keychain/KWallet/Credential Manager)
-- Full AST executor trait implementation for all drivers
+- Automated Database Diagram / ERD interactive editor
+- Query result chart & data visualization widgets
+- Step-by-step Stored Procedure & PL/pgSQL visual debugger
+- Native iPadOS touch-optimized UI layout
+- Windows signed installer package (MSI / AppX)
 
 ## 12. License
 This project is dual‑licensed:
-
 1) GNU Affero General Public License v3 (AGPL‑3.0) — see `LICENSE-AGPL`
 2) Commercial License — contact PT. Vneu Teknologi Indonesia (see `LICENSE`)
 
-In short: use AGPL for OSS/non‑commercial; obtain a commercial license for closed‑source/commercial integration.
-
 ## 13. Changelog
 
+### v0.13.0 (Master Powerhouse Release)
+- **Visual Query Profiler**: Interactive tree graph for `EXPLAIN ANALYZE` (Postgres, MySQL, MSSQL) with Sugiyama layout, cost percentage visualization, and automated bottleneck warnings.
+- **Server-Side GUI Filter Builder**: Dynamic SQL WHERE generator with support for multi-condition groups and operator selectors.
+- **Foreign Key Navigation**: 1-click hyperlink jump on FK columns directly to referenced rows.
+- **Multi-Tab Value Inspector**: Dedicated inspector modal featuring JSON Tree Formatter, Hex/Binary viewer, Image preview (PNG, JPEG, WebP, SVG), and Raw virtual text.
+- **Native Backup & Restore Wizard**: Visual dump/restore manager supporting `pg_dump`, `mysqldump`, and SQLite backup APIs with compression and live log monitoring.
+- **Two-Way Schema Sync**: Structural schema diff engine with automatic generation of forward `ALTER TABLE` and `ROLLBACK` migration scripts.
+- **DBA Process Monitor**: Real-time processlist, lock dependency tree, and 1-click query termination (`KILL PID`).
+- **User & Permissions GUI**: User account management and granular database/table permission matrices.
+- **Enterprise Security**: mTLS support with custom CA, Client Certificate, and encrypted Private Keys, plus Multi-Hop SSH Bastion Tunneling.
+- **WebAssembly Plugin Runtime**: `wasmi` Wasm engine with Host API, starter plugins for Apache Parquet/DuckDB export and ORM model generation (Diesel, SeaORM, Prisma, TypeORM, SQLAlchemy).
+- **Universal Quick Open (`Cmd+P` / `Cmd+K`)**: Fast category-filtered fuzzy search for tables, views, procedures, saved queries, history, connections, and commands.
+- **Editor Find & Replace**: Floating search panel with Regex, Case Sensitivity, Whole Word, and In-Selection search.
+
+### v0.12.0
+- **End-to-End Encrypted Cloud Sync**: Zero-Knowledge Vault with Argon2id KDF, AES-256-GCM encryption, and X25519 team key sharing.
+- Query pool cancellation and 30-second timeout handling.
+- SQLite metadata cache corruption self-healing and conflict handling.
+- Synchronous app icon initialization.
+
+### v0.11.x
+- Async startup enhancements and team workspace collaboration.
+- Table structure editor and index manager improvements.
+
+### v0.10.x
+- Multi-query tab management and editor performance tuning.
+- Native file dialog upgrades and connection caching.
+
 ### v0.7.0
-- **Redis Browser**: full visual key explorer — type filter (String/Hash/List/Set/ZSet/Stream), full‑text key search, key preview panel with TTL & size labels
-- **Redis Cluster support**: auto‑detects standalone vs. cluster mode; scans all master nodes automatically when in cluster mode
-- Background async loading of Redis state via message‑passing channel
+- **Redis Browser**: Visual key explorer with type filters, full-text key search, and preview panel with TTL/size metrics.
+- **Redis Cluster Support**: Auto-detects standalone vs cluster mode; scans master nodes automatically.
 
 ### v0.6.x
-- **AI Assistant** (Cmd+Shift+A): schema‑aware query suggestions powered by OpenAI (ChatGPT), Anthropic (Claude), Groq, GitHub Copilot/Models, or any Custom OpenAI‑compatible endpoint; configurable model, API key, and base URL in Preferences
-- Spreadsheet primary‑key detection improved: fallback chain from `index_cache` → live DB query, reducing edit failures in table‑browse mode
-- Sidebar database tree fixes & reliability improvements
+- **AI Assistant (`Cmd+Shift+A`)**: Schema-aware SQL generation powered by OpenAI, Claude, Groq, Copilot, or custom endpoints.
+- Primary key detection fallback chain improvements.
 
-### v0.5.x (selected highlights)
-- **Built‑in HTTP Client**: REST/API testing panel available as a tab — supports all major methods, Bearer/Basic/API‑Key auth, JSON & form‑data body, syntax‑highlighted responses, state persisted per connection
-- **Connection Folders**: group connections into named folders; drag‑and‑drop reordering of both connections and folders in the sidebar
-- **Editor**: background & pointer highlight, colored multi‑result tabs (active tab accent), cursor reliability fixes, improved `--` mid‑query comment styling, autocomplete JOIN suggestions
-- **Inline date/time editing**: date & datetime cells in the data grid open a native‑style picker
-- **UI / Theme**: full redesign pass — updated color palette, icon alignment, spacing between columns
-- Connection module refactored into `src/connection/{crud, execute, pool, sql, types, ui}.rs` for easier maintenance
-- `window_egui` split into focused sub‑modules (`app_impl`, `init`, `sidebar_tree`, `tree_loader`, `render_dialogs`, `connection_mgr`)
+### v0.5.x
+- **Built-in HTTP Client**: REST API tester with headers, body, auth, and state persistence.
+- **Connection Folders**: Named folders with drag-and-drop reordering.
+- **Inline Date/Time Editing**: Native picker for date/datetime cells in data grid.
 
 ## 14. Acknowledgements
 Built with the Rust ecosystem. egui & sqlx projects are especially instrumental.
