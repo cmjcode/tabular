@@ -1159,6 +1159,19 @@ impl super::Tabular {
                                         &table_name,
                                         &conn,
                                     );
+                                    let (idxs, parts) = rt.block_on(async {
+                                        let idx_fut = crate::data_table::fetch_index_details_standalone_async(
+                                            &conn,
+                                            &database_name,
+                                            &table_name,
+                                        );
+                                        let part_fut = crate::data_table::fetch_partition_details_standalone_async(
+                                            &conn,
+                                            &database_name,
+                                            &table_name,
+                                        );
+                                        (idx_fut.await, part_fut.await)
+                                    });
 
                                     let _ = result_sender_thread.send(
                                         models::enums::BackgroundResult::TableStructureFetched {
@@ -1166,6 +1179,8 @@ impl super::Tabular {
                                             database_name,
                                             table_name,
                                             columns: cols,
+                                            indexes: Some(idxs),
+                                            partitions: Some(parts),
                                         },
                                     );
                                 }

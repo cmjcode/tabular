@@ -5,6 +5,15 @@ use crate::{
     window_egui::{self, Tabular},
 };
 
+fn spawn_cache_write<F>(tabular: &Tabular, fut: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    if let Some(rt) = &tabular.runtime {
+        rt.spawn(fut);
+    }
+}
+
 pub(crate) fn get_tables_from_cache(
     tabular: &Tabular,
     connection_id: i64,
@@ -292,11 +301,7 @@ pub(crate) fn clear_tables_from_cache_for_db(
                 }
             }
         };
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut);
-        } else if let Ok(rt) = tokio::runtime::Runtime::new() {
-            rt.block_on(fut);
-        }
+        spawn_cache_write(tabular, fut);
     }
 }
 
@@ -311,7 +316,7 @@ pub(crate) fn save_databases_to_cache(
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let databases_clone = databases.to_vec();
-        let fut = async {
+        let fut = async move {
             // Clear existing cache for this connection
             let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
                 .bind(connection_id)
@@ -327,11 +332,7 @@ pub(crate) fn save_databases_to_cache(
                      .await;
             }
         };
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut)
-        } else {
-            tokio::runtime::Runtime::new().unwrap().block_on(fut)
-        };
+        spawn_cache_write(tabular, fut);
     }
 }
 
@@ -536,11 +537,7 @@ pub(crate) fn save_tables_to_cache(
                      .await;
             }
         };
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut)
-        } else {
-            tokio::runtime::Runtime::new().unwrap().block_on(fut)
-        };
+        spawn_cache_write(tabular, fut);
     }
 }
 
@@ -556,7 +553,7 @@ pub(crate) fn save_columns_to_cache(
         let columns_clone = columns.to_vec();
         let database_name = database_name.to_string();
         let table_name = table_name.to_string();
-        let fut = async {
+        let fut = async move {
             // Clear existing cache for this table
             let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
               .bind(connection_id)
@@ -578,11 +575,7 @@ pub(crate) fn save_columns_to_cache(
                      .await;
             }
         };
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut)
-        } else {
-            tokio::runtime::Runtime::new().unwrap().block_on(fut)
-        };
+        spawn_cache_write(tabular, fut);
     }
 }
 
@@ -787,11 +780,11 @@ pub(crate) fn save_table_rows_to_cache(
 ) {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
-        let database_name = database_name.to_string();
-        let table_name = table_name.to_string();
+        let db_name_str = database_name.to_string();
+        let tbl_name_str = table_name.to_string();
         let headers_json = serde_json::to_string(headers).unwrap_or("[]".to_string());
         let rows_json = serde_json::to_string(rows).unwrap_or("[]".to_string());
-        let fut = async {
+        let fut = async move {
             let _ = sqlx::query(
                 r#"INSERT INTO row_cache (connection_id, database_name, table_name, headers_json, rows_json, updated_at)
                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -799,20 +792,16 @@ pub(crate) fn save_table_rows_to_cache(
                    DO UPDATE SET headers_json=excluded.headers_json, rows_json=excluded.rows_json, updated_at=CURRENT_TIMESTAMP"#,
             )
             .bind(connection_id)
-            .bind(&database_name)
-            .bind(&table_name)
+            .bind(&db_name_str)
+            .bind(&tbl_name_str)
             .bind(headers_json)
             .bind(rows_json)
             .execute(pool_clone.as_ref())
             .await;
         };
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut)
-        } else {
-            tokio::runtime::Runtime::new().unwrap().block_on(fut)
-        };
+        spawn_cache_write(tabular, fut);
         debug!(
-            "💾 Saved first 100 rows to cache for {}/{}/{}",
+            "💾 Queued saving first 100 rows to cache for {}/{}/{}",
             connection_id, database_name, table_name
         );
     }
@@ -857,11 +846,7 @@ pub(crate) fn save_redis_browser_keys_to_cache(
                 .await;
             }
         };
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut)
-        } else {
-            tokio::runtime::Runtime::new().unwrap().block_on(fut)
-        };
+        spawn_cache_write(tabular, fut);
     }
 }
 
@@ -1066,13 +1051,9 @@ pub(crate) fn save_indexes_to_cache(
                 .await;
             }
         };
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut)
-        } else {
-            tokio::runtime::Runtime::new().unwrap().block_on(fut)
-        };
+        spawn_cache_write(tabular, fut);
         debug!(
-            "💾 Saved {} indexes to cache for {}/{}/{}",
+            "💾 Queued saving {} indexes to cache for {}/{}/{}",
             indexes.len(),
             connection_id,
             database_name,
@@ -1200,8 +1181,9 @@ pub(crate) fn save_partitions_to_cache(
         let pool_clone = pool.clone();
         let dbn = database_name.to_string();
         let tbn = table_name.to_string();
+        let partitions_clone = partitions.to_vec();
         let fut = async move {
-            for part in partitions {
+            for part in partitions_clone {
                 let _ = sqlx::query(
                     r#"INSERT OR REPLACE INTO partition_cache
                         (connection_id, database_name, table_name, partition_name, partition_type, partition_expression, subpartition_type)
@@ -1218,13 +1200,9 @@ pub(crate) fn save_partitions_to_cache(
                 .await;
             }
         };
-        if let Some(rt) = tabular.runtime.clone() {
-            rt.block_on(fut)
-        } else {
-            tokio::runtime::Runtime::new().unwrap().block_on(fut)
-        };
+        spawn_cache_write(tabular, fut);
         debug!(
-            "✅ Saved {} partitions to cache for {}.{}",
+            "✅ Queued saving {} partitions to cache for {}.{}",
             partitions.len(),
             database_name,
             table_name
