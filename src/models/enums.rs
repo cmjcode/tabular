@@ -131,6 +131,8 @@ pub enum BackgroundResult {
         database_name: String,
         table_name: String,
         columns: Option<Vec<(String, String)>>,
+        indexes: Option<Vec<crate::models::structs::IndexStructInfo>>,
+        partitions: Option<Vec<crate::models::structs::PartitionStructInfo>>,
     },
     RefreshComplete {
         connection_id: i64,

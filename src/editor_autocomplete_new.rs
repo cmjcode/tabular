@@ -503,7 +503,7 @@ fn get_cached_columns(
 
         // 2) SQLite cache: db-scoped first, then any-database (editor tabs
         // aren't always pinned to the table's real database).
-        let mut cols = get_columns_from_cache(app, cid, db, &t)
+        let cols = get_columns_from_cache(app, cid, db, &t)
             .filter(|c| !c.is_empty())
             .or_else(|| crate::cache_data::get_columns_for_connection_any_db(app, cid, &t));
 
@@ -552,23 +552,38 @@ fn get_cached_columns(
                     }
                 }
 
-            // Only attempt the live fetch (and blacklist on miss) when we have at
-            // least one candidate database. If cand_dbs is still empty the user
-            // hasn't connected yet — skip blacklisting so we retry next keystroke.
             if !cand_dbs.is_empty() {
                 if let Some(conn) = app.connections.iter().find(|c| c.id == Some(cid)).cloned() {
-                    for table_db in &cand_dbs {
-                        if let Some(fetched) =
-                            crate::connection::fetch_columns_from_database(cid, table_db, &t, &conn)
-                            && !fetched.is_empty()
-                        {
-                            crate::cache_data::save_columns_to_cache(app, cid, table_db, &t, &fetched);
-                            cols = Some(fetched);
-                            break;
-                        }
+                    let cand_dbs_clone = cand_dbs.clone();
+                    let t_clone = t.clone();
+                    let pool_opt = app.shared_db_pool.read().ok().and_then(|g| g.clone());
+                    if let Some(rt) = &app.runtime {
+                        rt.spawn(async move {
+                            if let Some(pool) = pool_opt {
+                                for table_db in &cand_dbs_clone {
+                                    if let Some(fetched) =
+                                        crate::connection::fetch_columns_from_database(cid, table_db, &t_clone, &conn)
+                                        && !fetched.is_empty()
+                                    {
+                                        for (i, (column_name, data_type)) in fetched.iter().enumerate() {
+                                            let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
+                                                .bind(cid)
+                                                .bind(table_db)
+                                                .bind(&t_clone)
+                                                .bind(column_name)
+                                                .bind(data_type)
+                                                .bind(i as i64)
+                                                .execute(pool.as_ref())
+                                                .await;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        });
                     }
                 }
-                // Blacklist only after a genuine fetch attempt (success or definitive miss).
+                // Blacklist only after fetch attempt is dispatched.
                 app.autocomplete_cols_warmed.insert(key.clone());
             }
         }

@@ -1,4 +1,4 @@
-use log::{debug};
+use log::debug;
 use crate::{connection, driver_mssql, models, window_egui};
 
 pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::Tabular) {
@@ -42,19 +42,11 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                 models::structs::StructureSubView::Columns
                     if !tabular.structure_columns.is_empty() =>
                 {
-                    debug!(
-                        "✅ Structure (columns) already loaded in-memory for {}/{} (skip reload)",
-                        database, table_guess
-                    );
                     return;
                 }
                 models::structs::StructureSubView::Indexes
                     if !tabular.structure_indexes.is_empty() =>
                 {
-                    debug!(
-                        "✅ Structure (indexes) already loaded in-memory for {}/{} (skip reload)",
-                        database, table_guess
-                    );
                     return;
                 }
                 _ => {}
@@ -68,116 +60,34 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
         tabular.structure_selected_cell = None;
         tabular.structure_sel_anchor = None;
 
-        // Branch: if user explicitly requested refresh, force live fetch and update cache
         let is_refresh = tabular.request_structure_refresh;
         tabular.request_structure_refresh = false;
 
-        if is_refresh {
-            if let Some(cols) = crate::connection::fetch_columns_from_database(
-                conn_id,
-                &database,
-                &table_guess,
-                &conn,
-            ) {
-                crate::cache_data::save_columns_to_cache(
-                    tabular,
-                    conn_id,
-                    &database,
-                    &table_guess,
-                    &cols,
-                );
-                debug!(
-                    "🔄 Manual refresh: loaded live structure from server for {}/{} ({} columns)",
-                    database,
-                    table_guess,
-                    cols.len()
-                );
-                for (name, dtype) in cols {
-                    tabular
-                        .structure_columns
-                        .push(models::structs::ColumnStructInfo {
-                            name,
-                            data_type: dtype,
-                            ..Default::default()
-                        });
-                }
-            }
-        } else {
-            // 1) Try to populate from cache immediately for instant UI
-            let mut had_struct_cache = false;
+        let mut need_fetch = is_refresh;
+
+        if !is_refresh {
+            // 1) Try to populate from cache immediately for instant UI (0ms blocking)
             if let Some(cols) =
                 crate::cache_data::get_columns_from_cache(tabular, conn_id, &database, &table_guess)
-                && !cols.is_empty()
             {
-                debug!(
-                    "📦 Showing cached structure for {}/{} ({} columns)",
-                    database,
-                    table_guess,
-                    cols.len()
-                );
-                for (name, dtype) in cols {
-                    tabular
-                        .structure_columns
-                        .push(models::structs::ColumnStructInfo {
-                            name,
-                            data_type: dtype,
-                            ..Default::default()
-                        });
+                if !cols.is_empty() {
+                    for (name, dtype) in cols {
+                        tabular
+                            .structure_columns
+                            .push(models::structs::ColumnStructInfo {
+                                name,
+                                data_type: dtype,
+                                ..Default::default()
+                            });
+                    }
+                } else {
+                    need_fetch = true;
                 }
-                had_struct_cache = true;
-            }
-
-            // 2) Only fetch live structure if no cache yet
-            if !had_struct_cache
-                && let Some(cols) = crate::connection::fetch_columns_from_database(
-                    conn_id,
-                    &database,
-                    &table_guess,
-                    &conn,
-                )
-            {
-                // Keep cache updated with latest structure
-                crate::cache_data::save_columns_to_cache(
-                    tabular,
-                    conn_id,
-                    &database,
-                    &table_guess,
-                    &cols,
-                );
-                debug!(
-                    "🌐 Loaded live structure from server for {}/{} ({} columns)",
-                    database,
-                    table_guess,
-                    cols.len()
-                );
-                for (name, dtype) in cols {
-                    tabular
-                        .structure_columns
-                        .push(models::structs::ColumnStructInfo {
-                            name,
-                            data_type: dtype,
-                            ..Default::default()
-                        });
-                }
-            }
-        }
-
-        // Detailed index metadata: only when Indexes subview is visible
-        if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
-            if is_refresh {
-                // Force live fetch and update cache
-                let idx =
-                    fetch_index_details_for_table(tabular, conn_id, &conn, &database, &table_guess);
-                crate::cache_data::save_indexes_to_cache(
-                    tabular,
-                    conn_id,
-                    &database,
-                    &table_guess,
-                    &idx,
-                );
-                tabular.structure_indexes = idx;
             } else {
-                // Try cache first for instant display
+                need_fetch = true;
+            }
+
+            if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
                 if let Some(cached) = crate::cache_data::get_indexes_from_cache(
                     tabular,
                     conn_id,
@@ -187,186 +97,307 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                     if !cached.is_empty() {
                         tabular.structure_indexes = cached;
                     } else {
-                        let idx = fetch_index_details_for_table(
-                            tabular,
-                            conn_id,
-                            &conn,
-                            &database,
-                            &table_guess,
-                        );
-                        if !idx.is_empty() {
-                            crate::cache_data::save_indexes_to_cache(
-                                tabular,
-                                conn_id,
-                                &database,
-                                &table_guess,
-                                &idx,
-                            );
-                        }
-                        tabular.structure_indexes = idx;
+                        need_fetch = true;
                     }
                 } else {
-                    let idx = fetch_index_details_for_table(
-                        tabular,
-                        conn_id,
-                        &conn,
-                        &database,
-                        &table_guess,
-                    );
-                    if !idx.is_empty() {
-                        crate::cache_data::save_indexes_to_cache(
-                            tabular,
-                            conn_id,
-                            &database,
-                            &table_guess,
-                            &idx,
-                        );
-                    }
-                    tabular.structure_indexes = idx;
+                    need_fetch = true;
                 }
             }
         }
 
-        // Fetch and cache partitions whenever structure is refreshed (always, not just for sidebar)
-        if is_refresh {
-            // Force live fetch of partitions and update cache
-            if let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
-                let partitions = fetch_partition_details_for_table(
-                    tabular,
-                    conn_id,
-                    &connection,
-                    &database,
-                    &table_guess,
-                );
-                if !partitions.is_empty() {
-                    crate::cache_data::save_partitions_to_cache(
-                        tabular,
-                        conn_id,
-                        &database,
-                        &table_guess,
-                        &partitions,
-                    );
-                    debug!(
-                        "✅ Refreshed partition cache for {}/{} ({} partitions)",
-                        database,
-                        table_guess,
-                        partitions.len()
-                    );
-                }
-            }
-        } else {
-            // Background fetch: seed partition cache if empty
-            if crate::cache_data::get_partitions_from_cache(tabular, conn_id, &database, &table_guess).is_none()
-                && let Some(connection) = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
-                    let partitions = fetch_partition_details_for_table(
-                        tabular,
-                        conn_id,
-                        &connection,
-                        &database,
-                        &table_guess,
-                    );
-                    if !partitions.is_empty() {
-                        crate::cache_data::save_partitions_to_cache(
-                            tabular,
-                            conn_id,
-                            &database,
-                            &table_guess,
-                            &partitions,
-                        );
-                        debug!(
-                            "✅ Seeded partition cache for {}/{} ({} partitions)",
-                            database,
-                            table_guess,
-                            partitions.len()
-                        );
-                    }
+        // 2) If not in cache or user requested manual refresh, dispatch background fetch non-blocking
+        if need_fetch {
+            tabular.is_refreshing_structure = true;
+            if let Some(sender) = &tabular.background_sender {
+                let _ = sender.send(models::enums::BackgroundTask::FetchTableStructure {
+                    connection_id: conn_id,
+                    database_name: database.clone(),
+                    table_name: table_guess.clone(),
+                });
             }
         }
 
-        // Remember last loaded structure target and clear refresh request
         tabular.last_structure_target = Some((conn_id, database, table_guess));
-        tabular.request_structure_refresh = false;
     }
 }
 
-// Fetch partition details for a table per database type
-pub fn fetch_partition_details_for_table(
-    tabular: &mut window_egui::Tabular,
-    connection_id: i64,
+pub async fn fetch_partition_details_standalone_async(
     connection: &models::structs::ConnectionConfig,
     database_name: &str,
     table_name: &str,
 ) -> Vec<models::structs::PartitionStructInfo> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
-            let rt = tabular.get_runtime();
-            rt.block_on(async {
-                if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = crate::connection::pool_if_connected_or_start(tabular, connection_id).await {
-                    // First get partition names
-                    let names_q = "SELECT PARTITION_NAME FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL AND SUBPARTITION_NAME IS NULL ORDER BY PARTITION_ORDINAL_POSITION";
-                    let partition_names: Vec<String> = sqlx::query_as::<_, (String,)>(names_q)
-                        .bind(database_name)
-                        .bind(table_name)
-                        .fetch_all(mysql_pool.as_ref())
-                        .await
-                        .unwrap_or_default()
+            let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(_) => return Vec::new(),
+            };
+            let encoded_username = crate::modules::url_encode(&connection.username);
+            let encoded_password = crate::modules::url_encode(&connection.password);
+            let connection_string = format!(
+                "mysql://{}:{}@{}:{}/{}",
+                encoded_username, encoded_password, target_host, target_port, database_name
+            );
+            if let Ok(pool) = sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(3))
+                .connect(&connection_string)
+                .await
+            {
+                let names_q = "SELECT PARTITION_NAME FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND PARTITION_NAME IS NOT NULL AND SUBPARTITION_NAME IS NULL ORDER BY PARTITION_ORDINAL_POSITION";
+                let partition_names: Vec<String> = sqlx::query_as::<_, (String,)>(names_q)
+                    .bind(database_name)
+                    .bind(table_name)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(n,)| n)
+                    .collect();
+
+                let show_q = format!("SHOW CREATE TABLE `{}`", table_name.replace('`', "``"));
+                let partition_type = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(show_q.as_str()))
+                    .fetch_optional(&pool)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|(_, create_sql)| {
+                        if let Some(partition_idx) = create_sql.to_uppercase().find("PARTITION BY") {
+                            let after_partition = &create_sql[partition_idx + 12..];
+                            after_partition
+                                .split_whitespace()
+                                .next()
+                                .map(|s| s.to_uppercase())
+                        } else {
+                            None
+                        }
+                    });
+
+                partition_names
+                    .into_iter()
+                    .map(|name| models::structs::PartitionStructInfo {
+                        name,
+                        partition_type: partition_type.clone(),
+                        partition_expression: None,
+                        subpartition_type: None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        models::enums::DatabaseType::PostgreSQL => {
+            let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(_) => return Vec::new(),
+            };
+            let encoded_username = crate::modules::url_encode(&connection.username);
+            let encoded_password = crate::modules::url_encode(&connection.password);
+            let connection_string = format!(
+                "postgres://{}:{}@{}:{}/{}",
+                encoded_username, encoded_password, target_host, target_port, database_name
+            );
+            if let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(3))
+                .connect(&connection_string)
+                .await
+            {
+                let q = "SELECT \n  c.relname AS partition_name,\n  CASE \n    WHEN p.relkind = 'p' THEN 'RANGE'\n    WHEN p.relkind = 'r' THEN (SELECT partstrat FROM pg_partitioned_table WHERE partrelid = p.oid LIMIT 1)\n    ELSE NULL\n  END AS partition_type\nFROM pg_class p\nJOIN pg_class c ON c.relfilenode = p.relfilenode OR (p.oid IN (SELECT partrelid FROM pg_partitioned_table WHERE partkeylen > 0))\nWHERE p.relname = $1 AND p.relkind IN ('p', 'r')\nORDER BY c.relname";
+                match sqlx::query_as::<_, (String, Option<String>)>(q)
+                    .bind(table_name)
+                    .fetch_all(&pool)
+                    .await
+                {
+                    Ok(rows) => rows
                         .into_iter()
-                        .map(|(n,)| n)
-                        .collect();
-                    
-                    // Get partition type from SHOW CREATE TABLE
-                    let show_q = format!("SHOW CREATE TABLE `{}`", table_name.replace("`", "``"));
-                    let partition_type = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(show_q.as_str()))
-                        .fetch_optional(mysql_pool.as_ref())
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|(_, create_sql)| {
-                            // Parse for PARTITION BY <TYPE>
-                            if let Some(partition_idx) = create_sql.to_uppercase().find("PARTITION BY") {
-                                let after_partition = &create_sql[partition_idx + 12..];
-                                after_partition
-                                    .split_whitespace()
-                                    .next()
-                                    .map(|s| s.to_uppercase())
-                            } else {
-                                None
-                            }
-                        });
-                    
-                    partition_names.into_iter()
-                        .map(|name| models::structs::PartitionStructInfo {
+                        .map(|(name, ptype)| models::structs::PartitionStructInfo {
                             name,
-                            partition_type: partition_type.clone(),
+                            partition_type: ptype,
                             partition_expression: None,
                             subpartition_type: None,
                         })
-                        .collect()
-                } else { Vec::new() }
-            })
+                        .collect(),
+                    Err(_) => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+pub async fn fetch_index_details_standalone_async(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+    table_name: &str,
+) -> Vec<models::structs::IndexStructInfo> {
+    match connection.connection_type {
+        models::enums::DatabaseType::MySQL => {
+            let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(_) => return Vec::new(),
+            };
+            let encoded_username = crate::modules::url_encode(&connection.username);
+            let encoded_password = crate::modules::url_encode(&connection.password);
+            let connection_string = format!(
+                "mysql://{}:{}@{}:{}/{}",
+                encoded_username, encoded_password, target_host, target_port, database_name
+            );
+            if let Ok(pool) = sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(3))
+                .connect(&connection_string)
+                .await
+            {
+                let q = r#"SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, MIN(NON_UNIQUE) AS NON_UNIQUE, GROUP_CONCAT(DISTINCT INDEX_TYPE) AS TYPES FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? GROUP BY INDEX_NAME ORDER BY INDEX_NAME"#;
+                match sqlx::query(q).bind(database_name).bind(table_name).fetch_all(&pool).await {
+                    Ok(rows) => {
+                        use sqlx::Row;
+                        rows.into_iter().map(|r| {
+                            let name: String = r.get("INDEX_NAME");
+                            let cols_str: Option<String> = r.try_get("COLS").ok();
+                            let non_unique: Option<i64> = r.try_get("NON_UNIQUE").ok();
+                            let types: Option<String> = r.try_get("TYPES").ok();
+                            let columns = cols_str.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+                            let unique = matches!(non_unique, Some(0));
+                            let method = types.and_then(|t| t.split(',').next().map(|m| m.trim().to_string())).filter(|s| !s.is_empty());
+                            models::structs::IndexStructInfo { name, method, unique, columns }
+                        }).collect()
+                    }
+                    Err(_) => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            }
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let rt = tabular.get_runtime();
-            rt.block_on(async {
-                if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = crate::connection::pool_if_connected_or_start(tabular, connection_id).await {
-                    // Get partition info from PostgreSQL
-                    let q = "SELECT \n  c.relname AS partition_name,\n  CASE \n    WHEN p.relkind = 'p' THEN 'RANGE'\n    WHEN p.relkind = 'r' THEN (SELECT partstrat FROM pg_partitioned_table WHERE partrelid = p.oid LIMIT 1)\n    ELSE NULL\n  END AS partition_type\nFROM pg_class p\nJOIN pg_class c ON c.relfilenode = p.relfilenode OR (p.oid IN (SELECT partrelid FROM pg_partitioned_table WHERE partkeylen > 0))\nWHERE p.relname = $1 AND p.relkind IN ('p', 'r')\nORDER BY c.relname";
-                    match sqlx::query_as::<_, (String, Option<String>)>(q)
-                        .bind(table_name)
-                        .fetch_all(pg_pool.as_ref())
-                        .await {
-                            Ok(rows) => rows.into_iter()
-                                .map(|(name, ptype)| models::structs::PartitionStructInfo {
-                                    name,
-                                    partition_type: ptype,
-                                    partition_expression: None,
-                                    subpartition_type: None,
-                                })
-                                .collect(),
-                            Err(_) => Vec::new(),
+            let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
+                Ok(tuple) => tuple,
+                Err(_) => return Vec::new(),
+            };
+            let encoded_username = crate::modules::url_encode(&connection.username);
+            let encoded_password = crate::modules::url_encode(&connection.password);
+            let connection_string = format!(
+                "postgres://{}:{}@{}:{}/{}",
+                encoded_username, encoded_password, target_host, target_port, database_name
+            );
+            if let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(3))
+                .connect(&connection_string)
+                .await
+            {
+                let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique FROM pg_class t JOIN pg_index i ON t.oid = i.indrelid JOIN pg_class idx ON idx.oid = i.indexrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE t.relname = $1 AND n.nspname='public' ORDER BY idx.relname"#;
+                match sqlx::query(q).bind(table_name).fetch_all(&pool).await {
+                    Ok(rows) => {
+                        use sqlx::Row;
+                        rows.into_iter().map(|r| {
+                            let name: String = r.get("index_name");
+                            let def: String = r.get("index_def");
+                            let unique: bool = r.get("is_unique");
+                            let method = def.split(" USING ").nth(1).and_then(|rest| rest.split_whitespace().next()).and_then(|m| if m.starts_with('('){None}else{Some(m.trim_matches('(').trim_matches(')').to_string())});
+                            let columns: Vec<String> = if let Some(start) = def.rfind('(') { if let Some(end_rel) = def[start+1..].find(')') { def[start+1..start+1+end_rel].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect() } else { Vec::new() } } else { Vec::new() };
+                            models::structs::IndexStructInfo { name, method, unique, columns }
+                        }).collect()
+                    }
+                    Err(_) => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            }
+        }
+        models::enums::DatabaseType::MsSQL => {
+            let host = connection.host.clone();
+            let port: u16 = connection.port.parse().unwrap_or(1433);
+            let user = connection.username.clone();
+            let pass = connection.password.clone();
+            let db = database_name.to_string();
+            let tbl = table_name.to_string();
+            if let Ok(mut client) = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await {
+                let parse = |name: &str| -> (Option<String>, String) { if let Some((s,t)) = name.split_once('.') { (Some(s.trim_matches(['[',']']).to_string()), t.trim_matches(['[',']']).to_string()) } else { (None, name.trim_matches(['[',']']).to_string()) } };
+                let (_schema_opt, table_only) = parse(&tbl);
+                let q = format!("SELECT i.name AS index_name, i.is_unique, i.type_desc, STUFF((SELECT ','+c.name FROM sys.index_columns ic2 JOIN sys.columns c ON c.object_id=ic2.object_id AND c.column_id=ic2.column_id WHERE ic2.object_id=i.object_id AND ic2.index_id=i.index_id ORDER BY ic2.key_ordinal FOR XML PATH(''), TYPE).value('.','NVARCHAR(MAX)'),1,1,'') AS columns FROM sys.indexes i INNER JOIN sys.objects o ON o.object_id=i.object_id WHERE o.name='{}' AND i.name IS NOT NULL ORDER BY i.name", table_only.replace('\'',"''"));
+                if let Ok(stream) = client.query(&q, &[]).await {
+                    if let Ok(records) = stream.collect_all().await {
+                        let mut list = Vec::new();
+                        for r in records {
+                            let name = r.get_string(0);
+                            let is_unique: Option<bool> = r.try_get(1).ok().flatten();
+                            let type_desc = r.get_string(2);
+                            let cols = r.get_string(3);
+                            if let Some(nm) = name {
+                                list.push(models::structs::IndexStructInfo { name: nm, method: type_desc, unique: is_unique.unwrap_or(false), columns: cols.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() });
+                            }
                         }
-                } else { Vec::new() }
-            })
+                        return list;
+                    }
+                }
+            }
+            Vec::new()
+        }
+        models::enums::DatabaseType::SQLite => {
+            let connection_string = format!("sqlite:{}", connection.host);
+            if let Ok(pool) = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(3))
+                .connect(&connection_string)
+                .await
+            {
+                use sqlx::Row;
+                let list_query = format!("PRAGMA index_list('{}')", table_name.replace('\'', "''"));
+                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(list_query.as_str())).fetch_all(&pool).await {
+                    let mut infos = Vec::new();
+                    for r in rows {
+                        let name_opt: Option<String> = r.try_get("name").ok().flatten();
+                        let unique_flag: Option<i64> = r.try_get("unique").ok().flatten();
+                        if let Some(nm) = name_opt {
+                            let info_q = format!("PRAGMA index_info('{}')", nm.replace('\'', "''"));
+                            let mut cols_vec = Vec::new();
+                            if let Ok(crows) = sqlx::query(sqlx::AssertSqlSafe(info_q.as_str())).fetch_all(&pool).await {
+                                for cr in crows {
+                                    if let Ok(Some(coln)) = cr.try_get::<Option<String>, _>("name") {
+                                        cols_vec.push(coln);
+                                    }
+                                }
+                            }
+                            infos.push(models::structs::IndexStructInfo {
+                                name: nm,
+                                method: None,
+                                unique: matches!(unique_flag, Some(0)),
+                                columns: cols_vec,
+                            });
+                        }
+                    }
+                    return infos;
+                }
+            }
+            Vec::new()
+        }
+        models::enums::DatabaseType::MongoDB => {
+            let client_opts = mongodb::options::ClientOptions::parse(&connection.host).await.ok();
+            if let Some(opts) = client_opts {
+                if let Ok(client) = mongodb::Client::with_options(opts) {
+                    if let Ok(names) = client
+                        .database(database_name)
+                        .collection::<mongodb::bson::Document>(table_name)
+                        .list_index_names()
+                        .await
+                    {
+                        return names
+                            .into_iter()
+                            .map(|n| models::structs::IndexStructInfo {
+                                name: n,
+                                method: None,
+                                unique: false,
+                                columns: Vec::new(),
+                            })
+                            .collect();
+                    }
+                }
+            }
+            Vec::new()
         }
         _ => Vec::new(),
     }
@@ -463,164 +494,6 @@ pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
                 );
             }
         }
-    }
-}
-
-// Detailed index metadata loader per database
-fn fetch_index_details_for_table(
-    tabular: &mut window_egui::Tabular,
-    connection_id: i64,
-    connection: &models::structs::ConnectionConfig,
-    database_name: &str,
-    table_name: &str,
-) -> Vec<models::structs::IndexStructInfo> {
-    match connection.connection_type {
-        models::enums::DatabaseType::MySQL => {
-            let rt = tabular.get_runtime();
-            rt.block_on(async {
-                    if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = crate::connection::pool_if_connected_or_start(tabular, connection_id).await {
-                        let q = r#"SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, MIN(NON_UNIQUE) AS NON_UNIQUE, GROUP_CONCAT(DISTINCT INDEX_TYPE) AS TYPES FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? GROUP BY INDEX_NAME ORDER BY INDEX_NAME"#;
-                        match sqlx::query(q).bind(database_name).bind(table_name).fetch_all(mysql_pool.as_ref()).await {
-                            Ok(rows) => { use sqlx::Row; rows.into_iter().map(|r| {
-                                let name: String = r.get("INDEX_NAME");
-                                let cols_str: Option<String> = r.try_get("COLS").ok();
-                                let non_unique: Option<i64> = r.try_get("NON_UNIQUE").ok();
-                                let types: Option<String> = r.try_get("TYPES").ok();
-                                let columns = cols_str.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
-                                let unique = matches!(non_unique, Some(0));
-                                let method = types.and_then(|t| t.split(',').next().map(|m| m.trim().to_string())).filter(|s| !s.is_empty());
-                                models::structs::IndexStructInfo { name, method, unique, columns }
-                            }).collect() }
-                            Err(_) => Vec::new(),
-                        }
-                    } else { Vec::new() }
-                })
-        }
-        models::enums::DatabaseType::PostgreSQL => {
-            let rt = tabular.get_runtime();
-            rt.block_on(async {
-                    if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = crate::connection::pool_if_connected_or_start(tabular, connection_id).await {
-                        let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique FROM pg_class t JOIN pg_index i ON t.oid = i.indrelid JOIN pg_class idx ON idx.oid = i.indexrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE t.relname = $1 AND n.nspname='public' ORDER BY idx.relname"#;
-                        match sqlx::query(q).bind(table_name).fetch_all(pg_pool.as_ref()).await {
-                            Ok(rows) => { use sqlx::Row; rows.into_iter().map(|r| {
-                                let name: String = r.get("index_name");
-                                let def: String = r.get("index_def");
-                                let unique: bool = r.get("is_unique");
-                                let method = def.split(" USING ").nth(1).and_then(|rest| rest.split_whitespace().next()).and_then(|m| if m.starts_with('('){None}else{Some(m.trim_matches('(').trim_matches(')').to_string())});
-                                let columns: Vec<String> = if let Some(start) = def.rfind('(') { if let Some(end_rel) = def[start+1..].find(')') { def[start+1..start+1+end_rel].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect() } else { Vec::new() } } else { Vec::new() };
-                                models::structs::IndexStructInfo { name, method, unique, columns }
-                            }).collect() }
-                            Err(_) => Vec::new(),
-                        }
-                    } else { Vec::new() }
-                })
-        }
-        models::enums::DatabaseType::MsSQL => {
-            let host = connection.host.clone();
-            let port: u16 = connection.port.parse().unwrap_or(1433);
-            let user = connection.username.clone();
-            let pass = connection.password.clone();
-            let db = database_name.to_string();
-            let tbl = table_name.to_string();
-            let rt_res = tabular.get_runtime().block_on(async move {
-                    let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
-                    let parse = |name: &str| -> (Option<String>, String) { if let Some((s,t)) = name.split_once('.') { (Some(s.trim_matches(['[',']']).to_string()), t.trim_matches(['[',']']).to_string()) } else { (None, name.trim_matches(['[',']']).to_string()) } };
-                    let (_schema_opt, table_only) = parse(&tbl);
-                    let q = format!("SELECT i.name AS index_name, i.is_unique, i.type_desc, STUFF((SELECT ','+c.name FROM sys.index_columns ic2 JOIN sys.columns c ON c.object_id=ic2.object_id AND c.column_id=ic2.column_id WHERE ic2.object_id=i.object_id AND ic2.index_id=i.index_id ORDER BY ic2.key_ordinal FOR XML PATH(''), TYPE).value('.','NVARCHAR(MAX)'),1,1,'') AS columns FROM sys.indexes i INNER JOIN sys.objects o ON o.object_id=i.object_id WHERE o.name='{}' AND i.name IS NOT NULL ORDER BY i.name", table_only.replace("'","''"));
-                    let stream = client.query(&q, &[]).await.map_err(|e| e.to_string())?;
-                    let mut list = Vec::new();
-                    for r in stream.collect_all().await.map_err(|e| e.to_string())? {
-                        let name = r.get_string(0);
-                        let is_unique: Option<bool> = r.try_get(1).ok().flatten();
-                        let type_desc = r.get_string(2);
-                        let cols = r.get_string(3);
-                        if let Some(nm) = name {
-                            list.push(models::structs::IndexStructInfo { name: nm, method: type_desc, unique: is_unique.unwrap_or(false), columns: cols.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() });
-                        }
-                    }
-                    Ok::<_, String>(list)
-                });
-            rt_res.unwrap_or_default()
-        }
-        models::enums::DatabaseType::SQLite => {
-            let rt = tabular.get_runtime();
-            rt.block_on(async {
-                if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) =
-                    crate::connection::pool_if_connected_or_start(tabular, connection_id).await
-                {
-                    use sqlx::Row;
-                    let list_query =
-                        format!("PRAGMA index_list('{}')", table_name.replace("'", "''"));
-                    match sqlx::query(sqlx::AssertSqlSafe(list_query.as_str()))
-                        .fetch_all(sqlite_pool.as_ref())
-                        .await
-                    {
-                        Ok(rows) => {
-                            let mut infos = Vec::new();
-                            for r in rows {
-                                let name_opt: Option<String> = r.try_get("name").ok().flatten();
-                                let unique_flag: Option<i64> = r.try_get("unique").ok().flatten();
-                                if let Some(nm) = name_opt {
-                                    let info_q =
-                                        format!("PRAGMA index_info('{}')", nm.replace("'", "''"));
-                                    let mut cols_vec = Vec::new();
-                                    if let Ok(crows) =
-                                        sqlx::query(sqlx::AssertSqlSafe(info_q.as_str())).fetch_all(sqlite_pool.as_ref()).await
-                                    {
-                                        for cr in crows {
-                                            if let Ok(Some(coln)) =
-                                                cr.try_get::<Option<String>, _>("name")
-                                            {
-                                                cols_vec.push(coln);
-                                            }
-                                        }
-                                    }
-                                    infos.push(models::structs::IndexStructInfo {
-                                        name: nm,
-                                        method: None,
-                                        unique: matches!(unique_flag, Some(0)),
-                                        columns: cols_vec,
-                                    });
-                                }
-                            }
-                            infos
-                        }
-                        Err(_) => Vec::new(),
-                    }
-                } else {
-                    Vec::new()
-                }
-            })
-        }
-        models::enums::DatabaseType::MongoDB => {
-            let rt = tabular.get_runtime();
-            rt.block_on(async {
-                if let Some(models::enums::DatabasePool::MongoDB(client)) =
-                    crate::connection::pool_if_connected_or_start(tabular, connection_id).await
-                {
-                    match client
-                        .database(database_name)
-                        .collection::<mongodb::bson::Document>(table_name)
-                        .list_index_names()
-                        .await
-                    {
-                        Ok(names) => names
-                            .into_iter()
-                            .map(|n| models::structs::IndexStructInfo {
-                                name: n,
-                                method: None,
-                                unique: false,
-                                columns: Vec::new(),
-                            })
-                            .collect(),
-                        Err(_) => Vec::new(),
-                    }
-                } else {
-                    Vec::new()
-                }
-            })
-        }
-        _ => Vec::new(),
     }
 }
 

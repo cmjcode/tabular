@@ -695,6 +695,8 @@ impl Tabular {
                             database_name,
                             table_name,
                             columns,
+                            indexes,
+                            partitions,
                         } => {
                             self.is_refreshing_structure = false;
                             if let Some(cols) = columns {
@@ -723,7 +725,42 @@ impl Tabular {
                                             ..Default::default()
                                         });
                                     }
-                                    self.last_structure_target = Some((connection_id, database_name, table_name));
+                                    self.last_structure_target = Some((connection_id, database_name.clone(), table_name.clone()));
+                                }
+                            }
+                            if let Some(idxs) = indexes {
+                                if !idxs.is_empty() {
+                                    crate::cache_data::save_indexes_to_cache(
+                                        self,
+                                        connection_id,
+                                        &database_name,
+                                        &table_name,
+                                        &idxs,
+                                    );
+                                    let active_db = self
+                                        .query_tabs
+                                        .get(self.active_tab_index)
+                                        .and_then(|t| t.database_name.clone())
+                                        .unwrap_or_default();
+                                    let current_table = data_table::infer_current_table_name(self);
+                                    if self.current_connection_id == Some(connection_id)
+                                        && active_db == database_name
+                                        && current_table == table_name
+                                        && self.structure_sub_view == models::structs::StructureSubView::Indexes
+                                    {
+                                        self.structure_indexes = idxs;
+                                    }
+                                }
+                            }
+                            if let Some(parts) = partitions {
+                                if !parts.is_empty() {
+                                    crate::cache_data::save_partitions_to_cache(
+                                        self,
+                                        connection_id,
+                                        &database_name,
+                                        &table_name,
+                                        &parts,
+                                    );
                                 }
                             }
                             ctx.request_repaint();
