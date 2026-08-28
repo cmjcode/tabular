@@ -204,6 +204,8 @@ impl super::Tabular {
             .and_then(|a| a.phone.clone())
             .unwrap_or_default();
 
+        let has_account = loaded_account.is_some();
+
         let mut app = Self {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
@@ -629,10 +631,10 @@ impl super::Tabular {
             sync_refresh_receiver: None,
             sync_refresh_attempt_count: 0,
             sync_session_expired_notified: false,
-            sync_trigger_connections: false,
-            sync_trigger_history: false,
-            sync_trigger_queries: false,
-            sync_trigger_http: false,
+            sync_trigger_connections: has_account,
+            sync_trigger_history: has_account,
+            sync_trigger_queries: has_account,
+            sync_trigger_http: has_account,
             sync_http_push_receiver: None,
             sync_http_pull_receiver: None,
             sync_connections_receiver: None,

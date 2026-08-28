@@ -882,16 +882,10 @@ impl super::Tabular {
     /// yet (vault locked, Team key not granted, or pre-E2E legacy ciphertext)
     /// are skipped rather than guessed at.
     fn merge_remote_connections(&mut self, remote_conns: Vec<crate::sync::api_client::RemoteConnection>) {
-        let vault = match self.vault.clone() {
-            Some(v) => v,
-            None => {
-                info!("[sync] Vault locked — deferring connection decrypt until unlocked");
-                return;
-            }
-        };
         let my_user_id = self.sync_account.as_ref().map(|a| a.user_id.clone());
         let token = self.sync_account.as_ref().map(|a| a.access_token.clone());
         let server = self.sync_server_url.clone();
+        let vault_opt = self.vault.clone();
 
         let existing: std::collections::HashSet<(String, Option<String>)> = self
             .connections
@@ -901,21 +895,27 @@ impl super::Tabular {
 
         let mut added = 0usize;
         for remote in remote_conns {
-            let key = match crate::sync::vault_sync::resolve_key_for_folder(
-                &vault.account_key,
-                &self.vault_team_keys,
-                &self.shared_folders_cache,
-                "connection",
-                &remote.folder_path,
-            ) {
-                Some(k) => k.clone(),
-                None => {
-                    info!("[sync] Skipping Team-shared connection '{}': Team key not unlocked yet", remote.name);
-                    continue;
-                }
-            };
-
             let mut conn: crate::models::structs::ConnectionConfig = if remote.crypto_version >= 1 {
+                let vault = match &vault_opt {
+                    Some(v) => v,
+                    None => {
+                        info!("[sync] Vault locked — deferring connection decrypt for '{}' until unlocked", remote.name);
+                        continue;
+                    }
+                };
+                let key = match crate::sync::vault_sync::resolve_key_for_folder(
+                    &vault.account_key,
+                    &self.vault_team_keys,
+                    &self.shared_folders_cache,
+                    "connection",
+                    &remote.folder_path,
+                ) {
+                    Some(k) => k.clone(),
+                    None => {
+                        info!("[sync] Skipping Team-shared connection '{}': Team key not unlocked yet", remote.name);
+                        continue;
+                    }
+                };
                 match crate::sync::vault_crypto::decrypt_json(&key, &remote.encrypted_config) {
                     Ok(c) => c,
                     Err(e) => {
@@ -926,7 +926,7 @@ impl super::Tabular {
             } else {
                 // Legacy (pre-vault) row — best-effort decrypt with the old
                 // scheme(s), then queue a re-upload under the real vault key
-                // so it migrates for good instead of staying legacy forever.
+                // if vault is available so it migrates for good.
                 let plaintext = match (&my_user_id, crate::sync::legacy_crypto::legacy_decrypt_best_effort(
                     &remote.encrypted_config,
                     my_user_id.as_deref().unwrap_or(""),
@@ -939,11 +939,18 @@ impl super::Tabular {
                 };
                 match serde_json::from_str::<crate::models::structs::ConnectionConfig>(&plaintext) {
                     Ok(c) => {
-                        if let Some(token) = &token {
+                        if let (Some(token), Some(vault)) = (&token, &vault_opt) {
+                            let key = crate::sync::vault_sync::resolve_key_for_folder(
+                                &vault.account_key,
+                                &self.vault_team_keys,
+                                &self.shared_folders_cache,
+                                "connection",
+                                &remote.folder_path,
+                            ).cloned().unwrap_or_else(|| vault.account_key.clone());
                             crate::sync::sync_connections::migrate_legacy_connection(
                                 remote.id.clone(),
                                 c.clone(),
-                                key.clone(),
+                                key,
                                 token.clone(),
                                 server.clone(),
                             );
