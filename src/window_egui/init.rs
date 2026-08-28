@@ -184,8 +184,25 @@ impl super::Tabular {
         };
 
         let config_store = None;
-        let profile_username_input = String::new();
-        let profile_phone_input = String::new();
+        crate::log_startup_step("loading sync account from secrets");
+        let loaded_account = crate::sync::api_client::load_account();
+        crate::log_startup_step("sync account loaded -> constructing Tabular struct");
+        let profile_display_name_input = loaded_account
+            .as_ref()
+            .and_then(|a| a.display_name.clone())
+            .unwrap_or_default();
+        let profile_avatar_url_input = loaded_account
+            .as_ref()
+            .and_then(|a| a.avatar_url.clone())
+            .unwrap_or_default();
+        let profile_username_input = loaded_account
+            .as_ref()
+            .and_then(|a| a.username.clone())
+            .unwrap_or_default();
+        let profile_phone_input = loaded_account
+            .as_ref()
+            .and_then(|a| a.phone.clone())
+            .unwrap_or_default();
 
         let mut app = Self {
             editor: EditorBuffer::new(""),
@@ -559,7 +576,7 @@ impl super::Tabular {
             backup_state: None,
             restore_state: None,
             // ── Sync & Collaboration ─────────────────────────────────────────
-            sync_account: None,
+            sync_account: loaded_account,
             sync_server_url: std::env::var("TABULAR_SERVER_URL")
                 .unwrap_or_else(|_| "https://api.tabular.id".to_string()),
             sync_enabled: true,
@@ -567,8 +584,8 @@ impl super::Tabular {
             crdt_state: None,
             collab_rooms: Vec::new(),
             show_collab_panel: false,
-            profile_display_name_input: String::new(),
-            profile_avatar_url_input: String::new(),
+            profile_display_name_input,
+            profile_avatar_url_input,
             profile_username_input,
             profile_phone_input,
             profile_update_receiver: None,
