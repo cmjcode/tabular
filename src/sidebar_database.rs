@@ -1531,6 +1531,13 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
                 ssh_private_key TEXT NOT NULL DEFAULT '',
                 ssh_password TEXT NOT NULL DEFAULT '',
                 ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0,
+                ssh_jump_host TEXT NOT NULL DEFAULT '',
+                ssl_enabled INTEGER NOT NULL DEFAULT 0,
+                ssl_ca_cert TEXT NOT NULL DEFAULT '',
+                ssl_client_cert TEXT NOT NULL DEFAULT '',
+                ssl_client_key TEXT NOT NULL DEFAULT '',
+                ssl_key_passphrase TEXT NOT NULL DEFAULT '',
+                ssl_verify_server INTEGER NOT NULL DEFAULT 1,
                 custom_views TEXT NOT NULL DEFAULT '[]',
                 replication_master_id INTEGER DEFAULT NULL
             );
@@ -1546,6 +1553,30 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
             CREATE TABLE IF NOT EXISTS connection_sync_cache (connection_id INTEGER PRIMARY KEY, last_synced_at DATETIME NOT NULL, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE);
             "#
         ).execute(&pool).await;
+
+        // Ensure missing columns exist in existing database schema
+        for migration in [
+            "ALTER TABLE connections ADD COLUMN folder TEXT DEFAULT NULL",
+            "ALTER TABLE connections ADD COLUMN ssh_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE connections ADD COLUMN ssh_host TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN ssh_port TEXT NOT NULL DEFAULT '22'",
+            "ALTER TABLE connections ADD COLUMN ssh_username TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN custom_views TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE connections ADD COLUMN ssh_auth_method TEXT NOT NULL DEFAULT 'key'",
+            "ALTER TABLE connections ADD COLUMN ssh_private_key TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN ssh_password TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE connections ADD COLUMN replication_master_id INTEGER DEFAULT NULL",
+            "ALTER TABLE connections ADD COLUMN ssh_jump_host TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN ssl_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE connections ADD COLUMN ssl_ca_cert TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN ssl_client_cert TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN ssl_client_key TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN ssl_key_passphrase TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE connections ADD COLUMN ssl_verify_server INTEGER NOT NULL DEFAULT 1",
+        ] {
+            let _ = sqlx::query(migration).execute(&pool).await;
+        }
 
         let _ = crate::sync::sync_teams_cache::init_teams_cache_tables(&pool).await;
     });
@@ -2804,7 +2835,7 @@ pub(crate) fn create_connections_folder_structure(
                 folder_name.clone(),
                 models::enums::NodeType::CustomFolder,
             );
-            folder_node.is_expanded = false;
+            folder_node.is_expanded = true;
             folder_node.file_path = Some(folder_name.clone());
             folder_node.children =
                 build_folder_nodes_for_level(&conns, &folder_name, 0);
