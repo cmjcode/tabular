@@ -432,10 +432,10 @@ impl super::Tabular {
             }
 
             // Save connection (outside of mutable borrow of connections)
-            if let Some(conn) = conn_to_save
-                 && crate::sidebar_database::save_connection_to_database(self, &conn) {
-                     crate::sidebar_database::refresh_connections_tree(self);
-                 }
+            if let Some(conn) = conn_to_save {
+                 crate::sidebar_database::refresh_connections_tree(self);
+                 crate::sidebar_database::update_connection_in_database_background(self, &conn);
+            }
         }
 
         if let Some((conn_id, view_name, query)) = edit_custom_view_requests.pop() {
@@ -4153,12 +4153,12 @@ impl super::Tabular {
                         if node.node_type == models::enums::NodeType::CustomView {
                             ui.separator();
                             if let Some(query) = &node.query {
-                                if ui.button("✏️ Edit this view").clicked() {
+                                if ui.button("✏️ Edit View").clicked() {
                                     edit_custom_view_request = Some((conn_id, node.name.clone(), query.clone()));
                                     ui.close();
                                 }
                             }
-                            if ui.button("🗑️ Delete this dba view").clicked() {
+                            if ui.button("🗑️ Delete View").clicked() {
                                 delete_custom_view_request = Some((conn_id, node.name.clone()));
                                 ui.close();
                             }
