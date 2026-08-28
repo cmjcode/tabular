@@ -166,6 +166,8 @@ pub(crate) fn open_dba_monitor_tab(
         Some(conn_id),
     );
 
+    crate::connection::ensure_background_pool_creation(tabular, conn_id);
+
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         tab.dba_monitor_state = Some(monitor_state);
         tab.is_table_browse_mode = false;
@@ -205,6 +207,8 @@ pub(crate) fn open_user_manager_tab(
         String::new(),
         Some(conn_id),
     );
+
+    crate::connection::ensure_background_pool_creation(tabular, conn_id);
 
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         tab.user_manager_state = Some(user_mgr_state);

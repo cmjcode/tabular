@@ -1288,6 +1288,8 @@ impl Tabular {
             }
 
             while let Ok((tab_index, result)) = self.dba_result_receiver.try_recv() {
+                log::info!("[DBA-MONITOR] UI received result for tab_index={}, is_ok={}", tab_index, result.is_ok());
+                eprintln!("[DBA-MONITOR] UI received result for tab_index={}, is_ok={}", tab_index, result.is_ok());
                 if let Some(tab) = self.query_tabs.get_mut(tab_index) {
                     if let Some(state) = &mut tab.dba_monitor_state {
                         state.is_loading = false;
@@ -1307,6 +1309,8 @@ impl Tabular {
             }
 
             while let Ok((tab_index, result)) = self.user_manager_result_receiver.try_recv() {
+                log::info!("[USER-MGR] UI received result for tab_index={}", tab_index);
+                eprintln!("[USER-MGR] UI received result for tab_index={}", tab_index);
                 if let Some(tab) = self.query_tabs.get_mut(tab_index) {
                     if let Some(state) = &mut tab.user_manager_state {
                         state.is_loading = false;
@@ -1315,6 +1319,8 @@ impl Tabular {
                                 state.last_refreshed = Some(std::time::Instant::now());
                                 match res {
                                     Ok(payload) => {
+                                        log::info!("[USER-MGR] UI applied payload: {} users, {} roles", payload.users.len(), payload.roles.len());
+                                        eprintln!("[USER-MGR] UI applied payload: {} users, {} roles", payload.users.len(), payload.roles.len());
                                         state.users = payload.users;
                                         state.roles = payload.roles;
                                         state.object_grants = payload.object_grants.clone();
@@ -1328,6 +1334,8 @@ impl Tabular {
                                         state.status_message = None;
                                     }
                                     Err(err) => {
+                                        log::error!("[USER-MGR] UI received error: {}", err);
+                                        eprintln!("[USER-MGR] UI received error: {}", err);
                                         state.status_message = Some((format!("Error: {}", err), true));
                                         state.show_diagnostics_panel = true;
                                     }
@@ -2880,7 +2888,10 @@ impl Tabular {
                         {
                             let conn_id = tab.connection_id;
                             let conn = conn_id.and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)));
-                            let db_type = conn.map(|c| c.connection_type.clone());
+                            let db_type = conn.map(|c| c.connection_type.clone())
+                                .or_else(|| conn_id.and_then(|cid| self.cached_connection_types.get(&cid).cloned()))
+                                .or_else(|| conn_id.and_then(|cid| self.connection_pools.get(&cid).map(|p| p.db_type())))
+                                .or_else(|| conn_id.and_then(|cid| self.shared_connection_pools.lock().ok().and_then(|p| p.get(&cid).map(|pool| pool.db_type()))));
                             let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "Database".to_string());
                             dba_conn_info = Some((conn_id, db_type.clone()));
 
@@ -2912,7 +2923,10 @@ impl Tabular {
                         {
                             let conn_id = tab.connection_id;
                             let conn = conn_id.and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)));
-                            let db_type = conn.map(|c| c.connection_type.clone());
+                            let db_type = conn.map(|c| c.connection_type.clone())
+                                .or_else(|| conn_id.and_then(|cid| self.cached_connection_types.get(&cid).cloned()))
+                                .or_else(|| conn_id.and_then(|cid| self.connection_pools.get(&cid).map(|p| p.db_type())))
+                                .or_else(|| conn_id.and_then(|cid| self.shared_connection_pools.lock().ok().and_then(|p| p.get(&cid).map(|pool| pool.db_type()))));
                             let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "Database".to_string());
                             let db_name = tab.database_name.clone();
                             let schema_name = tab.schema_name.clone();
@@ -2921,6 +2935,8 @@ impl Tabular {
                             if let Some(state) = &mut tab.user_manager_state {
                                 // Auto-fetch initial data if empty and not loading
                                 if state.users.is_empty() && !state.is_loading && state.last_refreshed.is_none() {
+                                    log::info!("[USER-MGR] Triggering auto-fetch on initial tab open: conn_id={:?}, db_type={:?}", conn_id, db_type);
+                                    eprintln!("[USER-MGR] Triggering auto-fetch on initial tab open: conn_id={:?}, db_type={:?}", conn_id, db_type);
                                     user_mgr_action = Some(crate::user_manager::UserManagerAction::Refresh);
                                 }
 
@@ -3084,6 +3100,12 @@ impl Tabular {
                             && let Some(action) = dba_action
                         {
                             let active_tab = self.active_tab_index;
+                            crate::connection::ensure_background_pool_creation(self, conn_id);
+                            let direct_pool = self.connection_pools.get(&conn_id).cloned()
+                                .or_else(|| self.shared_connection_pools.lock().ok().and_then(|p| p.get(&conn_id).cloned()));
+                            let shared_pools = self.shared_connection_pools.clone();
+                            let rt_opt = self.runtime.clone();
+
                             match action {
                                 crate::dba_monitor::DbaAction::Refresh => {
                                     if let Some(tab) = self.query_tabs.get_mut(active_tab) {
@@ -3091,25 +3113,27 @@ impl Tabular {
                                             state.is_loading = true;
                                         }
                                     }
-                                    if let Some(pool) = self.connection_pools.get(&conn_id).cloned() {
-                                        if let Some(rt) = self.runtime.clone() {
-                                            let sender = self.dba_result_sender.clone();
-                                            let ctx = ui.ctx().clone();
-                                            rt.spawn(async move {
-                                                let res = crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await;
-                                                let _ = sender.send((active_tab, res));
-                                                ctx.request_repaint();
-                                            });
-                                        }
+                                    if let Some(rt) = rt_opt {
+                                        let sender = self.dba_result_sender.clone();
+                                        let ctx = ui.ctx().clone();
+                                        rt.spawn(async move {
+                                            let pool_res = wait_for_connection_pool(direct_pool, shared_pools, conn_id).await;
+                                            let res = match pool_res {
+                                                Ok(pool) => crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await,
+                                                Err(e) => Err(e),
+                                            };
+                                            let _ = sender.send((active_tab, res));
+                                            ctx.request_repaint();
+                                        });
                                     }
                                 }
                                 crate::dba_monitor::DbaAction::CancelQuery(pid) => {
                                     if let Some(query) = crate::dba_monitor::get_cancel_query(&db_type, pid) {
-                                        if let Some(pool) = self.connection_pools.get(&conn_id).cloned() {
-                                            if let Some(rt) = self.runtime.clone() {
-                                                let sender = self.dba_result_sender.clone();
-                                                let ctx = ui.ctx().clone();
-                                                rt.spawn(async move {
+                                        if let Some(rt) = rt_opt {
+                                            let sender = self.dba_result_sender.clone();
+                                            let ctx = ui.ctx().clone();
+                                            rt.spawn(async move {
+                                                if let Ok(pool) = wait_for_connection_pool(direct_pool.clone(), shared_pools.clone(), conn_id).await {
                                                     match crate::dba_monitor::execute_dba_command(&pool, &query).await {
                                                         Ok(_) => log::info!("Cancelled query for PID {}", pid),
                                                         Err(e) => log::error!("Failed to cancel query for PID {}: {}", pid, e),
@@ -3117,18 +3141,18 @@ impl Tabular {
                                                     let res = crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await;
                                                     let _ = sender.send((active_tab, res));
                                                     ctx.request_repaint();
-                                                });
-                                            }
+                                                }
+                                            });
                                         }
                                     }
                                 }
                                 crate::dba_monitor::DbaAction::KillProcess(pid) => {
                                     if let Some(query) = crate::dba_monitor::get_kill_query(&db_type, pid) {
-                                        if let Some(pool) = self.connection_pools.get(&conn_id).cloned() {
-                                            if let Some(rt) = self.runtime.clone() {
-                                                let sender = self.dba_result_sender.clone();
-                                                let ctx = ui.ctx().clone();
-                                                rt.spawn(async move {
+                                        if let Some(rt) = rt_opt {
+                                            let sender = self.dba_result_sender.clone();
+                                            let ctx = ui.ctx().clone();
+                                            rt.spawn(async move {
+                                                if let Ok(pool) = wait_for_connection_pool(direct_pool.clone(), shared_pools.clone(), conn_id).await {
                                                     match crate::dba_monitor::execute_dba_command(&pool, &query).await {
                                                         Ok(_) => log::info!("Killed process PID {}", pid),
                                                         Err(e) => log::error!("Failed to kill process PID {}: {}", pid, e),
@@ -3136,64 +3160,106 @@ impl Tabular {
                                                     let res = crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await;
                                                     let _ = sender.send((active_tab, res));
                                                     ctx.request_repaint();
-                                                });
-                                            }
+                                                }
+                                            });
                                         }
                                     }
+                                }
+                                crate::dba_monitor::DbaAction::OpenInSqlTab(query) => {
+                                    let conn_name = self.connections.iter().find(|c| c.id == Some(conn_id)).map(|c| c.name.clone()).unwrap_or_else(|| "DB".to_string());
+                                    crate::editor::create_new_tab_with_connection_and_database(
+                                        self,
+                                        format!("⚡ DBA: {}", conn_name),
+                                        query,
+                                        Some(conn_id),
+                                        None,
+                                    );
                                 }
                             }
                         }
                     
-                        if let Some((Some(conn_id), Some(db_type), db_name, schema_name)) = user_mgr_conn_info
+                        if let Some((conn_id_opt, db_type_opt, db_name, schema_name)) = user_mgr_conn_info
                             && let Some(action) = user_mgr_action
                         {
                             let active_tab = self.active_tab_index;
-                            let sender = self.user_manager_result_sender.clone();
-                            let ctx = ui.ctx().clone();
-                            let pool_opt = self.connection_pools.get(&conn_id).cloned();
-                            let rt_opt = self.runtime.clone();
+                            if let (Some(conn_id), Some(db_type)) = (conn_id_opt, db_type_opt.clone()) {
+                                log::info!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
+                                eprintln!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
+                                crate::connection::ensure_background_pool_creation(self, conn_id);
+                                let sender = self.user_manager_result_sender.clone();
+                                let ctx = ui.ctx().clone();
+                                let direct_pool = self.connection_pools.get(&conn_id).cloned()
+                                    .or_else(|| self.shared_connection_pools.lock().ok().and_then(|p| p.get(&conn_id).cloned()));
+                                let shared_pools = self.shared_connection_pools.clone();
+                                let rt_opt = self.runtime.clone();
 
-                            match action {
-                                crate::user_manager::UserManagerAction::Refresh => {
-                                    if let Some(tab) = self.query_tabs.get_mut(active_tab) {
-                                        if let Some(state) = &mut tab.user_manager_state {
-                                            state.is_loading = true;
+                                match action {
+                                    crate::user_manager::UserManagerAction::OpenInSqlTab(query) => {
+                                        let conn_name = self.connections.iter().find(|c| c.id == Some(conn_id)).map(|c| c.name.clone()).unwrap_or_else(|| "DB".to_string());
+                                        crate::editor::create_new_tab_with_connection_and_database(
+                                            self,
+                                            format!("👥 Users: {}", conn_name),
+                                            query,
+                                            Some(conn_id),
+                                            db_name,
+                                        );
+                                    }
+                                    crate::user_manager::UserManagerAction::Refresh => {
+                                        if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                            if let Some(state) = &mut tab.user_manager_state {
+                                                state.is_loading = true;
+                                            }
+                                        }
+                                        if let Some(rt) = rt_opt {
+                                            rt.spawn(async move {
+                                                let pool_res = wait_for_connection_pool(direct_pool, shared_pools, conn_id).await;
+                                                let res = match pool_res {
+                                                    Ok(pool) => crate::user_manager::fetch_user_manager_data(
+                                                        &pool,
+                                                        &db_type,
+                                                        db_name.as_deref(),
+                                                        schema_name.as_deref(),
+                                                    ).await,
+                                                    Err(e) => Err(e),
+                                                };
+                                                let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(res)));
+                                                ctx.request_repaint();
+                                            });
                                         }
                                     }
-                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
-                                        rt.spawn(async move {
-                                            let res = crate::user_manager::fetch_user_manager_data(
-                                                &pool,
-                                                &db_type,
-                                                db_name.as_deref(),
-                                                schema_name.as_deref(),
-                                            ).await;
-                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(res)));
-                                            ctx.request_repaint();
-                                        });
-                                    }
-                                }
                                 crate::user_manager::UserManagerAction::CreateUser(form) => {
                                     let sql = crate::user_manager::generate_create_user_sql(&form, &db_type);
-                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                    if let Some(rt) = rt_opt {
                                         let sql_clone = sql.clone();
                                         rt.spawn(async move {
-                                            let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
-                                            let cmd_res = exec_res.map(|_| format!("User '{}' created successfully", form.username));
-                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
-                                                action_name: "Create User".to_string(),
-                                                sql: sql_clone,
-                                                result: cmd_res,
-                                            }));
+                                            let pool_res = wait_for_connection_pool(direct_pool, shared_pools, conn_id).await;
+                                            match pool_res {
+                                                Ok(pool) => {
+                                                    let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
+                                                    let cmd_res = exec_res.map(|_| format!("User '{}' created successfully", form.username));
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                        action_name: "Create User".to_string(),
+                                                        sql: sql_clone,
+                                                        result: cmd_res,
+                                                    }));
 
-                                            // Re-fetch users
-                                            let fetch_res = crate::user_manager::fetch_user_manager_data(
-                                                &pool,
-                                                &db_type,
-                                                db_name.as_deref(),
-                                                schema_name.as_deref(),
-                                            ).await;
-                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                                    // Re-fetch users
+                                                    let fetch_res = crate::user_manager::fetch_user_manager_data(
+                                                        &pool,
+                                                        &db_type,
+                                                        db_name.as_deref(),
+                                                        schema_name.as_deref(),
+                                                    ).await;
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                                }
+                                                Err(e) => {
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                        action_name: "Create User".to_string(),
+                                                        sql: sql_clone,
+                                                        result: Err(e),
+                                                    }));
+                                                }
+                                            }
                                             ctx.request_repaint();
                                         });
                                     }
@@ -3205,74 +3271,110 @@ impl Tabular {
                                         &form.new_password,
                                         &db_type,
                                     );
-                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                    if let Some(rt) = rt_opt {
                                         let sql_clone = sql.clone();
                                         rt.spawn(async move {
-                                            let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
-                                            let cmd_res = exec_res.map(|_| format!("Password updated for user '{}'", form.target_user));
-                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
-                                                action_name: "Change Password".to_string(),
-                                                sql: sql_clone,
-                                                result: cmd_res,
-                                            }));
+                                            let pool_res = wait_for_connection_pool(direct_pool, shared_pools, conn_id).await;
+                                            match pool_res {
+                                                Ok(pool) => {
+                                                    let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
+                                                    let cmd_res = exec_res.map(|_| format!("Password updated for user '{}'", form.target_user));
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                        action_name: "Change Password".to_string(),
+                                                        sql: sql_clone,
+                                                        result: cmd_res,
+                                                    }));
+                                                }
+                                                Err(e) => {
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                        action_name: "Change Password".to_string(),
+                                                        sql: sql_clone,
+                                                        result: Err(e),
+                                                    }));
+                                                }
+                                            }
                                             ctx.request_repaint();
                                         });
                                     }
                                 }
                                 crate::user_manager::UserManagerAction::DropUser(user, host) => {
                                     let sql = crate::user_manager::generate_drop_user_sql(&user, &host, &db_type);
-                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                    if let Some(rt) = rt_opt {
                                         let sql_clone = sql.clone();
                                         rt.spawn(async move {
-                                            let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
-                                            let cmd_res = exec_res.map(|_| format!("User '{}' dropped successfully", user));
-                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
-                                                action_name: "Drop User".to_string(),
-                                                sql: sql_clone,
-                                                result: cmd_res,
-                                            }));
+                                            let pool_res = wait_for_connection_pool(direct_pool, shared_pools, conn_id).await;
+                                            match pool_res {
+                                                Ok(pool) => {
+                                                    let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
+                                                    let cmd_res = exec_res.map(|_| format!("User '{}' dropped successfully", user));
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                        action_name: "Drop User".to_string(),
+                                                        sql: sql_clone,
+                                                        result: cmd_res,
+                                                    }));
 
-                                            // Re-fetch users
-                                            let fetch_res = crate::user_manager::fetch_user_manager_data(
-                                                &pool,
-                                                &db_type,
-                                                db_name.as_deref(),
-                                                schema_name.as_deref(),
-                                            ).await;
-                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                                    // Re-fetch users
+                                                    let fetch_res = crate::user_manager::fetch_user_manager_data(
+                                                        &pool,
+                                                        &db_type,
+                                                        db_name.as_deref(),
+                                                        schema_name.as_deref(),
+                                                    ).await;
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                                }
+                                                Err(e) => {
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                        action_name: "Drop User".to_string(),
+                                                        sql: sql_clone,
+                                                        result: Err(e),
+                                                    }));
+                                                }
+                                            }
                                             ctx.request_repaint();
                                         });
                                     }
                                 }
                                 crate::user_manager::UserManagerAction::ApplyPrivilegeChanges { grantee, grantee_host: _, sql_statements } => {
-                                    if let (Some(pool), Some(rt)) = (pool_opt, rt_opt) {
+                                    if let Some(rt) = rt_opt {
                                         let all_sqls = sql_statements.join("\n");
                                         rt.spawn(async move {
-                                            let mut errors = Vec::new();
-                                            for stmt in &sql_statements {
-                                                if let Err(e) = crate::user_manager::execute_user_manager_command(&pool, stmt).await {
-                                                    errors.push(e);
+                                            let pool_res = wait_for_connection_pool(direct_pool, shared_pools, conn_id).await;
+                                            match pool_res {
+                                                Ok(pool) => {
+                                                    let mut errors = Vec::new();
+                                                    for stmt in &sql_statements {
+                                                        if let Err(e) = crate::user_manager::execute_user_manager_command(&pool, stmt).await {
+                                                            errors.push(e);
+                                                        }
+                                                    }
+                                                    let cmd_res = if errors.is_empty() {
+                                                        Ok(format!("Privileges updated for '{}'", grantee))
+                                                    } else {
+                                                        Err(errors.join("; "))
+                                                    };
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                        action_name: "Apply Privileges".to_string(),
+                                                        sql: all_sqls,
+                                                        result: cmd_res,
+                                                    }));
+
+                                                    // Re-fetch data
+                                                    let fetch_res = crate::user_manager::fetch_user_manager_data(
+                                                        &pool,
+                                                        &db_type,
+                                                        db_name.as_deref(),
+                                                        schema_name.as_deref(),
+                                                    ).await;
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                                }
+                                                Err(e) => {
+                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                        action_name: "Apply Privileges".to_string(),
+                                                        sql: all_sqls,
+                                                        result: Err(e),
+                                                    }));
                                                 }
                                             }
-                                            let cmd_res = if errors.is_empty() {
-                                                Ok(format!("Privileges updated for '{}'", grantee))
-                                            } else {
-                                                Err(errors.join("; "))
-                                            };
-                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
-                                                action_name: "Apply Privileges".to_string(),
-                                                sql: all_sqls,
-                                                result: cmd_res,
-                                            }));
-
-                                            // Re-fetch data
-                                            let fetch_res = crate::user_manager::fetch_user_manager_data(
-                                                &pool,
-                                                &db_type,
-                                                db_name.as_deref(),
-                                                schema_name.as_deref(),
-                                            ).await;
-                                            let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
                                             ctx.request_repaint();
                                         });
                                     }
@@ -3321,7 +3423,18 @@ impl Tabular {
                                     }
                                 }
                             }
+                        } else {
+                            log::error!("[USER-MGR] Cannot process action: conn_id={:?}, db_type={:?}", conn_id_opt, db_type_opt);
+                            eprintln!("[USER-MGR] Cannot process action: conn_id={:?}, db_type={:?}", conn_id_opt, db_type_opt);
+                            if let Some(tab) = self.query_tabs.get_mut(active_tab) {
+                                if let Some(state) = &mut tab.user_manager_state {
+                                    state.is_loading = false;
+                                    state.status_message = Some(("Failed to identify database connection type".to_string(), true));
+                                    state.show_diagnostics_panel = true;
+                                }
+                            }
                         }
+                    }
                     
                         if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor && !rendered_user_manager {
                             self.render_query_editor_with_split(ui, "regular_query");
@@ -5103,5 +5216,34 @@ impl App for Tabular {
         crate::connection::cancel_all_connection_attempts(self);
     }
 } // end impl App for Tabular
+
+async fn wait_for_connection_pool(
+    direct_pool: Option<models::enums::DatabasePool>,
+    shared_pools: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>>,
+    conn_id: i64,
+) -> Result<models::enums::DatabasePool, String> {
+    if let Some(p) = direct_pool {
+        log::info!("[POOL-WAIT] Direct pool available for conn_id={}", conn_id);
+        eprintln!("[POOL-WAIT] Direct pool available for conn_id={}", conn_id);
+        return Ok(p);
+    }
+    log::info!("[POOL-WAIT] Waiting for background pool for conn_id={}...", conn_id);
+    eprintln!("[POOL-WAIT] Waiting for background pool for conn_id={}...", conn_id);
+    for attempt in 0..100 {
+        if let Ok(guard) = shared_pools.lock() {
+            if let Some(p) = guard.get(&conn_id).cloned() {
+                log::info!("[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}", attempt, conn_id);
+                eprintln!("[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}", attempt, conn_id);
+                return Ok(p);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let err = format!("Connecting to database (id={}) timed out after 10s. Please check that the database server is reachable.", conn_id);
+    log::error!("[POOL-WAIT] {}", err);
+    eprintln!("[POOL-WAIT] {}", err);
+    Err(err)
+}
+
 
 

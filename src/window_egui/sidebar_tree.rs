@@ -2064,6 +2064,22 @@ impl super::Tabular {
             crate::sync::ui_teams::refresh_all_shared_folders(self);
         }
 
+        // Handle "Open as SQL Editor Tab" request for DBA views
+        let dba_sql_req: Option<(i64, String, String)> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("open_dba_sql_tab_req")));
+        if let Some((conn_id, tab_title, sql_query)) = dba_sql_req {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<(i64, String, String)>(egui::Id::new("open_dba_sql_tab_req"));
+            });
+            crate::editor::create_new_tab_with_connection(
+                self,
+                tab_title,
+                sql_query,
+                Some(conn_id),
+            );
+        }
+
         // Return query files that were clicked
         results
     }
@@ -4077,22 +4093,77 @@ impl super::Tabular {
             }
 
 
-            // Add context menu for Custom View items
-            if node.node_type == models::enums::NodeType::CustomView {
+            // Add context menu for DBA Views and Custom View items
+            let is_dba_item = matches!(
+                node.node_type,
+                models::enums::NodeType::UsersFolder
+                    | models::enums::NodeType::PrivilegesFolder
+                    | models::enums::NodeType::ProcessesFolder
+                    | models::enums::NodeType::StatusFolder
+                    | models::enums::NodeType::BlockedQueriesFolder
+                    | models::enums::NodeType::ReplicationStatusFolder
+                    | models::enums::NodeType::MasterStatusFolder
+                    | models::enums::NodeType::MetricsUserActiveFolder
+                    | models::enums::NodeType::CustomView
+            );
+
+            if is_dba_item {
                 response.context_menu(|ui| {
-                     if ui.button("✏️ Edit this view").clicked() {
-                         if let Some(conn_id) = node.connection_id
-                             && let Some(query) = &node.query {
-                                 edit_custom_view_request = Some((conn_id, node.name.clone(), query.clone()));
-                             }
-                         ui.close();
-                     }
-                     if ui.button("🗑️ Delete this dba view").clicked() {
-                         if let Some(conn_id) = node.connection_id {
-                             delete_custom_view_request = Some((conn_id, node.name.clone()));
-                         }
-                         ui.close();
-                     }
+                    if let Some(conn_id) = node.connection_id {
+                        if ui.button("⚡ Open View / Interactive Tab").clicked() {
+                            match node.node_type {
+                                models::enums::NodeType::ProcessesFolder => {
+                                    dba_click_request = Some((conn_id, models::enums::NodeType::ProcessesFolder));
+                                }
+                                models::enums::NodeType::BlockedQueriesFolder => {
+                                    dba_click_request = Some((conn_id, models::enums::NodeType::BlockedQueriesFolder));
+                                }
+                                models::enums::NodeType::UsersFolder => {
+                                    dba_click_request = Some((conn_id, models::enums::NodeType::UsersFolder));
+                                }
+                                models::enums::NodeType::PrivilegesFolder => {
+                                    dba_click_request = Some((conn_id, models::enums::NodeType::PrivilegesFolder));
+                                }
+                                _ => {
+                                    if let Some(query) = &node.query {
+                                        custom_view_click_request = Some((conn_id, node.name.clone(), query.clone()));
+                                    }
+                                }
+                            }
+                            ui.close();
+                        }
+
+                        if let Some(query) = &node.query {
+                            if ui.button("📝 Open as SQL Editor Tab").clicked() {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(
+                                        egui::Id::new("open_dba_sql_tab_req"),
+                                        (conn_id, format!("⚡ {}", node.name), query.clone()),
+                                    );
+                                });
+                                ui.close();
+                            }
+
+                            if ui.button("📋 Copy SQL Query").clicked() {
+                                ui.ctx().copy_text(query.clone());
+                                ui.close();
+                            }
+                        }
+
+                        if node.node_type == models::enums::NodeType::CustomView {
+                            ui.separator();
+                            if let Some(query) = &node.query {
+                                if ui.button("✏️ Edit this view").clicked() {
+                                    edit_custom_view_request = Some((conn_id, node.name.clone(), query.clone()));
+                                    ui.close();
+                                }
+                            }
+                            if ui.button("🗑️ Delete this dba view").clicked() {
+                                delete_custom_view_request = Some((conn_id, node.name.clone()));
+                                ui.close();
+                            }
+                        }
+                    }
                 });
             }
 

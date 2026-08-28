@@ -129,6 +129,7 @@ pub enum UserManagerAction {
     CloseChangePasswordModal,
     OpenDropConfirmModal(String, String),
     CloseDropConfirmModal,
+    OpenInSqlTab(String),
 }
 
 /// Full state of User & Privileges Manager tab
@@ -207,10 +208,12 @@ pub enum UserManagerResult {
 pub async fn fetch_user_manager_data(
     pool: &DatabasePool,
     db_type: &DatabaseType,
-    _database_name: Option<&str>,
-    _schema_name: Option<&str>,
+    database_name: Option<&str>,
+    schema_name: Option<&str>,
 ) -> Result<UserManagerDataPayload, String> {
-    match (db_type, pool) {
+    log::info!("[USER-MGR] fetch_user_manager_data started for db_type={:?}, database={:?}, schema={:?}", db_type, database_name, schema_name);
+    eprintln!("[USER-MGR] fetch_user_manager_data started for db_type={:?}, database={:?}, schema={:?}", db_type, database_name, schema_name);
+    let result = match (db_type, pool) {
         (DatabaseType::PostgreSQL, DatabasePool::PostgreSQL(pg_pool)) => {
             fetch_postgres_user_data(pg_pool).await
         }
@@ -221,7 +224,20 @@ pub async fn fetch_user_manager_data(
             fetch_sqlite_user_data(sq_pool).await
         }
         _ => Err(format!("User and Role Management is not supported for {:?}", db_type)),
+    };
+    match &result {
+        Ok(payload) => {
+            log::info!("[USER-MGR] fetch_user_manager_data SUCCESS: {} users, {} roles, {} object grants, {} query logs",
+                payload.users.len(), payload.roles.len(), payload.object_grants.len(), payload.executed_queries.len());
+            eprintln!("[USER-MGR] fetch_user_manager_data SUCCESS: {} users, {} roles, {} object grants, {} query logs",
+                payload.users.len(), payload.roles.len(), payload.object_grants.len(), payload.executed_queries.len());
+        }
+        Err(err) => {
+            log::error!("[USER-MGR] fetch_user_manager_data ERROR: {}", err);
+            eprintln!("[USER-MGR] fetch_user_manager_data ERROR: {}", err);
+        }
     }
+    result
 }
 
 /// Execute a user management DDL statement (e.g. CREATE USER, ALTER USER, DROP, GRANT)
@@ -262,6 +278,100 @@ pub async fn execute_user_manager_command(
 }
 
 // ---------------------------------------------------------------------------
+// Query Helpers with Timeouts & Rich Logging
+// ---------------------------------------------------------------------------
+
+async fn query_mysql_timeout(
+    my_pool: &sqlx::MySqlPool,
+    sql: &str,
+    timeout_secs: u64,
+    step_desc: &str,
+) -> Result<Vec<sqlx::mysql::MySqlRow>, String> {
+    log::info!("[USER-MGR-MYSQL] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    eprintln!("[USER-MGR-MYSQL] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    
+    let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(my_pool);
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
+        Ok(Ok(rows)) => {
+            log::info!("[USER-MGR-MYSQL] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            eprintln!("[USER-MGR-MYSQL] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            Ok(rows)
+        }
+        Ok(Err(e)) => {
+            log::warn!("[USER-MGR-MYSQL] [{}] Query Error: {}", step_desc, e);
+            eprintln!("[USER-MGR-MYSQL] [{}] Query Error: {}", step_desc, e);
+            Err(e.to_string())
+        }
+        Err(_) => {
+            let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
+            log::warn!("[USER-MGR-MYSQL] [{}] Timeout Error: {}", step_desc, err);
+            eprintln!("[USER-MGR-MYSQL] [{}] Timeout Error: {}", step_desc, err);
+            Err(err)
+        }
+    }
+}
+
+async fn query_pg_timeout(
+    pg_pool: &sqlx::PgPool,
+    sql: &str,
+    timeout_secs: u64,
+    step_desc: &str,
+) -> Result<Vec<sqlx::postgres::PgRow>, String> {
+    log::info!("[USER-MGR-PG] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    eprintln!("[USER-MGR-PG] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    
+    let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(pg_pool);
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
+        Ok(Ok(rows)) => {
+            log::info!("[USER-MGR-PG] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            eprintln!("[USER-MGR-PG] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            Ok(rows)
+        }
+        Ok(Err(e)) => {
+            log::warn!("[USER-MGR-PG] [{}] Query Error: {}", step_desc, e);
+            eprintln!("[USER-MGR-PG] [{}] Query Error: {}", step_desc, e);
+            Err(e.to_string())
+        }
+        Err(_) => {
+            let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
+            log::warn!("[USER-MGR-PG] [{}] Timeout Error: {}", step_desc, err);
+            eprintln!("[USER-MGR-PG] [{}] Timeout Error: {}", step_desc, err);
+            Err(err)
+        }
+    }
+}
+
+async fn query_sqlite_timeout(
+    sq_pool: &sqlx::SqlitePool,
+    sql: &str,
+    timeout_secs: u64,
+    step_desc: &str,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, String> {
+    log::info!("[USER-MGR-SQLITE] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    eprintln!("[USER-MGR-SQLITE] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    
+    let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(sq_pool);
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
+        Ok(Ok(rows)) => {
+            log::info!("[USER-MGR-SQLITE] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            eprintln!("[USER-MGR-SQLITE] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            Ok(rows)
+        }
+        Ok(Err(e)) => {
+            log::warn!("[USER-MGR-SQLITE] [{}] Query Error: {}", step_desc, e);
+            eprintln!("[USER-MGR-SQLITE] [{}] Query Error: {}", step_desc, e);
+            Err(e.to_string())
+        }
+        Err(_) => {
+            let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
+            log::warn!("[USER-MGR-SQLITE] [{}] Timeout Error: {}", step_desc, err);
+            eprintln!("[USER-MGR-SQLITE] [{}] Timeout Error: {}", step_desc, err);
+            Err(err)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PostgreSQL Fetcher
 // ---------------------------------------------------------------------------
 async fn fetch_postgres_user_data(
@@ -286,7 +396,7 @@ async fn fetch_postgres_user_data(
         ORDER BY r.rolname;
     "#;
 
-    let roles_res = sqlx::query(roles_query).fetch_all(pg_pool).await;
+    let roles_res = query_pg_timeout(pg_pool, roles_query, 4, "Roles (pg_catalog.pg_roles)").await;
 
     match roles_res {
         Ok(role_rows) => {
@@ -306,7 +416,7 @@ async fn fetch_postgres_user_data(
                 JOIN pg_catalog.pg_roles m ON (a.member = m.oid)
                 ORDER BY b.rolname, m.rolname;
             "#;
-            let member_res = sqlx::query(members_query).fetch_all(pg_pool).await;
+            let member_res = query_pg_timeout(pg_pool, members_query, 4, "Role Members (pg_catalog.pg_auth_members)").await;
             let mut member_to_roles: HashMap<String, Vec<String>> = HashMap::new();
             let mut role_to_members: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -332,7 +442,7 @@ async fn fetch_postgres_user_data(
                         step_name: "Fetch Role Memberships (pg_catalog.pg_auth_members)".to_string(),
                         sql: members_query.trim().to_string(),
                         row_count: None,
-                        error: Some(e.to_string()),
+                        error: Some(e),
                     });
                 }
             }
@@ -392,11 +502,12 @@ async fn fetch_postgres_user_data(
                 step_name: "Fetch PostgreSQL Roles (pg_catalog.pg_roles) - Primary".to_string(),
                 sql: roles_query.trim().to_string(),
                 row_count: None,
-                error: Some(err_primary.to_string()),
+                error: Some(err_primary),
             });
 
             let pg_user_query = "SELECT usename AS username, usesuper AS is_superuser, usecreatedb AS can_create_db FROM pg_catalog.pg_user ORDER BY usename;";
-            match sqlx::query(pg_user_query).fetch_all(pg_pool).await {
+            let user_res = query_pg_timeout(pg_pool, pg_user_query, 4, "Users Fallback 1 (pg_catalog.pg_user)").await;
+            match user_res {
                 Ok(user_rows) => {
                     executed_queries.push(ExecutedQueryLog {
                         step_name: "Fetch PostgreSQL Users (pg_catalog.pg_user) - Fallback 1".to_string(),
@@ -428,11 +539,12 @@ async fn fetch_postgres_user_data(
                         step_name: "Fetch PostgreSQL Users (pg_catalog.pg_user) - Fallback 1".to_string(),
                         sql: pg_user_query.to_string(),
                         row_count: None,
-                        error: Some(err_fb1.to_string()),
+                        error: Some(err_fb1),
                     });
 
                     let cur_user_query = "SELECT current_user AS username, session_user AS session_user;";
-                    match sqlx::query(cur_user_query).fetch_all(pg_pool).await {
+                    let cur_res = query_pg_timeout(pg_pool, cur_user_query, 4, "Current User Fallback 2").await;
+                    match cur_res {
                         Ok(rows) => {
                             executed_queries.push(ExecutedQueryLog {
                                 step_name: "Fetch Current PostgreSQL User - Fallback 2".to_string(),
@@ -462,7 +574,7 @@ async fn fetch_postgres_user_data(
                                 step_name: "Fetch Current PostgreSQL User - Fallback 2".to_string(),
                                 sql: cur_user_query.to_string(),
                                 row_count: None,
-                                error: Some(err_fb2.to_string()),
+                                error: Some(err_fb2),
                             });
                         }
                     }
@@ -481,7 +593,7 @@ async fn fetch_postgres_user_data(
         WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
         ORDER BY table_schema, table_name;
     "#;
-    let table_rows = match sqlx::query(tables_query).fetch_all(pg_pool).await {
+    let table_rows = match query_pg_timeout(pg_pool, tables_query, 4, "Tables & Views").await {
         Ok(rows) => {
             executed_queries.push(ExecutedQueryLog {
                 step_name: "Fetch Tables & Views (information_schema.tables)".to_string(),
@@ -496,7 +608,7 @@ async fn fetch_postgres_user_data(
                 step_name: "Fetch Tables & Views (information_schema.tables)".to_string(),
                 sql: tables_query.trim().to_string(),
                 row_count: None,
-                error: Some(e.to_string()),
+                error: Some(e),
             });
             Vec::new()
         }
@@ -512,7 +624,7 @@ async fn fetch_postgres_user_data(
         FROM information_schema.table_privileges 
         WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast');
     "#;
-    let priv_rows = match sqlx::query(privs_query).fetch_all(pg_pool).await {
+    let priv_rows = match query_pg_timeout(pg_pool, privs_query, 4, "Table Privileges").await {
         Ok(rows) => {
             executed_queries.push(ExecutedQueryLog {
                 step_name: "Fetch Table Privileges (information_schema.table_privileges)".to_string(),
@@ -527,7 +639,7 @@ async fn fetch_postgres_user_data(
                 step_name: "Fetch Table Privileges (information_schema.table_privileges)".to_string(),
                 sql: privs_query.trim().to_string(),
                 row_count: None,
-                error: Some(e.to_string()),
+                error: Some(e),
             });
             Vec::new()
         }
@@ -615,7 +727,7 @@ async fn fetch_mysql_user_data(
         ORDER BY User, Host;
     "#;
 
-    let res_1 = sqlx::query(users_query_1).fetch_all(my_pool).await;
+    let res_1 = query_mysql_timeout(my_pool, users_query_1, 4, "Users Attempt 1 (mysql.user full)").await;
     match res_1 {
         Ok(rows) => {
             executed_queries.push(ExecutedQueryLog {
@@ -661,11 +773,12 @@ async fn fetch_mysql_user_data(
                 step_name: "Fetch MySQL Users (mysql.user full) - Attempt 1".to_string(),
                 sql: users_query_1.trim().to_string(),
                 row_count: None,
-                error: Some(err_1.to_string()),
+                error: Some(err_1),
             });
 
             let users_query_2 = "SELECT DISTINCT User, Host FROM mysql.user ORDER BY User, Host;";
-            match sqlx::query(users_query_2).fetch_all(my_pool).await {
+            let res_2 = query_mysql_timeout(my_pool, users_query_2, 4, "Users Attempt 2 (mysql.user minimal)").await;
+            match res_2 {
                 Ok(rows) => {
                     executed_queries.push(ExecutedQueryLog {
                         step_name: "Fetch MySQL Users (mysql.user minimal) - Attempt 2".to_string(),
@@ -696,11 +809,12 @@ async fn fetch_mysql_user_data(
                         step_name: "Fetch MySQL Users (mysql.user minimal) - Attempt 2".to_string(),
                         sql: users_query_2.to_string(),
                         row_count: None,
-                        error: Some(err_2.to_string()),
+                        error: Some(err_2),
                     });
 
                     let users_query_3 = "SELECT DISTINCT GRANTEE FROM information_schema.user_privileges ORDER BY GRANTEE;";
-                    match sqlx::query(users_query_3).fetch_all(my_pool).await {
+                    let res_3 = query_mysql_timeout(my_pool, users_query_3, 4, "Users Attempt 3 (user_privileges)").await;
+                    match res_3 {
                         Ok(rows) if !rows.is_empty() => {
                             executed_queries.push(ExecutedQueryLog {
                                 step_name: "Fetch MySQL Grantees (information_schema.user_privileges) - Attempt 3".to_string(),
@@ -731,7 +845,8 @@ async fn fetch_mysql_user_data(
                         }
                         _ => {
                             let users_query_4 = "SELECT CURRENT_USER() AS cur_user, USER() AS session_user;";
-                            match sqlx::query(users_query_4).fetch_all(my_pool).await {
+                            let res_4 = query_mysql_timeout(my_pool, users_query_4, 4, "Users Attempt 4 (CURRENT_USER)").await;
+                            match res_4 {
                                 Ok(rows) => {
                                     executed_queries.push(ExecutedQueryLog {
                                         step_name: "Fetch Current MySQL User (CURRENT_USER()) - Attempt 4".to_string(),
@@ -765,7 +880,7 @@ async fn fetch_mysql_user_data(
                                         step_name: "Fetch Current MySQL User (CURRENT_USER()) - Attempt 4".to_string(),
                                         sql: users_query_4.to_string(),
                                         row_count: None,
-                                        error: Some(err_4.to_string()),
+                                        error: Some(err_4),
                                     });
                                 }
                             }
@@ -785,7 +900,7 @@ async fn fetch_mysql_user_data(
         WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
         ORDER BY table_schema, table_name;
     "#;
-    let table_rows = match sqlx::query(tables_query).fetch_all(my_pool).await {
+    let table_rows = match query_mysql_timeout(my_pool, tables_query, 4, "Tables List").await {
         Ok(rows) => {
             executed_queries.push(ExecutedQueryLog {
                 step_name: "Fetch MySQL Tables (information_schema.tables)".to_string(),
@@ -800,7 +915,7 @@ async fn fetch_mysql_user_data(
                 step_name: "Fetch MySQL Tables (information_schema.tables)".to_string(),
                 sql: tables_query.trim().to_string(),
                 row_count: None,
-                error: Some(e.to_string()),
+                error: Some(e),
             });
             Vec::new()
         }
@@ -816,7 +931,7 @@ async fn fetch_mysql_user_data(
         FROM information_schema.table_privileges 
         WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys');
     "#;
-    let priv_rows = match sqlx::query(privs_query).fetch_all(my_pool).await {
+    let priv_rows = match query_mysql_timeout(my_pool, privs_query, 4, "Table Privileges").await {
         Ok(rows) => {
             executed_queries.push(ExecutedQueryLog {
                 step_name: "Fetch MySQL Table Privileges (information_schema.table_privileges)".to_string(),
@@ -831,7 +946,7 @@ async fn fetch_mysql_user_data(
                 step_name: "Fetch MySQL Table Privileges (information_schema.table_privileges)".to_string(),
                 sql: privs_query.trim().to_string(),
                 row_count: None,
-                error: Some(e.to_string()),
+                error: Some(e),
             });
             Vec::new()
         }
@@ -898,7 +1013,7 @@ async fn fetch_mysql_user_data(
 }
 
 // ---------------------------------------------------------------------------
-// SQLite Fetcher (Informational Single-User Engine)
+// SQLite Fetcher
 // ---------------------------------------------------------------------------
 async fn fetch_sqlite_user_data(
     sq_pool: &sqlx::SqlitePool,
@@ -923,7 +1038,7 @@ async fn fetch_sqlite_user_data(
     });
 
     let tables_query = "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name;";
-    let rows = match sqlx::query(tables_query).fetch_all(sq_pool).await {
+    let rows = match query_sqlite_timeout(sq_pool, tables_query, 4, "SQLite Objects").await {
         Ok(r) => {
             executed_queries.push(ExecutedQueryLog {
                 step_name: "Fetch SQLite Objects (sqlite_master)".to_string(),
@@ -938,7 +1053,7 @@ async fn fetch_sqlite_user_data(
                 step_name: "Fetch SQLite Objects (sqlite_master)".to_string(),
                 sql: tables_query.to_string(),
                 row_count: None,
-                error: Some(e.to_string()),
+                error: Some(e),
             });
             Vec::new()
         }
@@ -1146,6 +1261,11 @@ pub fn render_user_manager(
             UserManagerTab::ObjectGrants => render_object_grants_matrix_tab(ui, state, db_type, out_action),
             UserManagerTab::SqlPreview => render_sql_preview_tab(ui, state, out_action),
         });
+
+    if state.show_diagnostics_panel || (state.users.is_empty() && !state.is_loading && state.selected_tab != UserManagerTab::SqlPreview) {
+        ui.add_space(6.0);
+        render_diagnostics_card(ui, state, out_action);
+    }
 }
 
 fn render_header_bar(
@@ -1288,11 +1408,6 @@ fn render_users_and_roles_tab(
 ) {
     let filter_text = state.search_text.to_lowercase();
 
-    if state.show_diagnostics_panel || (state.users.is_empty() && !state.is_loading) {
-        render_diagnostics_card(ui, state, out_action);
-        ui.add_space(8.0);
-    }
-
     ui.columns(2, |cols| {
         cols[0].group(|ui| {
             ui.horizontal(|ui| {
@@ -1313,7 +1428,7 @@ fn render_users_and_roles_tab(
                         ui.vertical_centered(|ui| {
                             ui.add_space(20.0);
                             ui.label(egui::RichText::new("⚠️ No user accounts retrieved.").strong().color(egui::Color32::from_rgb(255, 180, 80)));
-                            ui.label(egui::RichText::new("Inspect the executed SQL queries above to see exact errors or permissions.").weak().size(11.0));
+                            ui.label(egui::RichText::new("Inspect the executed SQL queries below to see exact errors or permissions.").weak().size(11.0));
                             ui.add_space(8.0);
                             if ui.button("🔄 Retry Query").clicked() {
                                 *out_action = Some(UserManagerAction::Refresh);
@@ -1456,77 +1571,76 @@ fn render_users_and_roles_tab(
                     });
 
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
 
-                    ui.label(egui::RichText::new("Account Capabilities").strong().size(12.0));
-                    egui::Grid::new("user_caps_grid")
-                        .num_columns(2)
-                        .spacing([16.0, 6.0])
-                        .show(ui, |ui| {
-                            ui.label("Superuser / Admin:");
-                            render_bool_badge(ui, user.is_superuser);
-                            ui.end_row();
+                    ui.label(egui::RichText::new("Capabilities & Privileges").strong().size(12.0));
+                    ui.add_space(2.0);
 
-                            ui.label("Can Login:");
-                            render_bool_badge(ui, user.can_login);
-                            ui.end_row();
+                    ui.horizontal_wrapped(|ui| {
+                        if user.is_superuser {
+                            render_badge(ui, "SUPERUSER / DBA", egui::Color32::from_rgb(180, 120, 20));
+                        }
+                        if user.can_login {
+                            render_badge(ui, "CAN LOGIN", egui::Color32::from_rgb(30, 120, 60));
+                        } else {
+                            render_badge(ui, "NO LOGIN (ROLE)", egui::Color32::from_rgb(100, 100, 100));
+                        }
+                        if user.can_create_db {
+                            render_badge(ui, "CAN CREATE DB", egui::Color32::from_rgb(40, 100, 160));
+                        }
+                        if user.can_create_role {
+                            render_badge(ui, "CAN CREATE ROLE", egui::Color32::from_rgb(140, 60, 160));
+                        }
+                        if user.is_locked {
+                            render_badge(ui, "ACCOUNT LOCKED", egui::Color32::from_rgb(180, 40, 40));
+                        }
+                        if user.password_expired {
+                            render_badge(ui, "PASSWORD EXPIRED", egui::Color32::from_rgb(180, 80, 40));
+                        }
+                    });
 
-                            ui.label("Create Database:");
-                            render_bool_badge(ui, user.can_create_db);
-                            ui.end_row();
+                    if let Some(valid) = &user.valid_until {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(format!("Password Valid Until: {}", valid)).size(11.0).weak());
+                    }
 
-                            ui.label("Create Roles:");
-                            render_bool_badge(ui, user.can_create_role);
-                            ui.end_row();
-
-                            if let Some(valid_until) = &user.valid_until {
-                                ui.label("Valid Until:");
-                                ui.label(valid_until);
-                                ui.end_row();
-                            }
-
-                            for (k, v) in &user.attributes {
-                                ui.label(format!("{}:", k));
-                                ui.label(v);
-                                ui.end_row();
-                            }
-                        });
-
-                    ui.add_space(8.0);
                     if !user.member_of.is_empty() {
-                        ui.label(egui::RichText::new("Member of Roles").strong().size(12.0));
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Granted Roles / Group Memberships").strong().size(12.0));
                         ui.horizontal_wrapped(|ui| {
                             for role in &user.member_of {
-                                render_badge(ui, role, egui::Color32::from_rgb(40, 90, 160));
+                                render_badge(ui, &format!("🛡️ {}", role), egui::Color32::from_rgb(50, 80, 140));
                             }
                         });
                     }
 
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Object Grants Matrix").strong().size(12.0));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("🛡️ Edit Table Permissions ➔").clicked() {
-                                state.selected_grantee = Some(user.username.clone());
-                                state.selected_grantee_host = user.host.clone();
-                                state.selected_tab = UserManagerTab::ObjectGrants;
-                            }
-                        });
-                    });
+                    if !user.attributes.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Detailed Attributes").strong().size(12.0));
+                        egui::Grid::new("user_attrs_grid")
+                            .num_columns(2)
+                            .spacing([12.0, 4.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for (k, v) in &user.attributes {
+                                    ui.label(egui::RichText::new(k).weak().size(11.0));
+                                    ui.label(egui::RichText::new(v).strong().size(11.0));
+                                    ui.end_row();
+                                }
+                            });
+                    }
 
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("user_grants_preview_scroll")
-                        .max_height(200.0)
-                        .show(ui, |ui| {
-                            let granted_count = state.object_grants.iter().filter(|g| g.has_select || g.has_all).count();
-                            ui.label(
-                                egui::RichText::new(format!("User has access to {} database tables/views.", granted_count))
-                                    .size(11.0)
-                                    .weak(),
-                            );
-                        });
+                    ui.add_space(12.0);
+                    let edit_grants_btn = egui::Button::new(
+                        egui::RichText::new("🛡️ View / Edit Object Grants for this User")
+                            .strong()
+                            .size(12.0),
+                    );
+                    if ui.add(edit_grants_btn).clicked() {
+                        state.selected_grantee = Some(user.username.clone());
+                        state.selected_grantee_host = user.host.clone();
+                        state.selected_tab = UserManagerTab::ObjectGrants;
+                    }
                 }
             } else {
                 ui.vertical_centered(|ui| {
@@ -1550,7 +1664,7 @@ fn render_diagnostics_card(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("🔍 Executed SQL Queries & Introspection Diagnostics")
+                    egui::RichText::new(format!("{} Executed SQL Queries & Introspection Diagnostics", egui_icons::icons::ICON_TERMINAL.codepoint))
                         .strong()
                         .size(13.0)
                         .color(ui.visuals().strong_text_color()),
@@ -1559,6 +1673,12 @@ fn render_diagnostics_card(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("🔄 Re-run Queries").clicked() {
                         *out_action = Some(UserManagerAction::Refresh);
+                    }
+                    if ui.small_button("⚡ Open All in SQL Tab").clicked() {
+                        let full_log = state.executed_queries.iter().map(|q| {
+                            format!("-- Step: {}\n{};\n", q.step_name, q.sql)
+                        }).collect::<Vec<String>>().join("\n");
+                        *out_action = Some(UserManagerAction::OpenInSqlTab(full_log));
                     }
                     if ui.small_button("📋 Copy All Queries").clicked() {
                         let full_log = state.executed_queries.iter().map(|q| {
@@ -1590,6 +1710,10 @@ fn render_diagnostics_card(
                                 ui.label(egui::RichText::new(&q.step_name).strong().size(12.0));
 
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("⚡ Open in SQL Tab / Test").clicked() {
+                                        *out_action = Some(UserManagerAction::OpenInSqlTab(q.sql.clone()));
+                                    }
+
                                     if ui.small_button("📋 Copy").clicked() {
                                         ui.ctx().copy_text(q.sql.clone());
                                     }
@@ -1991,6 +2115,9 @@ fn render_sql_preview_tab(
                                 ui.label(egui::RichText::new(&q.step_name).strong());
 
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("⚡ Open in SQL Tab").clicked() {
+                                        *out_action = Some(UserManagerAction::OpenInSqlTab(q.sql.clone()));
+                                    }
                                     if ui.small_button("📋 Copy SQL").clicked() {
                                         ui.ctx().copy_text(q.sql.clone());
                                     }
@@ -2196,6 +2323,7 @@ fn render_badge(ui: &mut egui::Ui, text: &str, fill: egui::Color32) {
         });
 }
 
+#[allow(dead_code)]
 fn render_bool_badge(ui: &mut egui::Ui, val: bool) {
     if val {
         render_badge(ui, "YES", egui::Color32::from_rgb(30, 120, 60));
