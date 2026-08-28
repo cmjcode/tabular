@@ -141,7 +141,18 @@ pub(crate) fn fetch_columns_from_database(
                 }
             }
             models::enums::DatabaseType::SQLite => {
-                let connection_string = format!("sqlite:{}", connection_clone.host);
+                let sqlite_path = if !connection_clone.database.trim().is_empty() {
+                    connection_clone.database.trim()
+                } else if !connection_clone.host.trim().is_empty() && connection_clone.host.trim() != "localhost" {
+                    connection_clone.host.trim()
+                } else {
+                    connection_clone.database.trim()
+                };
+                let connection_string = if sqlite_path.starts_with("sqlite:") {
+                    sqlite_path.to_string()
+                } else {
+                    format!("sqlite:{}", sqlite_path)
+                };
 
                 match sqlx::sqlite::SqlitePoolOptions::new()
                     .max_connections(1)

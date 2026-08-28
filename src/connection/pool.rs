@@ -620,7 +620,18 @@ async fn create_connection_pool_for_config_inner(
             }
         }
         models::enums::DatabaseType::SQLite => {
-            let connection_string = format!("sqlite:{}", connection.host);
+            let sqlite_path = if !connection.database.trim().is_empty() {
+                connection.database.trim()
+            } else if !connection.host.trim().is_empty() && connection.host.trim() != "localhost" {
+                connection.host.trim()
+            } else {
+                connection.database.trim()
+            };
+            let connection_string = if sqlite_path.starts_with("sqlite:") {
+                sqlite_path.to_string()
+            } else {
+                format!("sqlite:{}", sqlite_path)
+            };
 
             let pool_result = SqlitePoolOptions::new()
                 .max_connections(5)

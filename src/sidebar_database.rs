@@ -198,6 +198,19 @@ pub(crate) fn render_connection_dialog(
         tabular.new_connection.clone()
     };
 
+    // Consume any picked SQLite file path
+    if let Some(temp_path) = tabular.temp_sqlite_path.take() {
+        if !temp_path.is_empty() {
+            connection_data.database = temp_path.clone();
+            connection_data.host = temp_path.clone();
+            if connection_data.name.trim().is_empty() {
+                if let Some(file_stem) = std::path::Path::new(&temp_path).file_stem().and_then(|s| s.to_str()) {
+                    connection_data.name = file_stem.to_string();
+                }
+            }
+        }
+    }
+
     egui::Window::new(title)
         .resizable(false)
         .default_width(400.0)
@@ -271,9 +284,19 @@ pub(crate) fn render_connection_dialog(
 
                         match connection_data.connection_type {
                             models::enums::DatabaseType::SQLite => {
-                                // SQLite: use "Database" as file name, "Folder" as directory
                                 ui.label("Database File:");
-                                ui.text_edit_singleline(&mut connection_data.database);
+                                ui.horizontal(|ui| {
+                                    let resp = ui.text_edit_singleline(&mut connection_data.database);
+                                    if resp.changed() {
+                                        connection_data.host = connection_data.database.clone();
+                                    }
+                                    if ui.button("📂").on_hover_text("Browse SQLite database file").clicked()
+                                        && let Some(sender) = &tabular.background_sender
+                                    {
+                                        let _ = sender
+                                            .send(models::enums::BackgroundTask::PickSqlitePath);
+                                    }
+                                });
                                 ui.end_row();
                             }
                             models::enums::DatabaseType::ApiHttp => {
@@ -305,33 +328,14 @@ pub(crate) fn render_connection_dialog(
                             }
                         }
 
-                        // Folder field: for SQLite, used as directory picker; for others, plain text
+                        // Folder field: standard organization folder in sidebar
                         ui.label("Folder (Optional):");
                         let mut folder_text = connection_data
                             .folder
                             .as_ref()
                             .unwrap_or(&String::new())
                             .clone();
-                        if connection_data.connection_type == models::enums::DatabaseType::SQLite {
-                            ui.horizontal(|ui| {
-                                ui.text_edit_singleline(&mut folder_text);
-                                if ui.button("📂").clicked()
-                                    && let Some(sender) = &tabular.background_sender
-                                {
-                                    let _ = sender
-                                        .send(models::enums::BackgroundTask::PickSqlitePath);
-                                }
-                            });
-
-                            if let Some(temp_path) = &tabular.temp_sqlite_path
-                                && !temp_path.is_empty()
-                            {
-                                folder_text = temp_path.clone();
-                            }
-                        } else {
-                            ui.text_edit_singleline(&mut folder_text);
-                        }
-
+                        ui.text_edit_singleline(&mut folder_text);
                         connection_data.folder = if folder_text.trim().is_empty() {
                             None
                         } else {
@@ -399,19 +403,20 @@ pub(crate) fn render_connection_dialog(
                                     format!("postgresql://{}{}:{}{}", auth, host, port, path)
                                 }
                                 models::enums::DatabaseType::SQLite => {
-                                    // For SQLite, build absolute-like path from optional folder + file name
-                                    let file_name = if db.is_empty() { host } else { db };
-                                    let mut path = String::new();
-                                    if let Some(folder) = &connection_data.folder
-                                        && !folder.is_empty()
-                                    {
-                                        path.push_str(folder);
-                                        if !path.ends_with('/') {
-                                            path.push('/');
-                                        }
+                                    let file_path = if !db.is_empty() {
+                                        db
+                                    } else if !host.is_empty() && host != "localhost" {
+                                        host
+                                    } else {
+                                        ""
+                                    };
+                                    if file_path.is_empty() {
+                                        "sqlite:".to_string()
+                                    } else if file_path.starts_with("sqlite:") {
+                                        file_path.to_string()
+                                    } else {
+                                        format!("sqlite:{}", file_path)
                                     }
-                                    path.push_str(file_name);
-                                    format!("sqlite:{}", path)
                                 }
                                 models::enums::DatabaseType::Redis => {
                                     if pass.is_empty() && user.is_empty() {
@@ -604,6 +609,14 @@ pub(crate) fn render_connection_dialog(
                 ui.horizontal(|ui| {
                     let save_button_text = if is_edit_mode { "Update" } else { "Save" };
                     if ui.button(save_button_text).clicked() && !connection_data.name.is_empty() {
+                        if connection_data.connection_type == models::enums::DatabaseType::SQLite {
+                            if !connection_data.database.is_empty() {
+                                connection_data.host = connection_data.database.clone();
+                            } else if !connection_data.host.is_empty() && connection_data.host != "localhost" {
+                                connection_data.database = connection_data.host.clone();
+                            }
+                        }
+
                         if is_edit_mode {
                             // Update existing connection
                             if let Some(id) = connection_data.id {
