@@ -2359,6 +2359,7 @@ impl super::Tabular {
                                 .color(muted_color)
                                 .strong(),
                         )
+                        .selectable(false)
                         .truncate()
                         .sense(egui::Sense::click()),
                     )
@@ -2372,10 +2373,35 @@ impl super::Tabular {
                     // Left-align non-connection labels as well; rely on parent row width for truncation.
                     ui.add(
                         egui::Label::new(label_text)
+                            .selectable(false)
                             .truncate()
                             .sense(egui::Sense::click()),
                     )
                 };
+
+                if response.hovered() || response.is_pointer_button_down_on() {
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    let is_dark = ui.visuals().dark_mode;
+                    let is_active = response.is_pointer_button_down_on();
+                    let bg = if is_active {
+                        if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
+                        else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+                    } else {
+                        if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
+                        else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+                    };
+                    let accent_color = super::style::theme_accent(ui.ctx());
+                    let row_rect = response.rect;
+                    let bar_rect = egui::Rect::from_min_size(
+                        egui::pos2(row_rect.left(), row_rect.top() + 2.0),
+                        egui::vec2(2.0, row_rect.height() - 4.0),
+                    );
+                    ui.painter().rect_filled(row_rect, 3.0, bg);
+                    ui.painter().rect_filled(bar_rect, 1.0, accent_color);
+                    ui.ctx().request_repaint();
+                }
 
                 // Tooltip for connection status
                 if node.node_type == models::enums::NodeType::Connection {
@@ -3644,6 +3670,9 @@ impl super::Tabular {
                         original_query
                     ));
                 }
+                if row_response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
                 row_response
             } else if node.node_type == models::enums::NodeType::Query {
                 // --- Premium interactive Saved Query row (with hover, active, and instant click) ---
@@ -3729,6 +3758,9 @@ impl super::Tabular {
                     );
                 }
 
+                if row_response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
                 if row_response.hovered() || row_response.clicked() {
                     ui.ctx().request_repaint();
                 }
@@ -3737,7 +3769,7 @@ impl super::Tabular {
             } else {
                 // For all other node types, use horizontal layout with icons.
                 // Add a spacer equal to the triangle width so leaf rows align with expandable rows (left-aligned look).
-                ui.horizontal(|ui| {
+                let inner_resp = ui.horizontal(|ui| {
                     // Reserve space equal to triangle toggle width (16px) for alignment
                     let _sp = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
 
@@ -3789,11 +3821,37 @@ impl super::Tabular {
                     // Use left-aligned label without forcing a full-row size to avoid centered look.
                     ui.add(
                         egui::Label::new(label_text)
+                            .selectable(false)
                             .truncate()
                             .sense(egui::Sense::click()),
                     )
-                })
-                .inner
+                });
+                let resp = inner_resp.inner;
+                let row_rect = inner_resp.response.rect;
+
+                if resp.hovered() || resp.is_pointer_button_down_on() {
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    let is_dark = ui.visuals().dark_mode;
+                    let is_active = resp.is_pointer_button_down_on();
+                    let bg = if is_active {
+                        if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
+                        else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+                    } else {
+                        if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
+                        else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+                    };
+                    let accent_color = super::style::theme_accent(ui.ctx());
+                    let bar_rect = egui::Rect::from_min_size(
+                        egui::pos2(row_rect.left(), row_rect.top() + 2.0),
+                        egui::vec2(2.0, row_rect.height() - 4.0),
+                    );
+                    ui.painter().rect_filled(row_rect, 3.0, bg);
+                    ui.painter().rect_filled(bar_rect, 1.0, accent_color);
+                    ui.ctx().request_repaint();
+                }
+                resp
             };
 
             let activated = response.clicked();

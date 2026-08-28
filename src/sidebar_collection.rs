@@ -85,6 +85,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                                     .small()
                                     .color(text_color),
                             )
+                            .selectable(false)
                             .sense(egui::Sense::click_and_drag())
                             .truncate(),
                         );
@@ -126,6 +127,27 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     // Use interact() on the full row rect so right-click is captured reliably across the entire row
                     let row_id = egui::Id::new("http_conn_row").with(conn_id);
                     let row_interact = ui.interact(row_rect, row_id, egui::Sense::click());
+
+                    let is_hovered = label_response.hovered() || row_interact.hovered();
+                    let is_active = label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
+                    if is_hovered || is_active {
+                        let is_dark = ui.visuals().dark_mode;
+                        let bg = if is_active {
+                            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
+                            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+                        } else {
+                            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
+                            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+                        };
+                        let bar_rect = egui::Rect::from_min_size(
+                            egui::pos2(row_rect.left(), row_rect.top() + 2.0),
+                            egui::vec2(2.0, row_rect.height() - 4.0),
+                        );
+                        ui.painter().rect_filled(row_rect, 3.0, bg);
+                        ui.painter().rect_filled(bar_rect, 1.0, accent);
+                        ui.ctx().request_repaint();
+                    }
+
                     if (label_response.clicked() || row_interact.clicked())
                         && app.dragged_http_conn_id.is_none()
                     {
@@ -262,7 +284,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 {
                     continue;
                 }
-                if let Some(act) = render_request_row(ui, ws_id, &req, accent, active_dnd_source.as_ref()) {
+                if let Some(act) =
+                    render_request_row(ui, ws_id, &req, accent, active_dnd_source.as_ref())
+                {
                     req_action = Some((req, act));
                 }
             }
@@ -530,9 +554,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
         if let (Some(src), Some(target)) = (active_dnd_source, pending_target) {
             match src {
                 HttpDndSource::Request {
-                    req_id,
-                    req_name,
-                    ..
+                    req_id, req_name, ..
                 } => match target {
                     HttpDndTarget::Workspace { ws_id, ws_name } => {
                         if crate::http_collection::move_request(
@@ -709,7 +731,7 @@ fn render_yaak_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                 }
 
                 // Auto-switch to HTTP Clients tab so user sees the result
-                app.selected_menu = "HTTP Clients".to_string();
+                app.selected_menu = "APIs".to_string();
             }
             Err(e) => {
                 app.toasts.error(format!("Yaak import failed: {e}"));
@@ -756,7 +778,7 @@ fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                     app.toasts.warning(w);
                 }
 
-                app.selected_menu = "HTTP Clients".to_string();
+                app.selected_menu = "APIs".to_string();
             }
             Err(e) => {
                 app.toasts.error(format!("Postman import failed: {e}"));
@@ -830,9 +852,9 @@ fn render_folder_node(
     folder_to_delete: &mut Option<(String, String, String)>,
 ) {
     let is_expanded = expanded_folders.contains(&folder.id) || !filter.is_empty();
-    let is_being_dragged = active_dnd_source.is_some_and(|src| {
-        matches!(src, HttpDndSource::Folder { folder_id, .. } if folder_id == &folder.id)
-    });
+    let is_being_dragged = active_dnd_source.is_some_and(
+        |src| matches!(src, HttpDndSource::Folder { folder_id, .. } if folder_id == &folder.id),
+    );
 
     let mut toggle_clicked = false;
     let mut row_clicked = false;
@@ -858,6 +880,7 @@ fn render_folder_node(
                     .strong()
                     .color(text_color),
             )
+            .selectable(false)
             .sense(egui::Sense::click_and_drag())
             .truncate(),
         );
@@ -892,6 +915,25 @@ fn render_folder_node(
 
     let folder_row_rect = inner_resp.response.rect;
     let label_resp = inner_resp.inner;
+
+    if label_resp.hovered() || label_resp.is_pointer_button_down_on() {
+        let is_dark = ui.visuals().dark_mode;
+        let is_active = label_resp.is_pointer_button_down_on();
+        let bg = if is_active {
+            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
+            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+        } else {
+            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
+            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+        };
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(folder_row_rect.left(), folder_row_rect.top() + 2.0),
+            egui::vec2(2.0, folder_row_rect.height() - 4.0),
+        );
+        ui.painter().rect_filled(folder_row_rect, 3.0, bg);
+        ui.painter().rect_filled(bar_rect, 1.0, accent);
+        ui.ctx().request_repaint();
+    }
 
     if toggle_clicked || row_clicked {
         if expanded_folders.contains(&folder.id) {
@@ -973,11 +1015,7 @@ fn render_folder_node(
             ui.close();
         }
         if ui.button("✏️ Rename Folder").clicked() {
-            *folder_to_rename = Some((
-                ws_id.to_string(),
-                folder.id.clone(),
-                folder.name.clone(),
-            ));
+            *folder_to_rename = Some((ws_id.to_string(), folder.id.clone(), folder.name.clone()));
             ui.close();
         }
         ui.separator();
@@ -1035,9 +1073,9 @@ fn render_request_row(
     let mut action = None;
     let display_name = req.display_name();
 
-    let is_being_dragged = active_dnd_source.is_some_and(|src| {
-        matches!(src, HttpDndSource::Request { req_id, .. } if req_id == &req.id)
-    });
+    let is_being_dragged = active_dnd_source.is_some_and(
+        |src| matches!(src, HttpDndSource::Request { req_id, .. } if req_id == &req.id),
+    );
 
     let inner_resp = ui.horizontal(|ui| {
         ui.add_space(4.0);
@@ -1051,15 +1089,14 @@ fn render_request_row(
         );
         // Request name or endpoint URL, clickable and draggable
         let mut lbl = ui.add(
-            egui::Label::new(
-                egui::RichText::new(&display_name)
-                    .small()
-                    .color(if is_being_dragged {
-                        accent
-                    } else {
-                        ui.style().visuals.text_color()
-                    }),
-            )
+            egui::Label::new(egui::RichText::new(&display_name).small().color(
+                if is_being_dragged {
+                    accent
+                } else {
+                    ui.style().visuals.text_color()
+                },
+            ))
+            .selectable(false)
             .sense(egui::Sense::click_and_drag())
             .truncate(),
         );
@@ -1094,6 +1131,26 @@ fn render_request_row(
     let row_id = egui::Id::new("http_req_row").with(&req.id);
     let row_interact = ui.interact(row_rect, row_id, egui::Sense::click_and_drag());
 
+    let is_hovered = label_response.hovered() || row_interact.hovered();
+    let is_active = label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
+    if is_hovered || is_active {
+        let is_dark = ui.visuals().dark_mode;
+        let bg = if is_active {
+            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
+            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+        } else {
+            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
+            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+        };
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(row_rect.left(), row_rect.top() + 2.0),
+            egui::vec2(2.0, row_rect.height() - 4.0),
+        );
+        ui.painter().rect_filled(row_rect, 3.0, bg);
+        ui.painter().rect_filled(bar_rect, 1.0, accent);
+        ui.ctx().request_repaint();
+    }
+
     if row_interact.drag_started() {
         ui.ctx().data_mut(|d| {
             d.insert_temp(
@@ -1107,9 +1164,7 @@ fn render_request_row(
         });
     }
 
-    if (label_response.clicked() || row_interact.clicked())
-        && action.is_none()
-        && !is_being_dragged
+    if (label_response.clicked() || row_interact.clicked()) && action.is_none() && !is_being_dragged
     {
         action = Some(RequestAction::Open);
     }
