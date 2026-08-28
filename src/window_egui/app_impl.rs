@@ -1541,18 +1541,6 @@ impl Tabular {
                                     self.render_sidebar_search_box(ui, "🔍 Search queries...");
                                     ui.add_space(4.0);
 
-                                    let queries_response = ui.interact(
-                                        ui.available_rect_before_wrap(),
-                                        egui::Id::new("queries_area"),
-                                        egui::Sense::click(),
-                                    );
-                                    queries_response.context_menu(|ui| {
-                                        if ui.button("📂 Create Folder").clicked() {
-                                            self.show_create_folder_dialog = true;
-                                            ui.close();
-                                        }
-                                    });
-
                                     let is_searching_queries = !self.database_search_text.trim().is_empty();
                                     let mut queries_tree = if is_searching_queries {
                                         std::mem::take(&mut self.filtered_queries_tree)
@@ -1568,6 +1556,7 @@ impl Tabular {
                                         self.queries_tree = queries_tree;
                                     }
 
+                                    let had_query_open_request = !query_files_to_open.is_empty();
                                     for (filename, content, file_path, _) in query_files_to_open {
                                         if file_path.is_empty() {
                                             log::debug!("✅ Processing query click: New unsaved tab '{}'", filename);
@@ -1579,12 +1568,29 @@ impl Tabular {
                                             }
                                         }
                                     }
+                                    if had_query_open_request {
+                                        ui.ctx().request_repaint();
+                                    }
                                     ui.add_space(4.0);
 
                                     if self.queries_tree.is_empty() && !is_searching_queries {
                                         ui.add_space(8.0);
                                         ui.label("No saved queries yet");
                                         ui.label("Click ➕ to create a new query");
+                                    }
+
+                                    // Empty bottom space context menu (without blocking tree click events)
+                                    if ui.available_height() > 10.0 {
+                                        let empty_response = ui.allocate_response(
+                                            ui.available_size(),
+                                            egui::Sense::click(),
+                                        );
+                                        empty_response.context_menu(|ui| {
+                                            if ui.button("📂 Create Folder").clicked() {
+                                                self.show_create_folder_dialog = true;
+                                                ui.close();
+                                            }
+                                        });
                                     }
                                 }
                                 "History" => {

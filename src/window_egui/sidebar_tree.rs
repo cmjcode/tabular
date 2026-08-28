@@ -2549,6 +2549,8 @@ impl super::Tabular {
                                     | models::enums::NodeType::ColumnsFolder
                                     | models::enums::NodeType::IndexesFolder
                                     | models::enums::NodeType::PrimaryKeysFolder
+                                    | models::enums::NodeType::QueryFolder
+                                    | models::enums::NodeType::CustomFolder
                             ))
                         && node.node_type != models::enums::NodeType::Table
                         && node.node_type != models::enums::NodeType::View;
@@ -2618,10 +2620,10 @@ impl super::Tabular {
                     connection_click_request = Some(conn_id);
                 }
 
-                // Handle clicks on table/view labels to load data - open in new tab
+                // Handle clicks on table/view labels to load data - open in new tab (single click)
                 if (node.node_type == models::enums::NodeType::Table
                     || node.node_type == models::enums::NodeType::View)
-                    && response.double_clicked()
+                    && response.clicked()
                     && let Some(conn_id) = node.connection_id
                 {
                     // Use table_name field if available (for search results), otherwise use node.name
@@ -3643,6 +3645,95 @@ impl super::Tabular {
                     ));
                 }
                 row_response
+            } else if node.node_type == models::enums::NodeType::Query {
+                // --- Premium interactive Saved Query row (with hover, active, and instant click) ---
+                let is_dark = ui.visuals().dark_mode;
+                let available_width = ui.available_width();
+                let body_h = ui.text_style_height(&egui::TextStyle::Body);
+                let item_h = body_h + 8.0;
+
+                let (rect, row_response) = ui.allocate_exact_size(
+                    egui::vec2(available_width, item_h),
+                    egui::Sense::click(),
+                );
+
+                if ui.is_rect_visible(rect) {
+                    let hovered = row_response.hovered();
+                    let active = row_response.is_pointer_button_down_on();
+
+                    // Background highlight on hover / click
+                    if active {
+                        let active_bg = if is_dark {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+                        };
+                        ui.painter().rect_filled(rect, 3.0, active_bg);
+                    } else if hovered {
+                        let hover_bg = if is_dark {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+                        };
+                        ui.painter().rect_filled(rect, 3.0, hover_bg);
+
+                        // Subtle left accent bar (2px)
+                        let accent_color = super::style::theme_accent(ui.ctx());
+                        let bar_rect = egui::Rect::from_min_size(
+                            egui::pos2(rect.left(), rect.top() + 2.0),
+                            egui::vec2(2.0, rect.height() - 4.0),
+                        );
+                        ui.painter().rect_filled(bar_rect, 1.0, accent_color);
+                    }
+
+                    // Spacer (16px) for triangle alignment + Search icon + Query name
+                    let text_color = if hovered || active {
+                        ui.visuals().strong_text_color()
+                    } else {
+                        ui.visuals().text_color()
+                    };
+
+                    let icon = egui_icons::icons::ICON_SEARCH.codepoint;
+                    let icon_color = if hovered || active {
+                        super::style::theme_accent(ui.ctx())
+                    } else {
+                        super::style::theme_muted_text(ui.ctx())
+                    };
+
+                    // Draw icon (at x = left + 18.0)
+                    let icon_pos = egui::pos2(rect.left() + 18.0, rect.center().y);
+                    ui.painter().text(
+                        icon_pos,
+                        egui::Align2::LEFT_CENTER,
+                        icon,
+                        egui::FontId::proportional(12.0),
+                        icon_color,
+                    );
+
+                    // Draw file name (at x = left + 34.0)
+                    let text_pos = egui::pos2(rect.left() + 34.0, rect.center().y - 7.0);
+                    let max_text_width = (rect.right() - text_pos.x - 4.0).max(10.0);
+                    let galley = ui.painter().layout_no_wrap(
+                        node.name.clone(),
+                        egui::FontId::proportional(13.0),
+                        text_color,
+                    );
+                    let clip_rect = egui::Rect::from_min_size(
+                        egui::pos2(text_pos.x, rect.top()),
+                        egui::vec2(max_text_width, rect.height()),
+                    );
+                    ui.painter().with_clip_rect(clip_rect).galley(
+                        text_pos,
+                        galley,
+                        text_color,
+                    );
+                }
+
+                if row_response.hovered() || row_response.clicked() {
+                    ui.ctx().request_repaint();
+                }
+
+                row_response
             } else {
                 // For all other node types, use horizontal layout with icons.
                 // Add a spacer equal to the triangle width so leaf rows align with expandable rows (left-aligned look).
@@ -3705,25 +3796,7 @@ impl super::Tabular {
                 .inner
             };
 
-            // DBA quick views + custom views act as actions, so require an explicit
-            // double-click (like Table/View) instead of firing on the first click.
-            let is_dba_or_custom_view = matches!(
-                node.node_type,
-                models::enums::NodeType::UsersFolder
-                    | models::enums::NodeType::PrivilegesFolder
-                    | models::enums::NodeType::ProcessesFolder
-                    | models::enums::NodeType::StatusFolder
-                    | models::enums::NodeType::BlockedQueriesFolder
-                    | models::enums::NodeType::ReplicationStatusFolder
-                    | models::enums::NodeType::MasterStatusFolder
-                    | models::enums::NodeType::MetricsUserActiveFolder
-                    | models::enums::NodeType::CustomView
-            );
-            let activated = if is_dba_or_custom_view {
-                response.double_clicked()
-            } else {
-                response.clicked()
-            };
+            let activated = response.clicked();
 
             if activated {
                 debug!(
