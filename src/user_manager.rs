@@ -140,6 +140,7 @@ pub struct UserManagerState {
     pub roles: Vec<RoleInfo>,
     pub object_grants: Vec<ObjectPrivilegeEntry>,
     pub original_grants: Vec<ObjectPrivilegeEntry>, // To track diffs
+    pub all_privileges_map: HashMap<(String, String, String), (HashSet<String>, bool)>,
     pub selected_grantee: Option<String>, // Username or Role currently inspected in matrix
     pub selected_grantee_host: String,
     pub selected_user_index: Option<usize>,
@@ -165,6 +166,7 @@ impl Default for UserManagerState {
             roles: Vec::new(),
             object_grants: Vec::new(),
             original_grants: Vec::new(),
+            all_privileges_map: HashMap::new(),
             selected_grantee: None,
             selected_grantee_host: "%".to_string(),
             selected_user_index: None,
@@ -184,12 +186,60 @@ impl Default for UserManagerState {
     }
 }
 
+impl UserManagerState {
+    pub fn sync_grants_for_selected_grantee(&mut self, db_type: Option<&DatabaseType>) {
+        let grantee = self.selected_grantee.as_deref().unwrap_or_default();
+        let is_mysql = matches!(db_type, Some(DatabaseType::MySQL));
+
+        let target_key = if is_mysql {
+            format!("'{}'@'{}'", grantee, self.selected_grantee_host)
+        } else {
+            grantee.to_string()
+        };
+
+        for entry in &mut self.object_grants {
+            let priv_entry = self.all_privileges_map
+                .get(&(target_key.clone(), entry.schema.clone(), entry.object_name.clone()))
+                .or_else(|| {
+                    if is_mysql {
+                        self.all_privileges_map.get(&(format!("'{}'@'%'", grantee), entry.schema.clone(), entry.object_name.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    self.all_privileges_map.iter().find(|((g, s, t), _)| {
+                        (g.eq_ignore_ascii_case(&target_key) || (is_mysql && g.starts_with(&format!("'{}'@'", grantee))))
+                            && s.eq_ignore_ascii_case(&entry.schema)
+                            && t.eq_ignore_ascii_case(&entry.object_name)
+                    }).map(|(_, v)| v)
+                });
+
+            let (privs, grant_opt) = match priv_entry {
+                Some((p, g)) => (p.clone(), *g),
+                None => (HashSet::new(), false),
+            };
+
+            entry.has_select = privs.contains("SELECT");
+            entry.has_insert = privs.contains("INSERT");
+            entry.has_update = privs.contains("UPDATE");
+            entry.has_delete = privs.contains("DELETE");
+            entry.has_execute = privs.contains("EXECUTE");
+            entry.has_all = entry.has_select && entry.has_insert && entry.has_update && entry.has_delete;
+            entry.grant_option = grant_opt;
+            entry.is_modified = false;
+        }
+        self.original_grants = self.object_grants.clone();
+    }
+}
+
 /// Payload returned by async fetcher
 #[derive(Debug, Clone)]
 pub struct UserManagerDataPayload {
     pub users: Vec<UserInfo>,
     pub roles: Vec<RoleInfo>,
     pub object_grants: Vec<ObjectPrivilegeEntry>,
+    pub all_privileges_map: HashMap<(String, String, String), (HashSet<String>, bool)>,
     pub executed_queries: Vec<ExecutedQueryLog>,
 }
 
@@ -369,6 +419,46 @@ async fn query_sqlite_timeout(
             Err(err)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Row Field Extraction Helpers (Case-Insensitive & Fallback by Index)
+// ---------------------------------------------------------------------------
+
+fn get_col_str_mysql(row: &sqlx::mysql::MySqlRow, col_name: &str, index: usize) -> String {
+    let lower = col_name.to_lowercase();
+    let upper = col_name.to_uppercase();
+    row.try_get::<Option<String>, _>(lower.as_str())
+        .or_else(|_| row.try_get::<Option<String>, _>(upper.as_str()))
+        .or_else(|_| row.try_get::<Option<String>, _>(col_name))
+        .or_else(|_| row.try_get::<Option<String>, _>(index))
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+fn get_col_str_pg(row: &sqlx::postgres::PgRow, col_name: &str, index: usize) -> String {
+    let lower = col_name.to_lowercase();
+    let upper = col_name.to_uppercase();
+    row.try_get::<Option<String>, _>(lower.as_str())
+        .or_else(|_| row.try_get::<Option<String>, _>(upper.as_str()))
+        .or_else(|_| row.try_get::<Option<String>, _>(col_name))
+        .or_else(|_| row.try_get::<Option<String>, _>(index))
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+fn get_col_str_sqlite(row: &sqlx::sqlite::SqliteRow, col_name: &str, index: usize) -> String {
+    let lower = col_name.to_lowercase();
+    let upper = col_name.to_uppercase();
+    row.try_get::<Option<String>, _>(lower.as_str())
+        .or_else(|_| row.try_get::<Option<String>, _>(upper.as_str()))
+        .or_else(|_| row.try_get::<Option<String>, _>(col_name))
+        .or_else(|_| row.try_get::<Option<String>, _>(index))
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -647,11 +737,11 @@ async fn fetch_postgres_user_data(
 
     let mut priv_map: HashMap<(String, String, String), (HashSet<String>, bool)> = HashMap::new();
     for row in priv_rows {
-        let grantee: String = row.try_get("grantee").unwrap_or_default();
-        let schema: String = row.try_get("table_schema").unwrap_or_default();
-        let table: String = row.try_get("table_name").unwrap_or_default();
-        let priv_type: String = row.try_get("privilege_type").unwrap_or_default();
-        let is_grantable_str: String = row.try_get("is_grantable").unwrap_or_else(|_| "NO".to_string());
+        let grantee = get_col_str_pg(&row, "grantee", 0);
+        let schema = get_col_str_pg(&row, "table_schema", 1);
+        let table = get_col_str_pg(&row, "table_name", 2);
+        let priv_type = get_col_str_pg(&row, "privilege_type", 3);
+        let is_grantable_str = get_col_str_pg(&row, "is_grantable", 4);
         let is_grantable = is_grantable_str.eq_ignore_ascii_case("YES");
 
         let entry = priv_map.entry((grantee, schema, table)).or_insert_with(|| (HashSet::new(), false));
@@ -661,14 +751,37 @@ async fn fetch_postgres_user_data(
         }
     }
 
+    for user in &users {
+        if user.is_superuser {
+            for row in &table_rows {
+                let schema = get_col_str_pg(row, "table_schema", 1);
+                let table_name = get_col_str_pg(row, "table_name", 2);
+                let mut super_privs = HashSet::new();
+                super_privs.insert("SELECT".to_string());
+                super_privs.insert("INSERT".to_string());
+                super_privs.insert("UPDATE".to_string());
+                super_privs.insert("DELETE".to_string());
+                super_privs.insert("EXECUTE".to_string());
+                super_privs.insert("ALL".to_string());
+                priv_map.insert((user.username.clone(), schema, table_name), (super_privs, true));
+            }
+        }
+    }
+
     let default_grantee = users.first().map(|u| u.username.as_str()).unwrap_or("public");
     let mut object_grants = Vec::new();
 
     for row in table_rows {
-        let db: String = row.try_get("table_catalog").unwrap_or_else(|_| "postgres".to_string());
-        let schema: String = row.try_get("table_schema").unwrap_or_default();
-        let table_name: String = row.try_get("table_name").unwrap_or_default();
-        let ttype: String = row.try_get("table_type").unwrap_or_else(|_| "BASE TABLE".to_string());
+        let mut db = get_col_str_pg(&row, "table_catalog", 0);
+        if db.is_empty() {
+            db = "postgres".to_string();
+        }
+        let schema = get_col_str_pg(&row, "table_schema", 1);
+        let table_name = get_col_str_pg(&row, "table_name", 2);
+        let mut ttype = get_col_str_pg(&row, "table_type", 3);
+        if ttype.is_empty() {
+            ttype = "BASE TABLE".to_string();
+        }
 
         let (privs, grant_opt) = priv_map
             .get(&(default_grantee.to_string(), schema.clone(), table_name.clone()))
@@ -702,6 +815,7 @@ async fn fetch_postgres_user_data(
         users,
         roles,
         object_grants,
+        all_privileges_map: priv_map,
         executed_queries,
     })
 }
@@ -921,6 +1035,110 @@ async fn fetch_mysql_user_data(
         }
     };
 
+    // 1. Global User Privileges
+    let user_privs_query = r#"
+        SELECT 
+            grantee, 
+            privilege_type, 
+            is_grantable 
+        FROM information_schema.user_privileges;
+    "#;
+    let user_priv_rows = match query_mysql_timeout(my_pool, user_privs_query, 4, "Global User Privileges").await {
+        Ok(rows) => {
+            executed_queries.push(ExecutedQueryLog {
+                step_name: "Fetch MySQL Global Privileges (information_schema.user_privileges)".to_string(),
+                sql: user_privs_query.trim().to_string(),
+                row_count: Some(rows.len()),
+                error: None,
+            });
+            rows
+        }
+        Err(e) => {
+            executed_queries.push(ExecutedQueryLog {
+                step_name: "Fetch MySQL Global Privileges (information_schema.user_privileges)".to_string(),
+                sql: user_privs_query.trim().to_string(),
+                row_count: None,
+                error: Some(e),
+            });
+            Vec::new()
+        }
+    };
+
+    let mut global_priv_map: HashMap<String, (HashSet<String>, bool)> = HashMap::new();
+    for row in user_priv_rows {
+        let grantee = get_col_str_mysql(&row, "grantee", 0);
+        let priv_type = get_col_str_mysql(&row, "privilege_type", 1);
+        let is_grantable_str = get_col_str_mysql(&row, "is_grantable", 2);
+        let is_grantable = is_grantable_str.eq_ignore_ascii_case("YES");
+
+        let entry = global_priv_map.entry(grantee.clone()).or_insert_with(|| (HashSet::new(), false));
+        entry.0.insert(priv_type.to_uppercase());
+        if is_grantable {
+            entry.1 = true;
+        }
+
+        let clean = grantee.replace('\'', "");
+        let clean_entry = global_priv_map.entry(clean).or_insert_with(|| (HashSet::new(), false));
+        clean_entry.0.insert(priv_type.to_uppercase());
+        if is_grantable {
+            clean_entry.1 = true;
+        }
+    }
+
+    // 2. Schema / Database Level Privileges
+    let schema_privs_query = r#"
+        SELECT 
+            grantee, 
+            table_schema, 
+            privilege_type, 
+            is_grantable 
+        FROM information_schema.schema_privileges 
+        WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys');
+    "#;
+    let schema_priv_rows = match query_mysql_timeout(my_pool, schema_privs_query, 4, "Schema Privileges").await {
+        Ok(rows) => {
+            executed_queries.push(ExecutedQueryLog {
+                step_name: "Fetch MySQL Schema Privileges (information_schema.schema_privileges)".to_string(),
+                sql: schema_privs_query.trim().to_string(),
+                row_count: Some(rows.len()),
+                error: None,
+            });
+            rows
+        }
+        Err(e) => {
+            executed_queries.push(ExecutedQueryLog {
+                step_name: "Fetch MySQL Schema Privileges (information_schema.schema_privileges)".to_string(),
+                sql: schema_privs_query.trim().to_string(),
+                row_count: None,
+                error: Some(e),
+            });
+            Vec::new()
+        }
+    };
+
+    let mut schema_priv_map: HashMap<(String, String), (HashSet<String>, bool)> = HashMap::new();
+    for row in schema_priv_rows {
+        let grantee = get_col_str_mysql(&row, "grantee", 0);
+        let schema = get_col_str_mysql(&row, "table_schema", 1);
+        let priv_type = get_col_str_mysql(&row, "privilege_type", 2);
+        let is_grantable_str = get_col_str_mysql(&row, "is_grantable", 3);
+        let is_grantable = is_grantable_str.eq_ignore_ascii_case("YES");
+
+        let entry = schema_priv_map.entry((grantee.clone(), schema.clone())).or_insert_with(|| (HashSet::new(), false));
+        entry.0.insert(priv_type.to_uppercase());
+        if is_grantable {
+            entry.1 = true;
+        }
+
+        let clean = grantee.replace('\'', "");
+        let clean_entry = schema_priv_map.entry((clean, schema)).or_insert_with(|| (HashSet::new(), false));
+        clean_entry.0.insert(priv_type.to_uppercase());
+        if is_grantable {
+            clean_entry.1 = true;
+        }
+    }
+
+    // 3. Table-Level Privileges
     let privs_query = r#"
         SELECT 
             grantee, 
@@ -952,34 +1170,106 @@ async fn fetch_mysql_user_data(
         }
     };
 
-    let mut priv_map: HashMap<(String, String, String), (HashSet<String>, bool)> = HashMap::new();
+    let mut table_priv_map: HashMap<(String, String, String), (HashSet<String>, bool)> = HashMap::new();
     for row in priv_rows {
-        let grantee: String = row.try_get("grantee").unwrap_or_default();
-        let schema: String = row.try_get("table_schema").unwrap_or_default();
-        let table: String = row.try_get("table_name").unwrap_or_default();
-        let priv_type: String = row.try_get("privilege_type").unwrap_or_default();
-        let is_grantable_str: String = row.try_get("is_grantable").unwrap_or_else(|_| "NO".to_string());
+        let grantee = get_col_str_mysql(&row, "grantee", 0);
+        let schema = get_col_str_mysql(&row, "table_schema", 1);
+        let table = get_col_str_mysql(&row, "table_name", 2);
+        let priv_type = get_col_str_mysql(&row, "privilege_type", 3);
+        let is_grantable_str = get_col_str_mysql(&row, "is_grantable", 4);
         let is_grantable = is_grantable_str.eq_ignore_ascii_case("YES");
 
-        let entry = priv_map.entry((grantee, schema, table)).or_insert_with(|| (HashSet::new(), false));
+        let entry = table_priv_map.entry((grantee.clone(), schema.clone(), table.clone())).or_insert_with(|| (HashSet::new(), false));
         entry.0.insert(priv_type.to_uppercase());
         if is_grantable {
             entry.1 = true;
         }
+
+        let clean = grantee.replace('\'', "");
+        let clean_entry = table_priv_map.entry((clean, schema, table)).or_insert_with(|| (HashSet::new(), false));
+        clean_entry.0.insert(priv_type.to_uppercase());
+        if is_grantable {
+            clean_entry.1 = true;
+        }
     }
 
-    let default_grantee = users.first().map(|u| format!("'{}'@'{}'", u.username, u.host)).unwrap_or_default();
+    // Collect all table objects
+    let mut table_objects = Vec::new();
+    for row in table_rows {
+        let schema = get_col_str_mysql(&row, "table_schema", 0);
+        let table_name = get_col_str_mysql(&row, "table_name", 1);
+        let mut ttype = get_col_str_mysql(&row, "table_type", 2);
+        if ttype.is_empty() {
+            ttype = "BASE TABLE".to_string();
+        }
+        table_objects.push((schema, table_name, ttype));
+    }
+
+    // Compute effective permissions for each user
+    let mut all_privileges_map: HashMap<(String, String, String), (HashSet<String>, bool)> = HashMap::new();
+    for user in &users {
+        let is_root = user.username.eq_ignore_ascii_case("root") || user.is_superuser;
+        let user_keys = [
+            format!("'{}'@'{}'", user.username, user.host),
+            format!("'{}'@'%'", user.username),
+            format!("{}@{}", user.username, user.host),
+            user.username.clone(),
+        ];
+
+        for (schema, table_name, _) in &table_objects {
+            let mut privs = HashSet::new();
+            let mut grant_opt = false;
+
+            if is_root {
+                privs.insert("SELECT".to_string());
+                privs.insert("INSERT".to_string());
+                privs.insert("UPDATE".to_string());
+                privs.insert("DELETE".to_string());
+                privs.insert("EXECUTE".to_string());
+                privs.insert("ALL".to_string());
+                grant_opt = true;
+            } else {
+                for key in &user_keys {
+                    if let Some((p, g)) = global_priv_map.get(key) {
+                        for item in p { privs.insert(item.clone()); }
+                        if *g { grant_opt = true; }
+                    }
+                    if let Some((p, g)) = schema_priv_map.get(&(key.clone(), schema.clone())) {
+                        for item in p { privs.insert(item.clone()); }
+                        if *g { grant_opt = true; }
+                    }
+                    if let Some((p, g)) = table_priv_map.get(&(key.clone(), schema.clone(), table_name.clone())) {
+                        for item in p { privs.insert(item.clone()); }
+                        if *g { grant_opt = true; }
+                    }
+                }
+
+                if privs.contains("ALL") || privs.contains("ALL PRIVILEGES") {
+                    privs.insert("SELECT".to_string());
+                    privs.insert("INSERT".to_string());
+                    privs.insert("UPDATE".to_string());
+                    privs.insert("DELETE".to_string());
+                    privs.insert("EXECUTE".to_string());
+                }
+            }
+
+            all_privileges_map.insert((format!("'{}'@'{}'", user.username, user.host), schema.clone(), table_name.clone()), (privs.clone(), grant_opt));
+            all_privileges_map.insert((user.username.clone(), schema.clone(), table_name.clone()), (privs, grant_opt));
+        }
+    }
+
+    let default_grantee_user = users.first();
     let mut object_grants = Vec::new();
 
-    for row in table_rows {
-        let schema: String = row.try_get("table_schema").unwrap_or_default();
-        let table_name: String = row.try_get("table_name").unwrap_or_default();
-        let ttype: String = row.try_get("table_type").unwrap_or_else(|_| "BASE TABLE".to_string());
-
-        let (privs, grant_opt) = priv_map
-            .get(&(default_grantee.clone(), schema.clone(), table_name.clone()))
-            .cloned()
-            .unwrap_or_default();
+    for (schema, table_name, ttype) in table_objects {
+        let (privs, grant_opt) = if let Some(u) = default_grantee_user {
+            all_privileges_map
+                .get(&(format!("'{}'@'{}'", u.username, u.host), schema.clone(), table_name.clone()))
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            (HashSet::new(), false)
+        };
 
         let has_select = privs.contains("SELECT");
         let has_insert = privs.contains("INSERT");
@@ -1008,6 +1298,7 @@ async fn fetch_mysql_user_data(
         users,
         roles,
         object_grants,
+        all_privileges_map,
         executed_queries,
     })
 }
@@ -1061,8 +1352,11 @@ async fn fetch_sqlite_user_data(
 
     let mut object_grants = Vec::new();
     for r in rows {
-        let name: String = r.try_get("name").unwrap_or_default();
-        let otype: String = r.try_get("type").unwrap_or_else(|_| "table".to_string());
+        let name = get_col_str_sqlite(&r, "name", 0);
+        let mut otype = get_col_str_sqlite(&r, "type", 1);
+        if otype.is_empty() {
+            otype = "table".to_string();
+        }
         object_grants.push(ObjectPrivilegeEntry {
             database: "main".to_string(),
             schema: "main".to_string(),
@@ -1083,6 +1377,7 @@ async fn fetch_sqlite_user_data(
         users,
         roles: Vec::new(),
         object_grants,
+        all_privileges_map: HashMap::new(),
         executed_queries,
     })
 }
@@ -1403,7 +1698,7 @@ fn render_status_banner(ui: &mut egui::Ui, message: &str, is_error: bool) {
 fn render_users_and_roles_tab(
     ui: &mut egui::Ui,
     state: &mut UserManagerState,
-    _db_type: Option<&DatabaseType>,
+    db_type: Option<&DatabaseType>,
     out_action: &mut Option<UserManagerAction>,
 ) {
     let filter_text = state.search_text.to_lowercase();
@@ -1419,6 +1714,8 @@ fn render_users_and_roles_tab(
                 });
             });
             ui.separator();
+
+            let mut clicked_user = None;
 
             egui::ScrollArea::vertical()
                 .id_salt("user_list_scroll")
@@ -1473,9 +1770,7 @@ fn render_users_and_roles_tab(
                                     });
 
                                 if ui.selectable_label(is_selected, name_text).clicked() {
-                                    state.selected_user_index = Some(idx);
-                                    state.selected_grantee = Some(user.username.clone());
-                                    state.selected_grantee_host = user.host.clone();
+                                    clicked_user = Some((idx, user.username.clone(), user.host.clone()));
                                 }
 
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1522,6 +1817,13 @@ fn render_users_and_roles_tab(
                         }
                     }
                 });
+
+            if let Some((idx, uname, uhost)) = clicked_user {
+                state.selected_user_index = Some(idx);
+                state.selected_grantee = Some(uname);
+                state.selected_grantee_host = uhost;
+                state.sync_grants_for_selected_grantee(db_type);
+            }
         });
 
         cols[1].group(|ui| {
@@ -1639,6 +1941,7 @@ fn render_users_and_roles_tab(
                     if ui.add(edit_grants_btn).clicked() {
                         state.selected_grantee = Some(user.username.clone());
                         state.selected_grantee_host = user.host.clone();
+                        state.sync_grants_for_selected_grantee(db_type);
                         state.selected_tab = UserManagerTab::ObjectGrants;
                     }
                 }
@@ -1897,6 +2200,7 @@ fn render_object_grants_matrix_tab(
             .clone()
             .unwrap_or_else(|| "Select User/Role".to_string());
 
+        let mut switched_grantee = None;
         egui::ComboBox::from_id_salt("grantee_combo")
             .selected_text(format!("👤 {}", current_target))
             .show_ui(ui, |ui| {
@@ -1904,19 +2208,23 @@ fn render_object_grants_matrix_tab(
                     let label = format!("👤 {}@{}", user.username, user.host);
                     let is_sel = state.selected_grantee.as_deref() == Some(&user.username);
                     if ui.selectable_label(is_sel, label).clicked() {
-                        state.selected_grantee = Some(user.username.clone());
-                        state.selected_grantee_host = user.host.clone();
+                        switched_grantee = Some((user.username.clone(), user.host.clone()));
                     }
                 }
                 for role in &state.roles {
                     let label = format!("🛡️ [Role] {}", role.role_name);
                     let is_sel = state.selected_grantee.as_deref() == Some(&role.role_name);
                     if ui.selectable_label(is_sel, label).clicked() {
-                        state.selected_grantee = Some(role.role_name.clone());
-                        state.selected_grantee_host = "%".to_string();
+                        switched_grantee = Some((role.role_name.clone(), "%".to_string()));
                     }
                 }
             });
+
+        if let Some((target, host)) = switched_grantee {
+            state.selected_grantee = Some(target);
+            state.selected_grantee_host = host;
+            state.sync_grants_for_selected_grantee(db_type);
+        }
 
         ui.add_space(16.0);
         ui.label("Batch Presets:");
