@@ -1325,12 +1325,17 @@ impl Tabular {
                                         state.roles = payload.roles;
                                         state.object_grants = payload.object_grants.clone();
                                         state.original_grants = payload.object_grants;
+                                        state.all_privileges_map = payload.all_privileges_map;
                                         state.executed_queries = payload.executed_queries;
                                         if state.selected_user_index.is_none() && !state.users.is_empty() {
                                             state.selected_user_index = Some(0);
                                             state.selected_grantee = Some(state.users[0].username.clone());
                                             state.selected_grantee_host = state.users[0].host.clone();
                                         }
+                                        let db_type = tab.connection_id
+                                            .and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)))
+                                            .map(|c| c.connection_type.clone());
+                                        state.sync_grants_for_selected_grantee(db_type.as_ref());
                                         state.status_message = None;
                                     }
                                     Err(err) => {
