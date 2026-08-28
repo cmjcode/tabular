@@ -1247,8 +1247,13 @@ impl super::Tabular {
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             if let Some(path) = rfd::FileDialog::new()
-                                .set_title("Pilih File / Folder SQLite")
-                                .pick_folder()
+                                .set_title("Select SQLite Database File")
+                                .add_filter(
+                                    "SQLite Database (*.db, *.sqlite, *.sqlite3, *.db3, *.sdb, *.sl3)",
+                                    &["db", "sqlite", "sqlite3", "db3", "sdb", "sl3"],
+                                )
+                                .add_filter("All Files", &["*"])
+                                .pick_file()
                             {
                                 let _ = result_sender_thread.send(
                                     models::enums::BackgroundResult::SqlitePathPicked {

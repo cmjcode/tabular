@@ -338,7 +338,18 @@ pub async fn fetch_index_details_standalone_async(
             Vec::new()
         }
         models::enums::DatabaseType::SQLite => {
-            let connection_string = format!("sqlite:{}", connection.host);
+            let sqlite_path = if !connection.database.trim().is_empty() {
+                connection.database.trim()
+            } else if !connection.host.trim().is_empty() && connection.host.trim() != "localhost" {
+                connection.host.trim()
+            } else {
+                connection.database.trim()
+            };
+            let connection_string = if sqlite_path.starts_with("sqlite:") {
+                sqlite_path.to_string()
+            } else {
+                format!("sqlite:{}", sqlite_path)
+            };
             if let Ok(pool) = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1)
                 .acquire_timeout(std::time::Duration::from_secs(3))
