@@ -298,3 +298,16 @@ pub enum DatabasePool {
     MsSQL(Arc<mssql_driver_pool::Pool>),
     MongoDB(Arc<MongoClient>),
 }
+
+impl DatabasePool {
+    pub fn db_type(&self) -> DatabaseType {
+        match self {
+            DatabasePool::MySQL(_) => DatabaseType::MySQL,
+            DatabasePool::PostgreSQL(_) => DatabaseType::PostgreSQL,
+            DatabasePool::SQLite(_) => DatabaseType::SQLite,
+            DatabasePool::Redis(_) => DatabaseType::Redis,
+            DatabasePool::MsSQL(_) => DatabaseType::MsSQL,
+            DatabasePool::MongoDB(_) => DatabaseType::MongoDB,
+        }
+    }
+}

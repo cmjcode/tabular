@@ -11,6 +11,7 @@ pub enum DbaAction {
     Refresh,
     CancelQuery(i64),
     KillProcess(i64),
+    OpenInSqlTab(String),
 }
 
 /// Fetch processlist asynchronously directly from the connection pool
@@ -19,11 +20,14 @@ pub async fn fetch_dba_processes(
     db_type: &DatabaseType,
 ) -> Result<Vec<ProcessInfo>, String> {
     let query = get_processlist_query(db_type);
+    log::info!("[DBA-MONITOR] Fetching processes for db_type={:?}...", db_type);
+    eprintln!("[DBA-MONITOR] Fetching processes for db_type={:?}...", db_type);
     match (db_type, pool) {
         (DatabaseType::PostgreSQL, DatabasePool::PostgreSQL(pg_pool)) => {
-            let rows = sqlx::query(sqlx::AssertSqlSafe(query))
-                .fetch_all(&**pg_pool)
+            let fut = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(&**pg_pool);
+            let rows = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
                 .await
+                .map_err(|_| "Fetching PostgreSQL processes timed out after 5s".to_string())?
                 .map_err(|e| e.to_string())?;
 
             let mut header_names = Vec::new();
@@ -49,12 +53,15 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
+            log::info!("[DBA-MONITOR] PostgreSQL processes fetched: {} rows", string_rows.len());
+            eprintln!("[DBA-MONITOR] PostgreSQL processes fetched: {} rows", string_rows.len());
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         (DatabaseType::MySQL, DatabasePool::MySQL(my_pool)) => {
-            let rows = sqlx::query(sqlx::AssertSqlSafe(query))
-                .fetch_all(&**my_pool)
+            let fut = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(&**my_pool);
+            let rows = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
                 .await
+                .map_err(|_| "Fetching MySQL processlist timed out after 5s".to_string())?
                 .map_err(|e| e.to_string())?;
 
             let mut header_names = Vec::new();
@@ -82,12 +89,15 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
+            log::info!("[DBA-MONITOR] MySQL processes fetched: {} rows", string_rows.len());
+            eprintln!("[DBA-MONITOR] MySQL processes fetched: {} rows", string_rows.len());
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         (DatabaseType::SQLite, DatabasePool::SQLite(sq_pool)) => {
-            let rows = sqlx::query(sqlx::AssertSqlSafe(query))
-                .fetch_all(&**sq_pool)
+            let fut = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(&**sq_pool);
+            let rows = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
                 .await
+                .map_err(|_| "Fetching SQLite processes timed out after 5s".to_string())?
                 .map_err(|e| e.to_string())?;
 
             let mut header_names = Vec::new();
@@ -109,6 +119,8 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
+            log::info!("[DBA-MONITOR] SQLite processes fetched: {} rows", string_rows.len());
+            eprintln!("[DBA-MONITOR] SQLite processes fetched: {} rows", string_rows.len());
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         _ => Err("Database engine not supported for live process monitor".to_string()),
@@ -525,9 +537,98 @@ pub fn render_dba_monitor(
                 }
             });
 
-        // --- 4. Confirmation Modal for Kill / Cancel ---
+        // --- 4. Bottom Panel: Executed SQL Query & Diagnostics ---
+        ui.add_space(4.0);
+        render_executed_query_panel(ui, state, db_type, to_execute);
+
+        // --- 5. Confirmation Modal for Kill / Cancel ---
         render_confirm_modal(ui, state, to_execute);
     });
+}
+
+fn render_executed_query_panel(
+    ui: &mut egui::Ui,
+    state: &mut DbaMonitorState,
+    db_type: Option<&DatabaseType>,
+    to_execute: &mut Option<DbaAction>,
+) {
+    let active_db = db_type.cloned().unwrap_or(DatabaseType::PostgreSQL);
+    let query = get_processlist_query(&active_db);
+
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} Executed SQL Query (DBA Live Monitoring)", egui_icons::icons::ICON_TERMINAL.codepoint))
+                        .strong()
+                        .size(13.0)
+                        .color(ui.visuals().strong_text_color()),
+                );
+
+                // Status badge
+                if state.is_loading {
+                    ui.label(
+                        egui::RichText::new("⏳ Fetching live data...")
+                            .color(egui::Color32::from_rgb(220, 180, 50))
+                            .size(11.0),
+                    );
+                } else if let Some((err_msg, true)) = &state.status_message {
+                    ui.label(
+                        egui::RichText::new(format!("⚠️ Error: {}", err_msg))
+                            .color(egui::Color32::from_rgb(255, 100, 100))
+                            .size(11.0),
+                    );
+                } else {
+                    let total = state.processes.len();
+                    let badge_text = if total == 0 {
+                        "⚠️ 0 active processes retrieved (No current running queries or insufficient privileges)".to_string()
+                    } else {
+                        format!("✅ {} processes retrieved", total)
+                    };
+                    let badge_col = if total == 0 {
+                        egui::Color32::from_rgb(200, 150, 40)
+                    } else {
+                        egui::Color32::from_rgb(40, 180, 80)
+                    };
+                    ui.label(
+                        egui::RichText::new(badge_text)
+                            .color(badge_col)
+                            .size(11.0),
+                    );
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("⚡ Open in SQL Tab / Test Query").clicked() {
+                        *to_execute = Some(DbaAction::OpenInSqlTab(query.to_string()));
+                    }
+
+                    if ui.small_button("📋 Copy SQL Query").clicked() {
+                        ui.ctx().copy_text(query.to_string());
+                    }
+
+                    if ui.small_button("🔄 Re-run").clicked() {
+                        *to_execute = Some(DbaAction::Refresh);
+                    }
+                });
+            });
+
+            ui.separator();
+            let mut query_str = query;
+            egui::ScrollArea::vertical()
+                .id_salt("dba_query_scroll")
+                .max_height(100.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut query_str)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(3),
+                    );
+                });
+        });
 }
 
 fn render_header_and_metrics(
