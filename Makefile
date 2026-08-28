@@ -117,6 +117,8 @@ bundle-macos: build-macos
 	chmod 755 $(BUILD_DIR)/$(MACOS_ARM_TARGET)/release/bundle/osx/$(APP_NAME).app/Contents/MacOS/Tabular
 	cp -R $(BUILD_DIR)/$(MACOS_ARM_TARGET)/release/bundle/osx/$(APP_NAME).app $(MACOS_DIR)/
 	cp $(BUILD_DIR)/$(MACOS_UNIVERSAL_TARGET)/release/tabular $(MACOS_DIR)/$(APP_NAME).app/Contents/MacOS/tabular
+	xattr -cr $(MACOS_DIR)/$(APP_NAME).app
+	find $(MACOS_DIR)/$(APP_NAME).app -name ".DS_Store" -delete
 	@if [ -n "$$APPLE_APP_IDENTITY" ]; then \
 		echo "🔏 Codesign with App Store entitlements (binary + app)..."; \
 		codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APPLE_APP_IDENTITY" $(MACOS_DIR)/$(APP_NAME).app/Contents/MacOS/tabular; \
@@ -171,6 +173,8 @@ pkg-macos-store: bundle-macos
 	if [ -n "$$PROVISIONING_PROFILE" ] && [ -f "$$PROVISIONING_PROFILE" ]; then \
 		echo "🔗 Embed provisioning profile"; cp "$$PROVISIONING_PROFILE" $$APP_PATH/Contents/embedded.provisionprofile; \
 	else echo "ℹ️  No provisioning profile (set PROVISIONING_PROFILE)"; fi; \
+	xattr -cr $$APP_PATH; \
+	find $$APP_PATH -name ".DS_Store" -delete; \
 	echo "🔏 Re-codesign with Mac App Store entitlements"; \
 	codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APP_IDENTITY" $$APP_PATH/Contents/MacOS/tabular; \
 	codesign --force --timestamp --options runtime --entitlements macos/Tabular.entitlements --keychain "$$HOME/Library/Keychains/login.keychain-db" -s "$$APP_IDENTITY" -v $$APP_PATH; \
