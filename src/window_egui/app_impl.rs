@@ -1461,9 +1461,9 @@ impl Tabular {
                                     self.selected_menu = "Database".to_string();
                                 }
 
-                                let is_c_active = self.selected_menu == "HTTP Clients";
-                                if style::render_custom_tab(ui, "HTTP Clients", is_c_active, egui::vec2(button_width, button_height)).clicked() {
-                                    self.selected_menu = "HTTP Clients".to_string();
+                                let is_c_active = self.selected_menu == "APIs";
+                                if style::render_custom_tab(ui, "APIs", is_c_active, egui::vec2(button_width, button_height)).clicked() {
+                                    self.selected_menu = "APIs".to_string();
                                 }
 
                                 let is_collab_active = self.selected_menu == "Collaborations";
@@ -1752,7 +1752,7 @@ impl Tabular {
                             }
 
                             // ── HTTP Clients tab ───────────────────────────────────────────
-                            if self.selected_menu == "HTTP Clients" {
+                            if self.selected_menu == "APIs" {
                                 crate::sidebar_collection::render_collections_sidebar(self, ui);
                             }
                         });
@@ -1806,7 +1806,7 @@ impl Tabular {
                                             _ => {}
                                         }
                                     }
-                                    "HTTP Clients" => {
+                                    "APIs" => {
                                         ui.menu_button(
                                             egui::RichText::new("➕").color(egui::Color32::WHITE),
                                             |ui| {
@@ -2131,7 +2131,7 @@ impl Tabular {
                                         }
                                         self.scroll_to_active_tab = false;
 
-                                        let is_http_active = self.selected_menu == "HTTP Clients"
+                                        let is_http_active = self.selected_menu == "APIs"
                                             || self
                                                 .current_connection_id
                                                 .and_then(|id| self.connections.iter().find(|c| c.id == Some(id)))
