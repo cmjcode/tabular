@@ -184,11 +184,11 @@ pub fn start_oauth_flow(
 }
 
 /// Open a URL in the system default browser
-fn open_url(url: &str) -> Result<(), String> {
+fn open_url(_url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(url)
+            .arg(_url)
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -196,7 +196,7 @@ fn open_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
-            .args(["/C", "start", url])
+            .args(["/C", "start", _url])
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -204,7 +204,7 @@ fn open_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
-            .arg(url)
+            .arg(_url)
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())
