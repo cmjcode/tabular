@@ -87,20 +87,35 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                 need_fetch = true;
             }
 
-            if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
-                if let Some(cached) = crate::cache_data::get_indexes_from_cache(
-                    tabular,
-                    conn_id,
-                    &database,
-                    &table_guess,
-                ) {
-                    if !cached.is_empty() {
-                        tabular.structure_indexes = cached;
-                    } else {
-                        need_fetch = true;
-                    }
-                } else {
+            // Always populate indexes from cache if available so switching to Indexes tab is instant
+            if let Some(cached) = crate::cache_data::get_indexes_from_cache(
+                tabular,
+                conn_id,
+                &database,
+                &table_guess,
+            ) {
+                if !cached.is_empty() {
+                    tabular.structure_indexes = cached;
+                } else if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
                     need_fetch = true;
+                }
+            } else if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
+                need_fetch = true;
+            }
+        }
+
+        // 1.5) Fallback seed: if columns are still empty, immediately populate from current_table_headers
+        // so user never sees a blank structure view while background query runs
+        if tabular.structure_columns.is_empty() && !tabular.current_table_headers.is_empty() {
+            for col_name in &tabular.current_table_headers {
+                if !col_name.is_empty() {
+                    tabular
+                        .structure_columns
+                        .push(models::structs::ColumnStructInfo {
+                            name: col_name.clone(),
+                            data_type: "varchar(255)".to_string(),
+                            ..Default::default()
+                        });
                 }
             }
         }
@@ -289,8 +304,15 @@ pub async fn fetch_index_details_standalone_async(
                 .connect(&connection_string)
                 .await
             {
-                let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique FROM pg_class t JOIN pg_index i ON t.oid = i.indrelid JOIN pg_class idx ON idx.oid = i.indexrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE t.relname = $1 AND n.nspname='public' ORDER BY idx.relname"#;
-                match sqlx::query(q).bind(table_name).fetch_all(&pool).await {
+                let (schema_name, raw_table) = if let Some((s, t)) = table_name.split_once('.') {
+                    (s.trim_matches('"'), t.trim_matches('"'))
+                } else if !database_name.is_empty() && database_name != connection.database {
+                    (database_name, table_name.trim_matches('"'))
+                } else {
+                    ("public", table_name.trim_matches('"'))
+                };
+                let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique FROM pg_class t JOIN pg_index i ON t.oid = i.indrelid JOIN pg_class idx ON idx.oid = i.indexrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE t.relname = $1 AND (n.nspname = $2 OR $2 = '') ORDER BY idx.relname"#;
+                match sqlx::query(q).bind(raw_table).bind(schema_name).fetch_all(&pool).await {
                     Ok(rows) => {
                         use sqlx::Row;
                         rows.into_iter().map(|r| {
@@ -357,9 +379,36 @@ pub async fn fetch_index_details_standalone_async(
                 .await
             {
                 use sqlx::Row;
-                let list_query = format!("PRAGMA index_list('{}')", table_name.replace('\'', "''"));
+                let clean_table = table_name.trim_matches(['`', '"', '[', ']']).replace('\'', "''");
+                let list_query = format!("PRAGMA index_list('{}')", clean_table);
+                let mut infos = Vec::new();
+
+                // 1) First check primary key from table_info
+                let info_table_q = format!("PRAGMA table_info('{}')", clean_table);
+                if let Ok(prows) = sqlx::query(sqlx::AssertSqlSafe(info_table_q.as_str())).fetch_all(&pool).await {
+                    let mut pk_cols: Vec<(i64, String)> = Vec::new();
+                    for pr in prows {
+                        let pk_order: i64 = pr.try_get("pk").unwrap_or(0);
+                        if pk_order > 0 {
+                            if let Ok(col_name) = pr.try_get::<String, _>("name") {
+                                pk_cols.push((pk_order, col_name));
+                            }
+                        }
+                    }
+                    if !pk_cols.is_empty() {
+                        pk_cols.sort_by_key(|k| k.0);
+                        let pk_col_names: Vec<String> = pk_cols.into_iter().map(|k| k.1).collect();
+                        infos.push(models::structs::IndexStructInfo {
+                            name: "PRIMARY".to_string(),
+                            method: Some("PRIMARY KEY".to_string()),
+                            unique: true,
+                            columns: pk_col_names,
+                        });
+                    }
+                }
+
+                // 2) Check regular & unique indexes
                 if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(list_query.as_str())).fetch_all(&pool).await {
-                    let mut infos = Vec::new();
                     for r in rows {
                         let name_opt: Option<String> = r.try_get("name").ok().flatten();
                         let unique_flag: Option<i64> = r.try_get("unique").ok().flatten();
@@ -373,16 +422,20 @@ pub async fn fetch_index_details_standalone_async(
                                     }
                                 }
                             }
-                            infos.push(models::structs::IndexStructInfo {
-                                name: nm,
-                                method: None,
-                                unique: matches!(unique_flag, Some(0)),
-                                columns: cols_vec,
-                            });
+                            // Don't duplicate if already added as PRIMARY
+                            let is_already_added = infos.iter().any(|existing| existing.name == nm || (existing.name == "PRIMARY" && existing.columns == cols_vec));
+                            if !is_already_added {
+                                infos.push(models::structs::IndexStructInfo {
+                                    name: nm,
+                                    method: None,
+                                    unique: matches!(unique_flag, Some(1)),
+                                    columns: cols_vec,
+                                });
+                            }
                         }
                     }
-                    return infos;
                 }
+                return infos;
             }
             Vec::new()
         }
@@ -508,10 +561,67 @@ pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
     }
 }
 
+fn extract_table_from_caption(caption: &str) -> Option<String> {
+    let trimmed = caption.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let after = if let Some((_, rest)) = trimmed.split_once(':') {
+        rest.trim()
+    } else {
+        trimmed
+    };
+    let mut cut = after.to_string();
+    if let Some(p) = cut.find('(') {
+        cut = cut[..p].trim().to_string();
+    }
+    let clean = cut
+        .trim_matches(|c| c == '`' || c == '"' || c == '[' || c == ']')
+        .trim();
+    if !clean.is_empty()
+        && !clean.starts_with("Query Results")
+        && !clean.starts_with("Query executed")
+        && !clean.starts_with("Running query")
+        && !clean.starts_with("Connecting")
+    {
+        Some(clean.to_string())
+    } else {
+        None
+    }
+}
+
 pub(crate) fn infer_current_table_name(tabular: &mut window_egui::Tabular) -> String {
-    // Priority 0: Check metadata
+    // Priority 1: Check active_tab.result_table_name (e.g. "Table: users (Database: mydb)")
+    if let Some(tab) = tabular.query_tabs.get(tabular.active_tab_index) {
+        if let Some(t) = extract_table_from_caption(&tab.result_table_name) {
+            return t;
+        }
+    }
+
+    // Priority 2: Check tabular.current_table_name if it starts with Table: or View:
+    if tabular.current_table_name.starts_with("Table:")
+        || tabular.current_table_name.starts_with("View:")
+    {
+        if let Some(t) = extract_table_from_caption(&tabular.current_table_name) {
+            return t;
+        }
+    }
+
+    // Priority 3: Check active tab title (e.g. "Table: users")
+    if let Some(tab) = tabular.query_tabs.get(tabular.active_tab_index) {
+        if let Some(t) = extract_table_from_caption(&tab.title) {
+            if !t.starts_with("Query ")
+                && !t.starts_with("New Tab")
+                && !t.starts_with("Untitled")
+                && !t.starts_with("Redis ")
+            {
+                return t;
+            }
+        }
+    }
+
+    // Priority 4: Check metadata only as fallback
     if let Some(meta) = &tabular.current_column_metadata {
-        // Try to find a valid table name from any column
         for col in meta {
             if let Some(t) = &col.table_name
                 && !t.is_empty()
@@ -521,38 +631,57 @@ pub(crate) fn infer_current_table_name(tabular: &mut window_egui::Tabular) -> St
         }
     }
 
-    // Priority 1: if current_table_name starts with "Table:" extract
-    if tabular.current_table_name.starts_with("Table:")
-        || tabular.current_table_name.starts_with("View:")
-    {
-        let after = tabular
-            .current_table_name
-            .split_once(':')
-            .map(|x| x.1)
-            .unwrap_or("")
-            .trim();
-        let mut cut = after.to_string();
-        if let Some(p) = cut.find('(') {
-            cut = cut[..p].trim().to_string();
-        }
-        if !cut.is_empty() {
-            return cut;
-        }
-    }
-    // Priority 2: active tab title pattern
-    let ttitle = tabular
-        .query_tabs
-        .get(tabular.active_tab_index)
-        .map(|t| t.title.clone())
-        .unwrap_or_default();
-    let mut table_guess = if ttitle.contains(':') {
-        ttitle.split(':').nth(1).unwrap_or("").trim().to_string()
-    } else {
-        String::new()
-    };
-    if let Some(p) = table_guess.find('(') {
-        table_guess = table_guess[..p].trim().to_string();
-    }
-    table_guess
+    String::new()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_table_from_caption_standard() {
+        assert_eq!(
+            extract_table_from_caption("Table: users (Database: mydb)"),
+            Some("users".to_string())
+        );
+        assert_eq!(
+            extract_table_from_caption("View: active_orders (Database: store)"),
+            Some("active_orders".to_string())
+        );
+        assert_eq!(
+            extract_table_from_caption("Table: `products` (Database: shop)"),
+            Some("products".to_string())
+        );
+        assert_eq!(
+            extract_table_from_caption("Table: [customers] (Database: crm)"),
+            Some("customers".to_string())
+        );
+        assert_eq!(
+            extract_table_from_caption("Table: \"accounts\""),
+            Some("accounts".to_string())
+        );
+        assert_eq!(
+            extract_table_from_caption("Table: users"),
+            Some("users".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_table_from_caption_query_results_ignored() {
+        assert_eq!(
+            extract_table_from_caption("Query Results (page 1 showing 100 rows)"),
+            None
+        );
+        assert_eq!(
+            extract_table_from_caption("Query executed successfully (0.02s)"),
+            None
+        );
+        assert_eq!(
+            extract_table_from_caption("Connecting… waiting for pool"),
+            None
+        );
+        assert_eq!(extract_table_from_caption(""), None);
+    }
+}
+
 
