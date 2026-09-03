@@ -47,6 +47,13 @@ help:
 	@echo "  archive-ipad       Archive TabulariOS Xcode project for iPad"
 	@echo "  ipa-ipad           Export signed .ipa for iPad"
 	@echo "  publish-ipad       Upload .ipa to App Store Connect / TestFlight"
+	@echo "  xcode-assets       Generate Assets.xcassets catalog"
+	@echo "  xcode-project      Generate Tabular.xcodeproj (iOS & macOS)"
+	@echo "  xcode-archive-ios  Archive Tabular-iOS via Xcode"
+	@echo "  xcode-archive-macos Archive Tabular-macOS via Xcode"
+	@echo "  xcode-publish-ios  Export & publish iOS to App Store Connect"
+	@echo "  xcode-publish-macos Export & publish macOS to App Store Connect"
+	@echo "  xcode-publish-all  Publish both iOS & macOS via Xcode"
 	@echo "  bundle-linux       Create tarballs + basic AppDir"
 	@echo "  bundle-windows     Create zipped binaries"
 	@echo "  release            Clean + deps + all bundles"
@@ -344,3 +351,34 @@ ipa-ipad:
 publish-ipad:
 	@echo "🚀 Publishing Tabular iPad app to App Store Connect / TestFlight..."
 	bash build_ipad.sh publish
+
+# ─── Unified Xcode Integration Targets ────────────────────────────────────────
+.PHONY: xcode-project xcode-assets xcode-archive-ios xcode-archive-macos xcode-publish-ios xcode-publish-macos xcode-publish-all
+
+xcode-assets:
+	@chmod +x apple/scripts/generate_assets.sh
+	@./apple/scripts/generate_assets.sh
+
+xcode-project: xcode-assets
+	@python3 apple/scripts/generate_project.py
+
+xcode-archive-ios: xcode-project
+	@chmod +x apple/scripts/publish_xcode.sh
+	@./apple/scripts/publish_xcode.sh ios archive
+
+xcode-archive-macos: xcode-project
+	@chmod +x apple/scripts/publish_xcode.sh
+	@./apple/scripts/publish_xcode.sh macos archive
+
+xcode-publish-ios: xcode-project
+	@chmod +x apple/scripts/publish_xcode.sh
+	@./apple/scripts/publish_xcode.sh ios upload
+
+xcode-publish-macos: xcode-project
+	@chmod +x apple/scripts/publish_xcode.sh
+	@./apple/scripts/publish_xcode.sh macos upload
+
+xcode-publish-all: xcode-project
+	@chmod +x apple/scripts/publish_xcode.sh
+	@./apple/scripts/publish_xcode.sh all
+

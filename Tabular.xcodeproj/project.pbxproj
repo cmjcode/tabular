@@ -1,0 +1,428 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		300000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* Assets.xcassets */; };
+		300000000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* Assets.xcassets */; };
+		300000000000000000000003 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* LaunchScreen.storyboard */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		200000000000000000000001 /* Tabular.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tabular.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000002 /* Tabular.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tabular.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		200000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		200000000000000000000005 /* Tabular-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Tabular-iOS.entitlements"; sourceTree = "<group>"; };
+		200000000000000000000006 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		200000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		200000000000000000000008 /* Tabular.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Tabular.entitlements; sourceTree = "<group>"; };
+		200000000000000000000009 /* build_cargo.sh */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = build_cargo.sh; sourceTree = "<group>"; };
+		20000000000000000000000A /* generate_assets.sh */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = generate_assets.sh; sourceTree = "<group>"; };
+		20000000000000000000000B /* publish_xcode.sh */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = publish_xcode.sh; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		500000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		500000000000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		100000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000004 /* apple */,
+				100000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		100000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000001 /* Tabular.app */,
+				200000000000000000000002 /* Tabular.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		100000000000000000000004 /* apple */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000005 /* ios */,
+				100000000000000000000006 /* macos */,
+				200000000000000000000003 /* Assets.xcassets */,
+				100000000000000000000007 /* scripts */,
+			);
+			path = apple;
+			sourceTree = "<group>";
+		};
+		100000000000000000000005 /* ios */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000008 /* Base.lproj */,
+				200000000000000000000004 /* Info.plist */,
+				200000000000000000000005 /* Tabular-iOS.entitlements */,
+			);
+			path = ios;
+			sourceTree = "<group>";
+		};
+		100000000000000000000008 /* Base.lproj */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000006 /* LaunchScreen.storyboard */,
+			);
+			path = Base.lproj;
+			sourceTree = "<group>";
+		};
+		100000000000000000000006 /* macos */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000007 /* Info.plist */,
+				200000000000000000000008 /* Tabular.entitlements */,
+			);
+			path = macos;
+			sourceTree = "<group>";
+		};
+		100000000000000000000007 /* scripts */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000009 /* build_cargo.sh */,
+				20000000000000000000000A /* generate_assets.sh */,
+				20000000000000000000000B /* publish_xcode.sh */,
+			);
+			path = scripts;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		400000000000000000000001 /* Tabular-iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 600000000000000000000002 /* Build configuration list for PBXNativeTarget "Tabular-iOS" */;
+			buildPhases = (
+				500000000000000000000001 /* Build Cargo (Rust) */,
+				500000000000000000000002 /* Resources */,
+				500000000000000000000003 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Tabular-iOS";
+			productName = Tabular;
+			productReference = 200000000000000000000001 /* Tabular.app */;
+			productType = "com.apple.product-type.application";
+		};
+		400000000000000000000002 /* Tabular-macOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 600000000000000000000003 /* Build configuration list for PBXNativeTarget "Tabular-macOS" */;
+			buildPhases = (
+				500000000000000000000004 /* Build Cargo (Rust) */,
+				500000000000000000000005 /* Resources */,
+				500000000000000000000006 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Tabular-macOS";
+			productName = Tabular;
+			productReference = 200000000000000000000002 /* Tabular.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		100000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					400000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+						DevelopmentTeam = YD4J5Z6A4G;
+						ProvisioningStyle = Automatic;
+					};
+					400000000000000000000002 = {
+						CreatedOnToolsVersion = 16.0;
+						DevelopmentTeam = YD4J5Z6A4G;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 600000000000000000000001 /* Build configuration list for PBXProject "Tabular" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 100000000000000000000002;
+			productRefGroup = 100000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				400000000000000000000001 /* Tabular-iOS */,
+				400000000000000000000002 /* Tabular-macOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		500000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				300000000000000000000001 /* Assets.xcassets in Resources */,
+				300000000000000000000003 /* LaunchScreen.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		500000000000000000000005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				300000000000000000000002 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		500000000000000000000001 /* Build Cargo (Rust) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Cargo (Rust)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PROJECT_DIR}/apple/scripts/build_cargo.sh\"\n";
+		};
+		500000000000000000000004 /* Build Cargo (Rust) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Cargo (Rust)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PROJECT_DIR}/apple/scripts/build_cargo.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		700000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_BITCODE = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+			};
+			name = Debug;
+		};
+		700000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_BITCODE = NO;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+			};
+			name = Release;
+		};
+		700000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "apple/ios/Tabular-iOS.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = YD4J5Z6A4G;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = apple/ios/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.14.3;
+				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
+				PRODUCT_NAME = Tabular;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		700000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "apple/ios/Tabular-iOS.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = YD4J5Z6A4G;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = apple/ios/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.14.3;
+				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
+				PRODUCT_NAME = Tabular;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		700000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = apple/macos/Tabular.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = YD4J5Z6A4G;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = apple/macos/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.14.3;
+				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
+				PRODUCT_NAME = Tabular;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		700000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = apple/macos/Tabular.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = YD4J5Z6A4G;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = apple/macos/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.14.3;
+				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
+				PRODUCT_NAME = Tabular;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		600000000000000000000001 /* Build configuration list for PBXProject "Tabular" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				700000000000000000000001 /* Debug */,
+				700000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		600000000000000000000002 /* Build configuration list for PBXNativeTarget "Tabular-iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				700000000000000000000003 /* Debug */,
+				700000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		600000000000000000000003 /* Build configuration list for PBXNativeTarget "Tabular-macOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				700000000000000000000005 /* Debug */,
+				700000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = 100000000000000000000001 /* Project object */;
+}
