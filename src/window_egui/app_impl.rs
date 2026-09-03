@@ -712,10 +712,28 @@ impl Tabular {
                                     .get(self.active_tab_index)
                                     .and_then(|t| t.database_name.clone())
                                     .unwrap_or_default();
+                                let conn_db = self
+                                    .connections
+                                    .iter()
+                                    .find(|c| c.id == Some(connection_id))
+                                    .map(|c| c.database.clone())
+                                    .unwrap_or_default();
+                                let resolved_db = if !active_db.is_empty() {
+                                    active_db.clone()
+                                } else {
+                                    conn_db.clone()
+                                };
+                                let db_matches = active_db.eq_ignore_ascii_case(&database_name)
+                                    || resolved_db.eq_ignore_ascii_case(&database_name)
+                                    || database_name.is_empty()
+                                    || database_name == "main";
                                 let current_table = data_table::infer_current_table_name(self);
+                                let table_matches = current_table.eq_ignore_ascii_case(&table_name)
+                                    || (current_table.is_empty() && self.is_table_browse_mode);
+
                                 if self.current_connection_id == Some(connection_id)
-                                    && active_db == database_name
-                                    && current_table == table_name
+                                    && db_matches
+                                    && table_matches
                                 {
                                     self.structure_columns.clear();
                                     for (name, dtype) in cols {
@@ -729,27 +747,42 @@ impl Tabular {
                                 }
                             }
                             if let Some(idxs) = indexes {
-                                if !idxs.is_empty() {
-                                    crate::cache_data::save_indexes_to_cache(
-                                        self,
-                                        connection_id,
-                                        &database_name,
-                                        &table_name,
-                                        &idxs,
-                                    );
-                                    let active_db = self
-                                        .query_tabs
-                                        .get(self.active_tab_index)
-                                        .and_then(|t| t.database_name.clone())
-                                        .unwrap_or_default();
-                                    let current_table = data_table::infer_current_table_name(self);
-                                    if self.current_connection_id == Some(connection_id)
-                                        && active_db == database_name
-                                        && current_table == table_name
-                                        && self.structure_sub_view == models::structs::StructureSubView::Indexes
-                                    {
-                                        self.structure_indexes = idxs;
-                                    }
+                                crate::cache_data::save_indexes_to_cache(
+                                    self,
+                                    connection_id,
+                                    &database_name,
+                                    &table_name,
+                                    &idxs,
+                                );
+                                let active_db = self
+                                    .query_tabs
+                                    .get(self.active_tab_index)
+                                    .and_then(|t| t.database_name.clone())
+                                    .unwrap_or_default();
+                                let conn_db = self
+                                    .connections
+                                    .iter()
+                                    .find(|c| c.id == Some(connection_id))
+                                    .map(|c| c.database.clone())
+                                    .unwrap_or_default();
+                                let resolved_db = if !active_db.is_empty() {
+                                    active_db.clone()
+                                } else {
+                                    conn_db.clone()
+                                };
+                                let db_matches = active_db.eq_ignore_ascii_case(&database_name)
+                                    || resolved_db.eq_ignore_ascii_case(&database_name)
+                                    || database_name.is_empty()
+                                    || database_name == "main";
+                                let current_table = data_table::infer_current_table_name(self);
+                                let table_matches = current_table.eq_ignore_ascii_case(&table_name)
+                                    || (current_table.is_empty() && self.is_table_browse_mode);
+
+                                if self.current_connection_id == Some(connection_id)
+                                    && db_matches
+                                    && table_matches
+                                {
+                                    self.structure_indexes = idxs;
                                 }
                             }
                             if let Some(parts) = partitions {
@@ -2780,6 +2813,7 @@ impl Tabular {
                                                  .as_ref()
                                                  .map(|t| t != &current_target)
                                                  .unwrap_or(true)
+                                                 || self.structure_columns.is_empty()
                                              {
                                                  data_table::load_structure_info_for_current_table(self);
                                              } else {
@@ -2833,6 +2867,29 @@ impl Tabular {
                                     // Render Data / Structure / Query (DDL) based on toggle
                                     match self.table_bottom_view {
                                         models::structs::TableBottomView::Structure => {
+                                            if let Some(conn_id) = self.current_connection_id {
+                                                let db = self
+                                                    .query_tabs
+                                                    .get(self.active_tab_index)
+                                                    .and_then(|t| t.database_name.clone())
+                                                    .unwrap_or_default();
+                                                let table = data_table::infer_current_table_name(self);
+                                                let current_target = (conn_id, db.clone(), table.clone());
+                                                if self
+                                                    .last_structure_target
+                                                    .as_ref()
+                                                    .map(|t| t != &current_target)
+                                                    .unwrap_or(true)
+                                                    || self.structure_columns.is_empty()
+                                                {
+                                                    data_table::load_structure_info_for_current_table(self);
+                                                } else {
+                                                    debug!("✅ Using in-memory structure for {}/{} (no reload)", db, table);
+                                                }
+                                            } else {
+                                                // No active connection, try load to ensure state sane
+                                                data_table::load_structure_info_for_current_table(self);
+                                            }
                                             data_table::render_structure_view(self, ui);
                                         }
                                         models::structs::TableBottomView::Query => {

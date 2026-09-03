@@ -1410,6 +1410,7 @@ impl super::Tabular {
 
                         // Reset spreadsheet editing state when opening a table
                         self.reset_spreadsheet_state();
+                        self.current_column_metadata = None;
 
                         // Set database context for current tab and auto-execute the query and display results in bottom
                         self.current_connection_id = Some(connection_id);
@@ -1679,35 +1680,10 @@ impl super::Tabular {
                 }
             }
 
-            // FIX: Jika user sedang berada pada view Structure dan berpindah klik ke table lain,
-            // sebelumnya struktur tidak di-refresh sehingga masih menampilkan struktur table lama.
-            // Di sini kita paksa reload struktur untuk table baru.
-            if self.table_bottom_view == models::structs::TableBottomView::Structure {
-                // Load only if target changed
-                if let Some(conn_id) = self.current_connection_id {
-                    let db = self
-                        .query_tabs
-                        .get(self.active_tab_index)
-                        .and_then(|t| t.database_name.clone())
-                        .unwrap_or_default();
-                    let table = data_table::infer_current_table_name(self);
-                    let current_target = (conn_id, db.clone(), table.clone());
-                    if self
-                        .last_structure_target
-                        .as_ref()
-                        .map(|t| t != &current_target)
-                        .unwrap_or(true)
-                    {
-                        data_table::load_structure_info_for_current_table(self);
-                    }
-                } else {
-                    data_table::load_structure_info_for_current_table(self);
-                }
-            } else {
-                // Pastikan struktur lama dibersihkan agar ketika user pindah ke Structure langsung memicu load.
-                self.structure_columns.clear();
-                self.structure_indexes.clear();
-            }
+            // Eagerly pre-load structure (columns & indexes) for this table in the background
+            // so switching to Structure or Indexes tab is instantaneous
+            self.last_structure_target = None;
+            data_table::load_structure_info_for_current_table(self);
         }
 
         // Handle index click requests - open Edit Index dialog

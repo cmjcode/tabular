@@ -216,15 +216,32 @@ pub(crate) fn fetch_columns_from_database(
                     .await
                 {
                     Ok(pool) => {
-                        let query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position";
+                        let (schema_name, raw_table) = if let Some((s, t)) = table_name.split_once('.') {
+                            (s.trim_matches('"'), t.trim_matches('"'))
+                        } else if !database_name.is_empty() && database_name != connection_clone.database {
+                            (database_name.as_str(), table_name.trim_matches('"'))
+                        } else {
+                            ("public", table_name.trim_matches('"'))
+                        };
+                        let query = "SELECT column_name, data_type FROM information_schema.columns WHERE (table_schema = $1 OR $1 = '') AND table_name = $2 ORDER BY ordinal_position";
                         match sqlx::query_as::<_, (String, String)>(query)
-                            .bind(&table_name)
+                            .bind(schema_name)
+                            .bind(raw_table)
                             .fetch_all(&pool)
                             .await
                         {
-                            Ok(rows) => {
-                                let columns: Vec<(String, String)> = rows.into_iter().collect();
-                                Some(columns)
+                            Ok(mut rows) => {
+                                if rows.is_empty() {
+                                    let fallback_q = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position";
+                                    if let Ok(frows) = sqlx::query_as::<_, (String, String)>(fallback_q)
+                                        .bind(raw_table)
+                                        .fetch_all(&pool)
+                                        .await
+                                    {
+                                        rows = frows;
+                                    }
+                                }
+                                Some(rows)
                             }
                             Err(e) => {
                                 debug!(
