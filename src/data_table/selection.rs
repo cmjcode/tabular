@@ -95,7 +95,7 @@ pub(crate) fn handle_column_click(
     tabular.selected_cell = None;
 }
 
-pub(crate) fn copy_selected_rows_as_csv(tabular: &mut window_egui::Tabular) -> Option<String> {
+pub(crate) fn copy_selected_rows_as_csv(tabular: &window_egui::Tabular) -> Option<String> {
     if tabular.selected_rows.is_empty() {
         return None;
     }
@@ -119,7 +119,7 @@ pub(crate) fn copy_selected_rows_as_csv(tabular: &mut window_egui::Tabular) -> O
     Some(lines.join("\n"))
 }
 
-pub(crate) fn copy_selected_columns_as_csv(tabular: &mut window_egui::Tabular) -> Option<String> {
+pub(crate) fn copy_selected_columns_as_csv(tabular: &window_egui::Tabular) -> Option<String> {
     if tabular.selected_columns.is_empty() {
         return None;
     }
@@ -153,7 +153,7 @@ pub(crate) fn copy_selected_columns_as_csv(tabular: &mut window_egui::Tabular) -
 /// Build CSV for a rectangular block selection in the Data grid (inclusive bounds).
 /// Returns None if the selection is invalid or outside the current page.
 pub(crate) fn copy_selected_block_as_csv(
-    tabular: &mut window_egui::Tabular,
+    tabular: &window_egui::Tabular,
     a: (usize, usize),
     b: (usize, usize),
 ) -> Option<String> {

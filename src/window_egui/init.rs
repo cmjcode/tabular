@@ -780,6 +780,7 @@ impl super::Tabular {
         // Spawn a background thread to process queued tasks
         let shared_db_pool = self.shared_db_pool.clone();
         let shared_pools = self.shared_connection_pools.clone();
+        let shared_runtime = self.runtime.clone();
 
         fn get_cache_pool(
             shared: &std::sync::Arc<std::sync::RwLock<Option<Arc<sqlx::SqlitePool>>>>,
@@ -810,13 +811,13 @@ impl super::Tabular {
                         // from being processed concurrently.
                         let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
+                        let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             eprintln!("[FETCH-DB] FetchDatabases id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            if let Some(pool) = &cache_pool_thread
-                                && let Ok(rt) = tokio::runtime::Runtime::new()
-                            {
+                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
                                 let dbs_opt = rt.block_on(connection::fetch_databases_background_task(
                                     connection_id,
                                     pool,
@@ -872,10 +873,12 @@ impl super::Tabular {
                         // the worker loop and every task queued behind it.
                         let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
+                        let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            if let Some(rt) = rt_opt {
                                 let keys = rt.block_on(async {
                                     if database_name == driver_redis::REDIS_CLUSTER_KEYSPACE {
                                         let redis_manager = {
@@ -949,10 +952,12 @@ impl super::Tabular {
                         // Off the worker loop: see FetchRedisKeys above.
                         let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
+                        let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            if let Some(rt) = rt_opt {
                                 let state = rt.block_on(async {
                                     let redis_manager = {
                                         let pools = shared_pools_thread.lock().ok()?;
@@ -1028,10 +1033,12 @@ impl super::Tabular {
                         // Off the worker loop: see FetchRedisKeys above.
                         let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
+                        let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            if let Some(rt) = rt_opt {
                                 let keys = rt.block_on(async {
                                     let redis_manager = {
                                         let pools = shared_pools_thread.lock().ok()?;
@@ -1073,34 +1080,27 @@ impl super::Tabular {
                     models::enums::BackgroundTask::RefreshConnection { connection_id } => {
                         let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
+                        let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
+                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             eprintln!(
                                 "[AUTO-SYNC] bg RefreshConnection id={} STARTED cache_pool_present={}",
                                 connection_id,
                                 cache_pool_thread.is_some()
                             );
-                            let (success, databases) = if let Some(cache_pool_arc) = &cache_pool_thread {
-                                match tokio::runtime::Runtime::new() {
-                                    Ok(rt) => rt.block_on(
-                                        crate::connection::refresh_connection_background_async(
-                                            connection_id,
-                                            &Some(cache_pool_arc.clone()),
-                                            &shared_pools_thread,
-                                        ),
+                            let (success, databases) = if let (Some(cache_pool_arc), Some(rt)) = (&cache_pool_thread, &rt_opt) {
+                                rt.block_on(
+                                    crate::connection::refresh_connection_background_async(
+                                        connection_id,
+                                        &Some(cache_pool_arc.clone()),
+                                        &shared_pools_thread,
                                     ),
-                                    Err(e) => {
-                                        eprintln!(
-                                            "[AUTO-SYNC] bg RefreshConnection id={} Runtime::new failed: {}",
-                                            connection_id, e
-                                        );
-                                        (false, vec![])
-                                    }
-                                }
+                                )
                             } else {
                                 eprintln!(
-                                    "[AUTO-SYNC] bg RefreshConnection id={} cache_pool is None!",
+                                    "[AUTO-SYNC] bg RefreshConnection id={} cache_pool or runtime is None!",
                                     connection_id
                                 );
                                 (false, vec![])
@@ -1122,13 +1122,13 @@ impl super::Tabular {
                         // Spawn a thread so pool creation doesn't block the worker loop.
                         let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_pools_thread = shared_pools.clone();
+                        let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             eprintln!("[POOL] EnsureConnectionPool id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            if let Some(pool) = &cache_pool_thread
-                                && let Ok(rt) = tokio::runtime::Runtime::new()
-                            {
+                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
                                 let res = rt.block_on(async {
                                     crate::connection::create_connection_pool_by_id(connection_id, pool).await
                                 });
@@ -1161,12 +1161,12 @@ impl super::Tabular {
                         table_name,
                     } => {
                         let shared_db_pool_thread = shared_db_pool.clone();
+                        let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            if let Some(pool) = &cache_pool_thread
-                                && let Ok(rt) = tokio::runtime::Runtime::new()
-                            {
+                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
                                 eprintln!("[WORKER] FetchTableStructure conn={} db='{}' tbl='{}' started", connection_id, database_name, table_name);
                                 let conn_opt = rt.block_on(async {
                                     crate::connection::pool::load_connection_by_id(connection_id, pool).await
@@ -1220,10 +1220,12 @@ impl super::Tabular {
                         // Off the worker loop: this is an HTTP round-trip, so an
                         // unreachable update server would otherwise hold up every
                         // queued connection task behind it.
+                        let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
-                            // Perform update check on a lightweight runtime (if required by async API)
-                            let result = if let Ok(rt) = tokio::runtime::Runtime::new() {
+                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            // Perform update check on shared runtime (if required by async API)
+                            let result = if let Some(rt) = rt_opt {
                                  rt.block_on(crate::self_update::check_for_updates())
                                     .map_err(|e| e.to_string())
                             } else {

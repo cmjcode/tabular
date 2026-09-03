@@ -635,20 +635,27 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     })
                     .sum::<f32>();
 
+            let mut table_sel_anchor = tabular.table_sel_anchor;
+            let mut selected_cell = tabular.selected_cell;
+            let mut table_dragging = tabular.table_dragging;
+            let mut inspect_value_request: Option<(String, String, usize, usize)> = None;
+            let mut open_plugin_modal = false;
+            let tab: &window_egui::Tabular = &*tabular;
+
             let scroll_out = egui::ScrollArea::both()
                 .id_salt("table_data_scroll")
-                .horizontal_scroll_offset(tabular.data_scroll_x)
+                .horizontal_scroll_offset(tab.data_scroll_x)
                 .auto_shrink([false, false])
                 .show(&mut scroll_child, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                     // Establish full content width so horizontal scrollbar is correct
                     ui.set_min_width(total_content_w);
 
-                    // Clone data (borrow checker: tabular fields mutated inside loop)
-                    let current_table_data = tabular.current_table_data.clone();
-                    let selected_rows = tabular.selected_rows.clone();
-                    let selected_row = tabular.selected_row;
-                    let newly_created_rows = tabular.newly_created_rows.clone();
+                    // Zero-copy borrow of table data and row sets
+                    let current_table_data = &tab.current_table_data;
+                    let selected_rows = &tab.selected_rows;
+                    let selected_row = tab.selected_row;
+                    let newly_created_rows = &tab.newly_created_rows;
 
                     // Top spacer: allocate space for rows above the viewport
                     if first_row > 0 {
@@ -765,19 +772,19 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 );
                                 for (vis_idx, &col_index) in display_col_indices.iter().enumerate() {
                                     let cell = row.get(col_index).cloned().unwrap_or_default();
-                                    let is_pinned = tabular.pinned_columns.contains(&headers[col_index]);
+                                    let is_pinned = tab.pinned_columns.contains(&headers[col_index]);
                                     let is_last_pinned = is_pinned && (vis_idx + 1 == pinned_count);
                                     let is_selected_cell =
-                                        tabular.selected_cell == Some((row_index, col_index));
+                                        selected_cell == Some((row_index, col_index));
                                     let is_selected_col =
-                                        tabular.selected_columns.contains(&col_index);
+                                        tab.selected_columns.contains(&col_index);
                                     let fk_info = fk_by_col_idx.get(&col_index);
                                     let is_fk_link = fk_info.is_some() && !cell.is_empty() && cell != "NULL";
 
                                     let column_width = if Some(col_index) == error_column_index {
-                                        get_column_width(tabular, col_index).max(100.0)
+                                        get_column_width(tab, col_index).max(100.0)
                                     } else {
-                                        get_column_width(tabular, col_index).max(50.0)
+                                        get_column_width(tab, col_index).max(50.0)
                                     };
                                     ui.allocate_ui_with_layout(
                                         [column_width, row_height].into(),
@@ -808,7 +815,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             }
                                             // Multi-cell block overlay (between anchor and current selected cell)
                                             if let (Some((ar, ac)), Some((br, bc))) =
-                                                (tabular.table_sel_anchor, tabular.selected_cell)
+                                                (table_sel_anchor, selected_cell)
                                             {
                                                 let rmin = ar.min(br);
                                                 let rmax = ar.max(br);
@@ -925,18 +932,17 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 } else {
                                                     let shift = ui.input(|i| i.modifiers.shift);
                                                     if shift {
-                                                        if tabular.table_sel_anchor.is_none() {
-                                                            tabular.table_sel_anchor = Some(
-                                                                tabular
-                                                                    .selected_cell
+                                                        if table_sel_anchor.is_none() {
+                                                            table_sel_anchor = Some(
+                                                                selected_cell
                                                                     .unwrap_or((row_index, col_index)),
                                                             );
                                                         }
-                                                        tabular.selected_cell =
+                                                        selected_cell =
                                                             Some((row_index, col_index));
                                                     } else {
                                                         cell_sel_requests.push((row_index, col_index));
-                                                        tabular.table_sel_anchor = None;
+                                                        table_sel_anchor = None;
                                                     }
                                                 }
                                             }
@@ -955,25 +961,25 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                                             // Drag-to-select lifecycle
                                             if cell_resp.drag_started() {
-                                                if tabular.table_sel_anchor.is_none() {
-                                                    tabular.table_sel_anchor =
+                                                if table_sel_anchor.is_none() {
+                                                    table_sel_anchor =
                                                         Some((row_index, col_index));
                                                 }
-                                                tabular.selected_cell =
+                                                selected_cell =
                                                     Some((row_index, col_index));
-                                                tabular.table_dragging = true;
+                                                table_dragging = true;
                                             }
-                                            if tabular.table_dragging
+                                            if table_dragging
                                                 && ui.input(|i| i.pointer.primary_down())
                                                 && cell_resp.hovered()
                                             {
-                                                tabular.selected_cell =
+                                                selected_cell =
                                                     Some((row_index, col_index));
                                             }
-                                            if tabular.table_dragging
+                                            if table_dragging
                                                 && !ui.input(|i| i.pointer.primary_down())
                                             {
-                                                tabular.table_dragging = false;
+                                                table_dragging = false;
                                             }
                                             // Check if this cell is being edited
                                             let is_editing_this_cell =
@@ -986,7 +992,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 text_edit_rect = text_edit_rect.shrink(2.0); // Small margin
 
                                                 // Store cell edit text in a local variable to avoid borrow conflict
-                                                let mut edit_text = tabular
+                                                let mut edit_text = tab
                                                     .spreadsheet_state
                                                     .cell_edit_text
                                                     .clone();
@@ -998,11 +1004,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                             // date pickers, etc.) from painting outside the
                                                             // row it belongs to.
                                                             ui.set_clip_rect(text_edit_rect);
-                                                            let valid_options = tabular.spreadsheet_state.enum_options.clone();
+                                                            let valid_options = tab.spreadsheet_state.enum_options.clone();
                                                             // Determine if column is Date/DateTime
                                                             let mut is_date_type = false;
                                                             let mut is_datetime_type = false;
-                                                            if let Some(meta) = &tabular.current_column_metadata
+                                                            if let Some(meta) = &tab.current_column_metadata
                                                                 && let Some(col_meta) = meta.get(col_index)
                                                             {
                                                                 let t = col_meta.type_name.to_uppercase();
@@ -1199,7 +1205,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.separator();
                                                     }
                                                     let col_name = headers.get(col_index).cloned().unwrap_or_default();
-                                                    if tabular.pinned_columns.contains(&col_name) {
+                                                    if tab.pinned_columns.contains(&col_name) {
                                                         if ui.button(format!("📌 Unpin Column '{}'", col_name)).clicked() {
                                                             pin_toggle_requests.push((col_name.clone(), false));
                                                             ui.close();
@@ -1216,7 +1222,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.close();
                                                     }
                                                     ui.separator();
-                                                    if tabular.is_table_browse_mode
+                                                    if tab.is_table_browse_mode
                                                         && ui.button("📋 Add New Row").clicked()
                                                     {
                                                         add_row_request = Some(0);
@@ -1224,63 +1230,63 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     }
                                                     ui.separator();
                                                     if ui.button("🔍 Inspect Value (JSON / Hex / Image)...").clicked() {
-                                                        let col_title = tabular.current_table_headers.get(col_index).cloned().unwrap_or_else(|| format!("Col {}", col_index + 1));
-                                                        tabular.cell_inspector.open(cell.clone(), col_title, row_index, col_index);
+                                                        let col_title = tab.current_table_headers.get(col_index).cloned().unwrap_or_else(|| format!("Col {}", col_index + 1));
+                                                        inspect_value_request = Some((cell.clone(), col_title, row_index, col_index));
                                                         ui.close();
                                                     }
                                                     if ui.button("📋 Copy Cell Value").clicked() {
                                                         ui.ctx().copy_text(cell.clone());
                                                         ui.close();
                                                     }
-                                                    if tabular.table_sel_anchor.is_some()
-                                                        && tabular.selected_cell.is_some()
+                                                    if table_sel_anchor.is_some()
+                                                        && selected_cell.is_some()
                                                         && ui
                                                             .button("📄 Copy Selection as CSV")
                                                             .clicked()
                                                     {
                                                         if let (Some(a), Some(b)) = (
-                                                            tabular.table_sel_anchor,
-                                                            tabular.selected_cell,
-                                                        ) && let Some(csv) = copy_selected_block_as_csv(tabular, a, b)
+                                                            table_sel_anchor,
+                                                            selected_cell,
+                                                        ) && let Some(csv) = copy_selected_block_as_csv(tab, a, b)
                                                         {
                                                             ui.ctx().copy_text(csv);
                                                         }
                                                         ui.close();
                                                     }
-                                                    let db_type = tabular
+                                                    let db_type = tab
                                                         .current_connection_id
                                                         .and_then(|cid| {
-                                                            tabular
+                                                            tab
                                                                 .connections
                                                                 .iter()
                                                                 .find(|c| c.id == Some(cid))
                                                         })
                                                         .map(|c| c.connection_type.clone());
                                                     if ui.button("🛢 Copy Selection as SQL INSERTs").clicked() {
-                                                        if let Some(sql) = copy_selected_as_sql_inserts(tabular, db_type.as_ref()) {
+                                                        if let Some(sql) = copy_selected_as_sql_inserts(tab, db_type.as_ref()) {
                                                             ui.ctx().copy_text(sql);
                                                         }
                                                         ui.close();
                                                     }
                                                     if ui.button("📝 Copy Selection as Markdown Table").clicked() {
-                                                        if let Some(md) = copy_selected_as_markdown(tabular) {
+                                                        if let Some(md) = copy_selected_as_markdown(tab) {
                                                             ui.ctx().copy_text(md);
                                                         }
                                                         ui.close();
                                                     }
                                                     if ui.button("🛢 Export Selection as SQL INSERTs...").clicked() {
-                                                        export_selected_to_sql_inserts(tabular, db_type.as_ref());
+                                                        export_selected_to_sql_inserts(tab, db_type.as_ref());
                                                         ui.close();
                                                     }
                                                     if ui.button("📝 Export Selection as Markdown Table...").clicked() {
-                                                        export_selected_to_markdown(tabular);
+                                                        export_selected_to_markdown(tab);
                                                         ui.close();
                                                     }
                                                     if let Some(selected_row_idx) =
-                                                        tabular.selected_row
+                                                        tab.selected_row
                                                         && ui.button("📄 Copy Row as CSV").clicked()
                                                     {
-                                                        if let Some(row_data) = tabular
+                                                        if let Some(row_data) = tab
                                                             .current_table_data
                                                             .get(selected_row_idx)
                                                         {
@@ -1310,34 +1316,34 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     ui.separator();
                                                     if ui.button("📄 Export to CSV").clicked() {
                                                         export::export_to_csv(
-                                                            &tabular.all_table_data,
-                                                            &tabular.current_table_headers,
-                                                            &tabular.current_table_name,
+                                                            &tab.all_table_data,
+                                                            &tab.current_table_headers,
+                                                            &tab.current_table_name,
                                                         );
                                                         ui.close();
                                                     }
                                                     if ui.button("📊 Export to XLSX").clicked() {
                                                         export::export_to_xlsx(
-                                                            &tabular.all_table_data,
-                                                            &tabular.current_table_headers,
-                                                            &tabular.current_table_name,
+                                                            &tab.all_table_data,
+                                                            &tab.current_table_headers,
+                                                            &tab.current_table_name,
                                                         );
                                                         ui.close();
                                                     }
                                                     if ui.button("🧾 Export to JSON").clicked() {
                                                         export::export_to_json(
-                                                            &tabular.all_table_data,
-                                                            &tabular.current_table_headers,
-                                                            &tabular.current_table_name,
+                                                            &tab.all_table_data,
+                                                            &tab.current_table_headers,
+                                                            &tab.current_table_name,
                                                         );
                                                         ui.close();
                                                     }
                                                     if ui.button("📝 Export to Markdown").clicked()
                                                     {
                                                         export::export_to_markdown(
-                                                            &tabular.all_table_data,
-                                                            &tabular.current_table_headers,
-                                                            &tabular.current_table_name,
+                                                            &tab.all_table_data,
+                                                            &tab.current_table_headers,
+                                                            &tab.current_table_name,
                                                         );
                                                         ui.close();
                                                     }
@@ -1345,46 +1351,46 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         .button("🛢 Export as SQL INSERTs")
                                                         .clicked()
                                                     {
-                                                        let db_type = tabular
+                                                        let db_type = tab
                                                             .current_connection_id
                                                             .and_then(|cid| {
-                                                                tabular
+                                                                tab
                                                                     .connections
                                                                     .iter()
                                                                     .find(|c| c.id == Some(cid))
                                                             })
                                                             .map(|c| c.connection_type.clone());
                                                         export::export_to_sql_inserts(
-                                                            &tabular.all_table_data,
-                                                            &tabular.current_table_headers,
-                                                            &tabular.current_table_name,
+                                                            &tab.all_table_data,
+                                                            &tab.current_table_headers,
+                                                            &tab.current_table_name,
                                                             db_type.as_ref(),
                                                         );
                                                         ui.close();
                                                     }
                                                     if ui.button("💾 Export SQL Dump").clicked() {
-                                                        let db_type = tabular
+                                                        let db_type = tab
                                                             .current_connection_id
                                                             .and_then(|cid| {
-                                                                tabular
+                                                                tab
                                                                     .connections
                                                                     .iter()
                                                                     .find(|c| c.id == Some(cid))
                                                             })
                                                             .map(|c| c.connection_type.clone());
                                                         export::export_to_sql_dump(
-                                                            &tabular.all_table_data,
-                                                            &tabular.current_table_headers,
-                                                            &tabular.current_table_name,
+                                                            &tab.all_table_data,
+                                                            &tab.current_table_headers,
+                                                            &tab.current_table_name,
                                                             db_type.as_ref(),
-                                                            tabular.current_column_metadata.as_deref(),
-                                                            Some(&tabular.structure_columns),
+                                                            tab.current_column_metadata.as_deref(),
+                                                            Some(&tab.structure_columns),
                                                         );
                                                         ui.close();
                                                     }
                                                     ui.separator();
                                                     if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
-                                                        tabular.plugin_modal_state.is_open = true;
+                                                        open_plugin_modal = true;
                                                         ui.close();
                                                     }
                                                     if tabular.is_table_browse_mode
@@ -1428,132 +1434,132 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 refresh_request_data = true;
                                 ui.close();
                             }
-                            if tabular.table_sel_anchor.is_some()
-                                && tabular.selected_cell.is_some()
+                            if table_sel_anchor.is_some()
+                                && selected_cell.is_some()
                                 && ui.button("📋 Copy Selection as CSV").clicked()
                             {
                                 if let (Some(a), Some(b)) =
-                                    (tabular.table_sel_anchor, tabular.selected_cell)
-                                    && let Some(csv) = copy_selected_block_as_csv(tabular, a, b)
+                                    (table_sel_anchor, selected_cell)
+                                    && let Some(csv) = copy_selected_block_as_csv(tab, a, b)
                                 {
                                     ui.ctx().copy_text(csv);
                                 }
                                 ui.close();
                             }
-                            let db_type_bg = tabular
+                            let db_type_bg = tab
                                 .current_connection_id
                                 .and_then(|cid| {
-                                    tabular.connections.iter().find(|c| c.id == Some(cid))
+                                    tab.connections.iter().find(|c| c.id == Some(cid))
                                 })
                                 .map(|c| c.connection_type.clone());
                             if ui.button("🛢 Copy Selection as SQL INSERTs").clicked() {
-                                if let Some(sql) = copy_selected_as_sql_inserts(tabular, db_type_bg.as_ref()) {
+                                if let Some(sql) = copy_selected_as_sql_inserts(tab, db_type_bg.as_ref()) {
                                     ui.ctx().copy_text(sql);
                                 }
                                 ui.close();
                             }
                             if ui.button("📝 Copy Selection as Markdown Table").clicked() {
-                                if let Some(md) = copy_selected_as_markdown(tabular) {
+                                if let Some(md) = copy_selected_as_markdown(tab) {
                                     ui.ctx().copy_text(md);
                                 }
                                 ui.close();
                             }
                             if ui.button("🛢 Export Selection as SQL INSERTs...").clicked() {
-                                export_selected_to_sql_inserts(tabular, db_type_bg.as_ref());
+                                export_selected_to_sql_inserts(tab, db_type_bg.as_ref());
                                 ui.close();
                             }
                             if ui.button("📝 Export Selection as Markdown Table...").clicked() {
-                                export_selected_to_markdown(tabular);
+                                export_selected_to_markdown(tab);
                                 ui.close();
                             }
                             if ui.button("📄 Export to CSV").clicked() {
                                 export::export_to_csv(
-                                    &tabular.all_table_data,
-                                    &tabular.current_table_headers,
-                                    &tabular.current_table_name,
+                                    &tab.all_table_data,
+                                    &tab.current_table_headers,
+                                    &tab.current_table_name,
                                 );
                                 ui.close();
                             }
                             if ui.button("📊 Export to XLSX").clicked() {
                                 export::export_to_xlsx(
-                                    &tabular.all_table_data,
-                                    &tabular.current_table_headers,
-                                    &tabular.current_table_name,
+                                    &tab.all_table_data,
+                                    &tab.current_table_headers,
+                                    &tab.current_table_name,
                                 );
                                 ui.close();
                             }
                             if ui.button("🧾 Export to JSON").clicked() {
                                 export::export_to_json(
-                                    &tabular.all_table_data,
-                                    &tabular.current_table_headers,
-                                    &tabular.current_table_name,
+                                    &tab.all_table_data,
+                                    &tab.current_table_headers,
+                                    &tab.current_table_name,
                                 );
                                 ui.close();
                             }
                             if ui.button("📝 Export to Markdown").clicked() {
                                 export::export_to_markdown(
-                                    &tabular.all_table_data,
-                                    &tabular.current_table_headers,
-                                    &tabular.current_table_name,
+                                    &tab.all_table_data,
+                                    &tab.current_table_headers,
+                                    &tab.current_table_name,
                                 );
                                 ui.close();
                             }
                             if ui.button("🛢 Export as SQL INSERTs").clicked() {
-                                let db_type = tabular
+                                let db_type = tab
                                     .current_connection_id
                                     .and_then(|cid| {
-                                        tabular.connections.iter().find(|c| c.id == Some(cid))
+                                        tab.connections.iter().find(|c| c.id == Some(cid))
                                     })
                                     .map(|c| c.connection_type.clone());
                                 export::export_to_sql_inserts(
-                                    &tabular.all_table_data,
-                                    &tabular.current_table_headers,
-                                    &tabular.current_table_name,
+                                    &tab.all_table_data,
+                                    &tab.current_table_headers,
+                                    &tab.current_table_name,
                                     db_type.as_ref(),
                                 );
                                 ui.close();
                             }
                             if ui.button("💾 Export SQL Dump").clicked() {
-                                let db_type = tabular
+                                let db_type = tab
                                     .current_connection_id
                                     .and_then(|cid| {
-                                        tabular.connections.iter().find(|c| c.id == Some(cid))
+                                        tab.connections.iter().find(|c| c.id == Some(cid))
                                     })
                                     .map(|c| c.connection_type.clone());
                                 export::export_to_sql_dump(
-                                    &tabular.all_table_data,
-                                    &tabular.current_table_headers,
-                                    &tabular.current_table_name,
+                                    &tab.all_table_data,
+                                    &tab.current_table_headers,
+                                    &tab.current_table_name,
                                     db_type.as_ref(),
-                                    tabular.current_column_metadata.as_deref(),
-                                    Some(&tabular.structure_columns),
+                                    tab.current_column_metadata.as_deref(),
+                                    Some(&tab.structure_columns),
                                 );
                                 ui.close();
                             }
                             ui.separator();
                             if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
-                                tabular.plugin_modal_state.is_open = true;
+                                open_plugin_modal = true;
                                 ui.close();
                             }
-                            if tabular.is_table_browse_mode
+                            if tab.is_table_browse_mode
                                 && ui.button("📥 Import CSV...").clicked()
                             {
                                 open_csv_import = true;
                                 ui.close();
                             }
                             ui.separator();
-                            if !tabular.selected_rows.is_empty()
+                            if !tab.selected_rows.is_empty()
                                 && ui.button("📋 Copy Selected Rows as CSV").clicked()
                             {
-                                if let Some(csv) = copy_selected_rows_as_csv(tabular) {
+                                if let Some(csv) = copy_selected_rows_as_csv(tab) {
                                     ui.ctx().copy_text(csv);
                                 }
                                 ui.close();
                             }
-                            if !tabular.selected_columns.is_empty()
+                            if !tab.selected_columns.is_empty()
                                 && ui.button("📋 Copy Selected Columns as CSV").clicked()
                             {
-                                if let Some(csv) = copy_selected_columns_as_csv(tabular) {
+                                if let Some(csv) = copy_selected_columns_as_csv(tab) {
                                     ui.ctx().copy_text(csv);
                                 }
                                 ui.close();
@@ -1563,15 +1569,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                     // Scroll to selected cell — computed geometrically so it works
                     // even when the target cell is outside the rendered viewport.
-                    if tabular.scroll_to_selected_cell
-                        && let Some((sel_row, sel_col)) = tabular.selected_cell {
+                    if tab.scroll_to_selected_cell
+                        && let Some((sel_row, sel_col)) = selected_cell {
                             let vis_pos = display_col_indices.iter().position(|&idx| idx == sel_col).unwrap_or(sel_col);
                             let col_x: f32 = 60.0
                                 + display_col_indices[..vis_pos]
                                     .iter()
-                                    .map(|&i| get_column_width(tabular, i).max(50.0))
+                                    .map(|&i| get_column_width(tab, i).max(50.0))
                                     .sum::<f32>();
-                            let col_w = get_column_width(tabular, sel_col).max(50.0);
+                            let col_w = get_column_width(tab, sel_col).max(50.0);
                             let rect = egui::Rect::from_min_size(
                                 egui::pos2(col_x, sel_row as f32 * row_height),
                                 egui::vec2(col_w, row_height),
@@ -1579,9 +1585,18 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             ui.scroll_to_rect(rect, Some(egui::Align::Center));
                         }
                 });
-            // Sync scroll offsets: x for sticky header, y for next-frame virtual scroll
+            // Sync scroll offsets and deferred state mutations
             tabular.data_scroll_x = scroll_out.state.offset.x;
             tabular.data_scroll_y = scroll_out.state.offset.y;
+            tabular.table_sel_anchor = table_sel_anchor;
+            tabular.selected_cell = selected_cell;
+            tabular.table_dragging = table_dragging;
+            if let Some((val, col_title, r, c)) = inspect_value_request {
+                tabular.cell_inspector.open(val, col_title, r, c);
+            }
+            if open_plugin_modal {
+                tabular.plugin_modal_state.is_open = true;
+            }
             // Execute deferred refresh after UI borrows are released
             if refresh_request_data {
                 refresh_current_table_data(tabular);

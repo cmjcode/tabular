@@ -1489,8 +1489,8 @@ pub fn highlight_text_cached(
     if let Some(cached_job) = cache.get(&hash) {
         return cached_job.clone();
     }
-    // Evict stale entries early (keep at most 2) to avoid unbounded memory growth during typing
-    if cache.len() >= 2 {
+    // Keep a reasonable bounded cache (up to 32 entries) to prevent thrashing between active tabs/queries
+    if cache.len() >= 32 {
         cache.clear();
     }
     let job = highlight_text(text, lang, dark);

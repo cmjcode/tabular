@@ -602,7 +602,7 @@ async fn create_connection_pool_for_config_inner(
                 .max_connections(15)
                 .min_connections(1)
                 .acquire_timeout(std::time::Duration::from_secs(15))
-                .idle_timeout(std::time::Duration::from_secs(300))
+                .idle_timeout(std::time::Duration::from_secs(600))
                 .max_lifetime(std::time::Duration::from_secs(1800))
                 .test_before_acquire(false)
                 .connect_with(connect_opts)
