@@ -84,7 +84,7 @@ impl super::Tabular {
                                  // But I cannot refactor it right now easily without breaking other calls.
                                  // So I will implement a raw SQL insert here for the fix.
 
-                                 println!("🔥 Loading columns for {}...", table);
+                                 log::debug!("Loading columns for {}...", table);
                                  // CLEAR
                                  let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
                                      .bind(conn_id)
@@ -105,7 +105,7 @@ impl super::Tabular {
                                          .execute(pool.as_ref())
                                          .await;
                                  }
-                                 println!("🔥 Columns loaded for {}", table);
+                                 log::debug!("Columns loaded for {}", table);
                              }
                          }
                      });

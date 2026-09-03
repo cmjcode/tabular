@@ -261,8 +261,7 @@ pub async fn fetch_user_manager_data(
     database_name: Option<&str>,
     schema_name: Option<&str>,
 ) -> Result<UserManagerDataPayload, String> {
-    log::info!("[USER-MGR] fetch_user_manager_data started for db_type={:?}, database={:?}, schema={:?}", db_type, database_name, schema_name);
-    eprintln!("[USER-MGR] fetch_user_manager_data started for db_type={:?}, database={:?}, schema={:?}", db_type, database_name, schema_name);
+    log::debug!("[USER-MGR] fetch_user_manager_data started for db_type={:?}, database={:?}, schema={:?}", db_type, database_name, schema_name);
     let result = match (db_type, pool) {
         (DatabaseType::PostgreSQL, DatabasePool::PostgreSQL(pg_pool)) => {
             fetch_postgres_user_data(pg_pool).await
@@ -277,14 +276,11 @@ pub async fn fetch_user_manager_data(
     };
     match &result {
         Ok(payload) => {
-            log::info!("[USER-MGR] fetch_user_manager_data SUCCESS: {} users, {} roles, {} object grants, {} query logs",
-                payload.users.len(), payload.roles.len(), payload.object_grants.len(), payload.executed_queries.len());
-            eprintln!("[USER-MGR] fetch_user_manager_data SUCCESS: {} users, {} roles, {} object grants, {} query logs",
+            log::debug!("[USER-MGR] fetch_user_manager_data SUCCESS: {} users, {} roles, {} object grants, {} query logs",
                 payload.users.len(), payload.roles.len(), payload.object_grants.len(), payload.executed_queries.len());
         }
         Err(err) => {
             log::error!("[USER-MGR] fetch_user_manager_data ERROR: {}", err);
-            eprintln!("[USER-MGR] fetch_user_manager_data ERROR: {}", err);
         }
     }
     result
@@ -337,25 +333,21 @@ async fn query_mysql_timeout(
     timeout_secs: u64,
     step_desc: &str,
 ) -> Result<Vec<sqlx::mysql::MySqlRow>, String> {
-    log::info!("[USER-MGR-MYSQL] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
-    eprintln!("[USER-MGR-MYSQL] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    log::debug!("[USER-MGR-MYSQL] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
     
     let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(my_pool);
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
         Ok(Ok(rows)) => {
-            log::info!("[USER-MGR-MYSQL] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
-            eprintln!("[USER-MGR-MYSQL] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            log::debug!("[USER-MGR-MYSQL] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
             Ok(rows)
         }
         Ok(Err(e)) => {
             log::warn!("[USER-MGR-MYSQL] [{}] Query Error: {}", step_desc, e);
-            eprintln!("[USER-MGR-MYSQL] [{}] Query Error: {}", step_desc, e);
             Err(e.to_string())
         }
         Err(_) => {
             let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
             log::warn!("[USER-MGR-MYSQL] [{}] Timeout Error: {}", step_desc, err);
-            eprintln!("[USER-MGR-MYSQL] [{}] Timeout Error: {}", step_desc, err);
             Err(err)
         }
     }
@@ -367,25 +359,21 @@ async fn query_pg_timeout(
     timeout_secs: u64,
     step_desc: &str,
 ) -> Result<Vec<sqlx::postgres::PgRow>, String> {
-    log::info!("[USER-MGR-PG] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
-    eprintln!("[USER-MGR-PG] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    log::debug!("[USER-MGR-PG] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
     
     let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(pg_pool);
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
         Ok(Ok(rows)) => {
-            log::info!("[USER-MGR-PG] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
-            eprintln!("[USER-MGR-PG] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            log::debug!("[USER-MGR-PG] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
             Ok(rows)
         }
         Ok(Err(e)) => {
             log::warn!("[USER-MGR-PG] [{}] Query Error: {}", step_desc, e);
-            eprintln!("[USER-MGR-PG] [{}] Query Error: {}", step_desc, e);
             Err(e.to_string())
         }
         Err(_) => {
             let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
             log::warn!("[USER-MGR-PG] [{}] Timeout Error: {}", step_desc, err);
-            eprintln!("[USER-MGR-PG] [{}] Timeout Error: {}", step_desc, err);
             Err(err)
         }
     }
@@ -397,25 +385,21 @@ async fn query_sqlite_timeout(
     timeout_secs: u64,
     step_desc: &str,
 ) -> Result<Vec<sqlx::sqlite::SqliteRow>, String> {
-    log::info!("[USER-MGR-SQLITE] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
-    eprintln!("[USER-MGR-SQLITE] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
+    log::debug!("[USER-MGR-SQLITE] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
     
     let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(sq_pool);
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
         Ok(Ok(rows)) => {
-            log::info!("[USER-MGR-SQLITE] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
-            eprintln!("[USER-MGR-SQLITE] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            log::debug!("[USER-MGR-SQLITE] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
             Ok(rows)
         }
         Ok(Err(e)) => {
             log::warn!("[USER-MGR-SQLITE] [{}] Query Error: {}", step_desc, e);
-            eprintln!("[USER-MGR-SQLITE] [{}] Query Error: {}", step_desc, e);
             Err(e.to_string())
         }
         Err(_) => {
             let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
             log::warn!("[USER-MGR-SQLITE] [{}] Timeout Error: {}", step_desc, err);
-            eprintln!("[USER-MGR-SQLITE] [{}] Timeout Error: {}", step_desc, err);
             Err(err)
         }
     }

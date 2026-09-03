@@ -782,7 +782,7 @@ impl Tabular {
                                     || clean_cur.contains(&clean_tbl)
                                     || clean_tbl.contains(&clean_cur);
 
-                                eprintln!(
+                                debug!(
                                     "[UI] TableStructureFetched conn={} db='{}' tbl='{}' idxs={} (cur_conn={:?}, cur_tbl='{}', db_ok={}, tbl_ok={})",
                                     connection_id, database_name, table_name, idxs.len(), self.current_connection_id, current_table, db_matches, table_matches
                                 );
@@ -792,7 +792,7 @@ impl Tabular {
                                     && table_matches
                                 {
                                     self.structure_indexes = idxs;
-                                    eprintln!("[UI] structure_indexes UPDATED! count={}", self.structure_indexes.len());
+                                    debug!("[UI] structure_indexes UPDATED! count={}", self.structure_indexes.len());
                                 }
                             }
                             if let Some(parts) = partitions {
@@ -881,7 +881,7 @@ impl Tabular {
 
                                     // Use the databases list that was read-back in the background thread
                                     // (inside the same SQLite connection as the write) — no WAL race.
-                                    eprintln!(
+                                    debug!(
                                         "[REFRESH-COMPLETE] non-full-refresh for conn={} got {} databases inline",
                                         connection_id, databases.len()
                                     );
@@ -1332,8 +1332,7 @@ impl Tabular {
             }
 
             while let Ok((tab_index, result)) = self.dba_result_receiver.try_recv() {
-                log::info!("[DBA-MONITOR] UI received result for tab_index={}, is_ok={}", tab_index, result.is_ok());
-                eprintln!("[DBA-MONITOR] UI received result for tab_index={}, is_ok={}", tab_index, result.is_ok());
+                log::debug!("[DBA-MONITOR] UI received result for tab_index={}, is_ok={}", tab_index, result.is_ok());
                 if let Some(tab) = self.query_tabs.get_mut(tab_index) {
                     if let Some(state) = &mut tab.dba_monitor_state {
                         state.is_loading = false;
@@ -1353,8 +1352,7 @@ impl Tabular {
             }
 
             while let Ok((tab_index, result)) = self.user_manager_result_receiver.try_recv() {
-                log::info!("[USER-MGR] UI received result for tab_index={}", tab_index);
-                eprintln!("[USER-MGR] UI received result for tab_index={}", tab_index);
+                log::debug!("[USER-MGR] UI received result for tab_index={}", tab_index);
                 if let Some(tab) = self.query_tabs.get_mut(tab_index) {
                     if let Some(state) = &mut tab.user_manager_state {
                         state.is_loading = false;
@@ -1363,8 +1361,7 @@ impl Tabular {
                                 state.last_refreshed = Some(std::time::Instant::now());
                                 match res {
                                     Ok(payload) => {
-                                        log::info!("[USER-MGR] UI applied payload: {} users, {} roles", payload.users.len(), payload.roles.len());
-                                        eprintln!("[USER-MGR] UI applied payload: {} users, {} roles", payload.users.len(), payload.roles.len());
+                                        log::debug!("[USER-MGR] UI applied payload: {} users, {} roles", payload.users.len(), payload.roles.len());
                                         state.users = payload.users;
                                         state.roles = payload.roles;
                                         state.object_grants = payload.object_grants.clone();
@@ -1384,7 +1381,6 @@ impl Tabular {
                                     }
                                     Err(err) => {
                                         log::error!("[USER-MGR] UI received error: {}", err);
-                                        eprintln!("[USER-MGR] UI received error: {}", err);
                                         state.status_message = Some((format!("Error: {}", err), true));
                                         state.show_diagnostics_panel = true;
                                     }
@@ -2998,8 +2994,7 @@ impl Tabular {
                             if let Some(state) = &mut tab.user_manager_state {
                                 // Auto-fetch initial data if empty and not loading
                                 if state.users.is_empty() && !state.is_loading && state.last_refreshed.is_none() {
-                                    log::info!("[USER-MGR] Triggering auto-fetch on initial tab open: conn_id={:?}, db_type={:?}", conn_id, db_type);
-                                    eprintln!("[USER-MGR] Triggering auto-fetch on initial tab open: conn_id={:?}, db_type={:?}", conn_id, db_type);
+                                    log::debug!("[USER-MGR] Triggering auto-fetch on initial tab open: conn_id={:?}, db_type={:?}", conn_id, db_type);
                                     user_mgr_action = Some(crate::user_manager::UserManagerAction::Refresh);
                                 }
 
@@ -3246,8 +3241,7 @@ impl Tabular {
                         {
                             let active_tab = self.active_tab_index;
                             if let (Some(conn_id), Some(db_type)) = (conn_id_opt, db_type_opt.clone()) {
-                                log::info!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
-                                eprintln!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
+                                log::debug!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
                                 crate::connection::ensure_background_pool_creation(self, conn_id);
                                 let sender = self.user_manager_result_sender.clone();
                                 let ctx = ui.ctx().clone();
@@ -3488,7 +3482,6 @@ impl Tabular {
                             }
                         } else {
                             log::error!("[USER-MGR] Cannot process action: conn_id={:?}, db_type={:?}", conn_id_opt, db_type_opt);
-                            eprintln!("[USER-MGR] Cannot process action: conn_id={:?}, db_type={:?}", conn_id_opt, db_type_opt);
                             if let Some(tab) = self.query_tabs.get_mut(active_tab) {
                                 if let Some(state) = &mut tab.user_manager_state {
                                     state.is_loading = false;
@@ -4585,7 +4578,6 @@ impl App for Tabular {
                     || i.consume_key(egui::Modifiers::CTRL, egui::Key::S)
                 {
                     save_shortcut = true;
-                    println!("🔥 Save shortcut detected!");
                 }
             });
         }
@@ -4901,11 +4893,6 @@ impl App for Tabular {
 
         // Execute Save action if shortcut was pressed
         if save_shortcut {
-            println!(
-                "🔥 Save shortcut execution block reached! pending_operations: {}, is_dirty: {}",
-                self.spreadsheet_state.pending_operations.len(),
-                self.spreadsheet_state.is_dirty
-            );
             debug!(
                 "🔥 Save shortcut pressed! pending_operations: {}, is_dirty: {}",
                 self.spreadsheet_state.pending_operations.len(),
@@ -4914,17 +4901,12 @@ impl App for Tabular {
 
             // If a cell is being edited, commit it first so its change is included in save
             if self.spreadsheet_state.editing_cell.is_some() {
-                println!("🔥 Committing active cell edit");
                 debug!("🔥 Committing active cell edit");
                 self.spreadsheet_finish_cell_edit(true);
             }
             // Prefer saving pending spreadsheet changes if any are queued
             if !self.spreadsheet_state.pending_operations.is_empty() {
                 let op_count = self.spreadsheet_state.pending_operations.len();
-                println!(
-                    "🔥 Calling spreadsheet_save_changes with {} operations",
-                    op_count
-                );
                 debug!(
                     "🔥 Calling spreadsheet_save_changes with {} operations",
                     op_count
@@ -4936,7 +4918,6 @@ impl App for Tabular {
                     self.toasts.error(format!("Gagal menyimpan tabel: {}", self.error_message));
                 }
             } else if !self.query_tabs.is_empty() {
-                println!("🔥 No spreadsheet operations, saving query tab instead");
                 debug!("🔥 No spreadsheet operations, saving query tab instead");
 
                 if let Err(error) = editor::save_current_tab(self) {
@@ -4944,8 +4925,6 @@ impl App for Tabular {
                     self.show_error_message = true;
                     self.toasts.error(format!("Save failed: {}", error));
                 }
-            } else {
-                println!("🔥 Nothing to save - no operations and no query tabs");
             }
         }
 
@@ -5282,17 +5261,14 @@ async fn wait_for_connection_pool(
     conn_id: i64,
 ) -> Result<models::enums::DatabasePool, String> {
     if let Some(p) = direct_pool {
-        log::info!("[POOL-WAIT] Direct pool available for conn_id={}", conn_id);
-        eprintln!("[POOL-WAIT] Direct pool available for conn_id={}", conn_id);
+        log::debug!("[POOL-WAIT] Direct pool available for conn_id={}", conn_id);
         return Ok(p);
     }
-    log::info!("[POOL-WAIT] Waiting for background pool for conn_id={}...", conn_id);
-    eprintln!("[POOL-WAIT] Waiting for background pool for conn_id={}...", conn_id);
+    log::debug!("[POOL-WAIT] Waiting for background pool for conn_id={}...", conn_id);
     for attempt in 0..100 {
         if let Ok(guard) = shared_pools.lock() {
             if let Some(p) = guard.get(&conn_id).cloned() {
-                log::info!("[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}", attempt, conn_id);
-                eprintln!("[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}", attempt, conn_id);
+                log::debug!("[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}", attempt, conn_id);
                 return Ok(p);
             }
         }
@@ -5300,7 +5276,6 @@ async fn wait_for_connection_pool(
     }
     let err = format!("Connecting to database (id={}) timed out after 10s. Please check that the database server is reachable.", conn_id);
     log::error!("[POOL-WAIT] {}", err);
-    eprintln!("[POOL-WAIT] {}", err);
     Err(err)
 }
 

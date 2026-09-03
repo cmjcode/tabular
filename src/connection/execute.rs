@@ -535,21 +535,21 @@ async fn execute_mysql_query_job(
                                                 {
                                                     let pks: std::collections::HashSet<String> =
                                                         cols.into_iter().map(|s| s.to_lowercase()).collect();
-                                                    std::println!("🔥 Found cached PKs for '{}': {:?}", table_full_name, pks);
+                                                    debug!("Found cached PKs for '{}': {:?}", table_full_name, pks);
                                                     table_pks.insert(table_full_name.to_lowercase(), pks);
                                                 }
                                             }
                                             Ok(None) => {
-                                                std::println!("🔥 No cached PK found for '{}' (db={}, tbl={})", table_full_name, target_db, target_table);
+                                                debug!("No cached PK found for '{}' (db={}, tbl={})", table_full_name, target_db, target_table);
                                             }
                                             Err(e) => {
-                                                std::println!("🔥 Error fetching PK from cache for '{}': {}", table_full_name, e);
+                                                debug!("Error fetching PK from cache for '{}': {}", table_full_name, e);
                                             }
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    std::println!("🔥 Failed to connect to local cache at {}: {}", db_path.display(), e);
+                                    debug!("Failed to connect to local cache at {}: {}", db_path.display(), e);
                                 }
                             }
 

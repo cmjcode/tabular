@@ -697,7 +697,7 @@ pub(crate) fn render_connection_dialog(
                             // Kick off a background schema-cache sync so autocomplete works
                             // immediately. Shows a loading badge on the connection name and
                             // skips API-HTTP connections (no schema to cache).
-                            eprintln!(
+                            debug!(
                                 "[AUTO-SYNC] Add Connection done: new_conn_id={:?} is_api_http={}",
                                 new_conn_id, is_api_http
                             );

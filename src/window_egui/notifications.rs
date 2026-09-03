@@ -146,7 +146,7 @@ impl ToastManager {
         let mut dismiss: Option<usize> = None;
         egui::Area::new(egui::Id::new("tabular_toasts"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 48.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -18.0))
             .interactable(true)
             .show(ctx, |ui| {
                 ui.set_max_width(380.0);
@@ -170,7 +170,7 @@ impl ToastManager {
                         })
                         .inner_margin(egui::Margin::symmetric(12, 10))
                         .outer_margin(egui::Margin {
-                            bottom: 8,
+                            top: 8,
                             ..Default::default()
                         });
                     frame.show(ui, |ui| {

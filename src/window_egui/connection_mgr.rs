@@ -1,18 +1,9 @@
 use log::debug;
 use crate::{models, cache_data, data_table, editor, directory, sidebar_query};
 
-/// Temporary diagnostic logger for the auto-sync feature. Writes to both stderr
-/// and /tmp/tabular-autosync.log so the log can be inspected without a terminal.
+/// Diagnostic logger for the auto-sync feature. Uses log::debug! for zero overhead when disabled.
 pub(crate) fn autosync_log(msg: &str) {
-    use std::io::Write;
-    eprintln!("{}", msg);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/tabular-autosync.log")
-    {
-        let _ = writeln!(f, "{}", msg);
-    }
+    log::debug!("[AUTOSYNC] {}", msg);
 }
 
 impl super::Tabular {
@@ -373,7 +364,7 @@ impl super::Tabular {
     }
 
     pub fn refresh_connection(&mut self, connection_id: i64) {
-        eprintln!("[REFRESH-CONN] manual refresh_connection started for id={}", connection_id);
+        log::debug!("[REFRESH-CONN] manual refresh_connection started for id={}", connection_id);
         self.auto_synced_connections.remove(&connection_id);
 
         // Clear in-memory database cache so next load gets fresh data

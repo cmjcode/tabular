@@ -709,7 +709,7 @@ pub(crate) async fn refresh_connection_background_async(
             } else {
                 vec![]
             };
-            eprintln!("[refresh_connection] inline databases read-back: {:?}", databases);
+            debug!("[refresh_connection] inline databases read-back: {} dbs", databases.len());
             (fetch_ok, databases)
         } else {
             warn!(
