@@ -31,13 +31,13 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
 
         // Short-circuit: if target unchanged and relevant subview data is already loaded, do nothing
         let target = (conn_id, database.clone(), table_guess.clone());
-        if !tabular.request_structure_refresh
-            && tabular
-                .last_structure_target
-                .as_ref()
-                .map(|t| t == &target)
-                .unwrap_or(false)
-        {
+        let target_changed = tabular
+            .last_structure_target
+            .as_ref()
+            .map(|t| t != &target)
+            .unwrap_or(true);
+
+        if !tabular.request_structure_refresh && !target_changed {
             match tabular.structure_sub_view {
                 models::structs::StructureSubView::Columns
                     if !tabular.structure_columns.is_empty() =>
@@ -53,12 +53,14 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
             }
         }
 
-        // Reset current in-memory structure before (re)loading
-        tabular.structure_columns.clear();
-        tabular.structure_indexes.clear();
-        tabular.structure_selected_row = None;
-        tabular.structure_selected_cell = None;
-        tabular.structure_sel_anchor = None;
+        // Reset current in-memory structure only if target actually changed or refresh requested
+        if target_changed || tabular.request_structure_refresh {
+            tabular.structure_columns.clear();
+            tabular.structure_indexes.clear();
+            tabular.structure_selected_row = None;
+            tabular.structure_selected_cell = None;
+            tabular.structure_sel_anchor = None;
+        }
 
         let is_refresh = tabular.request_structure_refresh;
         tabular.request_structure_refresh = false;
@@ -117,6 +119,22 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                             ..Default::default()
                         });
                 }
+            }
+        }
+
+        // 1.6) Fallback seed for indexes: if structure_indexes is still empty, seed PRIMARY index if there's an 'id' column
+        if tabular.structure_indexes.is_empty() {
+            let pk_col = tabular.structure_columns.iter().find(|c| {
+                c.name.eq_ignore_ascii_case("id")
+                    || c.extra.as_deref().unwrap_or("").to_lowercase().contains("auto_increment")
+            });
+            if let Some(col) = pk_col {
+                tabular.structure_indexes.push(models::structs::IndexStructInfo {
+                    name: "PRIMARY".to_string(),
+                    method: Some("BTREE".to_string()),
+                    unique: true,
+                    columns: vec![col.name.clone()],
+                });
             }
         }
 
@@ -254,38 +272,169 @@ pub async fn fetch_index_details_standalone_async(
                 Ok(tuple) => tuple,
                 Err(_) => return Vec::new(),
             };
-            let encoded_username = crate::modules::url_encode(&connection.username);
-            let encoded_password = crate::modules::url_encode(&connection.password);
-            let connection_string = format!(
-                "mysql://{}:{}@{}:{}/{}",
-                encoded_username, encoded_password, target_host, target_port, database_name
-            );
-            if let Ok(pool) = sqlx::mysql::MySqlPoolOptions::new()
-                .max_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(3))
-                .connect(&connection_string)
-                .await
-            {
-                let q = r#"SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, MIN(NON_UNIQUE) AS NON_UNIQUE, GROUP_CONCAT(DISTINCT INDEX_TYPE) AS TYPES FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? GROUP BY INDEX_NAME ORDER BY INDEX_NAME"#;
-                match sqlx::query(q).bind(database_name).bind(table_name).fetch_all(&pool).await {
-                    Ok(rows) => {
-                        use sqlx::Row;
-                        rows.into_iter().map(|r| {
-                            let name: String = r.get("INDEX_NAME");
-                            let cols_str: Option<String> = r.try_get("COLS").ok();
-                            let non_unique: Option<i64> = r.try_get("NON_UNIQUE").ok();
-                            let types: Option<String> = r.try_get("TYPES").ok();
-                            let columns = cols_str.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
-                            let unique = matches!(non_unique, Some(0));
-                            let method = types.and_then(|t| t.split(',').next().map(|m| m.trim().to_string())).filter(|s| !s.is_empty());
-                            models::structs::IndexStructInfo { name, method, unique, columns }
-                        }).collect()
-                    }
-                    Err(_) => Vec::new(),
+            let port_num = target_port.parse::<u16>().unwrap_or(3306);
+            let clean_db = if !database_name.trim().is_empty() {
+                database_name.trim().trim_matches(['`', '"', '[', ']']).to_string()
+            } else if !connection.database.trim().is_empty() {
+                connection.database.trim().trim_matches(['`', '"', '[', ']']).to_string()
+            } else {
+                String::new()
+            };
+            let clean_table = table_name.trim().trim_matches(['`', '"', '[', ']']).to_string();
+
+            let mut connect_opts = sqlx::mysql::MySqlConnectOptions::new()
+                .host(&target_host)
+                .port(port_num)
+                .username(&connection.username)
+                .password(&connection.password);
+
+            if !clean_db.is_empty() {
+                connect_opts = connect_opts.database(&clean_db);
+            }
+
+            if connection.ssl_enabled {
+                let ssl_mode = if !connection.ssl_verify_server {
+                    sqlx::mysql::MySqlSslMode::Required
+                } else if !connection.ssl_ca_cert.trim().is_empty() {
+                    sqlx::mysql::MySqlSslMode::VerifyCa
+                } else {
+                    sqlx::mysql::MySqlSslMode::Required
+                };
+                connect_opts = connect_opts.ssl_mode(ssl_mode);
+                if !connection.ssl_ca_cert.trim().is_empty() {
+                    connect_opts = connect_opts.ssl_ca(connection.ssl_ca_cert.trim());
                 }
             } else {
-                Vec::new()
+                connect_opts = connect_opts.ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
             }
+
+            if let Ok(pool) = sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(5))
+                .connect_with(connect_opts)
+                .await
+            {
+                let find_col_idx = |row: &sqlx::mysql::MySqlRow, col_target: &str| -> Option<usize> {
+                    use sqlx::Column;
+                    use sqlx::Row;
+                    row.columns()
+                        .iter()
+                        .position(|c| c.name().eq_ignore_ascii_case(col_target))
+                };
+                let get_str = |row: &sqlx::mysql::MySqlRow, col: &str| -> Option<String> {
+                    use sqlx::Row;
+                    let idx = find_col_idx(row, col)?;
+                    if let Ok(s) = row.try_get::<String, _>(idx) {
+                        return Some(s);
+                    }
+                    if let Ok(b) = row.try_get::<Vec<u8>, _>(idx) {
+                        return Some(String::from_utf8_lossy(&b).to_string());
+                    }
+                    None
+                };
+                let get_num = |row: &sqlx::mysql::MySqlRow, col: &str| -> Option<i64> {
+                    use sqlx::Row;
+                    let idx = find_col_idx(row, col)?;
+                    if let Ok(v) = row.try_get::<i64, _>(idx) { return Some(v); }
+                    if let Ok(v) = row.try_get::<i32, _>(idx) { return Some(v as i64); }
+                    if let Ok(v) = row.try_get::<i16, _>(idx) { return Some(v as i64); }
+                    if let Ok(v) = row.try_get::<i8, _>(idx) { return Some(v as i64); }
+                    if let Ok(v) = row.try_get::<u64, _>(idx) { return Some(v as i64); }
+                    if let Ok(v) = row.try_get::<u32, _>(idx) { return Some(v as i64); }
+                    if let Ok(v) = row.try_get::<String, _>(idx) { return v.parse::<i64>().ok(); }
+                    None
+                };
+
+                // Method 1 (Primary): SHOW INDEX FROM `db`.`table`
+                let show_q = if !clean_db.is_empty() {
+                    format!("SHOW INDEX FROM `{}`.`{}`", clean_db.replace('`', ""), clean_table.replace('`', ""))
+                } else {
+                    format!("SHOW INDEX FROM `{}`", clean_table.replace('`', ""))
+                };
+
+                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(show_q.as_str())).fetch_all(&pool).await {
+                    let mut map: std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)> = std::collections::BTreeMap::new();
+                    for r in rows {
+                        let key_name = get_str(&r, "Key_name").unwrap_or_default();
+                        if key_name.is_empty() { continue; }
+                        let col_name = get_str(&r, "Column_name").unwrap_or_default();
+                        let non_unique = get_num(&r, "Non_unique").unwrap_or(1);
+                        let index_type = get_str(&r, "Index_type");
+                        let seq = get_num(&r, "Seq_in_index").unwrap_or(0);
+
+                        let entry = map.entry(key_name).or_insert_with(|| (index_type, non_unique == 0, Vec::new()));
+                        if !col_name.is_empty() {
+                            entry.2.push((seq, col_name));
+                        }
+                    }
+                    if !map.is_empty() {
+                        let mut list = Vec::new();
+                        for (k_name, (itype, is_unique, mut cols)) in map {
+                            cols.sort_by_key(|c| c.0);
+                            let col_names: Vec<String> = cols.into_iter().map(|c| c.1).collect();
+                            list.push(models::structs::IndexStructInfo {
+                                name: k_name,
+                                method: itype,
+                                unique: is_unique,
+                                columns: col_names,
+                            });
+                        }
+                        list.sort_by(|a, b| {
+                            if a.name == "PRIMARY" {
+                                std::cmp::Ordering::Less
+                            } else if b.name == "PRIMARY" {
+                                std::cmp::Ordering::Greater
+                            } else {
+                                a.name.cmp(&b.name)
+                            }
+                        });
+                        return list;
+                    }
+                }
+
+                // Method 2 (Fallback): INFORMATION_SCHEMA.STATISTICS
+                let q = r#"SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, INDEX_TYPE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX"#;
+                if let Ok(rows) = sqlx::query(q).bind(&clean_db).bind(&clean_table).fetch_all(&pool).await {
+                    let mut map: std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)> = std::collections::BTreeMap::new();
+                    for r in rows {
+                        let key_name = get_str(&r, "INDEX_NAME").unwrap_or_default();
+                        if key_name.is_empty() { continue; }
+                        let col_name = get_str(&r, "COLUMN_NAME").unwrap_or_default();
+                        let non_unique = get_num(&r, "NON_UNIQUE").unwrap_or(1);
+                        let index_type = get_str(&r, "INDEX_TYPE");
+                        let seq = get_num(&r, "SEQ_IN_INDEX").unwrap_or(0);
+
+                        let entry = map.entry(key_name).or_insert_with(|| (index_type, non_unique == 0, Vec::new()));
+                        if !col_name.is_empty() {
+                            entry.2.push((seq, col_name));
+                        }
+                    }
+                    if !map.is_empty() {
+                        let mut list = Vec::new();
+                        for (k_name, (itype, is_unique, mut cols)) in map {
+                            cols.sort_by_key(|c| c.0);
+                            let col_names: Vec<String> = cols.into_iter().map(|c| c.1).collect();
+                            list.push(models::structs::IndexStructInfo {
+                                name: k_name,
+                                method: itype,
+                                unique: is_unique,
+                                columns: col_names,
+                            });
+                        }
+                        list.sort_by(|a, b| {
+                            if a.name == "PRIMARY" {
+                                std::cmp::Ordering::Less
+                            } else if b.name == "PRIMARY" {
+                                std::cmp::Ordering::Greater
+                            } else {
+                                a.name.cmp(&b.name)
+                            }
+                        });
+                        return list;
+                    }
+                }
+            }
+            Vec::new()
         }
         models::enums::DatabaseType::PostgreSQL => {
             let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
@@ -575,7 +724,13 @@ fn extract_table_from_caption(caption: &str) -> Option<String> {
     if let Some(p) = cut.find('(') {
         cut = cut[..p].trim().to_string();
     }
-    let clean = cut
+    let mut clean = cut
+        .trim_matches(|c| c == '`' || c == '"' || c == '[' || c == ']')
+        .trim();
+    if let Some(rest) = clean.strip_prefix("Loading ") {
+        clean = rest.trim_end_matches('.').trim();
+    }
+    let clean = clean
         .trim_matches(|c| c == '`' || c == '"' || c == '[' || c == ']')
         .trim();
     if !clean.is_empty()
@@ -583,6 +738,7 @@ fn extract_table_from_caption(caption: &str) -> Option<String> {
         && !clean.starts_with("Query executed")
         && !clean.starts_with("Running query")
         && !clean.starts_with("Connecting")
+        && !clean.starts_with("Loading")
     {
         Some(clean.to_string())
     } else {
@@ -663,6 +819,10 @@ mod tests {
         assert_eq!(
             extract_table_from_caption("Table: users"),
             Some("users".to_string())
+        );
+        assert_eq!(
+            extract_table_from_caption("Loading datalogs..."),
+            Some("datalogs".to_string())
         );
     }
 
