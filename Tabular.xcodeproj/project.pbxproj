@@ -82,14 +82,6 @@
 			path = ios;
 			sourceTree = "<group>";
 		};
-		100000000000000000000008 /* Base.lproj */ = {
-			isa = PBXGroup;
-			children = (
-				200000000000000000000006 /* LaunchScreen.storyboard */,
-			);
-			path = Base.lproj;
-			sourceTree = "<group>";
-		};
 		100000000000000000000006 /* macos */ = {
 			isa = PBXGroup;
 			children = (
@@ -107,6 +99,14 @@
 				20000000000000000000000B /* publish_xcode.sh */,
 			);
 			path = scripts;
+			sourceTree = "<group>";
+		};
+		100000000000000000000008 /* Base.lproj */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000006 /* LaunchScreen.storyboard */,
+			);
+			path = Base.lproj;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -297,19 +297,20 @@
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = apple/ios/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Tabular;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.14.3;
+				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 2;
 			};
 			name = Debug;
 		};
@@ -324,19 +325,20 @@
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = apple/ios/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Tabular;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.14.3;
+				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 2;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
@@ -347,6 +349,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = apple/macos/Tabular.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -354,12 +357,13 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = apple/macos/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Tabular;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.14.3;
+				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = macosx;
@@ -372,6 +376,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = apple/macos/Tabular.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -379,12 +384,13 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = apple/macos/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Tabular;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.14.3;
+				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = macosx;
@@ -422,7 +428,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
 	};
 	rootObject = 100000000000000000000001 /* Project object */;
 }
