@@ -1645,7 +1645,11 @@ impl super::Tabular {
                                         self.active_query_jobs.insert(job_id, status);
                                         self.query_execution_in_progress = true;
                                         self.extend_query_icon_hold();
-                                        self.current_table_name = format!("Loading {}...", table_name);
+                                        self.current_table_name = format!(
+                                            "Table: {} (Database: {})",
+                                            table_name,
+                                            database_name.as_deref().unwrap_or("Unknown")
+                                        );
                                         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                             active_tab.result_table_name = self.current_table_name.clone();
                                         }

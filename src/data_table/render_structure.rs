@@ -327,7 +327,9 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
         if crate::window_egui::style::render_custom_tab(ui, "📈 Indexes", is_idx, tab_size).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
-            load_structure_info_for_current_table(tabular);
+            if tabular.structure_indexes.is_empty() {
+                load_structure_info_for_current_table(tabular);
+            }
             tabular.structure_sel_anchor = None;
             tabular.structure_selected_cell = None;
             tabular.structure_selected_row = None;

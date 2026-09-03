@@ -775,14 +775,24 @@ impl Tabular {
                                     || database_name.is_empty()
                                     || database_name == "main";
                                 let current_table = data_table::infer_current_table_name(self);
-                                let table_matches = current_table.eq_ignore_ascii_case(&table_name)
-                                    || (current_table.is_empty() && self.is_table_browse_mode);
+                                let clean_cur = current_table.trim_matches(['`', '"', '[', ']']).to_lowercase();
+                                let clean_tbl = table_name.trim_matches(['`', '"', '[', ']']).to_lowercase();
+                                let table_matches = clean_cur == clean_tbl
+                                    || (clean_cur.is_empty() && self.is_table_browse_mode)
+                                    || clean_cur.contains(&clean_tbl)
+                                    || clean_tbl.contains(&clean_cur);
+
+                                eprintln!(
+                                    "[UI] TableStructureFetched conn={} db='{}' tbl='{}' idxs={} (cur_conn={:?}, cur_tbl='{}', db_ok={}, tbl_ok={})",
+                                    connection_id, database_name, table_name, idxs.len(), self.current_connection_id, current_table, db_matches, table_matches
+                                );
 
                                 if self.current_connection_id == Some(connection_id)
                                     && db_matches
                                     && table_matches
                                 {
                                     self.structure_indexes = idxs;
+                                    eprintln!("[UI] structure_indexes UPDATED! count={}", self.structure_indexes.len());
                                 }
                             }
                             if let Some(parts) = partitions {
@@ -796,6 +806,7 @@ impl Tabular {
                                     );
                                 }
                             }
+                            self.is_refreshing_structure = false;
                             ctx.request_repaint();
                         }
                         models::enums::BackgroundResult::RefreshComplete {
@@ -2813,7 +2824,7 @@ impl Tabular {
                                                  .as_ref()
                                                  .map(|t| t != &current_target)
                                                  .unwrap_or(true)
-                                                 || self.structure_columns.is_empty()
+                                                 || (self.structure_columns.is_empty() && !self.is_refreshing_structure)
                                              {
                                                  data_table::load_structure_info_for_current_table(self);
                                              } else {
@@ -2880,7 +2891,7 @@ impl Tabular {
                                                     .as_ref()
                                                     .map(|t| t != &current_target)
                                                     .unwrap_or(true)
-                                                    || self.structure_columns.is_empty()
+                                                    || (self.structure_columns.is_empty() && !self.is_refreshing_structure)
                                                 {
                                                     data_table::load_structure_info_for_current_table(self);
                                                 } else {

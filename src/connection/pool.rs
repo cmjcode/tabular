@@ -900,6 +900,39 @@ pub(crate) async fn load_connection_by_id(
     let ssl_key_passphrase: String = row.try_get("ssl_key_passphrase").unwrap_or_default();
     let ssl_verify_server: i64 = row.try_get("ssl_verify_server").unwrap_or(1);
 
+    let password = if let Some(cid) = id {
+        crate::secrets::resolve_readonly(
+            &crate::secrets::connection_secret_name(cid, "password"),
+            &password,
+        )
+    } else {
+        password
+    };
+    let ssh_private_key = if let Some(cid) = id {
+        crate::secrets::resolve_readonly(
+            &crate::secrets::connection_secret_name(cid, "ssh_private_key"),
+            &ssh_private_key,
+        )
+    } else {
+        ssh_private_key
+    };
+    let ssh_password = if let Some(cid) = id {
+        crate::secrets::resolve_readonly(
+            &crate::secrets::connection_secret_name(cid, "ssh_password"),
+            &ssh_password,
+        )
+    } else {
+        ssh_password
+    };
+    let ssl_key_passphrase = if let Some(cid) = id {
+        crate::secrets::resolve_readonly(
+            &crate::secrets::connection_secret_name(cid, "ssl_key_passphrase"),
+            &ssl_key_passphrase,
+        )
+    } else {
+        ssl_key_passphrase
+    };
+
     Some(models::structs::ConnectionConfig {
         id,
         name,

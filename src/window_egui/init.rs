@@ -1167,6 +1167,7 @@ impl super::Tabular {
                             if let Some(pool) = &cache_pool_thread
                                 && let Ok(rt) = tokio::runtime::Runtime::new()
                             {
+                                eprintln!("[WORKER] FetchTableStructure conn={} db='{}' tbl='{}' started", connection_id, database_name, table_name);
                                 let conn_opt = rt.block_on(async {
                                     crate::connection::pool::load_connection_by_id(connection_id, pool).await
                                 });
@@ -1192,6 +1193,13 @@ impl super::Tabular {
                                         (idx_fut.await, part_fut.await)
                                     });
 
+                                    eprintln!("[WORKER] FetchTableStructure finished: {} cols, {} idxs for {}/{}",
+                                        cols.as_ref().map(|c| c.len()).unwrap_or(0),
+                                        idxs.len(),
+                                        database_name,
+                                        table_name
+                                    );
+
                                     let _ = result_sender_thread.send(
                                         models::enums::BackgroundResult::TableStructureFetched {
                                             connection_id,
@@ -1202,6 +1210,8 @@ impl super::Tabular {
                                             partitions: Some(parts),
                                         },
                                     );
+                                } else {
+                                    eprintln!("[WORKER] FetchTableStructure: failed to load connection id={}", connection_id);
                                 }
                             }
                         });
