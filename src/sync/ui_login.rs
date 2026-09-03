@@ -6,6 +6,7 @@
 //! 3. `draw_circular_avatar`: Helper to render circular user avatars with image texture or initials fallback.
 
 use eframe::egui;
+use crate::rfd;
 use crate::window_egui::{Tabular, style};
 use super::auth::OAuthProvider;
 
