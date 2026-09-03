@@ -593,11 +593,11 @@ impl super::Tabular {
             return;
         }
 
-        eprintln!("[TREE-LOADER] load_databases_for_folder conn={}", connection_id);
+        debug!("[TREE-LOADER] load_databases_for_folder conn={}", connection_id);
 
         // First check cache
         let cached_opt = cache_data::get_databases_from_cache(self, connection_id);
-        eprintln!("[TREE-LOADER] conn={} SQLite database_cache lookup returned: {:?}", connection_id, cached_opt);
+        debug!("[TREE-LOADER] conn={} SQLite database_cache lookup returned: {} dbs", connection_id, cached_opt.as_ref().map(|d| d.len()).unwrap_or(0));
 
         // Distinguish three cases:
         // 1. Some(non-empty) → cache hit, populate tree immediately
@@ -606,7 +606,7 @@ impl super::Tabular {
         // 3. None            → DB lookup failed entirely (no pool / first run) → trigger auto-sync
         match cached_opt {
             Some(cached_databases) if !cached_databases.is_empty() => {
-                eprintln!("[TREE-LOADER] conn={} CACHE HIT! Building tree nodes for {} databases: {:?}", connection_id, cached_databases.len(), cached_databases);
+                debug!("[TREE-LOADER] conn={} CACHE HIT! Building tree nodes for {} databases", connection_id, cached_databases.len());
                 databases_folder.children.clear();
                 for db_name in &cached_databases {
                     let mut db_node = models::structs::TreeNode::new(
@@ -659,7 +659,7 @@ impl super::Tabular {
                 // Cache was queried successfully but returned an empty list — background sync
                 // is still in-flight and hasn't written database rows yet.  Do NOT re-trigger
                 // auto-sync here; just show a passive "Syncing..." placeholder.
-                eprintln!("[TREE-LOADER] conn={} cache Some([]) — sync in-flight, showing Syncing...", connection_id);
+                debug!("[TREE-LOADER] conn={} cache Some([]) — sync in-flight, showing Syncing...", connection_id);
                 databases_folder.children.clear();
                 let syncing_node = models::structs::TreeNode::new(
                     "Syncing databases...".to_string(),
@@ -671,7 +671,7 @@ impl super::Tabular {
             None => {
                 // Cache lookup returned None — DB pool not ready or connection never fetched databases.
                 // Fetch databases list in background if not already fetching.
-                eprintln!("[TREE-LOADER] conn={} CACHE MISS (None)! Dispatching FetchDatabases in background", connection_id);
+                debug!("[TREE-LOADER] conn={} CACHE MISS (None)! Dispatching FetchDatabases in background", connection_id);
 
                 if !self.fetching_databases.contains(&connection_id)
                     && !self.connection_errors.contains_key(&connection_id)
@@ -1154,10 +1154,9 @@ impl super::Tabular {
             cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
             && !cached_items.is_empty()
         {
-            eprintln!(
-                "[TABULAR-DEBUG] MySQL load_folder: CACHE HIT conn={} db={:?} type={:?} count={} panen_found={}",
-                connection_id, database_name, table_type, cached_items.len(),
-                cached_items.iter().any(|n| n.to_lowercase().contains("panen"))
+            debug!(
+                "[TREE-LOADER] MySQL load_folder: CACHE HIT conn={} db={:?} type={:?} count={}",
+                connection_id, database_name, table_type, cached_items.len()
             );
             // Create tree nodes from cached data
             let child_nodes: Vec<models::structs::TreeNode> = cached_items
@@ -1200,10 +1199,9 @@ impl super::Tabular {
             database_name,
             table_type,
         ) {
-            eprintln!(
-                "[TABULAR-DEBUG] MySQL load_folder: LIVE FETCH conn={} db={:?} type={:?} count={} panen_found={}",
-                connection_id, database_name, table_type, real_items.len(),
-                real_items.iter().any(|n| n.to_lowercase().contains("panen"))
+            debug!(
+                "[TREE-LOADER] MySQL load_folder: LIVE FETCH conn={} db={:?} type={:?} count={}",
+                connection_id, database_name, table_type, real_items.len()
             );
 
             // Save to cache for future use
@@ -1299,10 +1297,9 @@ impl super::Tabular {
             cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
             && !cached.is_empty()
         {
-            eprintln!(
-                "[TABULAR-DEBUG] PG load_folder: CACHE HIT conn={} db={:?} type={:?} count={} panen_found={}",
-                connection_id, database_name, table_type, cached.len(),
-                cached.iter().any(|n| n.to_lowercase().contains("panen"))
+            debug!(
+                "[TREE-LOADER] PG load_folder: CACHE HIT conn={} db={:?} type={:?} count={}",
+                connection_id, database_name, table_type, cached.len()
             );
             node.children = cached
                 .into_iter()
@@ -1331,10 +1328,9 @@ impl super::Tabular {
             database_name,
             table_type,
         ) {
-            eprintln!(
-                "[TABULAR-DEBUG] PG load_folder: LIVE FETCH conn={} db={:?} type={:?} count={} panen_found={}",
-                connection_id, database_name, table_type, real_items.len(),
-                real_items.iter().any(|n| n.to_lowercase().contains("panen"))
+            debug!(
+                "[TREE-LOADER] PG load_folder: LIVE FETCH conn={} db={:?} type={:?} count={}",
+                connection_id, database_name, table_type, real_items.len()
             );
             let table_data: Vec<(String, String)> = real_items
                 .iter()

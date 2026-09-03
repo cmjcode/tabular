@@ -20,8 +20,7 @@ pub async fn fetch_dba_processes(
     db_type: &DatabaseType,
 ) -> Result<Vec<ProcessInfo>, String> {
     let query = get_processlist_query(db_type);
-    log::info!("[DBA-MONITOR] Fetching processes for db_type={:?}...", db_type);
-    eprintln!("[DBA-MONITOR] Fetching processes for db_type={:?}...", db_type);
+    log::debug!("[DBA-MONITOR] Fetching processes for db_type={:?}...", db_type);
     match (db_type, pool) {
         (DatabaseType::PostgreSQL, DatabasePool::PostgreSQL(pg_pool)) => {
             let fut = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(&**pg_pool);
@@ -53,8 +52,7 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
-            log::info!("[DBA-MONITOR] PostgreSQL processes fetched: {} rows", string_rows.len());
-            eprintln!("[DBA-MONITOR] PostgreSQL processes fetched: {} rows", string_rows.len());
+            log::debug!("[DBA-MONITOR] PostgreSQL processes fetched: {} rows", string_rows.len());
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         (DatabaseType::MySQL, DatabasePool::MySQL(my_pool)) => {
@@ -89,8 +87,7 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
-            log::info!("[DBA-MONITOR] MySQL processes fetched: {} rows", string_rows.len());
-            eprintln!("[DBA-MONITOR] MySQL processes fetched: {} rows", string_rows.len());
+            log::debug!("[DBA-MONITOR] MySQL processes fetched: {} rows", string_rows.len());
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         (DatabaseType::SQLite, DatabasePool::SQLite(sq_pool)) => {
@@ -119,8 +116,7 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
-            log::info!("[DBA-MONITOR] SQLite processes fetched: {} rows", string_rows.len());
-            eprintln!("[DBA-MONITOR] SQLite processes fetched: {} rows", string_rows.len());
+            log::debug!("[DBA-MONITOR] SQLite processes fetched: {} rows", string_rows.len());
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         _ => Err("Database engine not supported for live process monitor".to_string()),

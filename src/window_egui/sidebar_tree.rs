@@ -1024,7 +1024,7 @@ impl super::Tabular {
                     let folder_type = expansion_req.node_type.clone();
                     let database_name = expansion_req.database_name.clone();
 
-                    eprintln!(
+                    debug!(
                         "[TABULAR-DEBUG] expansion_handler: conn={} folder_type={:?} db={:?} force_clear={}",
                         connection_id, folder_type, database_name, expansion_req.force_clear_cache
                     );
@@ -1033,7 +1033,7 @@ impl super::Tabular {
                     // live-fetch path is always taken instead of stale cache.
                     if expansion_req.force_clear_cache {
                         if let Some(ref db) = database_name {
-                            eprintln!(
+                            debug!(
                                 "[TABULAR-DEBUG] expansion_handler: forcing cache clear for db={:?}",
                                 db
                             );
@@ -1043,7 +1043,7 @@ impl super::Tabular {
                                 db,
                             );
                         } else {
-                            eprintln!("[TABULAR-DEBUG] expansion_handler: force_clear=true but database_name is None! Cannot clear cache.");
+                            debug!("[TABULAR-DEBUG] expansion_handler: force_clear=true but database_name is None! Cannot clear cache.");
                         }
                     }
 
@@ -1057,7 +1057,7 @@ impl super::Tabular {
                             &folder_type,
                             &database_name,
                         ) {
-                            eprintln!(
+                            debug!(
                                 "[TABULAR-DEBUG] expansion_handler: found folder node is_loaded={} db={:?}",
                                 folder_node.is_loaded, folder_node.database_name
                             );
@@ -1582,7 +1582,6 @@ impl super::Tabular {
                             if !had_cache {
                                 // Set browse mode when opening table via sidebar click
                                 self.is_table_browse_mode = true;
-                                println!("================== 1 ============================ ");
                                 debug!("🔄 Taking client-side pagination fallback path");
                                 debug!(
                                     "🌐 Loading live data from server for table {}/{} (client pagination)",

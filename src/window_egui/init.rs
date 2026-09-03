@@ -814,7 +814,7 @@ impl super::Tabular {
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
-                            eprintln!("[FETCH-DB] FetchDatabases id={} STARTED", connection_id);
+                            debug!("[FETCH-DB] FetchDatabases id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
@@ -823,7 +823,7 @@ impl super::Tabular {
                                     pool,
                                     &shared_pools_thread,
                                 ));
-                                eprintln!("[FETCH-DB] FetchDatabases id={} result: {:?}", connection_id, dbs_opt);
+                                debug!("[FETCH-DB] FetchDatabases id={} result: {} dbs", connection_id, dbs_opt.as_ref().map(|d| d.len()).unwrap_or(0));
 
                                 if let Some(dbs) = dbs_opt {
                                     let _ = result_sender_thread.send(
@@ -1085,7 +1085,7 @@ impl super::Tabular {
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
-                            eprintln!(
+                            debug!(
                                 "[AUTO-SYNC] bg RefreshConnection id={} STARTED cache_pool_present={}",
                                 connection_id,
                                 cache_pool_thread.is_some()
@@ -1099,15 +1099,15 @@ impl super::Tabular {
                                     ),
                                 )
                             } else {
-                                eprintln!(
+                                debug!(
                                     "[AUTO-SYNC] bg RefreshConnection id={} cache_pool or runtime is None!",
                                     connection_id
                                 );
                                 (false, vec![])
                             };
-                            eprintln!(
-                                "[AUTO-SYNC] bg RefreshConnection id={} FINISHED success={} databases={:?}",
-                                connection_id, success, databases
+                            debug!(
+                                "[AUTO-SYNC] bg RefreshConnection id={} FINISHED success={} db_count={}",
+                                connection_id, success, databases.len()
                             );
                             let _ = result_sender_thread.send(
                                 models::enums::BackgroundResult::RefreshComplete {
@@ -1125,14 +1125,14 @@ impl super::Tabular {
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
-                            eprintln!("[POOL] EnsureConnectionPool id={} STARTED", connection_id);
+                            debug!("[POOL] EnsureConnectionPool id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
                                 let res = rt.block_on(async {
                                     crate::connection::create_connection_pool_by_id(connection_id, pool).await
                                 });
-                                eprintln!("[POOL] EnsureConnectionPool id={} result ok={}", connection_id, res.is_ok());
+                                debug!("[POOL] EnsureConnectionPool id={} result ok={}", connection_id, res.is_ok());
                                 match res {
                                     Ok(new_pool) => {
                                         if let Ok(mut shared) = shared_pools_thread.lock() {
@@ -1140,7 +1140,7 @@ impl super::Tabular {
                                         }
                                     }
                                     Err(err_msg) => {
-                                        eprintln!("[POOL] EnsureConnectionPool id={} error: {}", connection_id, err_msg);
+                                        error!("[POOL] EnsureConnectionPool id={} error: {}", connection_id, err_msg);
                                         let _ = result_sender_thread.send(models::enums::BackgroundResult::ConnectionFailed {
                                             connection_id,
                                             error_message: err_msg,
@@ -1167,7 +1167,7 @@ impl super::Tabular {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
-                                eprintln!("[WORKER] FetchTableStructure conn={} db='{}' tbl='{}' started", connection_id, database_name, table_name);
+                                debug!("[WORKER] FetchTableStructure conn={} db='{}' tbl='{}' started", connection_id, database_name, table_name);
                                 let conn_opt = rt.block_on(async {
                                     crate::connection::pool::load_connection_by_id(connection_id, pool).await
                                 });
@@ -1193,7 +1193,7 @@ impl super::Tabular {
                                         (idx_fut.await, part_fut.await)
                                     });
 
-                                    eprintln!("[WORKER] FetchTableStructure finished: {} cols, {} idxs for {}/{}",
+                                    debug!("[WORKER] FetchTableStructure finished: {} cols, {} idxs for {}/{}",
                                         cols.as_ref().map(|c| c.len()).unwrap_or(0),
                                         idxs.len(),
                                         database_name,
@@ -1211,7 +1211,7 @@ impl super::Tabular {
                                         },
                                     );
                                 } else {
-                                    eprintln!("[WORKER] FetchTableStructure: failed to load connection id={}", connection_id);
+                                    error!("[WORKER] FetchTableStructure: failed to load connection id={}", connection_id);
                                 }
                             }
                         });

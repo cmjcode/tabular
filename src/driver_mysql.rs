@@ -459,7 +459,7 @@ pub(crate) async fn fetch_mysql_data(
         None
     }
 
-    eprintln!("[DRIVER-MYSQL] conn={} starting fetch_mysql_data...", connection_id);
+    debug!("[DRIVER-MYSQL] conn={} starting fetch_mysql_data...", connection_id);
     let mut staging = MetadataStaging::new(connection_id);
 
     // Fetch databases via INFORMATION_SCHEMA and skip system schemas (robust to VARBINARY)
@@ -470,12 +470,12 @@ pub(crate) async fn fetch_mysql_data(
     let db_rows = match db_rows_res {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[DRIVER-MYSQL] conn={} failed to list INFORMATION_SCHEMA.SCHEMATA: {}", connection_id, e);
+            error!("[DRIVER-MYSQL] conn={} failed to list INFORMATION_SCHEMA.SCHEMATA: {}", connection_id, e);
             return false;
         }
     };
 
-    eprintln!("[DRIVER-MYSQL] conn={} found {} raw schemas", connection_id, db_rows.len());
+    debug!("[DRIVER-MYSQL] conn={} found {} raw schemas", connection_id, db_rows.len());
 
     for row in db_rows.into_iter() {
         let db_name = match decode_cell(&row, 0) {
@@ -487,7 +487,7 @@ pub(crate) async fn fetch_mysql_data(
             continue;
         }
 
-        eprintln!("[DRIVER-MYSQL] conn={} processing schema: '{}'", connection_id, db_name);
+        debug!("[DRIVER-MYSQL] conn={} processing schema: '{}'", connection_id, db_name);
         let staged_db = staging.add_database(&db_name);
 
         // Fetch base tables and views using INFORMATION_SCHEMA
@@ -501,7 +501,7 @@ pub(crate) async fn fetch_mysql_data(
         let table_rows = match tables_res {
             Ok(r) => r,
             Err(e) => {
-                eprintln!(
+                error!(
                     "[DRIVER-MYSQL] conn={} failed to list tables in '{}': {}",
                     connection_id, db_name, e
                 );
@@ -509,7 +509,7 @@ pub(crate) async fn fetch_mysql_data(
             }
         };
 
-        eprintln!("[DRIVER-MYSQL] conn={} schema '{}' has {} tables/views", connection_id, db_name, table_rows.len());
+        debug!("[DRIVER-MYSQL] conn={} schema '{}' has {} tables/views", connection_id, db_name, table_rows.len());
 
         let mut seen_tables = std::collections::HashSet::new();
         for row in table_rows.into_iter() {
@@ -611,18 +611,18 @@ pub(crate) async fn fetch_mysql_data(
 
     let total_dbs = staging.databases.len();
     let total_tbls: usize = staging.databases.iter().map(|d| d.tables.len()).sum();
-    eprintln!(
+    debug!(
         "[DRIVER-MYSQL] conn={} staging finished: {} DBs, {} tables total. Committing to SQLite...",
         connection_id, total_dbs, total_tbls
     );
 
     match staging.commit_to_sqlite(cache_pool).await {
         Ok(_) => {
-            eprintln!("[DRIVER-MYSQL] conn={} commit_to_sqlite SUCCESS", connection_id);
+            debug!("[DRIVER-MYSQL] conn={} commit_to_sqlite SUCCESS", connection_id);
             true
         }
         Err(e) => {
-            eprintln!("[DRIVER-MYSQL] conn={} commit_to_sqlite FAILED: {}", connection_id, e);
+            error!("[DRIVER-MYSQL] conn={} commit_to_sqlite FAILED: {}", connection_id, e);
             false
         }
     }
