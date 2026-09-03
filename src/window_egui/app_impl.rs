@@ -4400,10 +4400,6 @@ impl App for Tabular {
             }
         }
 
-        // Apply global UI visuals based on the current theme and device metrics.
-        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
-        crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
-
         // If waiting for pool, check readiness and auto-run queued query
         if self.pool_wait_in_progress {
             let mut ready = false;
@@ -4501,8 +4497,8 @@ impl App for Tabular {
                         tab.query_message_is_error = true;
                     }
                 } else {
-                    // Keep UI updated while waiting
-                    ctx.request_repaint();
+                    // Keep UI updated while waiting with 50ms throttle (smooth spinner without 100% CPU burn)
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
                 }
             }
         }

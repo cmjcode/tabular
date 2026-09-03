@@ -3135,7 +3135,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
                 ui.painter().rect_filled(rect, 0.0, col);
             }
-        } else {
+        } else if text_len <= 50_000 {
             // Block highlight for statements
             // Quick parse to find statement boundaries with robust comment handling
             // Only run if text is reasonably sized to avoid lags on huge files every frame

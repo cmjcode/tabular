@@ -626,16 +626,59 @@ fn collect_loaded_fks(app: &mut Tabular) -> Vec<crate::models::structs::ForeignK
         {
             return fks;
         }
-        // Lazy one-shot warm: fetch live FKs (which also persists them), re-read.
+        // Lazy one-shot warm in background: fetch live FKs asynchronously without freezing the UI thread
         if !app.fk_cache_warmed.contains(&cid) {
             app.fk_cache_warmed.insert(cid);
-            if let Some(rt) = app.runtime.clone() {
-                let _ = rt.block_on(crate::connection::get_foreign_keys(app, cid, &db));
-            }
-            if let Some(fks) = crate::cache_data::get_foreign_keys_from_cache(app, cid, &db)
-                && !fks.is_empty()
-            {
-                return fks;
+            if let (Some(rt), Some(pool), Some(db_pool)) = (
+                app.runtime.clone(),
+                app.connection_pools.get(&cid).cloned(),
+                app.db_pool.clone(),
+            ) {
+                let db_name = db.clone();
+                rt.spawn(async move {
+                    let mut keys: Vec<crate::models::structs::ForeignKey> = Vec::new();
+                    match pool {
+                        crate::models::enums::DatabasePool::MySQL(p) => {
+                            if let Ok(k) = crate::driver_mysql::fetch_mysql_foreign_keys(&p, &db_name).await {
+                                keys = k;
+                            }
+                        }
+                        crate::models::enums::DatabasePool::PostgreSQL(p) => {
+                            if let Ok(k) = crate::driver_postgres::fetch_postgres_foreign_keys(&p).await {
+                                keys = k;
+                            }
+                        }
+                        crate::models::enums::DatabasePool::SQLite(p) => {
+                            if let Ok(k) = crate::driver_sqlite::fetch_sqlite_foreign_keys(&p).await {
+                                keys = k;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if !keys.is_empty() {
+                        let _ = sqlx::query(
+                            "DELETE FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
+                        )
+                        .bind(cid)
+                        .bind(&db_name)
+                        .execute(db_pool.as_ref())
+                        .await;
+                        for fk in &keys {
+                            let _ = sqlx::query(
+                                "INSERT OR REPLACE INTO foreign_key_cache (connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name, constraint_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            )
+                            .bind(cid)
+                            .bind(&db_name)
+                            .bind(&fk.table_name)
+                            .bind(&fk.column_name)
+                            .bind(&fk.referenced_table_name)
+                            .bind(&fk.referenced_column_name)
+                            .bind(&fk.constraint_name)
+                            .execute(db_pool.as_ref())
+                            .await;
+                        }
+                    }
+                });
             }
         }
     }
