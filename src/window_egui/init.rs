@@ -172,6 +172,8 @@ impl super::Tabular {
             mpsc::channel::<(usize, Result<Vec<models::structs::ProcessInfo>, String>)>();
         let (user_manager_result_sender, user_manager_result_receiver) =
             mpsc::channel::<(usize, crate::user_manager::UserManagerResult)>();
+        let (autocomplete_warm_sender, autocomplete_warm_receiver) =
+            mpsc::channel::<crate::window_egui::AutocompleteWarmResult>();
 
         // Create shared runtime for all database operations
         crate::log_startup_step("creating shared Tokio runtime");
@@ -389,6 +391,11 @@ impl super::Tabular {
             fk_cache_warmed: std::collections::HashSet::new(),
             autocomplete_cols_warmed: std::collections::HashSet::new(),
             autocomplete_cols_mem: std::collections::HashMap::new(),
+            autocomplete_fks_mem: std::collections::HashMap::new(),
+            autocomplete_tables_mem: std::collections::HashMap::new(),
+            autocomplete_col_types_mem: std::collections::HashMap::new(),
+            autocomplete_warm_receiver: Some(autocomplete_warm_receiver),
+            autocomplete_warm_sender,
             selection_force_clear: false,
             // Index dialog defaults
             show_index_dialog: false,

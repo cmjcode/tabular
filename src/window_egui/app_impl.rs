@@ -4158,6 +4158,31 @@ impl App for Tabular {
             }
         }
 
+        // Drain background autocomplete metadata warming results
+        if let Some(ref rx) = self.autocomplete_warm_receiver {
+            let mut got_any = false;
+            while let Ok(res) = rx.try_recv() {
+                got_any = true;
+                match res {
+                    crate::window_egui::AutocompleteWarmResult::ForeignKeys { connection_id, database_name, keys } => {
+                        self.autocomplete_fks_mem.insert((connection_id, database_name), keys);
+                    }
+                    crate::window_egui::AutocompleteWarmResult::Columns { connection_id, table_name, columns, types } => {
+                        self.autocomplete_cols_mem.insert((connection_id, table_name.clone()), columns);
+                        for (cn, ct) in types {
+                            self.autocomplete_col_types_mem.insert((connection_id, table_name.clone(), cn.to_ascii_lowercase()), ct);
+                        }
+                    }
+                    crate::window_egui::AutocompleteWarmResult::Tables { connection_id, database_name, tables } => {
+                        self.autocomplete_tables_mem.insert((connection_id, database_name), tables);
+                    }
+                }
+            }
+            if got_any {
+                ctx.request_repaint();
+            }
+        }
+
         // Drive sync & collaboration tick
         self.tick_sync(ctx);
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)

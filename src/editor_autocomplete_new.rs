@@ -1,5 +1,4 @@
 //! Temporary clean replacement for editor_autocomplete while original is corrupted.
-use crate::cache_data::{get_columns_from_cache, get_tables_from_cache};
 use crate::query_tools;
 use crate::window_egui::Tabular;
 use eframe::egui;
@@ -268,7 +267,102 @@ mod tests {
         assert!(context_relevance_score(SqlContext::AfterJoinOn, "orders.id = users.id", "o")
             > context_relevance_score(SqlContext::AfterJoinOn, "orders", "o"));
     }
+
+    #[test]
+    fn test_collect_tables_from_tree() {
+        use crate::models::enums::NodeType;
+        use crate::models::structs::TreeNode;
+
+        let mut table1 = TreeNode::new("users".to_string(), NodeType::Table);
+        table1.connection_id = Some(1);
+        table1.database_name = Some("mydb".to_string());
+
+        let mut view1 = TreeNode::new("v_active_users".to_string(), NodeType::View);
+        view1.connection_id = Some(1);
+        view1.database_name = Some("mydb".to_string());
+
+        let mut other_db_table = TreeNode::new("other_users".to_string(), NodeType::Table);
+        other_db_table.connection_id = Some(1);
+        other_db_table.database_name = Some("otherdb".to_string());
+
+        let mut other_conn_table = TreeNode::new("remote_users".to_string(), NodeType::Table);
+        other_conn_table.connection_id = Some(2);
+        other_conn_table.database_name = Some("mydb".to_string());
+
+        let mut root = TreeNode::new("root".to_string(), NodeType::Connection);
+        root.children = vec![table1, view1, other_db_table, other_conn_table];
+
+        let mut out = Vec::new();
+        collect_tables_from_tree(&[root], Some(1), Some("mydb"), &mut out);
+
+        assert_eq!(out, vec!["users", "v_active_users"]);
+    }
+
+    #[test]
+    fn test_collect_columns_from_tree() {
+        use crate::models::enums::NodeType;
+        use crate::models::structs::TreeNode;
+
+        let col1 = TreeNode::new("id".to_string(), NodeType::Column);
+        let col2 = TreeNode::new("email".to_string(), NodeType::Column);
+        let col3 = TreeNode::new("name".to_string(), NodeType::Column);
+
+        let mut table = TreeNode::new("customers".to_string(), NodeType::Table);
+        table.connection_id = Some(1);
+        table.children = vec![col1, col2, col3];
+
+        let mut root = TreeNode::new("root".to_string(), NodeType::Connection);
+        root.children = vec![table];
+
+        let root_slice = std::slice::from_ref(&root);
+
+        let mut cols = Vec::new();
+        // Case-insensitive match check
+        collect_columns_from_tree(root_slice, 1, "CUSTOMERS", &mut cols);
+        assert_eq!(cols, vec!["id", "email", "name"]);
+
+        // Unknown table returns empty without error
+        let mut unknown_cols = Vec::new();
+        collect_columns_from_tree(root_slice, 1, "nonexistent", &mut unknown_cols);
+        assert!(unknown_cols.is_empty());
+    }
+
+    #[test]
+    fn test_collect_loaded_fks_memory_lookup() {
+        use crate::models::structs::ForeignKey;
+        use std::collections::HashMap;
+
+        let mut mem_fks: HashMap<(i64, String), Vec<ForeignKey>> = HashMap::new();
+        mem_fks.insert(
+            (1, "mydb".to_string()),
+            vec![
+                ForeignKey {
+                    constraint_name: "fk_orders_customer".to_string(),
+                    table_name: "orders".to_string(),
+                    column_name: "customer_id".to_string(),
+                    referenced_table_name: "customers".to_string(),
+                    referenced_column_name: "id".to_string(),
+                },
+                ForeignKey {
+                    constraint_name: "fk_items_order".to_string(),
+                    table_name: "order_items".to_string(),
+                    column_name: "order_id".to_string(),
+                    referenced_table_name: "orders".to_string(),
+                    referenced_column_name: "id".to_string(),
+                },
+            ],
+        );
+
+        // Verify that memory map lookup by (connection_id, db) is instant
+        let key = (1, "mydb".to_string());
+        let all_fks = mem_fks.get(&key).expect("FKs must be found in memory");
+        assert_eq!(all_fks.len(), 2);
+        assert_eq!(all_fks[0].table_name, "orders");
+        assert_eq!(all_fks[0].referenced_table_name, "customers");
+        assert_eq!(all_fks[1].table_name, "order_items");
+    }
 }
+
 
 fn extract_tables(sql: &str) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -415,83 +509,172 @@ fn fuzzy_match(pref: &str, cand: &str) -> Option<i32> {
     }
     if pi == p.len() { Some(score) } else { None }
 }
-fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
-    // Always enumerate ALL databases for this connection so tables that live in
-    // a sibling database (e.g. "datalogs" in a non-active schema) still appear
-    // in suggestions. Active database goes first so its tables sort to the top.
-    let all_dbs = app.database_cache.get(&cid).cloned().unwrap_or_default();
-    let ordered_dbs: Vec<String> = if db.is_empty() || all_dbs.is_empty() {
-        all_dbs
-    } else {
-        let mut v = vec![db.to_string()];
-        v.extend(all_dbs.into_iter().filter(|d| d != db));
-        v
-    };
-    let mut all = Vec::new();
-    for d in &ordered_dbs {
-        for tt in ["table", "view"] {
-            if let Some(mut ls) = get_tables_from_cache(app, cid, d, tt) {
-                all.append(&mut ls);
+
+fn collect_tables_from_tree(
+    nodes: &[crate::models::structs::TreeNode],
+    target_cid: Option<i64>,
+    target_db: Option<&str>,
+    out: &mut Vec<String>,
+) {
+    for node in nodes {
+        let matches_conn = target_cid.is_none() || node.connection_id.is_none() || node.connection_id == target_cid;
+        let matches_db = target_db.is_none() || node.database_name.is_none() || node.database_name.as_deref() == target_db;
+        if (node.node_type == crate::models::enums::NodeType::Table || node.node_type == crate::models::enums::NodeType::View)
+            && matches_conn && matches_db
+        {
+            if !node.name.is_empty() && !out.contains(&node.name) {
+                out.push(node.name.clone());
             }
         }
-    }
-    // Fallback: editor tabs are often not pinned to a specific database, so the
-    // scoped lookup above can return nothing even when the connection has cached
-    // tables. Query the whole connection (any database) before giving up.
-    if all.is_empty() {
-        for tt in ["table", "view"] {
-            if let Some(mut ls) = crate::cache_data::get_tables_for_connection_any_db(app, cid, tt)
-            {
-                all.append(&mut ls);
-            }
-        }
-    }
-    if all.is_empty() {
-        None
-    } else {
-        all.sort_unstable();
-        all.dedup();
-        Some(all)
+        collect_tables_from_tree(&node.children, target_cid, target_db, out);
     }
 }
-pub(crate) fn get_all_tables(app: &Tabular) -> Vec<String> {
-    let mut all = Vec::new();
-    for (cid, dbs) in &app.database_cache {
-        for d in dbs {
-            for tt in ["table", "view"] {
-                if let Some(mut ls) = get_tables_from_cache(app, *cid, d, tt) {
-                    all.append(&mut ls);
+
+fn collect_columns_from_tree(
+    nodes: &[crate::models::structs::TreeNode],
+    target_cid: i64,
+    target_table: &str,
+    out: &mut Vec<String>,
+) {
+    for node in nodes {
+        if (node.connection_id.is_none() || node.connection_id == Some(target_cid))
+            && (node.node_type == crate::models::enums::NodeType::Table || node.node_type == crate::models::enums::NodeType::View)
+            && node.name.eq_ignore_ascii_case(target_table)
+        {
+            for child in &node.children {
+                if child.node_type == crate::models::enums::NodeType::Column {
+                    if !child.name.is_empty() && !out.contains(&child.name) {
+                        out.push(child.name.clone());
+                    }
                 }
             }
+            return;
+        }
+        collect_columns_from_tree(&node.children, target_cid, target_table, out);
+    }
+}
+
+fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
+    // 1. In-memory check first (0ms, non-blocking)
+    if let Some(tbls) = app.autocomplete_tables_mem.get(&(cid, db.to_string())) {
+        if !tbls.is_empty() {
+            return Some(tbls.clone());
         }
     }
-    // `database_cache` may be empty even when `table_cache` is populated (tree
-    // expanded but the db-list map not built). Query the cache table directly.
-    if all.is_empty()
-        && let Some(mut ls) = crate::cache_data::get_all_cached_tables_global(app)
-    {
-        all.append(&mut ls);
+    if !db.is_empty() {
+        if let Some(tbls) = app.autocomplete_tables_mem.get(&(cid, String::new())) {
+            if !tbls.is_empty() {
+                return Some(tbls.clone());
+            }
+        }
     }
-    all.sort_unstable();
-    all.dedup();
+
+    // 2. Extract from in-memory items_tree without I/O
+    let mut tree_tables = Vec::new();
+    collect_tables_from_tree(&app.items_tree, Some(cid), if db.is_empty() { None } else { Some(db) }, &mut tree_tables);
+    if !tree_tables.is_empty() {
+        tree_tables.sort_unstable();
+        tree_tables.dedup();
+        return Some(tree_tables);
+    }
+
+    // 3. Lazy background warm from SQLite table_cache (non-blocking)
+    if let (Some(rt), Some(db_pool)) = (app.runtime.clone(), app.db_pool.clone()) {
+        let warm_tx = app.autocomplete_warm_sender.clone();
+        let db_name = db.to_string();
+        rt.spawn(async move {
+            let rows = if db_name.is_empty() {
+                sqlx::query_as::<_, (String,)>(
+                    "SELECT DISTINCT table_name FROM table_cache WHERE connection_id = ? AND table_type IN ('table', 'view') ORDER BY table_name",
+                )
+                .bind(cid)
+                .fetch_all(db_pool.as_ref())
+                .await
+            } else {
+                sqlx::query_as::<_, (String,)>(
+                    "SELECT table_name FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type IN ('table', 'view') ORDER BY table_name",
+                )
+                .bind(cid)
+                .bind(&db_name)
+                .fetch_all(db_pool.as_ref())
+                .await
+            };
+            if let Ok(rows) = rows {
+                let tables: Vec<String> = rows.into_iter().map(|(t,)| t).collect();
+                if !tables.is_empty() {
+                    let _ = warm_tx.send(crate::window_egui::AutocompleteWarmResult::Tables {
+                        connection_id: cid,
+                        database_name: db_name,
+                        tables,
+                    });
+                }
+            }
+        });
+    }
+
+    None
+}
+
+pub(crate) fn get_all_tables(app: &Tabular) -> Vec<String> {
+    // 1. In-memory check
+    let mut all = Vec::new();
+    for tbls in app.autocomplete_tables_mem.values() {
+        for t in tbls {
+            if !all.contains(t) {
+                all.push(t.clone());
+            }
+        }
+    }
+    if !all.is_empty() {
+        all.sort_unstable();
+        all.dedup();
+        return all;
+    }
+
+    // 2. Extract from in-memory items_tree
+    collect_tables_from_tree(&app.items_tree, None, None, &mut all);
+    if !all.is_empty() {
+        all.sort_unstable();
+        all.dedup();
+        return all;
+    }
+
+    // 3. Lazy background warm (non-blocking)
+    if let (Some(rt), Some(db_pool)) = (app.runtime.clone(), app.db_pool.clone()) {
+        let warm_tx = app.autocomplete_warm_sender.clone();
+        rt.spawn(async move {
+            if let Ok(rows) = sqlx::query_as::<_, (i64, String, String)>(
+                "SELECT connection_id, database_name, table_name FROM table_cache WHERE table_type IN ('table', 'view') ORDER BY table_name",
+            )
+            .fetch_all(db_pool.as_ref())
+            .await {
+                let mut map: std::collections::HashMap<(i64, String), Vec<String>> = std::collections::HashMap::new();
+                for (cid, db, tbl) in rows {
+                    map.entry((cid, db)).or_default().push(tbl);
+                }
+                for ((cid, db), tables) in map {
+                    let _ = warm_tx.send(crate::window_egui::AutocompleteWarmResult::Tables {
+                        connection_id: cid,
+                        database_name: db,
+                        tables,
+                    });
+                }
+            }
+        });
+    }
+
     all
 }
+
 fn get_cached_columns(
     app: &mut Tabular,
     cid: i64,
     db: &str,
     tables: Vec<String>,
 ) -> Option<Vec<String>> {
-    if tables.is_empty() {
-        return None;
-    }
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for t in tables {
         let key = (cid, t.to_ascii_lowercase());
-
-        // 1) In-memory fast path: once a table's columns are resolved they live
-        // here for the session, so suggestions never vanish on a later cache
-        // miss and we don't re-run blocking lookups on every keystroke.
         if let Some(cols) = app.autocomplete_cols_mem.get(&key) {
             for c in cols {
                 if !out.contains(c) {
@@ -501,107 +684,109 @@ fn get_cached_columns(
             continue;
         }
 
-        // 2) SQLite cache: db-scoped first, then any-database (editor tabs
-        // aren't always pinned to the table's real database).
-        let cols = get_columns_from_cache(app, cid, db, &t)
-            .filter(|c| !c.is_empty())
-            .or_else(|| crate::cache_data::get_columns_for_connection_any_db(app, cid, &t));
-
-        // 3) Lazy warm: columns are only cached when a table is expanded in the
-        // tree. If still nothing, fetch them live once and persist, so column
-        // autocomplete works without manually opening each table first.
-        if cols.is_none() && !app.autocomplete_cols_warmed.contains(&key) {
-            // Build an ordered list of databases to try. Prefer the database the
-            // table is actually cached under (the editor tab's `database_name`
-            // is often empty or stale), then the tab's db, then every database
-            // known for this connection.
-            let mut cand_dbs: Vec<String> = Vec::new();
-            let push_db = |d: String, v: &mut Vec<String>| {
-                if !d.is_empty() && !v.iter().any(|e| e.eq_ignore_ascii_case(&d)) {
-                    v.push(d);
-                }
-            };
-            if let Some(d) = crate::cache_data::get_table_database_from_cache(app, cid, &t) {
-                push_db(d, &mut cand_dbs);
-            }
-            push_db(db.to_string(), &mut cand_dbs);
-            if let Some(dbs) = app.database_cache.get(&cid).cloned() {
-                for d in dbs {
-                    push_db(d, &mut cand_dbs);
-                }
-            }
-
-            // Fallback: query the SQLite database_cache directly. This covers the
-            // common case where the user opens the editor before expanding the tree —
-            // database_cache (in-memory) is empty but the SQLite table was populated
-            // when the connection was first established.
-            if cand_dbs.is_empty()
-                && let (Some(pool), Some(rt)) = (app.db_pool.as_ref().cloned(), app.runtime.clone()) {
-                    let fut = async {
-                        sqlx::query_as::<_, (String,)>(
-                            "SELECT DISTINCT database_name FROM database_cache WHERE connection_id = ? AND database_name != '' LIMIT 10",
-                        )
-                        .bind(cid)
-                        .fetch_all(pool.as_ref())
-                        .await
-                    };
-                    if let Ok(rows) = rt.block_on(fut) {
-                        for (d,) in rows {
-                            push_db(d, &mut cand_dbs);
-                        }
-                    }
-                }
-
-            if !cand_dbs.is_empty() {
-                if let Some(conn) = app.connections.iter().find(|c| c.id == Some(cid)).cloned() {
-                    let cand_dbs_clone = cand_dbs.clone();
-                    let t_clone = t.clone();
-                    let pool_opt = app.shared_db_pool.read().ok().and_then(|g| g.clone());
-                    if let Some(rt) = &app.runtime {
-                        rt.spawn(async move {
-                            if let Some(pool) = pool_opt {
-                                for table_db in &cand_dbs_clone {
-                                    if let Some(fetched) =
-                                        crate::connection::fetch_columns_from_database(cid, table_db, &t_clone, &conn)
-                                        && !fetched.is_empty()
-                                    {
-                                        for (i, (column_name, data_type)) in fetched.iter().enumerate() {
-                                            let _ = sqlx::query("INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)")
-                                                .bind(cid)
-                                                .bind(table_db)
-                                                .bind(&t_clone)
-                                                .bind(column_name)
-                                                .bind(data_type)
-                                                .bind(i as i64)
-                                                .execute(pool.as_ref())
-                                                .await;
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-                // Blacklist only after fetch attempt is dispatched.
-                app.autocomplete_cols_warmed.insert(key.clone());
-            }
-        }
-
-        // Promote whatever we resolved into the in-memory map and the output.
-        if let Some(cols) = cols {
-            let names: Vec<String> = cols.into_iter().map(|(c, _)| c).collect();
-            for c in &names {
+        // 2) Check if columns are already in items_tree
+        let mut tree_cols = Vec::new();
+        collect_columns_from_tree(&app.items_tree, cid, &t, &mut tree_cols);
+        if !tree_cols.is_empty() {
+            for c in &tree_cols {
                 if !out.contains(c) {
                     out.push(c.clone());
                 }
             }
-            app.autocomplete_cols_mem.insert(key, names);
+            app.autocomplete_cols_mem.insert(key.clone(), tree_cols);
+            continue;
+        }
+
+        // 3) If missing in memory: mark warmed and insert placeholder immediately to prevent repeated lookups
+        if !app.autocomplete_cols_warmed.contains(&key) {
+            app.autocomplete_cols_warmed.insert(key.clone());
+            app.autocomplete_cols_mem.entry(key.clone()).or_insert_with(Vec::new);
+
+            if let (Some(rt), Some(db_pool)) = (app.runtime.clone(), app.db_pool.clone()) {
+                let warm_tx = app.autocomplete_warm_sender.clone();
+                let t_clone = t.clone();
+                let db_clone = db.to_string();
+                let conn_opt = app.connections.iter().find(|c| c.id == Some(cid)).cloned();
+                let pool_opt = app.shared_db_pool.read().ok().and_then(|g| g.clone());
+
+                rt.spawn(async move {
+                    // Query SQLite column_cache in background
+                    let cached = if db_clone.is_empty() {
+                        sqlx::query_as::<_, (String, String)>(
+                            "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND table_name = ? COLLATE NOCASE ORDER BY ordinal_position",
+                        )
+                        .bind(cid)
+                        .bind(&t_clone)
+                        .fetch_all(db_pool.as_ref())
+                        .await
+                    } else {
+                        sqlx::query_as::<_, (String, String)>(
+                            "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? COLLATE NOCASE ORDER BY ordinal_position",
+                        )
+                        .bind(cid)
+                        .bind(&db_clone)
+                        .bind(&t_clone)
+                        .fetch_all(db_pool.as_ref())
+                        .await
+                    };
+
+                    let mut cols: Vec<(String, String)> = match cached {
+                        Ok(rows) if !rows.is_empty() => rows,
+                        _ => Vec::new(),
+                    };
+
+                    // If SQLite had nothing and we have live connection, fetch live
+                    if cols.is_empty() && let (Some(conn), Some(_pool)) = (conn_opt, pool_opt) {
+                        let try_dbs: Vec<String> = if db_clone.is_empty() {
+                            vec![conn.database.clone()]
+                        } else {
+                            vec![db_clone.clone()]
+                        };
+                        for table_db in &try_dbs {
+                            if let Some(fetched) =
+                                crate::connection::fetch_columns_from_database(cid, table_db, &t_clone, &conn)
+                                && !fetched.is_empty()
+                            {
+                                if let Ok(mut tx) = db_pool.begin().await {
+                                    for (i, (column_name, data_type)) in fetched.iter().enumerate() {
+                                        let _ = sqlx::query(
+                                            "INSERT OR REPLACE INTO column_cache (connection_id, database_name, table_name, column_name, data_type, ordinal_position) VALUES (?, ?, ?, ?, ?, ?)",
+                                        )
+                                        .bind(cid)
+                                        .bind(table_db)
+                                        .bind(&t_clone)
+                                        .bind(column_name)
+                                        .bind(data_type)
+                                        .bind(i as i64)
+                                        .execute(&mut *tx)
+                                        .await;
+                                    }
+                                    let _ = tx.commit().await;
+                                }
+                                cols = fetched;
+                                break;
+                            }
+                        }
+                    }
+
+                    if !cols.is_empty() {
+                        let col_names: Vec<String> = cols.iter().map(|(c, _)| c.clone()).collect();
+                        let _ = warm_tx.send(crate::window_egui::AutocompleteWarmResult::Columns {
+                            connection_id: cid,
+                            table_name: t_clone.to_ascii_lowercase(),
+                            columns: col_names,
+                            types: cols,
+                        });
+                    }
+                });
+            }
         }
     }
     out.sort_unstable();
+    out.dedup();
     if out.is_empty() { None } else { Some(out) }
 }
+
 fn add_keywords(out: &mut Vec<String>, pref: &str) {
     // With no prefix yet (e.g. right after `FROM `), don't flood the popup with
     // every keyword — let tables/columns lead. Keywords return once the user types.
@@ -615,20 +800,31 @@ fn add_keywords(out: &mut Vec<String>, pref: &str) {
     }
 }
 
-/// Collect ForeignKey metadata for autocomplete. Prefers the persistent
-/// `foreign_key_cache` for the active connection (works even with no ERD open);
-/// lazily warms that cache once per connection per session; finally falls back
-/// to any FK data already loaded into an open ERD diagram.
+/// Collect ForeignKey metadata for autocomplete. Prefers in-memory
+/// `autocomplete_fks_mem` for the active connection (instant 0ms response);
+/// lazily warms that cache once per connection per session in background
+/// without freezing the UI thread; finally falls back to any FK data already
+/// loaded into an open ERD diagram.
 fn collect_loaded_fks(app: &mut Tabular) -> Vec<crate::models::structs::ForeignKey> {
     if let Some((cid, db)) = active_connection_and_db(app) {
-        if let Some(fks) = crate::cache_data::get_foreign_keys_from_cache(app, cid, &db)
-            && !fks.is_empty()
-        {
-            return fks;
+        // 1. In-memory check (0ms, non-blocking)
+        if let Some(fks) = app.autocomplete_fks_mem.get(&(cid, db.clone())) {
+            if !fks.is_empty() {
+                return fks.clone();
+            }
         }
-        // Lazy one-shot warm in background: fetch live FKs asynchronously without freezing the UI thread
+        if !db.is_empty() {
+            if let Some(fks) = app.autocomplete_fks_mem.get(&(cid, String::new())) {
+                if !fks.is_empty() {
+                    return fks.clone();
+                }
+            }
+        }
+
+        // 2. Lazy one-shot warm in background without freezing the UI thread
         if !app.fk_cache_warmed.contains(&cid) {
             app.fk_cache_warmed.insert(cid);
+            let warm_tx = app.autocomplete_warm_sender.clone();
             if let (Some(rt), Some(pool), Some(db_pool)) = (
                 app.runtime.clone(),
                 app.connection_pools.get(&cid).cloned(),
@@ -636,53 +832,103 @@ fn collect_loaded_fks(app: &mut Tabular) -> Vec<crate::models::structs::ForeignK
             ) {
                 let db_name = db.clone();
                 rt.spawn(async move {
-                    let mut keys: Vec<crate::models::structs::ForeignKey> = Vec::new();
-                    match pool {
-                        crate::models::enums::DatabasePool::MySQL(p) => {
-                            if let Ok(k) = crate::driver_mysql::fetch_mysql_foreign_keys(&p, &db_name).await {
-                                keys = k;
-                            }
-                        }
-                        crate::models::enums::DatabasePool::PostgreSQL(p) => {
-                            if let Ok(k) = crate::driver_postgres::fetch_postgres_foreign_keys(&p).await {
-                                keys = k;
-                            }
-                        }
-                        crate::models::enums::DatabasePool::SQLite(p) => {
-                            if let Ok(k) = crate::driver_sqlite::fetch_sqlite_foreign_keys(&p).await {
-                                keys = k;
-                            }
-                        }
-                        _ => {}
-                    }
-                    if !keys.is_empty() {
-                        let _ = sqlx::query(
-                            "DELETE FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
+                    // Try reading from SQLite cache first in background
+                    let cached_fks = if db_name.is_empty() {
+                        sqlx::query_as::<_, (String, String, String, String, String)>(
+                            "SELECT table_name, column_name, referenced_table_name, referenced_column_name, constraint_name FROM foreign_key_cache WHERE connection_id = ?",
+                        )
+                        .bind(cid)
+                        .fetch_all(db_pool.as_ref())
+                        .await
+                    } else {
+                        sqlx::query_as::<_, (String, String, String, String, String)>(
+                            "SELECT table_name, column_name, referenced_table_name, referenced_column_name, constraint_name FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
                         )
                         .bind(cid)
                         .bind(&db_name)
-                        .execute(db_pool.as_ref())
-                        .await;
-                        for fk in &keys {
-                            let _ = sqlx::query(
-                                "INSERT OR REPLACE INTO foreign_key_cache (connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name, constraint_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                            )
-                            .bind(cid)
-                            .bind(&db_name)
-                            .bind(&fk.table_name)
-                            .bind(&fk.column_name)
-                            .bind(&fk.referenced_table_name)
-                            .bind(&fk.referenced_column_name)
-                            .bind(&fk.constraint_name)
-                            .execute(db_pool.as_ref())
-                            .await;
+                        .fetch_all(db_pool.as_ref())
+                        .await
+                    };
+
+                    let mut keys: Vec<crate::models::structs::ForeignKey> = match cached_fks {
+                        Ok(rows) if !rows.is_empty() => rows
+                            .into_iter()
+                            .map(|(table_name, column_name, referenced_table_name, referenced_column_name, constraint_name)| {
+                                crate::models::structs::ForeignKey {
+                                    constraint_name,
+                                    table_name,
+                                    column_name,
+                                    referenced_table_name,
+                                    referenced_column_name,
+                                }
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+
+                    // If SQLite cache had nothing, fetch live from driver
+                    if keys.is_empty() {
+                        match pool {
+                            crate::models::enums::DatabasePool::MySQL(p) => {
+                                if let Ok(k) = crate::driver_mysql::fetch_mysql_foreign_keys(&p, &db_name).await {
+                                    keys = k;
+                                }
+                            }
+                            crate::models::enums::DatabasePool::PostgreSQL(p) => {
+                                if let Ok(k) = crate::driver_postgres::fetch_postgres_foreign_keys(&p).await {
+                                    keys = k;
+                                }
+                            }
+                            crate::models::enums::DatabasePool::SQLite(p) => {
+                                if let Ok(k) = crate::driver_sqlite::fetch_sqlite_foreign_keys(&p).await {
+                                    keys = k;
+                                }
+                            }
+                            _ => {}
+                        }
+
+                        // Write to SQLite cache in a single atomic transaction
+                        if !keys.is_empty() {
+                            if let Ok(mut tx) = db_pool.begin().await {
+                                let _ = sqlx::query(
+                                    "DELETE FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
+                                )
+                                .bind(cid)
+                                .bind(&db_name)
+                                .execute(&mut *tx)
+                                .await;
+
+                                for fk in &keys {
+                                    let _ = sqlx::query(
+                                        "INSERT OR REPLACE INTO foreign_key_cache (connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name, constraint_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                    )
+                                    .bind(cid)
+                                    .bind(&db_name)
+                                    .bind(&fk.table_name)
+                                    .bind(&fk.column_name)
+                                    .bind(&fk.referenced_table_name)
+                                    .bind(&fk.referenced_column_name)
+                                    .bind(&fk.constraint_name)
+                                    .execute(&mut *tx)
+                                    .await;
+                                }
+                                let _ = tx.commit().await;
+                            }
                         }
                     }
+
+                    // Send back to main UI thread
+                    let _ = warm_tx.send(crate::window_egui::AutocompleteWarmResult::ForeignKeys {
+                        connection_id: cid,
+                        database_name: db_name,
+                        keys,
+                    });
                 });
             }
         }
     }
-    // Fallback: FKs from any open diagram state.
+
+    // 3. Fallback: FKs from any open diagram state (already in memory).
     app.query_tabs
         .iter()
         .filter_map(|tab| tab.diagram_state.as_ref())
@@ -1323,6 +1569,26 @@ fn build_suggestions(
 }
 
 pub fn update_autocomplete(app: &mut Tabular) {
+    // Drain background autocomplete metadata warming results first
+    if let Some(ref rx) = app.autocomplete_warm_receiver {
+        while let Ok(res) = rx.try_recv() {
+            match res {
+                crate::window_egui::AutocompleteWarmResult::ForeignKeys { connection_id, database_name, keys } => {
+                    app.autocomplete_fks_mem.insert((connection_id, database_name), keys);
+                }
+                crate::window_egui::AutocompleteWarmResult::Columns { connection_id, table_name, columns, types } => {
+                    app.autocomplete_cols_mem.insert((connection_id, table_name.clone()), columns);
+                    for (cn, ct) in types {
+                        app.autocomplete_col_types_mem.insert((connection_id, table_name.clone(), cn.to_ascii_lowercase()), ct);
+                    }
+                }
+                crate::window_egui::AutocompleteWarmResult::Tables { connection_id, database_name, tables } => {
+                    app.autocomplete_tables_mem.insert((connection_id, database_name), tables);
+                }
+            }
+        }
+    }
+
     // Throttle autocomplete updates to avoid heavy work on every keystroke
     let now = std::time::Instant::now();
     if let Some(last) = app.autocomplete_last_update {
@@ -1465,21 +1731,22 @@ pub fn update_autocomplete(app: &mut Tabular) {
             syntax.sort_unstable();
             syntax.dedup();
 
-            // Phase 3: column type + owning-table metadata for richer notes.
+            // Phase 3: column type + owning-table metadata for richer notes (purely in-memory).
             let mut col_meta: std::collections::HashMap<String, (String, String)> =
                 std::collections::HashMap::new();
             let mut col_ambiguous: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             if cid != 0 {
                 for t in tables_near_cursor(&editor_text, cursor) {
-                    let cols = get_columns_from_cache(app, cid, &db, &t)
-                        .filter(|c| !c.is_empty())
-                        .or_else(|| {
-                            crate::cache_data::get_columns_for_connection_any_db(app, cid, &t)
-                        });
-                    if let Some(cols) = cols {
-                        for (cn, ct) in cols {
+                    let tl = t.to_ascii_lowercase();
+                    if let Some(cols) = app.autocomplete_cols_mem.get(&(cid, tl.clone())) {
+                        for cn in cols {
                             let key = cn.to_ascii_lowercase();
+                            let ct = app
+                                .autocomplete_col_types_mem
+                                .get(&(cid, tl.clone(), key.clone()))
+                                .cloned()
+                                .unwrap_or_else(|| "column".to_string());
                             match col_meta.get(&key) {
                                 Some((_, owner)) if owner != &t => {
                                     col_ambiguous.insert(key);
