@@ -10,6 +10,10 @@
 	<key>com.apple.security.network.client</key>
 	<true/>
 
+	<!-- Allow incoming network connections (local loopback server for OAuth callback) -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+
 	<!-- Allow user-selected files read-write (SQLite, SQL scripts, CSV/JSON exports) -->
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
