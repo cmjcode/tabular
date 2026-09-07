@@ -37,9 +37,9 @@ sqlx = { version = "0.9", features = [
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
 sqlparser = { version = "0.62", optional = true }
 sqlformat = "0.5.0"
-redis = { version = "1.6.0", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }
 bson = { version = "3", features = ["uuid-1"] }
-mongodb = { version = "3.8.2", features = ["zlib-compression"] }
+mongodb = { version = "3.9.0", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = { version = "0.36", features = ["datepicker"] }
@@ -49,14 +49,14 @@ jiff = "0.2"
 colorful = "0.3.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-dirs = "6.0"
+dirs = "7.0.0"
 regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
 rust_xlsxwriter = "0.99"                                # Pure-Rust xlsx writer (no libclang/C toolchain)
 hex = "0.4.3"
 rust_decimal = "1.43.0"
-wasmi = "1.1.0"
+wasmi = "2.0.0"
 log = { version = "0.4", features = ["max_level_off"] }
 env_logger = "0.11"
 dotenv = "0.15.0"
@@ -83,7 +83,7 @@ flate2 = "1.1"
 tar = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
-tree-sitter = { version = "0.26", optional = true }
+tree-sitter = { version = "0.27.0", optional = true }
 tree-sitter-sequel = { version = "0.3.11", optional = true }
 tree-sitter-json = "0.24.8"
 tree-sitter-javascript = "0.25.0"
@@ -115,8 +115,8 @@ aes-gcm = { version = "0.11" } # symmetric encryption of synced payloads
 sha2 = { version = "0.11" } # hashing (checksums, KDF glue)
 base64 = "0.23"
 rand = { version = "0.10" } # AES-GCM nonce generation
-argon2 = { version = "0.5", features = [
-       "std",
+argon2 = { version = "0.6", features = [
+       "zeroize",
 ] } # Sync Passphrase -> KEK (Argon2id)
 crypto_box = { version = "0.9", features = [
        "seal",
