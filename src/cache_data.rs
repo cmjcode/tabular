@@ -65,6 +65,7 @@ pub(crate) fn get_tables_from_cache(
 /// cached table/view of `table_type` for the connection across all databases.
 /// Used as an autocomplete fallback when the active editor tab isn't pinned to a
 /// specific database (so `database_name` is empty or doesn't match the cache).
+#[allow(dead_code)]
 pub(crate) fn get_tables_for_connection_any_db(
     tabular: &Tabular,
     connection_id: i64,
@@ -91,6 +92,7 @@ pub(crate) fn get_tables_for_connection_any_db(
 /// Resolve which database a cached table belongs to (first match). Used so the
 /// autocomplete can lazily fetch a table's columns with the right database when
 /// the editor tab isn't pinned to one.
+#[allow(dead_code)]
 pub(crate) fn get_table_database_from_cache(
     tabular: &Tabular,
     connection_id: i64,
@@ -117,6 +119,7 @@ pub(crate) fn get_table_database_from_cache(
 /// Every cached table/view name across ALL connections and databases. Last-ditch
 /// autocomplete fallback when neither the tab's connection nor the database can
 /// be resolved but `table_cache` does hold data.
+#[allow(dead_code)]
 pub(crate) fn get_all_cached_tables_global(tabular: &Tabular) -> Option<Vec<String>> {
     let pool = tabular.db_pool.as_ref()?.clone();
     let fut = async {
@@ -136,6 +139,7 @@ pub(crate) fn get_all_cached_tables_global(tabular: &Tabular) -> Option<Vec<Stri
 
 /// Like `get_columns_from_cache` but NOT scoped to a database. Returns the first
 /// cached column set found for `table_name` under the connection (any database).
+#[allow(dead_code)]
 pub(crate) fn get_columns_for_connection_any_db(
     tabular: &Tabular,
     connection_id: i64,

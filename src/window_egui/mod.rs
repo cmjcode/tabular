@@ -40,6 +40,27 @@ pub struct PendingStructureJob {
     pub on_success: Box<dyn FnOnce(&mut Tabular)>,
 }
 
+/// Results from non-blocking background metadata warming tasks for autocomplete
+#[derive(Debug)]
+pub enum AutocompleteWarmResult {
+    ForeignKeys {
+        connection_id: i64,
+        database_name: String,
+        keys: Vec<models::structs::ForeignKey>,
+    },
+    Columns {
+        connection_id: i64,
+        table_name: String, // lowercase
+        columns: Vec<String>,
+        types: Vec<(String, String)>, // (column_name, data_type)
+    },
+    Tables {
+        connection_id: i64,
+        database_name: String,
+        tables: Vec<String>,
+    },
+}
+
 pub struct Tabular {
     pub editor: EditorBuffer,
     // Transitional multi-selection model (will move to lapce-core selection)
@@ -312,6 +333,16 @@ pub struct Tabular {
     // never "disappear" due to a later SQLite cache-read miss or db-scope
     // mismatch, and we avoid repeated blocking lookups on the UI thread.
     pub autocomplete_cols_mem: std::collections::HashMap<(i64, String), Vec<String>>,
+    // In-memory foreign keys per (connection_id, database_name) for autocomplete.
+    // Avoids repeated blocking SQLite queries during query editor rendering.
+    pub autocomplete_fks_mem: std::collections::HashMap<(i64, String), Vec<models::structs::ForeignKey>>,
+    // In-memory table list per (connection_id, database_name) for autocomplete.
+    pub autocomplete_tables_mem: std::collections::HashMap<(i64, String), Vec<String>>,
+    // In-memory column types per (connection_id, table_lowercase, column_lowercase).
+    pub autocomplete_col_types_mem: std::collections::HashMap<(i64, String, String), String>,
+    // Background receiver and sender for non-blocking autocomplete warm tasks
+    pub autocomplete_warm_receiver: Option<Receiver<AutocompleteWarmResult>>,
+    pub autocomplete_warm_sender: Sender<AutocompleteWarmResult>,
     // Ensure selection is cleared on the next frame after a destructive action (e.g., Delete)
     pub selection_force_clear: bool,
     // Multi-cursor support: additional caret positions (primary caret tracked separately)
