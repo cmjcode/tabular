@@ -22,6 +22,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use log::{info, warn};
+use rand::RngExt;
 
 use super::{TabularAccount, api_client::TokenResponse};
 
@@ -78,108 +79,168 @@ fn url_decode(input: &str) -> String {
 }
 
 /// Initiate OAuth login:
-/// 1. Bind local TCP listener on 127.0.0.1:0 (ephemeral port assigned by OS)
-/// 2. Open the browser to `{server_url}/api/v1/auth/login/{provider}?port={port}`
-/// 3. The server handles OAuth and redirects/fetches to local callback
-/// 4. The client thread receives the tokens automatically without manual copy-paste
+/// 1. Generate a cryptographically random session ticket
+/// 2. Optionally bind local TCP listener on 127.0.0.1:0 if permitted by OS / App Sandbox
+/// 3. Open browser to `{server_url}/api/v1/auth/login/{provider}?ticket={ticket}[&port={port}]`
+/// 4. Simultaneously poll `{server_url}/api/v1/auth/ticket/poll` and listen on loopback
+/// 5. Works seamlessly in macOS App Sandbox / TestFlight, behind firewalls, and across all browsers (Safari/Chrome)
 pub fn start_oauth_flow(
     server_url: &str,
     provider: OAuthProvider,
 ) -> mpsc::Receiver<Result<TokenResponse, String>> {
     let (tx, rx) = mpsc::channel();
 
-    let listener = match TcpListener::bind("127.0.0.1:0") {
-        Ok(l) => l,
+    // 1. Generate random session ticket (32 hex characters)
+    let mut ticket_bytes = [0u8; 16];
+    rand::rng().fill(&mut ticket_bytes);
+    let ticket = hex::encode(ticket_bytes);
+
+    // 2. Best-effort loopback listener (allowed in dev/unrestricted, but blocked by App Sandbox without server entitlement)
+    let listener_res = TcpListener::bind("127.0.0.1:0");
+    let (listener_opt, port_opt) = match listener_res {
+        Ok(l) => {
+            let port = l.local_addr().ok().map(|a| a.port());
+            let _ = l.set_nonblocking(true);
+            (Some(l), port)
+        }
         Err(e) => {
-            warn!("Failed to bind local loopback listener: {}", e);
-            let url = format!("{}/api/v1/auth/login/{}", server_url.trim_end_matches('/'), provider.path());
-            let _ = open_url(&url);
-            return rx;
+            info!("Local loopback listener not available (App Sandbox or restricted network): {}", e);
+            (None, None)
         }
     };
 
-    let port = match listener.local_addr() {
-        Ok(addr) => addr.port(),
-        Err(_) => 0,
-    };
+    // 3. Build login URL with ticket and optional port
+    let mut url = format!(
+        "{}/api/v1/auth/login/{}?ticket={}",
+        server_url.trim_end_matches('/'),
+        provider.path(),
+        ticket
+    );
+    if let Some(port) = port_opt {
+        url.push_str(&format!("&port={}", port));
+    }
 
-    // Spawn loopback listener in background thread
+    // 4. Open the browser
+    if let Err(e) = open_url(&url) {
+        warn!("Failed to open browser: {}", e);
+    }
+    info!("Opened OAuth URL: {}", url);
+
+    // 5. Spawn background worker to await authentication via HTTPS polling or loopback callback
+    let server_url_owned = server_url.trim_end_matches('/').to_string();
     thread::spawn(move || {
-        info!("🔑 Waiting for OAuth loopback callback on 127.0.0.1:{}", port);
+        info!("🔑 Waiting for OAuth authentication (ticket: {}, loopback port: {:?})", ticket, port_opt);
         let start_time = std::time::Instant::now();
+        let poll_url = format!("{}/api/v1/auth/ticket/poll", server_url_owned);
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .ok();
+
+        let mut last_poll = std::time::Instant::now() - Duration::from_secs(5);
 
         while start_time.elapsed() < Duration::from_secs(180) {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let mut buf = [0u8; 8192];
-                let n = match stream.read(&mut buf) {
-                    Ok(n) if n > 0 => n,
-                    _ => continue,
-                };
-
-                let request_str = String::from_utf8_lossy(&buf[..n]);
-
-                // Handle CORS OPTIONS preflight
-                if request_str.starts_with("OPTIONS") {
-                    let cors_resp = "HTTP/1.1 204 No Content\r\n\
-                                     Access-Control-Allow-Origin: *\r\n\
-                                     Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-                                     Access-Control-Allow-Headers: *\r\n\
-                                     Connection: close\r\n\r\n";
-                    let _ = stream.write_all(cors_resp.as_bytes());
-                    let _ = stream.flush();
-                    continue;
-                }
-
-                // Extract token JSON payload
-                let token_json_opt = if request_str.starts_with("POST") {
-                    request_str.split("\r\n\r\n").nth(1).map(|s| s.trim().to_string())
-                } else if request_str.starts_with("GET") {
-                    if let Some(pos) = request_str.find("token=") {
-                        let query_part = &request_str[pos + 6..];
-                        let end_pos = query_part.find(' ').unwrap_or(query_part.len());
-                        Some(url_decode(&query_part[..end_pos]))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                let http_resp = "HTTP/1.1 200 OK\r\n\
-                                 Content-Type: text/html\r\n\
-                                 Access-Control-Allow-Origin: *\r\n\
-                                 Connection: close\r\n\r\n\
-                                 <!DOCTYPE html><html><body style='font-family:sans-serif;text-align:center;padding:40px;background:#0f172a;color:#fff;'>\
-                                 <h2 style='color:#38bdf8;'>Sign in successful!</h2><p>You can close this tab and return to Tabular.</p></body></html>";
-                let _ = stream.write_all(http_resp.as_bytes());
-                let _ = stream.flush();
-
-                if let Some(json_str) = token_json_opt {
-                    match serde_json::from_str::<TokenResponse>(&json_str) {
-                        Ok(token_resp) => {
-                            info!("✅ Received valid token response via loopback HTTP");
-                            let _ = tx.send(Ok(token_resp));
-                            return;
-                        }
-                        Err(e) => {
-                            warn!("❌ Failed to parse TokenResponse from loopback: {}", e);
-                            let _ = tx.send(Err(format!("Invalid token JSON: {}", e)));
-                            return;
+            // A. Ticket Polling via HTTPS (100% compatible with App Sandbox & Safari)
+            if last_poll.elapsed() >= Duration::from_millis(1500) {
+                last_poll = std::time::Instant::now();
+                if let Some(ref http) = client {
+                    let body = serde_json::json!({ "ticket": ticket });
+                    if let Ok(resp) = http.post(&poll_url).json(&body).send() {
+                        if resp.status().is_success() {
+                            if let Ok(json) = resp.json::<serde_json::Value>() {
+                                let data = json.get("data").unwrap_or(&json);
+                                let status = data.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                                if status == "completed" {
+                                    if let Some(token_val) = data.get("token") {
+                                        match serde_json::from_value::<TokenResponse>(token_val.clone()) {
+                                            Ok(token_resp) => {
+                                                info!("✅ Received valid token response via ticket polling");
+                                                let _ = tx.send(Ok(token_resp));
+                                                return;
+                                            }
+                                            Err(e) => {
+                                                warn!("❌ Failed to parse TokenResponse from ticket poll: {}", e);
+                                                let _ = tx.send(Err(format!("Invalid token JSON from poll: {}", e)));
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
+
+            // B. Optional Loopback HTTP Server Check
+            if let Some(ref listener) = listener_opt {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+                    let mut buf = [0u8; 8192];
+                    if let Ok(n) = stream.read(&mut buf) {
+                        if n > 0 {
+                            let request_str = String::from_utf8_lossy(&buf[..n]);
+
+                            if request_str.starts_with("OPTIONS") {
+                                let cors_resp = "HTTP/1.1 204 No Content\r\n\
+                                                 Access-Control-Allow-Origin: *\r\n\
+                                                 Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+                                                 Access-Control-Allow-Headers: *\r\n\
+                                                 Connection: close\r\n\r\n";
+                                let _ = stream.write_all(cors_resp.as_bytes());
+                                let _ = stream.flush();
+                            } else {
+                                let token_json_opt = if request_str.starts_with("POST") {
+                                    request_str.split("\r\n\r\n").nth(1).map(|s| s.trim().to_string())
+                                } else if request_str.starts_with("GET") {
+                                    if let Some(pos) = request_str.find("token=") {
+                                        let query_part = &request_str[pos + 6..];
+                                        let end_pos = query_part.find(' ').unwrap_or(query_part.len());
+                                        Some(url_decode(&query_part[..end_pos]))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                let http_resp = "HTTP/1.1 200 OK\r\n\
+                                                 Content-Type: text/html\r\n\
+                                                 Access-Control-Allow-Origin: *\r\n\
+                                                 Connection: close\r\n\r\n\
+                                                 <!DOCTYPE html><html><body style='font-family:sans-serif;text-align:center;padding:40px;background:#0f172a;color:#fff;'>\
+                                                 <h2 style='color:#38bdf8;'>Sign in successful!</h2><p>You can close this tab and return to Tabular.</p></body></html>";
+                                let _ = stream.write_all(http_resp.as_bytes());
+                                let _ = stream.flush();
+
+                                if let Some(json_str) = token_json_opt {
+                                    match serde_json::from_str::<TokenResponse>(&json_str) {
+                                        Ok(token_resp) => {
+                                            info!("✅ Received valid token response via loopback HTTP");
+                                            let _ = tx.send(Ok(token_resp));
+                                            return;
+                                        }
+                                        Err(e) => {
+                                            warn!("❌ Failed to parse TokenResponse from loopback: {}", e);
+                                            let _ = tx.send(Err(format!("Invalid token JSON: {}", e)));
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            thread::sleep(Duration::from_millis(200));
         }
+
         let _ = tx.send(Err("Authentication timed out after 3 minutes".to_string()));
     });
 
-    let url = format!("{}/api/v1/auth/login/{}?port={}", server_url.trim_end_matches('/'), provider.path(), port);
-    if let Err(e) = open_url(&url) {
-        warn!("Failed to open browser: {}", e);
-    }
-
-    info!("Opened OAuth URL: {}", url);
     rx
 }
 
@@ -253,5 +314,64 @@ pub async fn refresh_if_needed(
             warn!("❌ Token refresh failed: {}", e);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::api_client::RemoteUser;
+
+    #[test]
+    fn test_token_to_account_conversion() {
+        let resp = TokenResponse {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_in: 3600,
+            user: RemoteUser {
+                id: "usr-42".to_string(),
+                email: "dev@tabular.id".to_string(),
+                display_name: Some("Dev User".to_string()),
+                avatar_url: None,
+                username: Some("devuser".to_string()),
+                phone: Some("+123456789".to_string()),
+            },
+        };
+
+        let account = token_to_account(&resp);
+        assert_eq!(account.user_id, "usr-42");
+        assert_eq!(account.email, "dev@tabular.id");
+        assert_eq!(account.access_token, "test_access_token");
+        assert_eq!(account.refresh_token, "test_refresh_token");
+        assert_eq!(account.username, Some("devuser".to_string()));
+        assert!(!account.is_token_expired());
+    }
+
+    #[test]
+    fn test_parse_poll_completed_response() {
+        let json_data = serde_json::json!({
+            "success": true,
+            "data": {
+                "status": "completed",
+                "token": {
+                    "access_token": "poll_access",
+                    "refresh_token": "poll_refresh",
+                    "expires_in": 7200,
+                    "user": {
+                        "id": "u-99",
+                        "email": "poll@tabular.id"
+                    }
+                }
+            }
+        });
+
+        let data = json_data.get("data").unwrap();
+        let status = data.get("status").and_then(|s| s.as_str()).unwrap();
+        assert_eq!(status, "completed");
+
+        let token_val = data.get("token").unwrap();
+        let token_resp: TokenResponse = serde_json::from_value(token_val.clone()).expect("parse TokenResponse");
+        assert_eq!(token_resp.access_token, "poll_access");
+        assert_eq!(token_resp.user.email, "poll@tabular.id");
     }
 }
