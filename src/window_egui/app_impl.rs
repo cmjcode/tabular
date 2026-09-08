@@ -1863,13 +1863,22 @@ impl Tabular {
                                         ui.menu_button(
                                             egui::RichText::new("➕").color(egui::Color32::WHITE),
                                             |ui| {
-                                                ui.set_min_width(160.0);
+                                                ui.set_min_width(170.0);
+                                                if ui.button("📄 New HTTP Request").clicked() {
+                                                    editor::create_new_http_tab(self, "New Request".to_string(), None);
+                                                    ui.close();
+                                                }
                                                 if ui.button("📁 Add New Collection").clicked() {
                                                     self.pending_create_http_workspace = Some(String::new());
                                                     ui.close();
                                                 }
-                                                if ui.button("🌐 Add New Connection").clicked() {
-                                                    editor::create_new_http_tab(self, "New HTTP Connection".to_string(), None);
+                                                if ui.button("🌐 Add HTTP Connection").clicked() {
+                                                    self.test_connection_status = None;
+                                                    self.test_connection_in_progress = false;
+                                                    let mut new_conn = models::structs::ConnectionConfig::default();
+                                                    new_conn.connection_type = models::enums::DatabaseType::ApiHttp;
+                                                    self.new_connection = new_conn;
+                                                    self.show_add_connection = true;
                                                     ui.close();
                                                 }
                                                 ui.separator();
@@ -1882,7 +1891,7 @@ impl Tabular {
                                                     ui.close();
                                                 }
                                             },
-                                        ).response.on_hover_text("Add Collection/Connection or Import Yaak/Postman");
+                                        ).response.on_hover_text("New HTTP Request, Add Collection/Connection, or Import");
                                     }
                                     _ => {}
                                 }
@@ -2219,7 +2228,12 @@ impl Tabular {
                                             .clicked()
                                         {
                                             if is_http_active {
-                                                editor::create_new_http_tab(self, "New Request".to_string(), self.current_connection_id);
+                                                let http_conn_id = self.current_connection_id.filter(|id| {
+                                                    self.connections
+                                                        .iter()
+                                                        .any(|c| c.id == Some(*id) && c.connection_type == models::enums::DatabaseType::ApiHttp)
+                                                });
+                                                editor::create_new_http_tab(self, "New Request".to_string(), http_conn_id);
                                             } else {
                                                 editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
                                             }
@@ -3019,6 +3033,16 @@ impl Tabular {
                                 if workspaces_saved {
                                     // Reload in-memory collection so sidebar reflects the newly saved request
                                     self.yaak_workspaces = crate::http_collection::load_workspaces();
+                                    self.selected_menu = "APIs".to_string();
+                                    if let Some(ref ws_id) = state.saved_workspace_id {
+                                        self.collection_just_saved_workspace = Some(ws_id.clone());
+                                    }
+                                    if let Some(ref f_id) = state.saved_folder_id {
+                                        self.collection_expanded_folders.insert(f_id.clone());
+                                    }
+                                    if !state.save_dialog_name.trim().is_empty() {
+                                        tab.title = state.save_dialog_name.trim().to_string();
+                                    }
                                 }
                             }
                             rendered_http = true;

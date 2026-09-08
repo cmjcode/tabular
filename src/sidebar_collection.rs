@@ -253,14 +253,20 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             continue;
         }
 
-        let default_open = app.yaak_workspaces.len() == 1;
+        let default_open = app.yaak_workspaces.len() == 1 || !filter.is_empty();
+        let is_just_saved = app.collection_just_saved_workspace.as_deref() == Some(ws_id.as_str());
 
-        let ws_header_resp = egui::CollapsingHeader::new(
+        let mut ws_header = egui::CollapsingHeader::new(
             egui::RichText::new(format!("📁  {}  ({})", ws_name, request_count)).strong(),
         )
         .id_salt(format!("sidebar_coll_ws_{}", ws_id))
-        .default_open(default_open)
-        .show(ui, |ui| {
+        .default_open(default_open);
+
+        if is_just_saved {
+            ws_header = ws_header.open(Some(true));
+        }
+
+        let ws_header_resp = ws_header.show(ui, |ui| {
             // ── Top-level requests ────────────────────────────────────────
             let top_req_ids: Vec<String> = app.yaak_workspaces[ws_idx]
                 .requests
@@ -395,6 +401,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     }
 
     app.collection_expanded_folders = expanded_folders;
+    app.collection_just_saved_workspace = None;
 
     // Apply deferred actions after rendering loop
     if let Some((name, id)) = conn_to_open {

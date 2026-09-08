@@ -487,6 +487,16 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
             );
             if workspaces_changed {
                 tabular.yaak_workspaces = crate::http_collection::load_workspaces();
+                tabular.selected_menu = "APIs".to_string();
+                if let Some(ref ws_id) = http_state.saved_workspace_id {
+                    tabular.collection_just_saved_workspace = Some(ws_id.clone());
+                }
+                if let Some(ref f_id) = http_state.saved_folder_id {
+                    tabular.collection_expanded_folders.insert(f_id.clone());
+                }
+                if !http_state.save_dialog_name.trim().is_empty() {
+                    tab.title = http_state.save_dialog_name.trim().to_string();
+                }
             }
         }
         return Ok(());
