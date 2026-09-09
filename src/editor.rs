@@ -6234,6 +6234,12 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
                 &tabular.current_table_name,
             );
         }
+        "Export All Data (ZIP)" | "File: Export All Data (ZIP)" => {
+            tabular.show_export_all_dialog = true;
+        }
+        "Import All Data (ZIP)" | "File: Import All Data (ZIP)" => {
+            tabular.show_import_all_dialog = true;
+        }
         "Data: Import CSV" => {
             if let Some(conn_id) = tabular.current_connection_id {
                 let db_type = tabular.connections.iter()
