@@ -584,6 +584,10 @@ impl super::Tabular {
             show_restore_dialog: false,
             backup_state: None,
             restore_state: None,
+            show_export_all_dialog: false,
+            show_import_all_dialog: false,
+            export_all_state: None,
+            import_all_state: None,
             // ── Sync & Collaboration ─────────────────────────────────────────
             sync_account: loaded_account,
             sync_server_url: std::env::var("TABULAR_SERVER_URL")
