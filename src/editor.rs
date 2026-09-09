@@ -479,14 +479,28 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
         && tab.http_client_state.is_some()
     {
         let conn_id = tab.connection_id;
+        let mut new_tab_title = None;
+        let mut workspaces_changed = false;
         if let Some(http_state) = tab.http_client_state.as_mut() {
-            let workspaces_changed = crate::http_client::save_or_update_http_tab(
+            workspaces_changed = crate::http_client::save_or_update_http_tab(
                 conn_id,
                 http_state,
                 &mut tabular.toasts,
             );
-            if workspaces_changed {
-                tabular.yaak_workspaces = crate::http_collection::load_workspaces();
+            if workspaces_changed && !http_state.save_dialog_name.trim().is_empty() {
+                new_tab_title = Some(http_state.save_dialog_name.trim().to_string());
+            }
+        }
+        if workspaces_changed {
+            tabular.yaak_workspaces = crate::http_collection::load_workspaces();
+            tabular.selected_menu = "APIs".to_string();
+            if let Some(title) = new_tab_title {
+                if let Some(t) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    t.title = title;
+                }
+            }
+            if tabular.sync_account.is_some() {
+                tabular.sync_trigger_http = true;
             }
         }
         return Ok(());

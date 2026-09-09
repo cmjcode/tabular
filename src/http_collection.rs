@@ -18,22 +18,39 @@ use crate::models::structs::{
 pub struct SavedRequest {
     pub id: String,
     pub workspace_id: String,
+    #[serde(default)]
     pub folder_id: Option<String>,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub url: String,
+    #[serde(default)]
     pub method: HttpMethod,
+    #[serde(default)]
     pub params: Vec<(String, String, bool)>,
+    #[serde(default)]
     pub headers: Vec<(String, String, bool)>,
+    #[serde(default)]
     pub body_type: HttpBodyType,
+    #[serde(default)]
     pub body_text: String,
+    #[serde(default)]
     pub form_data: Vec<(String, String, bool)>,
+    #[serde(default)]
     pub auth_type: HttpAuthType,
+    #[serde(default)]
     pub bearer_token: String,
+    #[serde(default)]
     pub basic_user: String,
+    #[serde(default)]
     pub basic_pass: String,
+    #[serde(default)]
     pub api_key_name: String,
+    #[serde(default)]
     pub api_key_value: String,
+    #[serde(default)]
     pub api_key_in_header: bool,
+    #[serde(default)]
     pub description: String,
 }
 
@@ -121,35 +138,42 @@ impl SavedRequest {
 }
 
 /// A sub-folder that groups requests inside a workspace.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct HttpFolder {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub parent_folder_id: Option<String>,
     /// Requests directly inside this folder (not in sub-folders).
+    #[serde(default)]
     pub requests: Vec<SavedRequest>,
     /// Child sub-folders (populated after full tree resolution).
+    #[serde(default)]
     pub children: Vec<HttpFolder>,
 }
 
 /// A workspace (project) containing folders and top-level requests.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct HttpWorkspace {
     pub id: String,
     pub name: String,
     /// Requests not inside any folder.
+    #[serde(default)]
     pub requests: Vec<SavedRequest>,
     /// Top-level folders (may be nested).
+    #[serde(default)]
     pub folders: Vec<HttpFolder>,
     /// Environment variables for this workspace.
+    #[serde(default)]
     pub environments: Vec<YaakEnvironment>,
 }
 
 /// An environment (set of key-value variables) from Yaak.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct YaakEnvironment {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub variables: Vec<(String, String)>, // (name, value)
 }
 
@@ -1963,6 +1987,49 @@ mod tests {
         assert_eq!(workspaces[0].folders.len(), 3);
         assert_eq!(workspaces[0].folders[2].id, "fld-child");
         assert_eq!(workspaces[0].folders[2].parent_folder_id, None);
+    }
+
+    #[test]
+    fn test_http_workspace_serde_defaults() {
+        // Minimal workspace JSON without folders, environments, requests
+        let json = r#"{"id":"ws_minimal","name":"Minimal Collection"}"#;
+        let ws: HttpWorkspace = serde_json::from_str(json).expect("Should deserialize with defaults");
+        assert_eq!(ws.id, "ws_minimal");
+        assert_eq!(ws.name, "Minimal Collection");
+        assert!(ws.requests.is_empty());
+        assert!(ws.folders.is_empty());
+        assert!(ws.environments.is_empty());
+
+        // Minimal saved request JSON
+        let req_json = r#"{"id":"req_min","workspace_id":"ws_minimal"}"#;
+        let req: SavedRequest = serde_json::from_str(req_json).expect("Should deserialize with defaults");
+        assert_eq!(req.id, "req_min");
+        assert_eq!(req.workspace_id, "ws_minimal");
+        assert_eq!(req.name, "");
+        assert_eq!(req.url, "");
+        assert_eq!(req.display_name(), "Untitled Request");
+    }
+
+    #[test]
+    fn test_create_workspace_and_add_request() {
+        let mut workspaces = Vec::new();
+        let ws = create_workspace(&mut workspaces, "Test API");
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(ws.name, "Test API");
+        assert!(ws.id.starts_with("ws_"));
+
+        let req = SavedRequest {
+            id: "req-123".to_string(),
+            workspace_id: ws.id.clone(),
+            folder_id: None,
+            name: "Get Users".to_string(),
+            url: "https://example.com/api/v1/users".to_string(),
+            ..Default::default()
+        };
+
+        workspaces[0].requests.push(req.clone());
+        assert_eq!(workspaces[0].requests.len(), 1);
+        assert_eq!(workspaces[0].requests[0].display_name(), "Get Users");
     }
 }
 

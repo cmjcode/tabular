@@ -253,14 +253,19 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             continue;
         }
 
-        let default_open = app.yaak_workspaces.len() == 1;
-
-        let ws_header_resp = egui::CollapsingHeader::new(
+        let ws_header = egui::CollapsingHeader::new(
             egui::RichText::new(format!("📁  {}  ({})", ws_name, request_count)).strong(),
         )
         .id_salt(format!("sidebar_coll_ws_{}", ws_id))
-        .default_open(default_open)
-        .show(ui, |ui| {
+        .default_open(true);
+
+        let ws_header = if !filter.is_empty() {
+            ws_header.open(Some(true))
+        } else {
+            ws_header
+        };
+
+        let ws_header_resp = ws_header.show(ui, |ui| {
             // ── Top-level requests ────────────────────────────────────────
             let top_req_ids: Vec<String> = app.yaak_workspaces[ws_idx]
                 .requests
@@ -1390,6 +1395,9 @@ fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest)
 // ─── Filter helpers ───────────────────────────────────────────────────────────
 
 fn workspace_has_match(ws: &crate::http_collection::HttpWorkspace, filter: &str) -> bool {
+    if ws.name.to_lowercase().contains(filter) {
+        return true;
+    }
     for req in &ws.requests {
         if req.display_name().to_lowercase().contains(filter)
             || req.url.to_lowercase().contains(filter)
@@ -1406,6 +1414,9 @@ fn workspace_has_match(ws: &crate::http_collection::HttpWorkspace, filter: &str)
 }
 
 fn folder_has_match(folder: &crate::http_collection::HttpFolder, filter: &str) -> bool {
+    if folder.name.to_lowercase().contains(filter) {
+        return true;
+    }
     for req in &folder.requests {
         if req.display_name().to_lowercase().contains(filter)
             || req.url.to_lowercase().contains(filter)

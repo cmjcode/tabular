@@ -129,7 +129,7 @@ pub fn render_http_client(
         });
 
     // Render the save dialog (outside the Frame so it can float as a Window)
-    if render_save_dialog(ui, state, toasts) {
+    if render_save_dialog(ui, state, toasts, connection_id) {
         workspaces_saved = true;
     }
 
@@ -301,6 +301,7 @@ fn render_save_dialog(
     ui: &mut egui::Ui,
     state: &mut HttpClientState,
     toasts: &mut crate::window_egui::notifications::ToastManager,
+    connection_id: Option<i64>,
 ) -> bool {
     if !state.show_save_dialog {
         return false;
@@ -309,8 +310,24 @@ fn render_save_dialog(
     let mut close = false;
     let mut save = false;
 
-    if state.workspaces.is_empty() {
-        state.workspaces = crate::http_collection::load_workspaces();
+    // Always fetch fresh workspaces from disk
+    let mut workspaces = crate::http_collection::load_workspaces();
+    if workspaces.is_empty() {
+        let default_ws = crate::http_collection::create_workspace(&mut workspaces, "Collection");
+        state.collection_panel.active_workspace_id = Some(default_ws.id);
+    }
+    state.workspaces = workspaces.clone();
+
+    // Ensure active_workspace_id is set to a valid workspace
+    let active_ws_valid = state
+        .collection_panel
+        .active_workspace_id
+        .as_ref()
+        .map_or(false, |id| state.workspaces.iter().any(|w| &w.id == id));
+    if !active_ws_valid {
+        if let Some(first) = state.workspaces.first() {
+            state.collection_panel.active_workspace_id = Some(first.id.clone());
+        }
     }
 
     egui::Window::new("💾 Save Request to Collection")
@@ -345,7 +362,7 @@ fn render_save_dialog(
                             .iter()
                             .find(|w| w.id == current_ws)
                             .map(|w| w.name.as_str())
-                            .unwrap_or("Default Workspace");
+                            .unwrap_or("Collection");
 
                         egui::ComboBox::from_id_salt("save_dialog_ws_combo")
                             .selected_text(selected_name)
@@ -388,10 +405,16 @@ fn render_save_dialog(
             .collection_panel
             .active_workspace_id
             .clone()
+            .or_else(|| state.workspaces.first().map(|w| w.id.clone()))
             .unwrap_or_else(|| "default".to_string());
 
         let req_name = if state.save_dialog_name.trim().is_empty() {
-            "New Request".to_string()
+            let endpoint = crate::http_collection::extract_endpoint_url(&state.url);
+            if endpoint == "/" || endpoint.is_empty() {
+                "New Request".to_string()
+            } else {
+                endpoint
+            }
         } else {
             state.save_dialog_name.trim().to_string()
         };
@@ -433,12 +456,18 @@ fn render_save_dialog(
             workspaces.push(new_ws);
         }
         crate::http_collection::save_workspaces(&workspaces);
+        state.workspaces = workspaces;
         state.saved_request_id = Some(new_req.id.clone());
         state.saved_workspace_id = Some(ws_id.clone());
         state.saved_folder_id = None;
         state.save_dialog_name = req_name.clone();
+        state.collection_panel.active_workspace_id = Some(ws_id);
 
-        toasts.success(format!("Saved request '{}' to collection!", req_name));
+        if let Some(conn_id) = connection_id {
+            save_http_state(conn_id, state);
+        }
+
+        toasts.success(format!("Request '{}' berhasil disimpan ✓", req_name));
     }
 
     if close {
@@ -547,20 +576,17 @@ fn render_code_dialog(
 }
 
 /// Save or update an HTTP client tab.
-/// - If associated with an HTTP connection (`connection_id`), saves connection state to disk.
-/// - Else if associated with an existing collection request (`state.saved_request_id`), updates the request in collection.
+/// - If associated with an existing collection request (`state.saved_request_id`), updates the request in collection.
+///   (Also updates HTTP connection state draft if `connection_id` is present).
 /// - Else (unsaved request), triggers the "Save Request to Collection" dialog.
+///   (Also updates HTTP connection state draft if `connection_id` is present).
 /// Returns `true` if workspace collection was modified (requires reloading `app.yaak_workspaces`).
 pub fn save_or_update_http_tab(
     connection_id: Option<i64>,
     state: &mut HttpClientState,
     toasts: &mut crate::window_egui::notifications::ToastManager,
 ) -> bool {
-    if let Some(conn_id) = connection_id {
-        save_http_state(conn_id, state);
-        toasts.success("HTTP connection state disimpan ✓");
-        false
-    } else if let Some(req_id) = state.saved_request_id.clone() {
+    if let Some(req_id) = state.saved_request_id.clone() {
         let mut workspaces = crate::http_collection::load_workspaces();
         let mut updated = false;
 
@@ -582,6 +608,9 @@ pub fn save_or_update_http_tab(
             req.api_key_name = state.api_key_name.clone();
             req.api_key_value = state.api_key_value.clone();
             req.api_key_in_header = state.api_key_in_header;
+            if !state.save_dialog_name.trim().is_empty() {
+                req.name = state.save_dialog_name.trim().to_string();
+            }
         }
 
         fn update_in_folders(
@@ -615,25 +644,46 @@ pub fn save_or_update_http_tab(
 
         if updated {
             crate::http_collection::save_workspaces(&workspaces);
-            let display_name = if state.save_dialog_name.is_empty() {
+            state.workspaces = workspaces;
+            if let Some(conn_id) = connection_id {
+                save_http_state(conn_id, state);
+            }
+            let display_name = if state.save_dialog_name.trim().is_empty() {
                 "request"
             } else {
-                &state.save_dialog_name
+                state.save_dialog_name.trim()
             };
             toasts.success(format!("Tersimpan '{}' ✓", display_name));
             true
         } else {
             // Request missing from workspaces, fallback to save dialog
             state.show_save_dialog = true;
-            if state.save_dialog_name.is_empty() {
-                state.save_dialog_name = "New Request".to_string();
+            if state.save_dialog_name.trim().is_empty() {
+                let default_name = crate::http_collection::extract_endpoint_url(&state.url);
+                state.save_dialog_name = if default_name == "/" || default_name.is_empty() {
+                    "New Request".to_string()
+                } else {
+                    default_name
+                };
+            }
+            if let Some(conn_id) = connection_id {
+                save_http_state(conn_id, state);
             }
             false
         }
     } else {
+        // Unsaved request: open save dialog so user can name it and choose collection
         state.show_save_dialog = true;
-        if state.save_dialog_name.is_empty() {
-            state.save_dialog_name = "New Request".to_string();
+        if state.save_dialog_name.trim().is_empty() {
+            let default_name = crate::http_collection::extract_endpoint_url(&state.url);
+            state.save_dialog_name = if default_name == "/" || default_name.is_empty() {
+                "New Request".to_string()
+            } else {
+                default_name
+            };
+        }
+        if let Some(conn_id) = connection_id {
+            save_http_state(conn_id, state);
         }
         false
     }

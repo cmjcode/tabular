@@ -2219,7 +2219,14 @@ impl Tabular {
                                             .clicked()
                                         {
                                             if is_http_active {
-                                                editor::create_new_http_tab(self, "New Request".to_string(), self.current_connection_id);
+                                                let http_conn_id = self
+                                                    .current_connection_id
+                                                    .filter(|id| {
+                                                        self.connections
+                                                            .iter()
+                                                            .any(|c| c.id == Some(*id) && c.connection_type == models::enums::DatabaseType::ApiHttp)
+                                                    });
+                                                editor::create_new_http_tab(self, "New Request".to_string(), http_conn_id);
                                             } else {
                                                 editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
                                             }
@@ -3014,11 +3021,25 @@ impl Tabular {
                             && tab.http_client_state.is_some()
                         {
                             let conn_id = tab.connection_id;
+                            let mut new_tab_title = None;
+                            let mut workspaces_saved = false;
                             if let Some(state) = &mut tab.http_client_state {
-                                let workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id);
-                                if workspaces_saved {
-                                    // Reload in-memory collection so sidebar reflects the newly saved request
-                                    self.yaak_workspaces = crate::http_collection::load_workspaces();
+                                workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id);
+                                if workspaces_saved && !state.save_dialog_name.trim().is_empty() {
+                                    new_tab_title = Some(state.save_dialog_name.trim().to_string());
+                                }
+                            }
+                            if workspaces_saved {
+                                // Reload in-memory collection so sidebar reflects the newly saved request
+                                self.yaak_workspaces = crate::http_collection::load_workspaces();
+                                self.selected_menu = "APIs".to_string();
+                                if let Some(title) = new_tab_title {
+                                    if let Some(t) = self.query_tabs.get_mut(self.active_tab_index) {
+                                        t.title = title;
+                                    }
+                                }
+                                if self.sync_account.is_some() {
+                                    self.sync_trigger_http = true;
                                 }
                             }
                             rendered_http = true;
