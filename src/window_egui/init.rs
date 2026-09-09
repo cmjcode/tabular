@@ -670,6 +670,7 @@ impl super::Tabular {
             workspaces_load_receiver: None,
             collection_search: String::new(),
             collection_expanded_folders: std::collections::HashSet::new(),
+            collection_just_saved_workspace: None,
             show_yaak_import_dialog: false,
             show_postman_import_dialog: false,
             queries_load_receiver: None,

@@ -563,7 +563,12 @@ impl super::Tabular {
             && let Ok(result) = rx.try_recv()
         {
             match result {
-                Ok(n) => info!("[sync] Pulled {} HTTP request(s)", n),
+                Ok(n) => {
+                    info!("[sync] Pulled {} HTTP request(s)", n);
+                    if n > 0 {
+                        self.yaak_workspaces = crate::http_collection::load_workspaces();
+                    }
+                }
                 Err(e) => {
                     warn!("[sync] HTTP requests pull error: {}", e);
                     self.check_401_error(&e);

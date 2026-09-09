@@ -253,14 +253,19 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             continue;
         }
 
-        let default_open = app.yaak_workspaces.len() == 1;
+        let is_just_saved = app.collection_just_saved_workspace.as_deref() == Some(ws_id.as_str());
 
-        let ws_header_resp = egui::CollapsingHeader::new(
+        let mut ws_header = egui::CollapsingHeader::new(
             egui::RichText::new(format!("📁  {}  ({})", ws_name, request_count)).strong(),
         )
         .id_salt(format!("sidebar_coll_ws_{}", ws_id))
-        .default_open(default_open)
-        .show(ui, |ui| {
+        .default_open(true);
+
+        if !filter.is_empty() || is_just_saved {
+            ws_header = ws_header.open(Some(true));
+        }
+
+        let ws_header_resp = ws_header.show(ui, |ui| {
             // ── Top-level requests ────────────────────────────────────────
             let top_req_ids: Vec<String> = app.yaak_workspaces[ws_idx]
                 .requests
@@ -395,6 +400,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     }
 
     app.collection_expanded_folders = expanded_folders;
+    app.collection_just_saved_workspace = None;
 
     // Apply deferred actions after rendering loop
     if let Some((name, id)) = conn_to_open {
@@ -1390,6 +1396,9 @@ fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest)
 // ─── Filter helpers ───────────────────────────────────────────────────────────
 
 fn workspace_has_match(ws: &crate::http_collection::HttpWorkspace, filter: &str) -> bool {
+    if ws.name.to_lowercase().contains(filter) {
+        return true;
+    }
     for req in &ws.requests {
         if req.display_name().to_lowercase().contains(filter)
             || req.url.to_lowercase().contains(filter)
@@ -1406,6 +1415,9 @@ fn workspace_has_match(ws: &crate::http_collection::HttpWorkspace, filter: &str)
 }
 
 fn folder_has_match(folder: &crate::http_collection::HttpFolder, filter: &str) -> bool {
+    if folder.name.to_lowercase().contains(filter) {
+        return true;
+    }
     for req in &folder.requests {
         if req.display_name().to_lowercase().contains(filter)
             || req.url.to_lowercase().contains(filter)
