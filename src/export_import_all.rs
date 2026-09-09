@@ -166,6 +166,21 @@ fn add_directory_recursive<W: Write + Seek>(
     for entry in std::fs::read_dir(current_dir)? {
         let entry = entry?;
         let path = entry.path();
+
+        // Skip symlinks to prevent infinite recursion
+        if let Ok(ft) = entry.file_type() {
+            if ft.is_symlink() {
+                continue;
+            }
+        }
+
+        // Skip macOS metadata and temporary hidden files
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name == ".DS_Store" || name.starts_with("._") {
+                continue;
+            }
+        }
+
         let rel_path = path
             .strip_prefix(base_dir)
             .map_err(|e| ExportImportError::InvalidArchive(e.to_string()))?;
@@ -207,11 +222,15 @@ fn clear_directory_contents(dir: &Path) -> std::io::Result<()> {
 
 // ─── Core Export / Import Implementation ─────────────────────────────────────
 
-/// Export all specified application data into a ZIP archive file at `target_path`.
-pub fn export_all_data(
-    tabular: &mut Tabular,
+/// Core headless export function that does not block on tokio runtime or mutate Tabular.
+/// Fully thread-safe and safe to execute in a background thread.
+pub fn export_all_data_payload(
     target_path: &Path,
     options: &ExportAllOptions,
+    connections: &[ConnectionConfig],
+    connection_folders: &[String],
+    yaak_workspaces: &[crate::http_collection::HttpWorkspace],
+    history_items: &[HistoryItem],
 ) -> Result<ExportSummary, ExportImportError> {
     if let Some(parent) = target_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -226,15 +245,15 @@ pub fn export_all_data(
 
     // 1. Export Connections and Connection Folders
     if options.include_connections {
-        let conns_json = serde_json::to_string_pretty(&tabular.connections)?;
+        let conns_json = serde_json::to_string_pretty(connections)?;
         zip.start_file("connections/connections.json", file_opts)?;
         zip.write_all(conns_json.as_bytes())?;
-        counts.connections = tabular.connections.len();
+        counts.connections = connections.len();
 
-        let folders_json = serde_json::to_string_pretty(&tabular.connection_folders)?;
+        let folders_json = serde_json::to_string_pretty(connection_folders)?;
         zip.start_file("connections/folders.json", file_opts)?;
         zip.write_all(folders_json.as_bytes())?;
-        counts.connection_folders = tabular.connection_folders.len();
+        counts.connection_folders = connection_folders.len();
     }
 
     // 2. Export Saved Queries
@@ -264,7 +283,7 @@ pub fn export_all_data(
         }
 
         // Also ensure in-memory workspaces that haven't hit disk are written
-        for ws in &tabular.yaak_workspaces {
+        for ws in yaak_workspaces {
             if !exported_ids.contains(&ws.id) {
                 let zip_path = format!("http_collections/{}.json", ws.id);
                 zip.start_file(&zip_path, file_opts)?;
@@ -275,43 +294,12 @@ pub fn export_all_data(
         }
     }
 
-    // 4. Export Query History
+    // 4. Export Query History (directly from in-memory history, zero deadlock risk)
     if options.include_history {
-        let rt = tabular.get_runtime();
-        let history_to_export: Vec<HistoryItem> = if let Some(ref pool) = tabular.db_pool {
-            let pool_clone = pool.clone();
-            let db_rows = rt.block_on(async {
-                sqlx::query_as::<_, (i64, String, i64, String, String)>(
-                    "SELECT id, query_text, connection_id, connection_name, executed_at FROM query_history ORDER BY executed_at ASC"
-                )
-                .fetch_all(pool_clone.as_ref())
-                .await
-            })
-            .ok()
-            .map(|rows| {
-                rows.into_iter()
-                    .map(|r| HistoryItem {
-                        id: Some(r.0),
-                        query: r.1,
-                        connection_id: r.2,
-                        connection_name: r.3,
-                        executed_at: r.4,
-                    })
-                    .collect::<Vec<_>>()
-            });
-
-            match db_rows {
-                Some(items) if !items.is_empty() => items,
-                _ => tabular.history_items.clone(),
-            }
-        } else {
-            tabular.history_items.clone()
-        };
-
-        let hist_json = serde_json::to_string_pretty(&history_to_export)?;
+        let hist_json = serde_json::to_string_pretty(history_items)?;
         zip.start_file("history/history.json", file_opts)?;
         zip.write_all(hist_json.as_bytes())?;
-        counts.history_items = history_to_export.len();
+        counts.history_items = history_items.len();
     }
 
     // 5. Write manifest.json
@@ -354,6 +342,22 @@ pub fn export_all_data(
         zip_file_size: file_size,
         archive_path: target_path.to_path_buf(),
     })
+}
+
+/// Export all specified application data into a ZIP archive file at `target_path`.
+pub fn export_all_data(
+    tabular: &mut Tabular,
+    target_path: &Path,
+    options: &ExportAllOptions,
+) -> Result<ExportSummary, ExportImportError> {
+    export_all_data_payload(
+        target_path,
+        options,
+        &tabular.connections,
+        &tabular.connection_folders,
+        &tabular.yaak_workspaces,
+        &tabular.history_items,
+    )
 }
 
 /// Inspect an archive without restoring it. Returns manifest metadata and item counts.
