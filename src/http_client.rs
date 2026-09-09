@@ -310,7 +310,7 @@ fn render_save_dialog(
     let mut close = false;
     let mut save = false;
 
-    // Always fetch fresh workspaces from disk
+    // Always fetch fresh workspaces from disk so newly created or imported collections are immediately visible
     let mut workspaces = crate::http_collection::load_workspaces();
     if workspaces.is_empty() {
         let default_ws = crate::http_collection::create_workspace(&mut workspaces, "Collection");
@@ -355,7 +355,8 @@ fn render_save_dialog(
                             .collection_panel
                             .active_workspace_id
                             .clone()
-                            .unwrap_or_else(|| state.workspaces[0].id.clone());
+                            .or_else(|| state.workspaces.first().map(|w| w.id.clone()))
+                            .unwrap_or_else(|| "default".to_string());
 
                         let selected_name = state
                             .workspaces
@@ -578,9 +579,10 @@ fn render_code_dialog(
 /// Save or update an HTTP client tab.
 /// - If associated with an existing collection request (`state.saved_request_id`), updates the request in collection.
 ///   (Also updates HTTP connection state draft if `connection_id` is present).
+/// - Else if associated with an HTTP connection (`connection_id`), saves connection state to disk.
 /// - Else (unsaved request), triggers the "Save Request to Collection" dialog.
 ///   (Also updates HTTP connection state draft if `connection_id` is present).
-/// Returns `true` if workspace collection was modified (requires reloading `app.yaak_workspaces`).
+/// Returns `true` if workspace collection or connection state was modified.
 pub fn save_or_update_http_tab(
     connection_id: Option<i64>,
     state: &mut HttpClientState,
@@ -671,6 +673,10 @@ pub fn save_or_update_http_tab(
             }
             false
         }
+    } else if let Some(conn_id) = connection_id {
+        save_http_state(conn_id, state);
+        toasts.success("HTTP connection state disimpan ✓");
+        true
     } else {
         // Unsaved request: open save dialog so user can name it and choose collection
         state.show_save_dialog = true;
