@@ -714,6 +714,12 @@ pub struct Tabular {
     /// Flag: show the Postman import file-picker dialog next frame.
     pub show_postman_import_dialog: bool,
 
+    // ─── Export & Import All Data (ZIP) ──────────────────────────────────────
+    pub show_export_all_dialog: bool,
+    pub show_import_all_dialog: bool,
+    pub export_all_state: Option<crate::dialog_export_import_all::ExportAllDialogState>,
+    pub import_all_state: Option<crate::dialog_export_import_all::ImportAllDialogState>,
+
     // ─── Async Startup Loaders ───────────────────────────────────────────────
     /// Background receiver for loading saved queries from directory
     pub queries_load_receiver: Option<std::sync::mpsc::Receiver<Vec<models::structs::TreeNode>>>,
